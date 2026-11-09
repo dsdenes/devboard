@@ -159,7 +159,7 @@
             <CommandButton
               variant="default"
               label="Start"
-              evidence={() => issues.lifecycle}
+              evidence={() => issues.startEvidence}
               command={() => issues.start()}
               data-testid="issues-start"
               data-command="issues.start"
@@ -243,6 +243,11 @@
           {/if}
           {#if issues.notice !== null}
             <p class="issues-notice" data-testid="issues-notice" role="status">{issues.notice}</p>
+          {/if}
+          {#if issues.startError !== null}
+            <p class="issues-error" data-testid="issues-start-error" role="alert">
+              {issues.startError}
+            </p>
           {/if}
           {#if workerLive && issues.snapshot?.poll?.error != null}
             <p class="issues-error" data-testid="issues-poll-error" role="alert">

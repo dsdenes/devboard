@@ -321,7 +321,13 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     title: "Start issue automation",
     group: "Issues",
     keywords: "worker begin poll implement every issue",
-    disabled: () => disabledWhen(!issues.canStart, "Start is unavailable while the worker is enabled."),
+    disabled: () =>
+      disabledWhen(
+        !issues.canStart,
+        issues.starting
+          ? "Start is already in progress."
+          : "Start is unavailable while the worker is enabled.",
+      ),
     run: () => issues.start(),
   });
   add({

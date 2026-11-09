@@ -214,6 +214,16 @@ fn hooks(
     }
 }
 
+/// Waits until `count` spawns are recorded. An accepted Start runs its
+/// preflight and spawn after it answers, so a test never reads the spawn list
+/// on the answer's own turn.
+async fn wait_for_spawns(spawns: &RecordedSpawns, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while spawns.lock().expect("spawns").len() < count && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn commands(directory: &Path) -> Vec<Value> {
     let mut names: Vec<String> = std::fs::read_dir(directory)
         .map(|entries| {
@@ -271,6 +281,8 @@ async fn an_unstarted_checkout_publishes_the_stopped_state_frame() {
         "finishedAt": null,
         "notice": null,
         "deferral": null,
+        "starting": false,
+        "startError": null,
         "updatedAt": null,
         "workers": [],
         "sync": {"intervalMs": 30000, "lastSyncAt": null, "error": null},
@@ -492,6 +504,7 @@ async fn start_spawns_once_then_attaches_and_writes_every_control() {
         bridge.start().await,
         StartOutcome::Started { attached: false }
     );
+    wait_for_spawns(&spawns, 1).await;
     {
         let recorded_spawns = spawns.lock().expect("spawns");
         assert_eq!(recorded_spawns.len(), 1);
@@ -585,6 +598,10 @@ async fn auto_resume_replaces_a_crashed_worker_and_respects_stop_and_pause() {
         bridge.supervise_once().await,
         "the vanished worker restarts"
     );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while spawns.lock().expect("spawns").is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(spawns.lock().expect("spawns").len(), 1);
 
     // An operator Stop stays respected even when the worker dies before it
@@ -735,28 +752,139 @@ async fn a_tracker_failure_is_published_without_losing_the_last_list() {
     assert_eq!(snapshot["queue"], json!([]));
 }
 
+/// A Start answers the state it changed before its preflight runs.
+///
+/// The preflight reads the forge and the spawn starts a process; neither may
+/// hold an operator action's answer. The answer names the start in flight, and
+/// the preflight's refusal is published once it lands, to every page.
 #[tokio::test]
-async fn a_start_refusal_reports_the_preflight_message() {
-    let (repo, state) = scratch("refuse");
+async fn a_start_answers_before_its_preflight_finishes() {
+    let (repo, state) = scratch("start-answer-budget");
     let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let (released, pending) = tokio::sync::oneshot::channel::<()>();
+    let pending = Arc::new(Mutex::new(Some(pending)));
+    let waiting = Arc::clone(&pending);
     let bridge = IssuesBridge::new(options(
         &repo,
         &state,
-        hooks(
-            Arc::new(|| PreflightResult::Refused {
-                message: "missing prerequisite: gh is not on PATH".into(),
+        IssuesHooks {
+            preflight: Arc::new(move |_request| {
+                let pending = Arc::clone(&waiting);
+                Box::pin(async move {
+                    let pending = { pending.lock().expect("preflight").take() };
+                    if let Some(pending) = pending {
+                        let _ = pending.await;
+                    }
+                    PreflightResult::Refused {
+                        message: "missing prerequisite: gh is not on PATH".into(),
+                    }
+                })
             }),
-            Arc::new(|_argv, _env| Some(42)),
-            Arc::new(|_request| Ok(())),
-        ),
-        sink,
+            spawn_worker: Arc::new(|_argv, _env| Some(42)),
+            close_issue: Arc::new(|_request| Box::pin(async { Ok(()) })),
+            tracker_read: empty_tracker(),
+            agent_environment: Arc::new(|| Box::pin(async { Ok(HashMap::new()) })),
+        },
+        Arc::clone(&sink),
     ));
+
+    let started = Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_millis(1000), bridge.start())
+        .await
+        .expect("a Start answers before its preflight finishes");
+    assert_eq!(outcome, StartOutcome::Started { attached: false });
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "the Start answered in {:?}",
+        started.elapsed()
+    );
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["starting"], json!(true));
+    assert_eq!(snapshot["startError"], Value::Null);
+
+    let _ = released.send(());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let snapshot = bridge.snapshot();
+        if snapshot["starting"] == json!(false) && snapshot["startError"] != Value::Null {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the refusal was never published: {snapshot}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let snapshot = bridge.snapshot();
+    assert_eq!(
+        snapshot["startError"],
+        "missing prerequisite: gh is not on PATH"
+    );
+    assert!(
+        sink.lock()
+            .expect("sink")
+            .iter()
+            .any(|frame| frame["startError"] == "missing prerequisite: gh is not on PATH"),
+        "every page learns the refusal"
+    );
+}
+
+/// A Stop during an accepted Start supersedes it: the start answers no worker,
+/// and its preflight's outcome is never published.
+#[tokio::test]
+async fn a_stop_supersedes_an_accepted_start() {
+    let (repo, state) = scratch("start-superseded");
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let (released, pending) = tokio::sync::oneshot::channel::<()>();
+    let pending = Arc::new(Mutex::new(Some(pending)));
+    let waiting = Arc::clone(&pending);
+    let spawns: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&spawns);
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        IssuesHooks {
+            preflight: Arc::new(move |_request| {
+                let pending = Arc::clone(&waiting);
+                Box::pin(async move {
+                    let pending = { pending.lock().expect("preflight").take() };
+                    if let Some(pending) = pending {
+                        let _ = pending.await;
+                    }
+                    PreflightResult::Ok {
+                        repository: "acme/app".into(),
+                    }
+                })
+            }),
+            spawn_worker: Arc::new(move |_argv, _env| {
+                recorded.lock().expect("spawns").push(42);
+                Some(42)
+            }),
+            close_issue: Arc::new(|_request| Box::pin(async { Ok(()) })),
+            tracker_read: empty_tracker(),
+            agent_environment: Arc::new(|| Box::pin(async { Ok(HashMap::new()) })),
+        },
+        Arc::clone(&sink),
+    ));
+
     assert_eq!(
         bridge.start().await,
-        StartOutcome::Refused {
-            message: "missing prerequisite: gh is not on PATH".into()
-        }
+        StartOutcome::Started { attached: false }
     );
+    assert_eq!(bridge.snapshot()["starting"], json!(true));
+    bridge.command(&IssuesCommand::Stop).expect("the stop");
+    assert_eq!(bridge.snapshot()["starting"], json!(false));
+
+    let _ = released.send(());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        spawns.lock().expect("spawns").is_empty(),
+        "a stop answers no worker"
+    );
+    assert_eq!(bridge.snapshot()["startError"], Value::Null);
 }
 
 #[tokio::test]
@@ -1185,6 +1313,10 @@ async fn a_drain_stopped_family_is_adopted_by_the_newest_version() {
         bridge.supervise_once().await,
         "the drained family is resumed"
     );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while spawns.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(spawns.load(Ordering::SeqCst), 1);
 }
 
@@ -1259,6 +1391,44 @@ async fn a_start_answers_the_state_and_never_the_activity() {
         "a Start answers the state alone, not the activity: {extra:?}"
     );
     drop(owner);
+}
+
+/// The REST answer one dispatched Start waits for arrives while its preflight
+/// is still pending.
+///
+/// The preflight reads the forge, so it can take seconds. A request handler
+/// that answered only after it finished held the operator's action past its
+/// one-second budget with no frame written; the answer now names the start in
+/// flight and the request returns on the quiet window.
+#[tokio::test]
+async fn a_dispatched_start_answers_inside_the_budget_while_its_preflight_is_pending() {
+    let (repo, state) = scratch("start-dispatch-budget");
+    let config = app_config(&repo, &state);
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+    // A preflight that never settles: no forge, no `omp`, and no spawn can
+    // follow, so nothing outlives the test's own runtime.
+    devboard::issues_mode::set_preflight(
+        &app,
+        Arc::new(|_request| {
+            Box::pin(async move {
+                std::future::pending::<()>().await;
+                PreflightResult::Ok {
+                    repository: "acme/app".into(),
+                }
+            })
+        }),
+    );
+
+    let started = Instant::now();
+    let frames = app.dispatch_captured(Command::StartIssues).await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(1000),
+        "the dispatched Start answered in {elapsed:?} while its preflight was pending"
+    );
+    assert_eq!(frames[0]["type"], "issuesState");
+    assert_eq!(frames[0]["starting"], json!(true));
 }
 
 /// A read replays each running agent's activity to the page that asked, and

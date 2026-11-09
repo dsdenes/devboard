@@ -120,6 +120,14 @@ export interface IssuesSnapshot {
   finishedAt: string | null;
   notice: string | null;
   /**
+   * True while this dashboard's accepted Start still runs its stop proof,
+   * preflight, or spawn. Optional so a client paired with an older server
+   * still validates its snapshot.
+   */
+  starting?: boolean;
+  /** Why the last accepted Start spawned nothing, or null. */
+  startError?: string | null;
+  /**
    * The start the worker has to defer right now, or null. The worker
    * recomputes it every pass, so it never describes a peer that has ended;
    * optional so a client paired with an older server still validates.

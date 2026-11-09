@@ -163,6 +163,28 @@ export class IssuesStore {
     return this.snapshot?.deferral ?? null;
   }
 
+  /**
+   * True while the dashboard's accepted Start still runs its stop proof,
+   * preflight, or spawn. The Start control reads it as the answered state.
+   */
+  get starting(): boolean {
+    return this.snapshot?.starting === true;
+  }
+
+  /** Why the last accepted Start spawned nothing, or null. */
+  get startError(): string | null {
+    return this.snapshot?.startError ?? null;
+  }
+
+  /**
+   * The Start control's confirming evidence: a start in flight, or the
+   * refusal that answered one. Both change on the frame the action changed,
+   * so the control leaves its busy word instead of waiting for the ceiling.
+   */
+  get startEvidence(): string {
+    return `${this.starting ? "starting" : "idle"}|${this.startError ?? ""}`;
+  }
+
   /** Open issues waiting for an agent; a running issue is not pending. */
   get pending(): number {
     return queueCounts(this.queue).pending;
@@ -185,7 +207,7 @@ export class IssuesStore {
   }
 
   get canStart(): boolean {
-    return connection.open && !this.enabled;
+    return connection.open && !this.enabled && !this.starting;
   }
 
   get canPause(): boolean {

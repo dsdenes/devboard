@@ -3506,22 +3506,30 @@ survives a dashboard restart and two repositories never share a worker. No syste
 machine-level scheduler is involved, and neither starting nor restarting a dashboard starts a
 worker.
 
-Start first proves the facts it needs: a canonical checkout root that is not a linked worktree,
-a GitHub `origin`, `omp` and `gh` on `PATH`, the `/implement-issue` command installed for the
-operator's omp, and the `/implement-goal-issue` extension installed beside it. Commands are
+Start answers before it proves anything: the snapshot it answers with carries `starting: true`, so
+the control leaves `Starting…` on that frame instead of waiting out a forge read. The stop proof,
+the preflight, and the spawn then run in the dashboard's own task, and the page's next read or the
+dashboard's poll carries the outcome. Start proves the facts it needs: a canonical checkout root
+that is not a linked worktree, a GitHub `origin`, `omp` and `gh` on `PATH`, the
+`/implement-issue` command installed for the operator's omp, and the `/implement-goal-issue`
+extension installed beside it. Commands are
 discovered in `<REPO_DIR>/.omp/commands/`, `<REPO_DIR>/.omp/agent/commands/`,
 `$HOME/.omp/commands/`, and `$HOME/.omp/agent/commands/`; the extension in
 `<REPO_DIR>/.omp/extensions/` or `$HOME/.omp/extensions/`. A refusal names the missing file, every
-path searched, and `.devboard/install.sh` as the remedy, spawns no peer, and writes no run. Start
-also requires `gh api repos/<owner>/<repo> --jq .permissions.push` to return `true`. A live legacy
+path searched, and `.devboard/install.sh` as the remedy, spawns no peer, and writes no run; it is
+published as the snapshot's `startError` and clears `starting`, and the Overview renders it as the
+`issues-start-error` alert. Start also requires
+`gh api repos/<owner>/<repo> --jq .permissions.push` to return `true`. A live legacy
 `devboard-orchestrator` lock is refused too; the harness never stops that process. Issues mode no
 longer requires `/implement-all-issues`; that command stays usable by hand outside the mode.
 
 The whole Start preflight has a 20-second deadline. A `gh` probe or preflight that does not settle
 is abandoned at that deadline, its child is killed (`SIGTERM`, then `SIGKILL` after 200 ms), and
-Start answers `{ ok: false, message }` naming the deadline. The in-flight Start task is cleared
+the published `startError` names the deadline. The in-flight Start task is cleared
 from memory, so the next Start runs the preflight again and spawns the worker when it succeeds;
-no restart is needed.
+no restart is needed. An operator Stop supersedes an accepted Start that has not spawned yet: that
+start is answered `ok` with no worker, its `starting` clears, and its preflight's outcome is never
+published.
 
 The worker is spawned detached in its own session from the harness package the server loaded,
 with `REPO_DIR` as its working directory. It holds `<REPO_DIR>/.devboard/.tmp/issues/lock`, which
@@ -3549,9 +3557,12 @@ leaves the ledger, so a reopened one is eligible again. A poll with no unhandled
 no peer and publishes `idle`.
 
 The Open issues list and every row's state come from one forge read: the dashboard's own read of
-the origin's open issues. While at least one client is connected it re-reads every 30 seconds
-(`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on connect, and publishes the result in the
-snapshot's `sync` field. That read is the only source of a row: no worker state file, stopped
+the origin's open issues. While a page is reading this resource, or a socket client is connected,
+it re-reads every 30 seconds (`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on the first
+read, and publishes the result in the snapshot's `sync` field. A page's own poll is what makes it
+a reading client: the REST transport keeps no command socket, so a read within one sync interval
+plus one page poll is the demand, and the reads a page sends once a second share one tracker read
+per interval. That read is the only source of a row: no worker state file, stopped
 worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
 one forge state that marks a run in progress: a running worker ensures the label exists, adds it
 to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
@@ -3563,12 +3574,12 @@ publishes its error in `sync.error`.
 A running issue that no longer appears in the dashboard's read is stopped: the dashboard sends one
 `abandon` command for that issue, and the worker records its run `stopped` with no handled entry
 and no cooldown. A live worker's own poll never changes the page's rows or counts, even when it
-lists a different set; only the dashboard's own fresh read does. With no connected client the
-dashboard makes no tracker call, and the worker's own poll still ends a run the moment it sees the
-issue leave the open list. Every running worker also reconciles the `processing` label against the
-repository's live claims: an open issue that carries the label with no live claim is repaired on
-the next poll, which covers a killed worker, a restarted dashboard, and an upgrade that leaves an
-older worker's state behind.
+lists a different set; only the dashboard's own fresh read does. With no page reading this
+resource and no socket client the dashboard makes no tracker call, and the worker's own poll
+still ends a run the moment it sees the issue leave the open list. Every running worker also
+reconciles the `processing` label against the repository's live claims: an open issue that
+carries the label with no live claim is repaired on the next poll, which covers a killed worker,
+a restarted dashboard, and an upgrade that leaves an older worker's state behind.
 
 A goal issue is the record of one goal, so its run settles only on a proven close: while the
 issue is open it never finishes `succeeded` or `stopped`. A poll that drops an open goal issue
