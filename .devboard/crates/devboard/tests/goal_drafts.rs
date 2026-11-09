@@ -230,6 +230,7 @@ fn write_running_record_since(
         launcher_pid: Some(launcher),
         supervisor_pid: Some(supervisor),
         updated_at: started,
+        applied_answer: None,
     };
     devboard::goal_drafts::write_goal_draft_owner_state(&state_dir(), repo, path, &state);
 }
@@ -265,6 +266,7 @@ fn write_owner_state(repo: &Path, path: &str, question: Option<GoalDraftQuestion
         launcher_pid: Some(std::process::id()),
         supervisor_pid: Some(std::process::id()),
         updated_at: now,
+        applied_answer: None,
     };
     devboard::goal_drafts::write_goal_draft_owner_state(&state_dir(), repo, path, &state);
 }
@@ -459,6 +461,7 @@ async fn start_streams_activity_answers_a_question_and_stops() {
     assert_eq!(question["options"][0]["label"], json!("Alpha"));
     assert_eq!(question["options"][0]["recommended"], json!(true));
     let id = question["id"].clone();
+    let answered_id = id.clone();
 
     let running_state: Value = serde_json::from_str(
         &std::fs::read_to_string(devboard::goal_drafts::goal_draft_owner_state_path(
@@ -525,11 +528,13 @@ async fn start_streams_activity_answers_a_question_and_stops() {
             "peer",
             "launcherPid",
             "supervisorPid",
-            "updatedAt"
+            "updatedAt",
+            "appliedAnswer"
         ]
     );
     assert_eq!(stored["version"], json!(1));
     assert_eq!(stored["run"]["status"], "stopped");
+    assert_eq!(stored["appliedAnswer"], answered_id);
     assert!(stored["owner"]["pid"].as_u64().is_some());
     assert!(stored["peer"].is_null());
 }
@@ -586,6 +591,104 @@ async fn an_answer_replies_with_its_applied_state() {
     assert!(
         answered.is_some(),
         "the reply carries the applied state: {frames:?}"
+    );
+}
+
+/// The state one owner publishes after it applies answer 9 and its peer asks
+/// the next question in the same tick: the applied run state never holds a
+/// "no question" moment a reader could observe, only the acknowledgement of
+/// the id that owner applied.
+fn write_answered_state(repo: &Path, path: &str) {
+    let now = devboard::journal::now_iso8601();
+    let cwd = std::env::current_dir().expect("a working directory");
+    let state = json!({
+        "version": devboard::goal_drafts::GOAL_DRAFT_OWNER_VERSION,
+        "run": {
+            "status": "running",
+            "path": path,
+            "startedAt": now.clone(),
+            "finishedAt": null,
+            "error": null,
+            "activity": ["Answer received: Alpha"],
+            "question": {
+                "id": 10,
+                "message": "Choose the next answer",
+                "options": [],
+            },
+        },
+        "owner": devboard::goal_drafts::self_child(&cwd).to_json(),
+        "peer": null,
+        "launcherPid": std::process::id(),
+        "supervisorPid": std::process::id(),
+        "updatedAt": now,
+        "appliedAnswer": 9,
+    });
+    let target = devboard::goal_drafts::goal_draft_owner_state_path(&state_dir(), repo, path);
+    let temporary = target.with_extension("json.tmp");
+    std::fs::write(&temporary, devboard::jsjson::stringify(&state)).expect("the owner state");
+    std::fs::rename(&temporary, &target).expect("an atomic owner state");
+}
+
+/// A peer that asks its next question immediately never leaves the applied
+/// state visible as "no question", so the reply must follow the answer the
+/// owner recorded rather than wait out the deadline for a state it cannot
+/// catch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_replies_from_the_acknowledgement_inside_its_budget() {
+    let _serial = serial().await;
+    let repo = repo_root("answer-ack");
+    let path = ".devboard/goal-proposals/ask.md".to_string();
+    write_owner_state(
+        &repo,
+        &path,
+        Some(GoalDraftQuestion {
+            id: AcpId::from_value(&json!(9)).expect("a question id"),
+            message: "Choose an answer".to_string(),
+            options: Vec::new(),
+        }),
+    );
+
+    let control = devboard::goal_drafts::goal_draft_control_directory(&state_dir(), &repo, &path);
+    let answered_repo = repo.clone();
+    let answered_path = path.clone();
+    let tick = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(5000);
+        while tokio::time::Instant::now() < deadline {
+            if std::fs::read_dir(&control).is_ok_and(|mut entries| entries.next().is_some()) {
+                write_answered_state(&answered_repo, &answered_path);
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        false
+    });
+
+    let app = app(&repo);
+    let started = tokio::time::Instant::now();
+    let frames = app
+        .dispatch_captured(Command::AnswerGoalDraft {
+            path: Some(json!(path)),
+            id: Some(json!(9)),
+            value: Some(json!("Alpha")),
+        })
+        .await;
+    let elapsed = started.elapsed();
+    assert!(
+        tick.await.expect("the owner tick"),
+        "the answer reached its owner"
+    );
+    assert!(
+        elapsed < Duration::from_millis(300),
+        "the reply follows the acknowledgement instead of the deadline: {elapsed:?}"
+    );
+    let answered = frames.iter().find(|frame| {
+        frame["type"] == "issuesDraftState"
+            && frame["draft"]["path"] == json!(path)
+            && frame["draft"]["question"]["id"] == json!(10)
+    });
+    assert!(
+        answered.is_some(),
+        "the reply carries the state the owner applied: {frames:?}"
     );
 }
 

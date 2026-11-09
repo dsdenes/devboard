@@ -24,8 +24,10 @@ use crate::goal_drafts::{
 };
 use crate::workers::WorkerInvocation;
 
-/// How often the owner consumes commands and checks its supervisor.
-const OWNER_CHECK_MS: u64 = 200;
+/// How often the owner consumes commands. This is the operator's answer round
+/// trip, not a housekeeping interval: the reply that confirms an answer waits
+/// for the acknowledgement the owner writes when it applies it.
+const OWNER_COMMAND_MS: u64 = 25;
 /// How long the owner waits for the peer to exit before it forces it.
 const PEER_CLOSE_GRACE_MS: u64 = 1_500;
 /// How long the owner waits for the dashboard's running state to appear.
@@ -72,6 +74,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
         peer: None,
         peer_child: stored.peer.clone(),
         first_stderr: String::new(),
+        applied_answer: stored.applied_answer.clone(),
         done: false,
     };
     // The owner publishes the identity its liveness is judged by before it
@@ -107,7 +110,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
         let _ = turn_sender.send(runner.run(&prompt).await);
     });
 
-    let mut ticker = tokio::time::interval(Duration::from_millis(OWNER_CHECK_MS));
+    let mut ticker = tokio::time::interval(Duration::from_millis(OWNER_COMMAND_MS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
@@ -180,6 +183,8 @@ struct Owner {
     peer: Option<Arc<AcpConnection>>,
     peer_child: Option<RecordedChild>,
     first_stderr: String,
+    /// The answer this owner applied last, durable in its published state.
+    applied_answer: Option<AcpId>,
     done: bool,
 }
 
@@ -197,6 +202,7 @@ impl Owner {
                 launcher_pid: self.launcher_pid,
                 supervisor_pid: self.supervisor_pid,
                 updated_at: crate::journal::now_iso8601(),
+                applied_answer: self.applied_answer.clone(),
             },
         );
     }
@@ -266,6 +272,7 @@ impl Owner {
             return;
         }
         self.run.question = None;
+        self.applied_answer = Some(id);
         self.persist();
     }
 

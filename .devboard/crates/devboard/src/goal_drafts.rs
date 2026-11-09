@@ -253,6 +253,10 @@ pub struct GoalDraftOwnerState {
     pub launcher_pid: Option<u32>,
     pub supervisor_pid: Option<u32>,
     pub updated_at: String,
+    /// The id of the answer its owner last applied. The applied run state is
+    /// transient — a peer that asks its next question at once replaces it in
+    /// the same tick — so this acknowledgement is what a reply waits on.
+    pub applied_answer: Option<AcpId>,
 }
 
 impl GoalDraftOwnerState {
@@ -265,6 +269,7 @@ impl GoalDraftOwnerState {
             "launcherPid": self.launcher_pid,
             "supervisorPid": self.supervisor_pid,
             "updatedAt": self.updated_at,
+            "appliedAnswer": serde_json::to_value(&self.applied_answer).unwrap_or(Value::Null),
         })
     }
 }
@@ -507,6 +512,10 @@ fn parse_state(value: &Value) -> Option<GoalDraftOwnerState> {
         Some(pid) => Some(pid),
         None => supervisor_pid,
     };
+    let applied_answer = match record.get("appliedAnswer") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(AcpId::from_value(value)?),
+    };
     Some(GoalDraftOwnerState {
         version: GOAL_DRAFT_OWNER_VERSION,
         run,
@@ -519,6 +528,7 @@ fn parse_state(value: &Value) -> Option<GoalDraftOwnerState> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        applied_answer,
     })
 }
 
@@ -1099,6 +1109,27 @@ impl DraftWatcher {
         self.send_all(self.drafts_frame());
     }
 
+    /// Re-reads one draft's owner state and publishes it, so a page action sees
+    /// what its owner recorded without scanning every run, proving every
+    /// process, and taking the lease on the request's own thread. False when
+    /// the state is unreadable, where the full refresh is the answer.
+    fn publish_run(&mut self, path: &str) -> bool {
+        let Some(stored) = read_goal_draft_owner_state(&self.state_dir, &self.repo_dir, path)
+        else {
+            return false;
+        };
+        let previous = self.runs.get(path).cloned();
+        self.owners.insert(path.to_string(), stored.clone());
+        self.runs.insert(path.to_string(), stored.run.clone());
+        self.emit_state(path);
+        if previous.is_some_and(|run| run.status == GoalDraftStatus::Running)
+            && stored.run.status != GoalDraftStatus::Running
+        {
+            self.publish_drafts();
+        }
+        true
+    }
+
     /// Writes one run's state. The owner identity is never invented here: only
     /// the owner process itself publishes it, in `owner`.
     fn store_state(
@@ -1117,6 +1148,7 @@ impl DraftWatcher {
             launcher_pid: Some(std::process::id()),
             supervisor_pid: Some(std::process::id()),
             updated_at,
+            applied_answer: None,
         };
         write_goal_draft_owner_state(&self.state_dir, &self.repo_dir, path, &state);
         self.owners.insert(path.to_string(), state.clone());
@@ -1159,6 +1191,7 @@ impl DraftWatcher {
             launcher_pid: latest.launcher_pid,
             supervisor_pid: latest.supervisor_pid,
             updated_at,
+            applied_answer: latest.applied_answer.clone(),
         };
         write_goal_draft_owner_state(&self.state_dir, &self.repo_dir, &path, &next);
         self.owners.insert(path.clone(), next.clone());
@@ -1711,13 +1744,21 @@ fn watcher_for(repo_dir: &Path, state_dir: &Path) -> Arc<Mutex<DraftWatcher>> {
 // Command dispatch
 
 /// Waits until the draft's owner records the answer it was handed, so the
-/// reply that confirms the answer carries the state the owner applied.
-async fn wait_for_applied_answer(state_dir: &Path, repo_dir: &Path, path: &str) {
+/// reply that confirms the answer carries the state the owner applied. The
+/// acknowledgement is durable: a peer that asks its next question at once
+/// replaces the question-less run state in the same tick, so waiting on that
+/// transient would burn the whole deadline.
+async fn wait_for_applied_answer(state_dir: &Path, repo_dir: &Path, path: &str, answer: &AcpId) {
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(ANSWER_APPLIED_DEADLINE_MS);
     loop {
         let applied = read_goal_draft_owner_state(state_dir, repo_dir, path).is_some_and(|state| {
-            state.run.question.is_none() || state.run.status != GoalDraftStatus::Running
+            state
+                .applied_answer
+                .as_ref()
+                .is_some_and(|applied| applied.as_key() == answer.as_key())
+                || state.run.question.is_none()
+                || state.run.status != GoalDraftStatus::Running
         });
         if applied {
             return;
@@ -1754,6 +1795,14 @@ async fn answer(
         return true;
     };
     let shared = watcher_for(repo_dir, state_dir);
+    let Some(answer_id) = AcpId::from_value(id_value) else {
+        send_draft_error(
+            conn,
+            Some(path_text),
+            "An answer needs its draft path, question id, and value.",
+        );
+        return true;
+    };
     {
         let mut watcher = watch_lock(&shared);
         // A request's handle dies with the request, so it never joins the
@@ -1770,12 +1819,15 @@ async fn answer(
             return true;
         }
     }
-    // The owner applies the answer on its own tick. The reply carries the
-    // applied run state, so the page stops waiting for its next poll: this
-    // response is the only frame it reads before then.
-    wait_for_applied_answer(state_dir, repo_dir, path_text).await;
+    // The owner consumes the command on its own tick and acknowledges it by
+    // the id it applied. The reply carries that run state, so the page stops
+    // waiting for its next poll: this response is the only frame it reads
+    // before then.
+    wait_for_applied_answer(state_dir, repo_dir, path_text, &answer_id).await;
     let mut watcher = watch_lock(&shared);
-    watcher.refresh();
+    if !watcher.publish_run(path_text) {
+        watcher.refresh();
+    }
     if conn.is_request() {
         conn.send(json!({
             "type": "issuesDraftState",
@@ -1968,6 +2020,7 @@ mod tests {
             launcher_pid: Some(42),
             supervisor_pid: Some(42),
             updated_at: "2026-11-03T00:00:01.000Z".to_string(),
+            applied_answer: Some(AcpId::Number(7)),
         };
         let value = state.to_json();
         let keys: Vec<&String> = value.as_object().expect("an object").keys().collect();
@@ -1980,7 +2033,8 @@ mod tests {
                 "peer",
                 "launcherPid",
                 "supervisorPid",
-                "updatedAt"
+                "updatedAt",
+                "appliedAnswer"
             ]
         );
         assert_eq!(value["peer"], Value::Null);

@@ -1025,6 +1025,11 @@ Every agentic run the dashboard starts owns a detached process, not a peer insid
 lifecycle lanes, a manual ADR run, goal creation, goal revision, skills preparation, goal-draft
 elaboration, Discover, Flow, and Ask. Each owner spawns the ACP peer, appends activity to a
 run-keyed file, publishes its question, and consumes answer, stop, pause, and resume commands.
+A goal-draft owner consumes commands every 25 ms and records the id of the answer it applied in
+its published state, because a peer that asks its next question at once replaces the applied run
+state in the same tick. The answer reply waits for that acknowledgement, bounded at 700 ms, so it
+carries the applied state without waiting out the bound; a slower owner still leaves the page's
+poll as the fallback.
 When a newer harness replaces the dashboard, the owners stay alive; the replacement leases and
 re-attaches to the same runs, so state and activity replay after reconnect, an answer reaches the
 same run, Stop ends it, and no replacement records the run as stopped or interrupted. A non-
