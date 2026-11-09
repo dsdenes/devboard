@@ -46,6 +46,7 @@ impl Dashboard {
         let state = root.join("state");
         std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
         std::fs::create_dir_all(&state).expect("a state directory");
+        std::fs::create_dir_all(root.join("releases")).expect("an empty release source");
         let status = Command::new("git")
             .arg("-C")
             .arg(&repo)
@@ -93,12 +94,19 @@ impl Dashboard {
             .env("HOME", std::env::var("HOME").unwrap_or_default())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
+            // A fixture is its own release source: the empty local directory
+            // fails every manifest read, so no published release installs a
+            // newer binary under the test and restarts the process mid-assert.
+            .env("DEVBOARD_RELEASE_URL", root.join("releases"))
+            // The dashboard that spawned this run states its own version on
+            // the environment; inheriting it makes the fixture believe it runs
+            // an older binary and replace itself.
+            .env_remove("DEVBOARD_RUNNING_VERSION")
             .env("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1")
             .env("DEVBOARD_OPENROUTER_USAGE_BASE_URL", "http://127.0.0.1:1")
             .env_remove("DEVBOARD_GITEA_URL")
             .env_remove("GITEA_URL")
             .env_remove("GITEA_TOKEN")
-            .env_remove("DEVBOARD_RELEASE_URL")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(

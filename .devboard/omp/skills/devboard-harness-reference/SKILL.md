@@ -4405,6 +4405,11 @@ to the `METHOD /path` that replaced it.
 - A 404 Problem on any path in `openapi.yaml` is the documented stale-bundle refusal: a page
   built against an older revision reloads once. A second refusal is reported and starts no
   reload loop.
+- A path under a root the REST surface owns, or under `flows`, `agent-runs`, `goal-proposals`,
+  `ready`, or `reports`, that matches no route answers `404` Problem JSON naming the request —
+  `This server serves no GET /issues/runs/.` — never the static file refusal, so a page that
+  sends a path this server does not serve reads which request was refused. Any other missing
+  path answers `The requested file was not found.`
 
 ### Per-run output sockets
 

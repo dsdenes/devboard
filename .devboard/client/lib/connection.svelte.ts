@@ -168,6 +168,15 @@ export class ConnectionStore {
         notifications.push("Connection", "error", this.lastError);
         return false;
       }
+      const envelope = command as Envelope;
+      const missing = missingPathField(envelope, operation);
+      if (missing !== null) {
+        // An empty path parameter would address no operation: the server would
+        // answer it as a missing file and the page as a stale bundle.
+        this.lastError = `This action is missing its ${missing}.`;
+        notifications.push("Connection", "error", this.lastError);
+        return false;
+      }
       if (this.transport !== undefined) {
         if (this.transport.readyState !== undefined && this.transport.readyState !== 1) {
           this.lastError = "Not connected to the server.";
@@ -180,7 +189,6 @@ export class ConnectionStore {
       }
       this.lastError = null;
       const action = slowUiAction.dispatch(command, resolved);
-      const envelope = command as Envelope;
       if (operation.method === "GET") {
         this.register(envelope);
         if (this.dispatchingStartingReads) {
@@ -684,6 +692,16 @@ function documentVisible(): boolean {
   if (typeof document === "undefined") return true;
   if (document.visibilityState !== undefined) return document.visibilityState !== "hidden";
   return document.hidden !== true;
+}
+
+/** The first path field a command leaves out, or `null` when it carries all. */
+function missingPathField(command: Envelope, operation: RestOperation): string | null {
+  for (const [, field] of operation.pathParams) {
+    const value = command[field];
+    if (typeof value === "number") continue;
+    if (typeof value !== "string" || value.length === 0) return field;
+  }
+  return null;
 }
 
 /** One operation's path with its path parameters from the command object. */

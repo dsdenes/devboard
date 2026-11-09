@@ -561,6 +561,46 @@ test("stale_bundle_reloads_once", async () => {
   store.dispose();
 });
 
+test("an_operation_without_its_path_parameter_is_refused", async () => {
+  const requested: string[] = [];
+  setGlobal("fetch", async (input: RequestInfo | URL) => {
+    requested.push(String(input));
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  setGlobal(
+    "WebSocket",
+    class Untracked {
+      constructor() {
+        throw new Error("no command socket may be constructed");
+      }
+    },
+  );
+  setGlobal("window", {
+    setInterval: () => 1,
+    clearInterval: () => undefined,
+    setTimeout: () => 1,
+    clearTimeout: () => undefined,
+  });
+  setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
+  setGlobal("document", fakeDocument("visible"));
+
+  const store = new ConnectionStore();
+  store.state = "open";
+  expect(store.send({ type: "getIssuesRun" }, "operator")).toBe(false);
+  expect(store.send({ type: "getIssuesRun", runId: "" }, "operator")).toBe(false);
+  await settle();
+  expect(requested).toEqual([]);
+  expect(store.lastError).toBe("This action is missing its runId.");
+
+  expect(store.send({ type: "getIssuesRun", runId: "run-1" }, "operator")).toBe(true);
+  await settle();
+  expect(requested).toEqual(["/issues/runs/run-1"]);
+  store.dispose();
+});
+
 const DRAFT_PATH = ".devboard/goal-proposals/example.md";
 const DRAFT_URL = "/goal-drafts/.devboard%2Fgoal-proposals%2Fexample.md";
 

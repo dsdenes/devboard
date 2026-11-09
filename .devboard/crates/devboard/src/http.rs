@@ -453,6 +453,10 @@ pub async fn serve(server: Arc<Server>) -> std::io::Result<()> {
     serve_on(listener, server).await
 }
 
+/// The path roots this dashboard serves itself, beside the route table.
+const BESIDE_ROUTE_TABLE_ROOTS: [&str; 5] =
+    ["agent-runs", "flows", "goal-proposals", "ready", "reports"];
+
 /// One request for the dashboard.
 async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response {
     let method = request.method().clone();
@@ -599,6 +603,22 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
             &headers,
             400,
             &format!("The request path {quoted} carries a control character."),
+            &[],
+        ));
+    }
+    // A path under a root the REST surface owns is an operation request, never
+    // a file. Answer it as one, so a page that sends a path this server does
+    // not serve reads which request was refused instead of a missing document.
+    let root = pathname
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("");
+    if crate::rest::serves_root(root) || BESIDE_ROUTE_TABLE_ROOTS.contains(&root) {
+        return reply(Replies::problem(
+            &headers,
+            404,
+            &format!("This server serves no {method} {pathname}."),
             &[],
         ));
     }
