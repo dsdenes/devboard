@@ -1331,6 +1331,60 @@ async fn single_responsibility_drops_a_filing_without_provenance() {
 }
 
 #[tokio::test]
+async fn single_responsibility_keeps_a_slow_forge_filing_on_the_card() {
+    let fixture = Fixture::new("srp-slow-forge");
+    fixture.srp_inputs();
+    let forge = Arc::new(SrpForge::default());
+    let turns = Arc::new(AtomicU64::new(0));
+    let turns_for_peer = Arc::clone(&turns);
+    let connect = fake_connect(move |prompt| {
+        let turns = Arc::clone(&turns_for_peer);
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/single-responsibility ");
+            let turn = turns.fetch_add(1, Ordering::SeqCst);
+            let error = if turn == 0 {
+                "could not resolve Gitea access for acme/fixture on http://forge.test: \
+                 GET /repos/acme/fixture failed: the request timed out after 30000 ms"
+            } else {
+                "POST /repos/acme/fixture/issues failed (HTTP 403): forbidden"
+            };
+            let line = json!({"tool": "issue_create", "ok": false, "error": error});
+            std::fs::write(directory.join("tool-log.jsonl"), format!("{line}\n"))
+                .expect("a tool record");
+            Ok(())
+        })
+    });
+    let worker = srp_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    // A filing that failed because the forge ran out of time is latency, not a
+    // fault: the card keeps no reason, so the dashboard raises no error
+    // notification and files no board issue against the forge already behind.
+    let state = worker.current_state();
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.notice, None);
+    let directory = srp::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
+    let activity = api::read_activity(&directory).join("\n");
+    assert!(activity.contains("the request timed out after 30000 ms"));
+    assert!(activity.contains("the forge is slow: the next cycle files again"));
+    // A tool error that names no latency still spends the cycle's reason.
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    let state = worker.current_state();
+    assert_eq!(
+        state.last_error.as_deref(),
+        Some("POST /repos/acme/fixture/issues failed (HTTP 403): forbidden")
+    );
+    assert!(state
+        .notice
+        .as_deref()
+        .is_some_and(|notice| notice.starts_with("Single Responsibility cycle failed:")));
+    worker.stop().await;
+}
+
+#[tokio::test]
 async fn single_responsibility_preflight_refuses_a_missing_or_unusable_skill() {
     let fixture = Fixture::new("srp-preflight");
     git_fixture(&fixture, "https://forge.test/acme/fixture.git");

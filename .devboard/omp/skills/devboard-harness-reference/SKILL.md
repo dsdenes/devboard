@@ -2917,7 +2917,11 @@ each created issue from the origin, and publishes a row only for an issue it rea
 the `single-responsibility` label and a body whose category, skill path, directive, component,
 evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
 recorded in activity as a verification failure and is not published as a row; a tool error files
-nothing and is recorded, never claimed as a filing. The issue lands in the origin: on GitHub
+nothing and is recorded, never claimed as a filing. A tool error that names a forge request bound
+that expired — the forge was slow, not broken — is recorded in activity and leaves no reason on
+the card, so the next cycle files again instead of the dashboard raising an error notification
+that returns as a new board issue for the same forge; any other tool error still sets the cycle's
+reason. The issue lands in the origin: on GitHub
 through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
 `forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
 is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`

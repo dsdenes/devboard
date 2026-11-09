@@ -23,7 +23,8 @@ use serde_json::{json, Value};
 
 use crate::acp::AcpActivity;
 use crate::forge::{
-    classify_forge_read_failure, Forge, ForgeReadFailureKind, ForgeReadRetry, ForgeRemote,
+    classify_forge_read_failure, is_forge_read_latency, Forge, ForgeReadFailureKind,
+    ForgeReadRetry, ForgeRemote,
 };
 use crate::journal::journal_key;
 use crate::providers::{
@@ -2487,6 +2488,18 @@ impl Worker {
         if let Some(error) = &error {
             record(format!("filing stopped: {error}"));
         }
+        // A filing that failed because the forge ran out of time is latency,
+        // not a fault: the request was still in flight, the next cycle files
+        // again, and keeping the reason would raise an error notification that
+        // returns as a new board issue for the forge already behind. A tool
+        // error that names no latency still spends the cycle's reason.
+        let error = match error {
+            Some(detail) if is_forge_read_latency(&detail) => {
+                record("the forge is slow: the next cycle files again".to_string());
+                None
+            }
+            other => other,
+        };
         self.finish_cycle(cycle_id, error);
     }
 
