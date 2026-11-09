@@ -373,6 +373,105 @@ test("a poll cycle never holds every origin connection", async () => {
   store.dispose();
 });
 
+/** The surface reads an open replays after the page's six first-paint reads. */
+const REPLAY_COMMANDS = [
+  "getMcpTools",
+  "getIssues",
+  "getAgents",
+  "getComplexity",
+  "getInstalledSkills",
+  "getGoalDrafts",
+];
+const REPLAY_PATHS = [
+  "/mcp-tools",
+  "/issues",
+  "/agents",
+  "/complexity",
+  "/installed-skills",
+  "/goal-drafts",
+];
+
+test("a page's own read is not queued behind the whole open replay", async () => {
+  // A page load replays every surface read right after the six first-paint
+  // reads, and the six connections a browser opens are then all busy. A read
+  // the page dispatches at mount — the Resources tab asks for its budget as it
+  // mounts — joined the back of that queue: /issues measured 970 ms and
+  // /goal-drafts 4469 ms on one live load, so getResources waited more than a
+  // second for a connection the server answers in 2 ms. The replay now waits
+  // for the six first-paint answers and then holds at most three connections,
+  // so the page's own read starts on the first freed one.
+  const pool = originPool(6);
+  const issued: string[] = [];
+  installHttpTransport((input) => {
+    issued.push(String(input));
+    return pool.request(input);
+  });
+
+  const store = new ConnectionStore();
+  store.onOpen(() => {
+    for (const type of REPLAY_COMMANDS) store.send({ type });
+  });
+  store.connect();
+  store.send({ type: "getResources" });
+  await settle();
+
+  expect(issued).toEqual([
+    "/records",
+    "/goal",
+    "/skills",
+    "/project",
+    "/version",
+    "/providers",
+    "/resources",
+  ]);
+
+  // The replay still runs once those first reads answer, and it never holds
+  // more connections than the poll already may.
+  await drainPool(pool);
+  expect(pool.inFlight()).toBe(0);
+  expect(issued).toEqual(expect.arrayContaining(REPLAY_PATHS));
+  store.dispose();
+});
+
+test("a first-paint read that never answers holds the replay one cadence", async () => {
+  // The replay waits for the page's first-paint reads so its own read is not
+  // queued behind them. A read that never answers must not keep the modes
+  // unread for the session: one cadence lets the replay start anyway.
+  const issued: string[] = [];
+  const timers: Array<() => void> = [];
+  installHttpTransport((input) => {
+    issued.push(String(input));
+    return new Promise<Response>(() => undefined);
+  });
+  setGlobal("window", {
+    setInterval: () => 1,
+    clearInterval: () => undefined,
+    setTimeout: (handler: () => void) => {
+      timers.push(handler);
+      return timers.length;
+    },
+    clearTimeout: () => undefined,
+  });
+
+  const store = new ConnectionStore();
+  store.onOpen(() => store.send({ type: "getIssues" }));
+  store.connect();
+  await settle();
+  expect(issued).toEqual([
+    "/records",
+    "/goal",
+    "/skills",
+    "/project",
+    "/version",
+    "/providers",
+  ]);
+  expect(timers).toHaveLength(1);
+  for (const timer of timers) timer();
+  await settle();
+  expect(issued).toContain("/issues");
+  store.dispose();
+});
+
 test("stale_bundle_reloads_once", async () => {
   let reloads = 0;
   setGlobal("sessionStorage", fakeStorage());

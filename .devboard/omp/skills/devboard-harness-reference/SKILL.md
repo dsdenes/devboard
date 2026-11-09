@@ -459,22 +459,28 @@ Every operator-initiated REST action and every operator-initiated `POST /reports
 first-paint reads a page load sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
 `getVersion`, `getProviders`). Those six are dispatched before every mode read on the same open,
 so they hold the page's first six browser connections and a slow mode read never queues one of
-them behind it. An action is complete when its first answer arrives — the frame that answers it,
-or the response to the request that carried it, whatever its status. A frame for another action
-or a broadcast does not complete it. A request that never answers keeps its budget and still
-files, so a lost or refused connection, a problem document, and a 304 file nothing while an
-unanswered read is still reported. The guard is observational: it never changes the 10-second
-command ceiling, a server timeout, a retry schedule, a polling interval, the busy control, or the
-request lifecycle. It does not dismiss a busy state, clear a control's timer, or abort a request.
+them behind it. Every mode read the open replays behind them is queued rather than issued, so a
+read a page dispatches itself as it mounts — the Resources tab's own `getResources` — takes the
+first freed connection instead of the back of the replay. An action is complete when its first
+answer arrives — the frame that answers it, or the response to the request that carried it,
+whatever its status. A frame for another action or a broadcast does not complete it. A request
+that never answers keeps its budget and still files, so a lost or refused connection, a problem
+document, and a 304 file nothing while an unanswered read is still reported. The guard is
+observational: it never changes the 10-second command ceiling, a server timeout, a retry
+schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
+busy state, clear a control's timer, or abort a request.
 
-A page refreshes every registered resource once a second, and that refresh keeps at most three of
-the browser's six origin connections in flight. A poll that dispatched its whole registry at once
-took all six, so the read the operator waited on queued behind the page's own refreshes: the
-server answered `GET /providers` in 5 ms while the page measured 842 ms. Three connections stay
-free for an operator action, a first-paint read, and the bundle's own requests, and the queue
-drains as each refresh answers, so a cycle still reads every registered resource. The run's
-output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks another
-background request beside the refreshes.
+A page refreshes every registered resource once a second, and every read the page issues for
+itself — a poll tick's refresh and an open's replay alike — keeps at most three of the
+browser's six origin connections in flight, starting the next one as an answer frees its slot.
+A poll that dispatched its whole registry at once took all six, so the read the operator waited
+on queued behind the page's own refreshes: the server answered `GET /providers` in 5 ms while the
+page measured 842 ms. Three connections stay free for an operator action, a first-paint read,
+and the bundle's own requests, and the queue drains as each refresh answers, so a cycle still
+reads every registered resource. The replay itself starts once the six first-paint reads answer,
+or one cadence later when one of them never answers, so the modes are never left unread. The
+run's output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks
+another background request beside the refreshes.
 
 The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
 refresh, poll, a polling surface's repeat request, and every send issued while the connection is

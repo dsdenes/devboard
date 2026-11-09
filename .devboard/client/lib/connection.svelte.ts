@@ -22,11 +22,12 @@ export const POLL_INTERVAL_MS = 1000;
 const ORIGIN_CONNECTIONS = 6;
 
 /**
- * Origin connections this page's background refresh may hold. The rest stay
- * free for a foreground read: a provider read the server answers in 5 ms waited
- * 842 ms behind a poll burst that had taken all six.
+ * Origin connections this page's own reads may hold, whether a poll tick or an
+ * open's replay issued them. The rest stay free for a foreground read: a
+ * provider read the server answers in 5 ms waited 842 ms behind a poll burst
+ * that had taken all six.
  */
-const MAX_POLL_REQUESTS = ORIGIN_CONNECTIONS - 3;
+const MAX_BACKGROUND_READS = ORIGIN_CONNECTIONS - 3;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -80,6 +81,13 @@ interface PolledResource {
   key: string;
 }
 
+/** One read this page issues for itself, waiting for a reserved connection. */
+interface BackgroundRead {
+  command: Envelope;
+  key: string;
+  origin: SlowUiActionOrigin;
+}
+
 /**
  * Owns every dashboard read and action. A mounted page registers its own GET
  * resource, which is polled once a second while the document is visible; an
@@ -110,15 +118,23 @@ export class ConnectionStore {
   private openHandlers: Array<() => void> = [];
   private polled = new Map<string, PolledResource>();
   private inFlight = new Set<string>();
-  /** Registered resources a refresh cycle has not started yet. */
-  private pollQueue: PolledResource[] = [];
-  /** Background refreshes this page currently holds a connection for. */
-  private pollRequests = 0;
+  /** Page reads an open replay or a poll tick has not started yet. */
+  private queue: BackgroundRead[] = [];
+  /** Page reads this page currently holds a connection for. */
+  private backgroundReads = 0;
+  /** The page's six first-paint reads still unanswered; the replay waits. */
+  private startingReads = 0;
+  /** False while those six own the page's six origin connections. */
+  private replayReady = true;
+  /** Wakes the replay when a first-paint read never answers. */
+  private replayTimer: number | undefined;
   private etags = new Map<string, string>();
   /** First open registers first-paint reads; later opens are reconnects. */
   private hasOpened = false;
   /** The origin the current open's six first-paint sends register under. */
   private openingOrigin: SlowUiActionOrigin | null = null;
+  /** True while `opened` dispatches those six reads. */
+  private dispatchingStartingReads = false;
 
   get open(): boolean {
     return this.state === "open";
@@ -167,7 +183,17 @@ export class ConnectionStore {
       const envelope = command as Envelope;
       if (operation.method === "GET") {
         this.register(envelope);
-        void this.fetchResource(envelope, operation, resolved, action);
+        if (this.dispatchingStartingReads) {
+          this.startingReads += 1;
+          void this.fetchResource(envelope, operation, resolved, action).finally(() => {
+            this.startingReadAnswered();
+            this.pump();
+          });
+        } else if (resolved === "refresh" || resolved === "reconnect") {
+          this.enqueue(envelope, operation, resolved);
+        } else {
+          void this.fetchResource(envelope, operation, resolved, action);
+        }
       } else {
         void this.perform(envelope, operation, action);
       }
@@ -235,8 +261,10 @@ export class ConnectionStore {
     // browser opens six per origin, so a read dispatched after the surfaces'
     // reads waits for a slot behind them: a 2 ms records read queued behind a
     // slow issues, agents, or goal-drafts read and breached its 1000 ms
-    // first-paint budget. The surfaces' replay reads follow, in order.
+    // first-paint budget. The surfaces' replay reads are queued behind the
+    // page's own reads instead of being issued after these six, in order.
     this.openingOrigin = opening;
+    this.dispatchingStartingReads = true;
     try {
       this.send({ type: "listRecords" }, opening);
       this.send({ type: "getGoal" }, opening);
@@ -244,11 +272,48 @@ export class ConnectionStore {
       this.send({ type: "getProject" }, opening);
       this.send({ type: "getVersion" }, opening);
       this.send({ type: "getProviders" }, opening);
+    } finally {
+      this.dispatchingStartingReads = false;
+    }
+    this.holdReplay();
+    try {
       this.openingOrigin = "reconnect";
       for (const handler of this.openHandlers) handler();
     } finally {
       this.openingOrigin = null;
     }
+    this.pump();
+  }
+
+  /**
+   * Keeps the open's replay reads queued while the page's first-paint reads
+   * own the six connections, and never longer than one cadence: a read that
+   * never answers must not keep the page's modes unread for the session.
+   */
+  private holdReplay(): void {
+    if (this.startingReads === 0) {
+      this.replayReady = true;
+      return;
+    }
+    this.replayReady = false;
+    if (this.replayTimer !== undefined) return;
+    if (typeof window === "undefined") return;
+    this.replayTimer = window.setTimeout(() => {
+      this.replayTimer = undefined;
+      this.replayReady = true;
+      this.pump();
+    }, POLL_INTERVAL_MS);
+  }
+
+  /** One first-paint read answered; the replay may start with the last one. */
+  private startingReadAnswered(): void {
+    this.startingReads -= 1;
+    if (this.startingReads > 0) return;
+    if (this.replayTimer !== undefined) {
+      clearTimeout(this.replayTimer);
+      this.replayTimer = undefined;
+    }
+    this.replayReady = true;
   }
 
   private lost(): void {
@@ -545,30 +610,50 @@ export class ConnectionStore {
 
   /**
    * One polling tick: queues every registered resource once. The queue drains
-   * through `pumpPoll`, which keeps at most `MAX_POLL_REQUESTS` refreshes in
+   * through `pump`, which keeps at most `MAX_BACKGROUND_READS` page reads in
    * flight so a foreground read always finds a free origin connection.
    */
   private pollTick(): void {
     if (!documentVisible() || this.awaitingRestart) return;
     for (const resource of this.polled.values()) {
-      if (!this.pollQueue.some((queued) => queued.key === resource.key)) {
-        this.pollQueue.push(resource);
-      }
+      const operation = REST_OPERATIONS[resource.command.type];
+      if (operation !== undefined) this.enqueue(resource.command, operation, "refresh");
     }
-    this.pumpPoll();
   }
 
-  /** Starts queued refreshes while a background connection is free. */
-  private pumpPoll(): void {
-    while (!this.disposed && this.pollRequests < MAX_POLL_REQUESTS) {
-      const resource = this.pollQueue.shift();
-      if (resource === undefined) return;
-      const operation = REST_OPERATIONS[resource.command.type];
+  /**
+   * Queues one read this page issues for itself — a poll tick's refresh or an
+   * open's replay — under its own key, so the same resource never waits twice.
+   */
+  private enqueue(
+    command: Envelope,
+    operation: RestOperation,
+    origin: SlowUiActionOrigin,
+  ): void {
+    const key = `${command.type}:${resourcePath(command, operation)}`;
+    if (this.queue.some((queued) => queued.key === key)) return;
+    this.queue.push({ command, key, origin });
+    this.pump();
+  }
+
+  /**
+   * Starts queued page reads while a connection this page may hold is free,
+   * and never before the six first-paint reads have answered: until then the
+   * browser's six connections belong to them, and a read the page dispatches
+   * at mount — the Resources tab's own budget read — must not wait behind the
+   * whole replay.
+   */
+  private pump(): void {
+    if (!this.replayReady) return;
+    while (!this.disposed && this.backgroundReads < MAX_BACKGROUND_READS) {
+      const next = this.queue.shift();
+      if (next === undefined) return;
+      const operation = REST_OPERATIONS[next.command.type];
       if (operation === undefined) continue;
-      this.pollRequests += 1;
-      void this.fetchResource(resource.command, operation, "refresh", null).finally(() => {
-        this.pollRequests -= 1;
-        this.pumpPoll();
+      this.backgroundReads += 1;
+      void this.fetchResource(next.command, operation, next.origin, null).finally(() => {
+        this.backgroundReads -= 1;
+        this.pump();
       });
     }
   }
@@ -576,7 +661,10 @@ export class ConnectionStore {
   dispose(): void {
     this.disposed = true;
     slowUiAction.reset();
-    this.pollQueue = [];
+    this.queue = [];
+    if (this.replayTimer !== undefined) clearTimeout(this.replayTimer);
+    this.replayTimer = undefined;
+    this.replayReady = true;
     if (this.retryTimer !== undefined) clearTimeout(this.retryTimer);
     if (this.pollTimer !== undefined) clearInterval(this.pollTimer);
     this.pollTimer = undefined;
