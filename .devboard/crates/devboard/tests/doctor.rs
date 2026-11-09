@@ -28,6 +28,44 @@ fn host(label: &str) -> PathBuf {
     root
 }
 
+/// A directory holding a working `omp` stub, prepended to `PATH` while the
+/// guard lives and restored when it drops. A test that asserts a healthy
+/// report proves the payload's own checks, never the machine's installed
+/// agent CLI.
+struct OmpStub(Option<std::ffi::OsString>);
+
+impl Drop for OmpStub {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(previous) => std::env::set_var("PATH", previous),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
+fn with_omp_stub(root: &Path) -> OmpStub {
+    let bin = root.join("stub-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("omp");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo \"omp 0.0.0\" ;;\n  *) echo \"usage: omp\" ;;\nesac\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let previous = std::env::var_os("PATH");
+    let mut entries = vec![bin];
+    if let Some(previous) = &previous {
+        entries.extend(std::env::split_paths(previous));
+    }
+    std::env::set_var("PATH", std::env::join_paths(entries).unwrap());
+    OmpStub(previous)
+}
+
 fn failures(report: &devboard::cli_install::DoctorReport) -> Vec<String> {
     report.failures.clone()
 }
@@ -65,6 +103,7 @@ fn local_release(root: &Path) -> PathBuf {
 fn a_healthy_host_passes() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let root = host("healthy");
+    let _omp = with_omp_stub(&root);
     let release = local_release(&root);
     std::env::set_var("DEVBOARD_RELEASE_URL", &release);
     let report = devboard::cli_install::doctor(Some(&root)).unwrap();
@@ -222,6 +261,7 @@ fn a_missing_omp_or_git_names_its_check() {
 fn a_local_release_artifact_is_downloaded_and_its_digest_checked() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let root = host("release-artifact");
+    let _omp = with_omp_stub(&root);
     let release = local_release(&root);
     let target = devboard::release::current_target().expect("a platform target");
     std::env::set_var("DEVBOARD_RELEASE_URL", &release);
