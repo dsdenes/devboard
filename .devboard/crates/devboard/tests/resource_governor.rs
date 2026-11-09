@@ -416,7 +416,7 @@ async fn global_cap_spans_goal_and_issues() {
             "--kind",
             "goal",
             "--hold-ms",
-            "1500",
+            "10000",
         ])
         .env("DEVBOARD_MAX_AGENT_PEERS", "1")
         .stdin(Stdio::null())
@@ -451,8 +451,10 @@ async fn global_cap_spans_goal_and_issues() {
     let flow = run("flow", "flow", 0);
     assert_eq!(flow.status.code(), Some(2), "a flow start is deferred");
     assert!(String::from_utf8_lossy(&flow.stdout).contains("deferred:"));
-    let status = goal.wait().expect("the goal helper ends");
-    assert!(status.success());
+    // Each helper start took close to a second on a loaded host, so the goal's
+    // hold must outlast both probes; end it here instead of racing the clock.
+    let _ = goal.kill();
+    let _ = goal.wait();
     // The same deferred start proceeds once the active run ends.
     let retried = run("issue #1", "issue", 0);
     assert_eq!(
