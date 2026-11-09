@@ -337,10 +337,16 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
 
     let widgets_frame = client
         .wait_for("two classified widgets", |frame| {
+            // Every diff tick publishes a widget list before the analyst has
+            // classified the files, and those transient lists name the files
+            // as structure changes. Wait for the reconciled pair instead of
+            // counting whatever the first frame carried.
             frame["type"] == "flowWidgets"
-                && frame["widgets"]
-                    .as_array()
-                    .is_some_and(|widgets| widgets.len() >= 2)
+                && frame["widgets"].as_array().is_some_and(|widgets| {
+                    widgets.len() >= 2
+                        && widgets[0]["category"] == "contract"
+                        && widgets[1]["category"] == "data"
+                })
         })
         .await;
     let widgets = widgets_frame["widgets"]

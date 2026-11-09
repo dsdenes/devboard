@@ -1661,6 +1661,28 @@ struct Conversation {
     queue: Vec<String>,
 }
 
+impl Conversation {
+    /// Appends the developer's message and decides who runs it: `true` means
+    /// the caller starts the prompt turn, and `false` means the text waits for
+    /// the live turn — or the opening prompt — to finish and drain it. The
+    /// decision and the enqueue belong to this one call so a turn that
+    /// finishes concurrently can never drain an empty queue and strand a
+    /// message that was read as queued.
+    fn enqueue_message(&mut self, text: &str) -> bool {
+        self.messages.push(ConversationMessage {
+            role: "developer".to_string(),
+            text: text.to_string(),
+        });
+        if self.busy {
+            self.queue.push(text.to_string());
+            false
+        } else {
+            self.busy = true;
+            true
+        }
+    }
+}
+
 struct Analyst {
     token: u64,
     agent: Option<Arc<AcpConnection>>,
@@ -5115,7 +5137,10 @@ impl FlowMode {
                 messages: Vec::new(),
                 activity: Vec::new(),
                 question: None,
-                busy: false,
+                // The opening prompt owns the turn from the moment the
+                // conversation opens, so a message sent before the peer is
+                // attached queues behind it instead of starting a second turn.
+                busy: true,
                 queue: Vec::new(),
             });
         }
@@ -5370,36 +5395,26 @@ impl FlowMode {
             self.error("A conversation message needs non-empty text.");
             return;
         };
-        let (busy, has_agent) = {
+        // The message and the turn decision are one step under one lock: a
+        // turn that finishes between a separate check and the enqueue would
+        // drain an empty queue and leave the text waiting forever.
+        let start_turn = {
             let mut inner = self.lock();
             let Some(conversation) = inner.conversation.as_mut().filter(|c| c.token == token)
             else {
                 return;
             };
-            conversation.messages.push(ConversationMessage {
-                role: "developer".to_string(),
-                text: text.clone(),
-            });
-            (conversation.busy, conversation.agent.is_some())
+            conversation.enqueue_message(&text)
         };
         self.broadcast(json!({
             "type": "flowConversationMessage",
             "role": "developer",
             "text": text,
         }));
-        if busy || !has_agent {
-            // No peer can take the text yet while `open_conversation` awaits
-            // the provider environment; the opening prompt's pump drains this
-            // queue.
-            let mut inner = self.lock();
-            if let Some(conversation) = inner.conversation.as_mut().filter(|c| c.token == token) {
-                conversation.queue.push(text);
-            }
-            drop(inner);
-            self.publish();
+        self.publish();
+        if !start_turn {
             return;
         }
-        self.publish();
         let mode = Arc::clone(self);
         tokio::spawn(async move {
             mode.prompt_conversation_turn(token, text).await;
@@ -6238,6 +6253,39 @@ mod tests {
         assert_eq!(pr_title(""), "Flow session");
         let long = "x".repeat(200);
         assert_eq!(pr_title(&long).chars().count(), 120);
+    }
+
+    #[test]
+    fn a_conversation_message_starts_one_turn_and_queues_the_next() {
+        let mut conversation = Conversation {
+            token: 1,
+            widget_id: "widget-1".to_string(),
+            agent: None,
+            messages: Vec::new(),
+            activity: Vec::new(),
+            question: None,
+            busy: false,
+            queue: Vec::new(),
+        };
+        assert!(conversation.enqueue_message("Which caller observes this?"));
+        assert!(conversation.busy);
+        assert!(conversation.queue.is_empty());
+        assert_eq!(
+            conversation.messages,
+            vec![ConversationMessage {
+                role: "developer".to_string(),
+                text: "Which caller observes this?".to_string(),
+            }]
+        );
+
+        // A message that arrives while the turn runs waits for that turn's
+        // finish to drain it, and the same call never drops it.
+        assert!(!conversation.enqueue_message("And the stored shape?"));
+        assert_eq!(
+            conversation.queue,
+            vec!["And the stored shape?".to_string()]
+        );
+        assert_eq!(conversation.messages.len(), 2);
     }
 
     #[test]
