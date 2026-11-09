@@ -10,7 +10,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
@@ -84,9 +84,14 @@ fn iso(dt: OffsetDateTime) -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_string())
 }
 
-/// The current instant as epoch milliseconds.
-fn now_millis() -> i64 {
-    epoch_millis(OffsetDateTime::now_utc())
+static MONOTONIC_START: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+
+/// Milliseconds since this process started.
+///
+/// The demand and throttle clocks must not move backwards: a wall-clock step
+/// would otherwise leave the tracker unread until the clock caught up.
+fn monotonic_millis() -> i64 {
+    MONOTONIC_START.elapsed().as_millis() as i64
 }
 
 fn iso_now() -> String {
@@ -2730,12 +2735,14 @@ pub struct IssuesBridge {
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
     poll_ms: u64,
     preflight_timeout_ms: u64,
-    /// Epoch millis at which a page last read the Issues resource. The REST
-    /// transport keeps no persistent command socket, so a page's polls are
-    /// what make it a watching client.
+    /// Monotonic millis since process start at which a page last read the
+    /// Issues resource, or -1 before any read. The REST transport keeps no
+    /// persistent command socket, so a page's polls are what make it a
+    /// watching client.
     demand_at: AtomicI64,
-    /// Epoch millis at which this dashboard last started a tracker read, so a
-    /// page polling once a second cannot outpace the sync interval.
+    /// Monotonic millis since process start at which this dashboard last
+    /// started a tracker read, or -1 before any read, so a page polling once a
+    /// second cannot outpace the sync interval.
     read_at: AtomicI64,
     on_open_issues: Arc<dyn Fn(Vec<Issue>) + Send + Sync>,
     tracker: TrackerSync,
@@ -2821,8 +2828,8 @@ impl IssuesBridge {
             has_clients: options.has_clients,
             poll_ms: options.poll_ms.max(50),
             preflight_timeout_ms: options.preflight_timeout_ms.max(1),
-            demand_at: AtomicI64::new(0),
-            read_at: AtomicI64::new(0),
+            demand_at: AtomicI64::new(-1),
+            read_at: AtomicI64::new(-1),
             on_open_issues: options.on_open_issues,
             tracker,
             repository_cache: cache,
@@ -3344,7 +3351,7 @@ impl IssuesBridge {
     /// running agent's whole activity at every other page is pure traffic:
     /// each of those pages reads it on its own next read.
     pub fn replay(&self, conn: &Conn) {
-        self.demand_at.store(now_millis(), Ordering::Relaxed);
+        self.demand_at.store(monotonic_millis(), Ordering::Relaxed);
         let snapshot = self.snapshot();
         conn.send(Self::typed_snapshot(snapshot.clone()));
         for run_id in self.active_run_ids(&snapshot) {
@@ -3789,7 +3796,7 @@ impl IssuesBridge {
             return true;
         }
         let last = self.demand_at.load(Ordering::Relaxed);
-        last > 0 && now_millis().saturating_sub(last) <= self.demand_window_ms()
+        last >= 0 && monotonic_millis().saturating_sub(last) <= self.demand_window_ms()
     }
 
     fn demand_window_ms(&self) -> i64 {
@@ -3808,9 +3815,9 @@ impl IssuesBridge {
         }
         // A page polls its resource once a second; the tracker is read once
         // per interval no matter how often a read arrives.
-        let now = now_millis();
+        let now = monotonic_millis();
         let previous = self.read_at.swap(now, Ordering::Relaxed);
-        if previous > 0 && now.saturating_sub(previous) < self.tracker.interval_ms as i64 {
+        if previous >= 0 && now.saturating_sub(previous) < self.tracker.interval_ms as i64 {
             return;
         }
         let result = self.tracker.sync().await;
