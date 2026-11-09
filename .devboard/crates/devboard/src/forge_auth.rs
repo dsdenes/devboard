@@ -25,7 +25,8 @@ use crate::forge::{
 pub const USAGE: &str = concat!(
     "Usage:\n",
     "  forge-auth check [--host <host>] [--project <owner/repo>] [options]\n",
-    "  forge-auth exec  [--host <host>] [--project <owner/repo>] [options] -- <gh|glab> <args...>\n",
+    "  forge-auth exec  [--host <host>] [--project <owner/repo>] [options] --\n",
+    "                   <command> <args...>\n",
     "\n",
     "Options:\n",
     "  --host <host>        forge hostname, e.g. github.com; defaults to the Gitea URL's\n",
@@ -66,6 +67,10 @@ pub struct Parsed {
     pub quiet: bool,
     /// The child command of `exec`, empty for `check`.
     pub command: Vec<String>,
+    /// Whether `--host` was omitted, so the origin (or the configured Gitea
+    /// address) named the host. An inferred host is classified like the
+    /// checkout's origin; an explicit one keeps the legacy probe chain.
+    pub host_inferred: bool,
 }
 
 /// The result of scanning the arguments.
@@ -212,6 +217,7 @@ pub fn parse(args: &[String], cwd: &Path, environment: &Environment) -> Result<S
         }
     }
 
+    let host_inferred = host.is_none();
     let origin = if host.is_none() || project.is_none() {
         origin_target(&working, environment)
     } else {
@@ -255,6 +261,7 @@ pub fn parse(args: &[String], cwd: &Path, environment: &Environment) -> Result<S
         json: json_output,
         quiet,
         command,
+        host_inferred,
     }))
 }
 
@@ -287,19 +294,36 @@ impl Context {
 
 /// Resolves the one credential a command should use.
 ///
-/// A pinned `--forge` decides directly. Otherwise the host picks GitHub or
-/// GitLab, and every other host is tried as GitHub, GitLab, then Gitea, exactly
-/// as the baseline wrapper does.
+/// A pinned `--forge` decides directly. A host inferred from the checkout's
+/// origin is classified exactly like the origin: `github.com` is GitHub, a
+/// GitLab host is GitLab, an explicit `DEVBOARD_FORGE` wins, and every other
+/// host — including this checkout's Gitea origin — is Gitea. No `gh` or `glab`
+/// probe starts for a Gitea host. An explicit `--host` that is not
+/// `github.com`, GitLab, or the configured Gitea address keeps the legacy
+/// GitHub, GitLab, then Gitea probe, which a self-hosted GitHub Enterprise
+/// `--host` needs.
 pub async fn resolve(parsed: &Parsed, context: &Context) -> AuthOutcome {
     if let Some(forge) = parsed.forge {
         return resolve_for(parsed, context, forge).await;
     }
     let lower = parsed.host.to_ascii_lowercase();
-    if lower == "github.com" {
-        return resolve_for(parsed, context, Forge::GitHub).await;
+    let gitea_host =
+        configured_gitea_host(&context.environment).map(|host| host.to_ascii_lowercase());
+    if lower == "github.com" || lower.contains("gitlab") {
+        return resolve_for(
+            parsed,
+            context,
+            forge::forge_from_host(&lower, &context.environment),
+        )
+        .await;
     }
-    if lower.contains("gitlab") {
-        return resolve_for(parsed, context, Forge::GitLab).await;
+    if parsed.host_inferred || gitea_host.as_deref() == Some(lower.as_str()) {
+        return resolve_for(
+            parsed,
+            context,
+            forge::forge_from_host(&lower, &context.environment),
+        )
+        .await;
     }
 
     let github = resolve_for(parsed, context, Forge::GitHub).await;

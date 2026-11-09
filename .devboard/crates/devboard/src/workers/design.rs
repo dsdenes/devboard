@@ -2131,18 +2131,21 @@ pub fn create_design_forge(
     environment: &HashMap<String, String>,
     timeout_ms: u64,
 ) -> Result<Arc<dyn DesignForge>, String> {
-    let remote = crate::forge::origin_forge_with(repo_dir, environment);
-    let forge = remote
-        .as_ref()
-        .map(|remote| remote.forge)
-        .unwrap_or(crate::forge::Forge::GitHub);
+    let Some(remote) = crate::forge::origin_forge_with(repo_dir, environment) else {
+        return Err(
+            crate::forge::origin_problem(repo_dir, environment).unwrap_or_else(|| {
+                "the checkout's origin does not name a supported repository".to_string()
+            }),
+        );
+    };
+    let forge = remote.forge;
     if forge == crate::forge::Forge::GitLab {
         return Err(
             "the design agent supports a GitHub or Gitea origin, not a GitLab one".to_string(),
         );
     }
     if forge == crate::forge::Forge::Gitea {
-        let base = crate::forge::gitea_base_url(remote.as_ref(), environment)
+        let base = crate::forge::gitea_base_url(Some(&remote), environment)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 "the design agent needs DEVBOARD_GITEA_URL for a Gitea origin".to_string()

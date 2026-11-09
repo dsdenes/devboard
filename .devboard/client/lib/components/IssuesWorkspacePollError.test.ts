@@ -60,7 +60,6 @@ test("a stopped worker's last poll error is not a current failure", () => {
 
   expect(view.queryByTestId("issues-poll-error")).toBeNull();
   expect(view.queryByTestId("issues-error")).toBeNull();
-  expect(view.queryByTestId("issues-sync-error")).toBeNull();
 });
 
 test("a stopped worker names the dashboard's own tracker sync failure", () => {
@@ -69,16 +68,16 @@ test("a stopped worker names the dashboard's own tracker sync failure", () => {
       sync: {
         intervalMs: 30000,
         lastSyncAt: "2026-11-05T08:57:10.477Z",
-        error: "the tracker did not answer within 20000 ms",
+        error: "Gitea open-issue read for acme/app failed: connection refused",
       },
     }),
   );
 
   const view = render(IssuesWorkspace, { props: { tab: OVERVIEW } });
 
-  expect(view.queryByTestId("issues-poll-error")).toBeNull();
-  expect(view.getByTestId("issues-sync-error").textContent?.trim()).toBe(
-    "the tracker did not answer within 20000 ms",
+  expect(view.queryByTestId("issues-error")).toBeNull();
+  expect(view.getByTestId("issues-poll-error").textContent?.trim()).toBe(
+    "Gitea open-issue read for acme/app failed: connection refused",
   );
 });
 
@@ -98,5 +97,4 @@ test("a live worker still shows its poll error", () => {
     "the tracker did not answer within 20000 ms",
   );
   expect(view.getByTestId("issues-error").textContent?.trim()).toBe("a different worker failure");
-  expect(view.queryByTestId("issues-sync-error")).toBeNull();
 });

@@ -58,6 +58,14 @@
   const workerLive = $derived(
     (issues.snapshot?.enabled ?? false) && (issues.snapshot?.lifecycle ?? "stopped") !== "stopped",
   );
+  // The Overview shows one tracker error, whichever half of the product read
+  // the origin: a live worker's poll, or the dashboard's own sync while the
+  // worker is stopped. Its text names the forge, the operation, and the cause.
+  const trackerError = $derived(
+    workerLive
+      ? (issues.snapshot?.poll?.error ?? null)
+      : (issues.snapshot?.sync?.error ?? null),
+  );
   $effect(() => {
     if (page !== "agents" && page !== "overview") return;
     const timer = setInterval(() => (now = Date.now()), 1000);
@@ -249,9 +257,9 @@
               {issues.startError}
             </p>
           {/if}
-          {#if workerLive && issues.snapshot?.poll?.error != null}
+          {#if trackerError !== null}
             <p class="issues-error" data-testid="issues-poll-error" role="alert">
-              {issues.snapshot.poll.error}
+              {trackerError}
             </p>
           {/if}
           {#if workerLive &&
@@ -259,11 +267,6 @@
             issues.snapshot.lastError !== issues.snapshot.poll?.error}
             <p class="issues-error" data-testid="issues-error" role="alert">
               {issues.snapshot.lastError}
-            </p>
-          {/if}
-          {#if !workerLive && issues.snapshot?.sync?.error != null}
-            <p class="issues-error" data-testid="issues-sync-error" role="alert">
-              {issues.snapshot.sync.error}
             </p>
           {/if}
         </div>

@@ -2986,12 +2986,19 @@ impl ScoutWorker {
                 "the scout supports a GitHub or Gitea origin, not a GitLab one: {}",
                 remote.host
             )),
-            _ => Ok(Arc::new(GitHubScoutForge::new(
+            Some(_) => Ok(Arc::new(GitHubScoutForge::new(
                 repository,
                 self.repo_dir.clone(),
                 self.environment.clone(),
                 self.read_timeout_ms,
             ))),
+            // An origin that names no supported forge reads and files nothing:
+            // the refusal names the origin instead of selecting GitHub.
+            None => Err(
+                crate::forge::origin_problem(&self.repo_dir, &self.environment).unwrap_or_else(
+                    || "the checkout's origin does not name a supported repository".to_string(),
+                ),
+            ),
         }
     }
 
