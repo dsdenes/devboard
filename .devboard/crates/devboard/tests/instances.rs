@@ -1,6 +1,9 @@
 //! One dashboard per host directory, the refusal that keeps it that way, and
 //! the sweep the panel icon runs before it starts or restarts one.
 
+mod common;
+
+use common::ReservedPort;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -239,6 +242,21 @@ fn version_bytes(state: &Path) -> Vec<u8> {
     std::fs::read(state.join("version.json")).unwrap_or_default()
 }
 
+/// Waits until the live dashboard's journal names `marker`, so one startup
+/// write is drained before a test takes its baseline.
+async fn wait_for_journal(repo: &Path, state: &Path, marker: &str) {
+    let path = devboard::journal::journal_file(state, repo);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains(marker) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the live journal named {marker}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Waits until the live dashboard has stopped writing its startup journal, so
 /// the refusal comparison has a quiet baseline.
 async fn quiet_journal(repo: &Path, state: &Path) -> u64 {
@@ -260,10 +278,22 @@ async fn a_second_start_for_the_same_host_dir_is_refused() {
     let repo = scratch.host("repo");
     let state = scratch.state("state");
     let other = scratch.state("second-state");
-    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
+    // The updater's one startup check is the live dashboard's last journal
+    // write after readiness. A reserved port that refuses connections makes
+    // that check fail at once and name itself, so the baseline below is taken
+    // after the write instead of racing it.
+    let refused = ReservedPort::bind();
+    let github = format!("http://127.0.0.1:{}", refused.port());
+    let mut first = start_dashboard(
+        &repo,
+        &state,
+        &scratch.path.join("first.log"),
+        &[("DEVBOARD_GITHUB_API_URL", &github)],
+    );
     let port = wait_ready(&state).await;
     let pid = first.id();
     let before_version = version_bytes(&state);
+    wait_for_journal(&repo, &state, "update check").await;
     let before_journal = quiet_journal(&repo, &state).await;
 
     let started = Instant::now();

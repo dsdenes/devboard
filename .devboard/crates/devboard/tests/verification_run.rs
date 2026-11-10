@@ -30,22 +30,24 @@ impl Fixture {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(
             harness.join("package.json"),
-            r#"{"name":"fixture","version":"0.0.0","scripts":{}}"#,
+            r#"{"name":"fixture","version":"0.0.0","scripts":{"test:client":"bun scripts/test-client.mjs"}}"#,
         )
         .unwrap();
         let log = root.join("calls.log");
-        let stub = bin.join("cargo");
-        std::fs::write(
-            &stub,
-            format!(
-                "#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> '{}'\nexit \"${{STUB_EXIT:-0}}\"\n",
-                log.display()
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&stub).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&stub, permissions).unwrap();
+        for program in ["cargo", "bun"] {
+            let stub = bin.join(program);
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> '{}'\nexit \"${{STUB_EXIT:-0}}\"\n",
+                    log.display()
+                ),
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&stub).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&stub, permissions).unwrap();
+        }
         let environment = HashMap::from([
             ("PATH".to_string(), bin.to_string_lossy().into_owned()),
             ("STUB_LOG".to_string(), log.to_string_lossy().into_owned()),
@@ -68,6 +70,10 @@ impl Drop for Fixture {
 }
 
 async fn run(fixture: &Fixture, check: &str, exit: u8) -> Value {
+    run_with(fixture, json!({"check": check}), exit).await
+}
+
+async fn run_with(fixture: &Fixture, arguments: Value, exit: u8) -> Value {
     let mut environment = fixture.context.environment.clone();
     environment.insert("STUB_EXIT".to_string(), exit.to_string());
     let context = McpContext {
@@ -78,7 +84,7 @@ async fn run(fixture: &Fixture, check: &str, exit: u8) -> Value {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
-        "params": {"name": "verification_run", "arguments": {"check": check}},
+        "params": {"name": "verification_run", "arguments": arguments},
     }))
     .unwrap();
     request.push('\n');
@@ -113,7 +119,7 @@ async fn the_rust_checks_run_their_exact_argv_from_the_harness_directory() {
             "rust:clippy",
             "clippy --workspace --all-targets -- -D warnings",
         ),
-        ("rust:test", "test --workspace"),
+        ("rust:test", "run test"),
     ];
     for (check, expected) in cases {
         let result = run(&fixture, check, 0).await;
@@ -128,6 +134,32 @@ async fn the_rust_checks_run_their_exact_argv_from_the_harness_directory() {
 
     let failing = run(&fixture, "rust:test", 3).await;
     assert_eq!(failing["exitCode"], 3, "{failing}");
+}
+
+#[tokio::test]
+async fn the_client_check_runs_the_entry_point_and_forwards_its_paths() {
+    let fixture = Fixture::new("client");
+    let harness = fixture
+        .context
+        .harness_dir
+        .canonicalize()
+        .unwrap_or_else(|_| fixture.context.harness_dir.clone());
+    std::fs::create_dir_all(harness.join("client/lib")).unwrap();
+    std::fs::write(harness.join("client/lib/example.test.ts"), "").unwrap();
+
+    let arguments = json!({"check": "test", "paths": ["client/lib/example.test.ts"]});
+    let result = run_with(&fixture, arguments, 0).await;
+    assert_eq!(result["check"], "test");
+    assert_eq!(result["exitCode"], 0, "{result}");
+    let call = std::fs::read_to_string(&fixture.log).unwrap();
+    let line = call.lines().last().expect("a stub call");
+    assert_eq!(
+        line,
+        format!(
+            "{}|run test:client -- ./client/lib/example.test.ts",
+            harness.display()
+        )
+    );
 }
 
 #[tokio::test]

@@ -210,11 +210,12 @@ git status --short --branch
 The package root that owns the lockfile is `.devboard/`: `<worktree>/.devboard` inside your worktree
 and `<REPO_DIR>/.devboard` in the canonical checkout. Run every harness `bun`/`bunx` command with
 that package root as the working directory: `bun install --frozen-lockfile`, `bun run build`,
-and `bun test`, each as its own invocation. The typecheck is not a bare `bunx tsc --noEmit`
-shell call: run it through `verification_run` with `{"check": "typecheck"}` once per verification
-pass, as *Typecheck* below requires. The repository root has no `package.json`, so a root-level
-`bun install --frozen-lockfile` exits nonzero with "Bun could not find a package.json file to
-install from", and a root-level `bun run build` fails with `error: Script not found "build"`.
+`bun run test`, and `bun run test:client`, each as its own invocation. The typecheck is not a
+bare `bunx tsc --noEmit` shell call: run it through `verification_run` with
+`{"check": "typecheck"}` once per verification pass, as *Typecheck* below requires. The repository
+root has no `package.json`, so a root-level `bun install --frozen-lockfile` exits nonzero with
+"Bun could not find a package.json file to install from", and a root-level `bun run build` fails
+with `error: Script not found "build"`.
 
 - Run `bun install --frozen-lockfile` only from the package root that owns the lockfile: the tool's
   `cwd` is `.devboard/` in the canonical checkout, or `<worktree>/.devboard/` in a task worktree.
@@ -283,8 +284,8 @@ no browser step into a workflow.
 
 - The Rust checks have exact entry points through `verification_run`:
   `{"check": "rust:fmt"}` runs `cargo fmt --check --all`, `{"check": "rust:clippy"}` runs
-  `cargo clippy --workspace --all-targets -- -D warnings`, and `{"check": "rust:test"}` runs
-  `cargo test --workspace`, all from the resolved `harnessDirectory`.
+  `cargo clippy --workspace --all-targets -- -D warnings`, and `{"check": "rust:test"}` runs the
+  workspace runner `bun run test`, all from the resolved `harnessDirectory`.
 - The client checks keep their existing entry points: `{"check": "build"}` runs the client build,
   `{"check": "check"}` runs its typecheck, `{"check": "typecheck"}` is the raw typecheck, and
   `{"check": "test"}` runs the client unit suite (optionally with `paths`).

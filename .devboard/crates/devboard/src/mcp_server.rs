@@ -3495,15 +3495,26 @@ async fn run_verification_with(
             "-D".into(),
             "warnings".into(),
         ]),
-        "rust:test" => Some(vec!["cargo".into(), "test".into(), "--workspace".into()]),
+        "rust:test" => Some(vec!["bun".into(), "run".into(), "test".into()]),
         _ => None,
     };
     let argv: Vec<String> = if let Some(argv) = rust_argv {
         argv
     } else if check == "test" {
-        package_scripts(context)?;
-        let mut argv = vec!["bun".to_string(), "test".to_string()];
-        argv.extend(test_paths(context, args.get("paths"))?);
+        let available = package_scripts(context)?;
+        if !available.contains_key("test:client") {
+            return Err(".devboard/package.json has no \"test:client\" script.".to_string());
+        }
+        let mut argv = vec![
+            "bun".to_string(),
+            "run".to_string(),
+            "test:client".to_string(),
+        ];
+        let paths = test_paths(context, args.get("paths"))?;
+        if !paths.is_empty() {
+            argv.push("--".to_string());
+            argv.extend(paths);
+        }
         argv
     } else if check == "typecheck" {
         let available = package_scripts(context)?;

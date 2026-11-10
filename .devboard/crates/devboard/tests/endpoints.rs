@@ -1,6 +1,9 @@
 //! The mutating endpoints: report filing against a stub Gitea, draft writing,
 //! and the idempotent replay of one keyed request.
 
+mod common;
+
+use common::ReservedPort;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -571,7 +574,8 @@ async fn a_rejected_credential_is_a_configuration_failure_not_a_server_error() {
 
 #[tokio::test]
 async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error() {
-    let forge = format!("http://127.0.0.1:{}", closed_port().await);
+    let refused = ReservedPort::bind();
+    let forge = format!("http://127.0.0.1:{}", refused.port());
     let fixture = start_against("feedback-unreachable", None, Some(&forge), 500, "true", 0).await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
@@ -662,16 +666,6 @@ async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
     drop(silent);
 }
 
-/// A loopback port whose listener was closed again, so nothing accepts.
-async fn closed_port() -> u16 {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .expect("a listener");
-    let port = listener.local_addr().expect("an address").port();
-    drop(listener);
-    port
-}
-
 /// The report every delivery test files, and the target that answers its POST.
 fn one_report(
     port: u16,
@@ -702,7 +696,8 @@ fn recording_sleep() -> (devboard::forge::Sleep, Arc<Mutex<Vec<u64>>>) {
 
 #[tokio::test]
 async fn a_refused_connection_spends_the_retry_schedule_before_the_delivery_fails() {
-    let (submission, target) = one_report(closed_port().await);
+    let refused = ReservedPort::bind();
+    let (submission, target) = one_report(refused.port());
     let (sleep, delays) = recording_sleep();
     let error = devboard::feedback::file_feedback_issue(&submission, &target, None, 60_000, &sleep)
         .await
@@ -723,15 +718,24 @@ async fn a_refused_connection_spends_the_retry_schedule_before_the_delivery_fail
 
 #[tokio::test]
 async fn a_refused_connection_that_opens_on_the_retry_files_the_report() {
-    let port = closed_port().await;
+    let reserved = ReservedPort::bind();
+    let port = reserved.port();
+    let opening: Arc<Mutex<Option<ReservedPort>>> = Arc::new(Mutex::new(Some(reserved)));
     let delays: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
     let seen = delays.clone();
     let sleep: devboard::forge::Sleep = Arc::new(move |millis| {
         seen.lock().expect("delays").push(millis);
+        let opening = opening.clone();
         Box::pin(async move {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-                .await
-                .expect("the retry forge");
+            let Some(reserved) = opening.lock().expect("the reserved port").take() else {
+                return;
+            };
+            let std_listener = reserved.listen();
+            std_listener
+                .set_nonblocking(true)
+                .expect("a non-blocking listener");
+            let listener =
+                tokio::net::TcpListener::from_std(std_listener).expect("the retry forge");
             tokio::spawn(async move {
                 let app = axum::Router::new().route(
                     "/api/v1/repos/dsdenes/devboard/issues",

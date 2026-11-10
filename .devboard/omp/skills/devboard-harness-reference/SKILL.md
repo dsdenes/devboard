@@ -623,7 +623,7 @@ every agent write and eventually exhausts the dev server's heap.
 
 > The TypeScript runtime and its `verify:*` scripts no longer exist. Where this document
 > describes one of those scripts, it describes the behavior that the Rust test suite and the
-> contract corpus under `contract/` now prove; run `cargo test --workspace` and
+> contract corpus under `contract/` now prove; run `bun run test` and
 > `cargo test -p devboard-contract`.
 
 ## Install
@@ -4526,12 +4526,12 @@ The dashboard's only WebSocket belongs to one live ACP run:
 cd .devboard
 cargo fmt --check --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+bun run test                             # the Rust workspace runner, one binary per core
 cargo test -p devboard-contract          # the whole HTTP contract corpus
 bun install --frozen-lockfile
 bun run build
 bun run check
-bun test
+bun run test:client                      # the client suite, one file per core
 # The operator suite: one serial browser session against the built dashboard,
 # a throwaway fixture repository, and the live Gitea.
 set -a; . ../.env; set +a
@@ -4546,14 +4546,15 @@ that each background family and the Issues worker start and stop without a survi
 that a report filed through the overlay becomes a linked issue, and that five start/stop cycles
 leave the dashboard ready and the board unchanged. Its report and traces stay under `.tmp/e2e/`.
 
-The rest of the surfaces below run from the current tree with no Node or Bun runtime for the
-harness itself:
+The rest of the surfaces below run from the current tree; the two suite entry points need Bun on
+`PATH`, while the harness binary itself needs neither Node nor Bun:
 
 - **Rust workspace tests** cover the dashboard, every worker family, the MCP server, install and
-  update, the release train, and the CLI.
+  update, the release train, and the CLI; `bun run test` builds them and runs one test binary per
+  available core.
 - **Contract corpus tests** replay every recorded HTTP case against the Rust dashboard.
-- **Client unit tests** (`bun test`) cover the Svelte client, and `bun run build` plus
-  `bun run check` cover its bundle and typecheck.
+- **Client unit tests** (`bun run test:client`) cover the Svelte client at one file per available
+  core, and `bun run build` plus `bun run check` cover its bundle and typecheck.
 - **CLI and HTTP smoke checks** exercise `devboard install`, `devboard update`, `devboard doctor`,
   `devboard cleanup`, `devboard worker`, `devboard publish`, and the readiness endpoint against
   throwaway hosts under `.devboard/.test-tmp/`.

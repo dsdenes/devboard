@@ -60,12 +60,18 @@ fn run_probe(cwd: &Path, environment: &[(&str, &str)], stdin: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("the shipped probe starts");
-    child
-        .stdin
-        .take()
-        .expect("a stdin pipe")
-        .write_all(stdin)
-        .expect("the probe accepts its input");
+    let mut pipe = child.stdin.take().expect("a stdin pipe");
+    match pipe.write_all(stdin) {
+        Ok(()) => {}
+        // A probe that resolved a stand-in executable exits without reading a
+        // byte, so the pipe can already be closed; the handshake assertions
+        // read the answers a probe that did serve the protocol writes.
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(error) => panic!("the probe accepts its input: {error}"),
+    }
+    // A probe serving the protocol reads until its input ends, so the write end
+    // closes before the probe is awaited.
+    drop(pipe);
     child.wait_with_output().expect("the probe finishes")
 }
 

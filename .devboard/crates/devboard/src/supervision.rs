@@ -724,6 +724,11 @@ fn matches_record(record: &SupervisionRecord) -> bool {
     }
     match process_argv(record.pid) {
         None => true,
+        // A child forked a moment ago reports no cmdline until it execs. The
+        // start tick already matched, so the pid is not recycled and the record
+        // is live: treating the empty argv as a mismatch would drop the record
+        // of a child that is still starting.
+        Some(argv) if argv.is_empty() => true,
         Some(argv) => argv.join("\u{0}") == record.argv.join("\u{0}"),
     }
 }

@@ -45,7 +45,7 @@ This checkout builds and releases the harness; hosts run an installed copy.
   installed copy by hand.
 - This checkout runs omp against its tracked `.omp/` mirror, and no install or update path
   refreshes it. Change `.devboard/omp/`, run `install.sh`, and commit both trees together;
-  `cargo test --workspace` plus `devboard doctor` fail when the mirror is missing a file,
+  `bun run test` plus `devboard doctor` fail when the mirror is missing a file,
   differs, or still carries a wrapper the canonical tree dropped.
 
 ## Install, update, and reload
@@ -125,15 +125,15 @@ Before a commit that changes the harness:
 ```bash
 cargo fmt --check --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+bun run test    # the workspace runner, one test binary per available core
 bun run check
-bun test
+bun run test:client   # the client suite, one file per available core
 bun run build   # builds the client and refreshes crates/devboard/assets when it changed
 ```
 
-A client change is verified with `cd .devboard && bun test`. `.gitea/workflows/devboard-ci.yml`
-runs the Rust checks and the embedded-client build, not the client suite, so a client change must
-pass `bun test` locally before it lands.
+A client change is verified with `cd .devboard && bun run test:client`.
+`.gitea/workflows/devboard-ci.yml` runs the Rust checks and the embedded-client build, not the
+client suite, so a client change must pass `bun run test:client` locally before it lands.
 
 A client change lands together with the refreshed, committed `crates/devboard/assets`: `bun run
 build` embeds the bundle it just built, the binary serves that copy, the release workflow builds

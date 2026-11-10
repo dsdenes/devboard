@@ -7,7 +7,8 @@
     "build": "vite build && bun scripts/embed-client.mjs",
     "dev": "vite",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "cargo test --workspace",
+    "test": "bun scripts/test-workspace.mjs",
+    "test:client": "bun scripts/test-client.mjs",
     "adr:lint": "adr lint --dir ../adrs",
     "adr:graph": "adr graph --dir ../adrs",
     "adr:queue": "adr queue --dir ../adrs"

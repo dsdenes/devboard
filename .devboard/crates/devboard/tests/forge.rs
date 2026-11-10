@@ -1,6 +1,9 @@
 //! The forge contract: origin parsing, Gitea REST paths and headers, auth,
 //! retry delays, tracker polling, release reads, and local discovery.
 
+mod common;
+
+use common::ReservedPort;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -2949,11 +2952,11 @@ fn a_tracker_source_names_the_forge_and_operation() {
 
 #[tokio::test]
 async fn a_refused_gitea_connection_names_the_cause() {
-    // A loopback port that was just released refuses the connection, so the
-    // transport's own cause chain decides the sentence.
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a free port");
-    let port = listener.local_addr().expect("an address").port();
-    drop(listener);
+    // A bound loopback port that never listens refuses the connection, so the
+    // transport's own cause chain decides the sentence and no other test can
+    // claim the port while this one runs.
+    let refused = ReservedPort::bind();
+    let port = refused.port();
     let options = TrackerOptions {
         forge: Forge::Gitea,
         repository: "owner/name".to_string(),

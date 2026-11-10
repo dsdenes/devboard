@@ -1,6 +1,8 @@
 //! Doctor coverage: a healthy host passes and each bad fixture names its check.
 
-use std::net::TcpListener;
+mod common;
+
+use common::ReservedPort;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -137,9 +139,8 @@ fn a_stale_running_version_and_an_unresponsive_dashboard_both_name_themselves() 
     let root = host("stale");
     let state = root.join(".devboard/.tmp");
     std::fs::create_dir_all(&state).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let refused = ReservedPort::bind();
+    let port = refused.port();
     std::fs::write(
         state.join("version.json"),
         serde_json::json!({

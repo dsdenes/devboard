@@ -31,9 +31,11 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         working-directory: .devboard
+        # The workspace runner builds every test binary, runs up to one per
+        # available core, and prints the host-derived concurrency.
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          cargo test --workspace
+          bun run test
       - name: Install client dependencies
         working-directory: .devboard
         run: bun install --frozen-lockfile

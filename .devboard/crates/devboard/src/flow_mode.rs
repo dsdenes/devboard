@@ -1739,29 +1739,27 @@ pub struct FlowMode {
     restored: tokio::sync::watch::Receiver<bool>,
 }
 
-static FLOW_MODES: LazyLock<Mutex<HashMap<usize, Arc<FlowMode>>>> =
+static FLOW_MODES: LazyLock<Mutex<HashMap<String, Arc<FlowMode>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
-fn registry() -> &'static Mutex<HashMap<usize, Arc<FlowMode>>> {
+fn registry() -> &'static Mutex<HashMap<String, Arc<FlowMode>>> {
     &FLOW_MODES
 }
 
 fn register(app: &Arc<App>, mode: Arc<FlowMode>) {
-    let key = Arc::as_ptr(app) as usize;
     registry()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .insert(key, mode);
+        .insert(app.instance.clone(), mode);
 }
 
 /// The controller serving one dashboard, if it has one.
 pub fn controller(app: &Arc<App>) -> Option<Arc<FlowMode>> {
-    let key = Arc::as_ptr(app) as usize;
     registry()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .get(&key)
+        .get(&app.instance)
         .cloned()
 }
 

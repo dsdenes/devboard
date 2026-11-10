@@ -1120,7 +1120,10 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
     }
 }
 
-#[tokio::test]
+// The budget is wall clock, so a loaded host can spend it before the first
+// step starts. A paused clock makes the two steps and the deadline advance
+// together and the assertion independent of how busy the machine is.
+#[tokio::test(start_paused = true)]
 async fn a_shared_preflight_budget_bounds_every_step_and_names_the_slow_one() {
     use devboard::agents_mode::PreflightBudget;
     use std::time::{Duration, Instant};

@@ -603,6 +603,17 @@ impl RunJournal {
         }
     }
 
+    /// One socket tick: the activity journals are checked unconditionally,
+    /// and the state is sampled when its own interval is due or forced.
+    fn tick(&mut self, run: &RunSource, now: Instant, force_state: bool) {
+        self.last_activity_sync = Some(now);
+        self.sync_activity(run);
+        if force_state || elapsed(self.last_sync, now, RUN_POLL_MS) {
+            self.last_sync = Some(now);
+            self.sync(run);
+        }
+    }
+
     fn push(&mut self, mut frame: Map<String, Value>, run: &str) {
         frame.insert("run".to_string(), Value::String(run.to_string()));
         frame.insert("cursor".to_string(), Value::Number(self.next_cursor.into()));
@@ -904,6 +915,29 @@ impl RunHub {
         self.read_at(run, after, Instant::now(), true)
     }
 
+    /// One output socket's tick: the activity journals are checked on every
+    /// tick, because the tick is their cadence, and the state sample keeps
+    /// its slower interval. A tick that only sampled the activity when its own
+    /// timestamp allowed could skip one and deliver an appended line at twice
+    /// the cadence.
+    pub fn read_tick(
+        &self,
+        run: &RunSource,
+        after: Option<u64>,
+        now: Instant,
+        force_state: bool,
+    ) -> (Option<u64>, Vec<Value>) {
+        let mut journals = self.journals.lock().expect("the run journal lock");
+        let journal = journals
+            .entry(run.id.clone())
+            .or_insert_with(RunJournal::new);
+        journal.tick(run, now, force_state);
+        if run.live {
+            journal.last_live = Some(now);
+        }
+        journal.read_after(after)
+    }
+
     /// The retained window and entries after one cursor, sampling the run at
     /// most once per interval. A second socket for the same run in the same
     /// interval answers what the first sample already found. A new subscriber
@@ -1127,9 +1161,12 @@ async fn run_socket(
     let mut sent = after;
     let mut fresh = true;
     // The socket tick is the activity check's cadence; the run's state is
-    // sampled once per `RUN_POLL_MS` however many sockets are open.
+    // sampled once per `RUN_POLL_MS` however many sockets are open. A tick the
+    // runtime missed fires on the next pass instead of waiting another whole
+    // cadence, so a momentarily busy process still delivers an appended line
+    // inside the documented window.
     let mut interval = tokio::time::interval(Duration::from_millis(RUN_ACTIVITY_MS));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     loop {
         tokio::select! {
             _ = interval.tick() => {
@@ -1140,7 +1177,7 @@ async fn run_socket(
                 // that tick samples the journal regardless of its interval;
                 // the close follows the frames the sample pushed.
                 let (reset, entries) =
-                    hub.read_at(&run, sent, Instant::now(), fresh || !run.live);
+                    hub.read_tick(&run, sent, Instant::now(), fresh || !run.live);
                 fresh = false;
                 if let Some(cursor) = reset {
                     if send_frame(&mut socket, &json!({"type": "reset", "run": run.id, "cursor": cursor})).await.is_err() {
@@ -1507,6 +1544,44 @@ mod tests {
         assert_eq!(reset, None);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["cursor"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn a_socket_tick_checks_activity_without_waiting_for_the_interval() {
+        let directory = scratch("tick-activity");
+        let run = RunSource {
+            id: "tick-run".to_string(),
+            kind: "flow".to_string(),
+            label: "tick-run".to_string(),
+            lifecycle: "running".to_string(),
+            live: true,
+            updated_at: None,
+            source: Source::Detached(directory.clone()),
+        };
+        let hub = RunHub::new();
+        let now = Instant::now();
+        let (_, frames) = hub.read_tick(&run, None, now, true);
+        assert!(
+            frames.iter().all(|frame| frame["type"] != "activity"),
+            "{frames:?}"
+        );
+        crate::detached_run::append_detached_run_activity(
+            &directory,
+            &crate::detached_run::DetachedRunActivity {
+                text: "an appended line".to_string(),
+                append: false,
+            },
+        );
+        // A tick well inside the sampling interval still checks the activity
+        // journals: the tick is their cadence, so a skipped interval cannot
+        // double the time an appended line waits.
+        let (_, frames) = hub.read_tick(&run, None, now + Duration::from_millis(10), false);
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame["type"] == "activity" && frame["text"] == "an appended line"),
+            "{frames:?}"
+        );
     }
 
     #[test]

@@ -1,5 +1,83 @@
 //! Helpers shared by the integration tests.
 
+// Each test binary compiles this module for the helpers it uses and leaves the
+// rest behind.
+#![allow(dead_code)]
+
+/// A loopback port that refuses every connection until the test opens it.
+///
+/// A port released with `drop(TcpListener)` can be claimed by any other test
+/// that asks the kernel for an ephemeral port, and a connection aimed at the
+/// "closed" port then reaches that unrelated listener. A socket that is bound
+/// but never listens refuses every connection and holds the port exclusively,
+/// so a refused-connection test stays true while the whole suite runs in
+/// parallel. `listen` turns the same socket into the accepting listener, with
+/// no window in which another process could take the port.
+#[cfg(target_os = "linux")]
+pub struct ReservedPort {
+    fd: std::os::unix::io::RawFd,
+    port: u16,
+}
+
+#[cfg(target_os = "linux")]
+impl ReservedPort {
+    pub fn bind() -> Self {
+        use std::net::Ipv4Addr;
+        unsafe {
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            assert!(fd >= 0, "a socket");
+            let address = libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: 0,
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from(Ipv4Addr::LOCALHOST).to_be(),
+                },
+                sin_zero: [0; 8],
+            };
+            let bound = libc::bind(
+                fd,
+                &address as *const libc::sockaddr_in as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            );
+            assert_eq!(bound, 0, "bind");
+            let mut named: libc::sockaddr_in = std::mem::zeroed();
+            let mut length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            let read = libc::getsockname(
+                fd,
+                &mut named as *mut libc::sockaddr_in as *mut libc::sockaddr,
+                &mut length,
+            );
+            assert_eq!(read, 0, "getsockname");
+            Self {
+                fd,
+                port: u16::from_be(named.sin_port),
+            }
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Starts listening on the reserved port, returning the accept socket.
+    pub fn listen(self) -> std::net::TcpListener {
+        assert_eq!(unsafe { libc::listen(self.fd, 128) }, 0, "listen");
+        let fd = self.fd;
+        std::mem::forget(self);
+        use std::os::unix::io::FromRawFd;
+        unsafe { std::net::TcpListener::from_raw_fd(fd) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ReservedPort {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.fd);
+        }
+    }
+}
+
 /// Counts the reads of every file under one directory tree, so a test can
 /// prove how many times the dashboard opened a state file. `IN_ACCESS` fires
 /// on a read and never on a write, so the dashboard's own writes are not

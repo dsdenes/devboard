@@ -3154,14 +3154,17 @@ fn provider_environment(
 /* Mode registry                                                             */
 /* ------------------------------------------------------------------------ */
 
-fn modes() -> &'static Mutex<HashMap<usize, Arc<AgentsMode>>> {
-    static MODES: std::sync::LazyLock<Mutex<HashMap<usize, Arc<AgentsMode>>>> =
+fn modes() -> &'static Mutex<HashMap<String, Arc<AgentsMode>>> {
+    static MODES: std::sync::LazyLock<Mutex<HashMap<String, Arc<AgentsMode>>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
     &MODES
 }
 
-fn mode_key(app: &Arc<App>) -> usize {
-    Arc::as_ptr(app) as usize
+/// The dashboard's own identity, never a heap address: a dropped dashboard's
+/// address can be reused, and a stale mode then answers a later dashboard's
+/// commands with the earlier dashboard's state.
+fn mode_key(app: &Arc<App>) -> String {
+    app.instance.clone()
 }
 
 fn mode_for(app: &Arc<App>) -> Option<Arc<AgentsMode>> {

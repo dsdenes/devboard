@@ -524,8 +524,11 @@ async fn discover_runs_survive_a_replacement_and_stop() {
     let state = scratch.state();
     provider(&state);
     let log = scratch.path.join("discover-agent.log");
+    // The answering peer stays alive after the answer, so Stop lands on a live
+    // run instead of racing the stub's own completion.
     let command = format!(
-        "{} acp-stub --discover --discover-delay-ms=1500 --discover-question --log={}",
+        "{} acp-stub --discover --discover-delay-ms=1500 --discover-question \
+         --discover-no-exit --log={}",
         env!("CARGO_BIN_EXE_devboard"),
         log.display()
     );
@@ -646,12 +649,28 @@ async fn discover_runs_survive_a_replacement_and_stop() {
     }
 
     // The answer reaches the same run, and the operator's Stop ends it.
-    rest(
-        &base,
-        json!({"type": "answerDiscover", "id": question_id, "value": "yes"}),
-    )
-    .await;
-    rest(&base, json!({"type": "stopDiscover"})).await;
+    //
+    // A restored run is marked active before the replacement finishes
+    // attaching its peer, and the dashboard refuses an answer it cannot
+    // deliver with a `discoverError` frame rather than dropping it silently.
+    // Send the same answer until the replacement owns the run's peer.
+    let answer = json!({"type": "answerDiscover", "id": question_id, "value": "yes"});
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let frames = rest(&base, answer.clone()).await;
+        if !frames.iter().any(|frame| frame["type"] == "discoverError") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the replacement accepted the answer: {frames:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // The peer acknowledges the answer by logging it, and the operator's Stop
+    // is the next action. A stop sent in the same breath races the answer
+    // against the peer's teardown: the owner writes the answer to the peer's
+    // pipe and then ends it, so the peer may never read the line.
     wait_until(
         || {
             std::fs::read_to_string(&log)
@@ -662,6 +681,7 @@ async fn discover_runs_survive_a_replacement_and_stop() {
         "the answer reached the same run",
     )
     .await;
+    rest(&base, json!({"type": "stopDiscover"})).await;
     wait_until(|| !alive(owner), Duration::from_secs(20), "the owner ended").await;
     wait_until(
         || !alive(peer),
