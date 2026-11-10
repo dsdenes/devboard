@@ -492,13 +492,20 @@ fn seed_idle_watchdog(directory: &Path) -> anyhow::Result<()> {
     let later = now + time::Duration::hours(1);
     let format = time::format_description::well_known::Rfc3339;
     let format_now = || now.format(&format).unwrap_or_default();
+    let pid = std::process::id();
     let worker = json!({
         "version": 1,
-        "pid": std::process::id(),
+        "pid": pid,
+        // The identity the liveness rule compares: the kernel start tick of the
+        // process this record names, so the record reads live while it runs and
+        // never survives a recycled pid.
+        "startTicks": crate::supervision::start_ticks(pid),
         "startedAt": format_now(),
         "root": directory.parent().map(|path| path.display().to_string()).unwrap_or_default(),
         "stateDir": directory.display().to_string(),
-        "lifecycle": "idle",
+        // A worker idle between cycles is still serving its family, which is
+        // what the published lifecycle says.
+        "lifecycle": "running",
         "enabled": true,
         "harnessVersion": "bench",
         "argv": [],
@@ -911,6 +918,32 @@ mod tests {
         assert_eq!(
             scratch_root(&crate_dir).expect("the crate directory"),
             expected
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The seeded record is the window's only watchdog state, so it must read
+    /// the way both readers read a worker's own record: parseable, and live
+    /// while the pid it names still holds the start tick written beside it.
+    #[test]
+    fn the_seeded_watchdog_record_parses_and_reads_live() {
+        let root = fixture("watchdog-record");
+        let directory = root.join("repo/.devboard/.tmp/watchdog");
+        seed_idle_watchdog(&directory).expect("the seeded watchdog");
+
+        let versions = crate::workers::watchdog::worker_state_directories(&directory);
+        assert_eq!(versions.len(), 1, "one published worker version");
+        let state = crate::workers::watchdog::read_worker_state(&versions[0])
+            .expect("the seeded record parses");
+        assert_eq!(
+            state.lifecycle,
+            crate::workers::watchdog::AgentLifecycle::Running
+        );
+        assert_eq!(state.harness_version.as_deref(), Some("bench"));
+        assert!(
+            crate::supervision::live_identity(state.pid, state.start_ticks),
+            "the seeded record names a live pid beside its kernel start tick"
         );
 
         let _ = std::fs::remove_dir_all(&root);
