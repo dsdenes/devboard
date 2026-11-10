@@ -313,11 +313,18 @@ struct DeadForge {
     closing: Mutex<Vec<String>>,
     closing_calls: AtomicU64,
     open_title_calls: AtomicU64,
+    read_delay_ms: AtomicU64,
 }
 
 impl dead::ForgeClient for DeadForge {
     fn list_issues(&self) -> dead::ForgeFuture<'_, Vec<dead::ForgeIssue>> {
-        Box::pin(async move { Ok(self.issues.lock().expect("the fake").clone()) })
+        let delay = self.read_delay_ms.load(Ordering::SeqCst);
+        Box::pin(async move {
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            Ok(self.issues.lock().expect("the fake").clone())
+        })
     }
 
     fn list_open_issue_titles(&self) -> dead::ForgeFuture<'_, Vec<String>> {
@@ -1090,6 +1097,76 @@ async fn dead_code_reads_open_titles_once_per_cycle_not_on_every_sync() {
         titles.iter().any(|title| title == "Fresh open title"),
         "{titles:?}"
     );
+    worker.stop().await;
+}
+
+/// A read that outlives its deadline is a slow forge, not a fault: the card
+/// stays stale with no reason, the last read's rows stay, and no error
+/// notification that would file a board issue for the same forge is raised.
+#[tokio::test]
+async fn dead_code_keeps_a_slow_forge_read_on_the_card() {
+    let fixture = Fixture::new("dead-slow");
+    fixture.write("src/a.ts", "export const dead = 1;\n");
+    let forge = Arc::new(DeadForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 4,
+            title: "Remove dead fixture code".to_string(),
+            url: "https://forge.test/acme/fixture/issues/4".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            closed_at: None,
+            body: "## Category\n\nunreferenced-symbol\n".to_string(),
+        });
+    let mut options = dead::WorkerOptions::new(&fixture.repo, &fixture.state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    options.sync_ms = Some(60_000);
+    options.cadence_ms = Some(60 * 60_000);
+    options.manual_cycles = true;
+    options.read_timeout_ms = Some(20);
+    options.connect = Some(fake_connect(|_prompt| Box::pin(async move { Ok(()) })));
+    options.forge = Some(Arc::clone(&forge) as Arc<dyn dead::ForgeClient>);
+    let worker = dead::Worker::new(options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let synced = worker.current_state();
+    assert_eq!(synced.sync.state, dead::SyncState::Ok);
+    assert_eq!(synced.issues.len(), 1);
+
+    forge.read_delay_ms.store(200, Ordering::SeqCst);
+    // Six stalled reads outlast the whole transient schedule, which is where a
+    // stalled read used to become a fault and raise the error notification.
+    for _ in 0..6 {
+        worker.refresh().await;
+    }
+    let stalled = worker.current_state();
+    assert_eq!(stalled.sync.state, dead::SyncState::Stale);
+    assert_eq!(stalled.sync.error, None);
+    assert_eq!(stalled.last_error, None);
+    assert_eq!(stalled.notice, None);
+    assert_eq!(stalled.issues.len(), 1, "the last read's rows stay");
+
+    forge.read_delay_ms.store(0, Ordering::SeqCst);
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 5,
+            title: "Remove more dead fixture code".to_string(),
+            url: "https://forge.test/acme/fixture/issues/5".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:01:00.000Z".to_string(),
+            closed_at: None,
+            body: "## Category\n\nunreferenced-symbol\n".to_string(),
+        });
+    worker.refresh().await;
+    let recovered = worker.current_state();
+    assert_eq!(recovered.sync.state, dead::SyncState::Ok);
+    assert_eq!(recovered.issues.len(), 2);
     worker.stop().await;
 }
 

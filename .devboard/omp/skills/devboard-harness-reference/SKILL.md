@@ -2893,7 +2893,11 @@ unchanged read costs no forge call for a row it already failed to resolve. A rel
 waiting for fills the version and clears the reason. The periodic read asks the forge for the
 `dead-code` label instead of paging every issue and reading each match back, and the open-issue
 titles its duplicate guard needs are read once at cycle start, so one sync stays well inside its
-30-second deadline against a large history.
+30-second deadline against a large history. A read that outlives that deadline is latency, not a
+fault: the page stays `stale` with no `agent-sync-error`, the last read's rows stay, and the next
+read runs on the normal 60-second cadence instead of spending the shared 1, 2, 4, and 8 second
+failure schedule, so a slow forge never raises an error notification that files a board issue
+back into the same forge.
 
 ### Single Responsibility
 

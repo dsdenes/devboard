@@ -22,7 +22,8 @@ use serde_json::{json, Value};
 
 use crate::acp::AcpActivity;
 use crate::forge::{
-    classify_forge_read_failure, Forge, ForgeReadFailureKind, ForgeReadRetry, ForgeRemote,
+    classify_forge_read_failure, is_forge_read_latency, Forge, ForgeReadFailureKind,
+    ForgeReadRetry, ForgeRemote,
 };
 use crate::journal::journal_key;
 use crate::providers::{
@@ -2533,6 +2534,28 @@ impl Worker {
 
     fn record_sync_failure(&self, detail: &str) {
         let kind = classify_forge_read_failure(detail);
+        // A read that ran out of time is a slow forge, not a broken one. The
+        // last read's rows still describe the repository, the four short
+        // retries only add pages to the walk that stalled, and the fifth
+        // attempt would set `last_error`, which the page raises as an error
+        // notification and which files a board issue back into the same forge.
+        // Keep the card stale with no reason and read again on the normal
+        // cadence; a read that actually failed still spends the schedule.
+        if kind == ForgeReadFailureKind::Transient && is_forge_read_latency(detail) {
+            {
+                let mut inner = lock(&self.inner);
+                let at = inner.state.sync.at.clone();
+                inner.state.sync = SyncStatus {
+                    state: SyncState::Stale,
+                    at,
+                    error: None,
+                };
+                inner.next_sync_at = self.now() + self.sync_ms as i64;
+            }
+            self.publish();
+            (self.log)(format!("the forge read is slow: {detail}"));
+            return;
+        }
         if kind == ForgeReadFailureKind::Transient {
             let delay = lock(&self.inner).retry.record(kind);
             if let Some(delay) = delay {
