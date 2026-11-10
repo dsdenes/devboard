@@ -93,8 +93,10 @@ status, origin, standardRef, kind, grounding, broader, related
 - `origin` is one of `owner`, `standard`, `llm`. Grounded existing terms use `owner` or `standard`;
   an agent proposal uses `llm`. `origin: standard` requires a `standardRef`.
 - `kind` is one of `entity`, `event`, `field`, `role`, `actor`, `value`, `rule`.
-- `grounding` is a non-empty list. Each entry is `code:<repository-relative path that exists>` or
-  `model:<symbol or model name that appears in the crawled host>`. The `model:` name matches
+- `grounding` is a non-empty list. Each entry is `code:<repository-relative path of one host
+  file>` or `model:<symbol or model name that appears in the crawled host>`. A `code:` entry names
+  a tracked or untracked file the crawl may cite, never a directory, an ignored path, or a path
+  under an excluded tree. The `model:` name matches
   `^[A-Za-z_][A-Za-z0-9_.-]*$` and appears as a whole word in one crawled file. A candidate with
   no grounding is omitted, never invented.
 - Fields use camelCase; enum values use the exact snake_case spelling above. Write no undeclared

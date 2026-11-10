@@ -1561,7 +1561,7 @@ fn grounding_list(
             if is_absolute_path(target) || target.split('/').any(|segment| segment == "..") {
                 return Err(invalid(&entry_path, "must name a repository-relative path"));
             }
-            if !trust_grounding && !repo_dir.join(target).exists() {
+            if !trust_grounding && !files.iter().any(|file| file == target) {
                 return Err(invalid(
                     &entry_path,
                     format!("names {target}, which the host does not carry"),

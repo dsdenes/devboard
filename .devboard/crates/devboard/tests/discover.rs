@@ -133,6 +133,31 @@ fn fixture_repo(scratch: &Scratch, label: &str, harness_source: bool) -> PathBuf
     repo
 }
 
+/// The checkout a clone runner produces: a committed repository whose one host
+/// file can ground a glossary.
+fn clone_checkout(checkout: &Path) {
+    std::fs::create_dir_all(checkout).expect("the clone directory");
+    write(
+        &checkout.join("README.md"),
+        "# Fresh\n\nA freshly cloned fixture host.\n",
+    );
+    git(checkout, &["init", "-q"]);
+    git(checkout, &["add", "-A"]);
+    git(
+        checkout,
+        &[
+            "-c",
+            "user.name=Discover Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ],
+    );
+}
+
 fn config(repo: &Path, state: &Path, command: String) -> Config {
     Config {
         hostname: "127.0.0.1".to_string(),
@@ -406,7 +431,7 @@ async fn remote_targets_clone_switch_and_refuse() {
             let cwd = request.cwd.clone();
             let name = request.argv.last().cloned().unwrap_or_default();
             Box::pin(async move {
-                std::fs::create_dir_all(cwd.join(name)).expect("the clone directory");
+                clone_checkout(&cwd.join(name));
                 devboard::discover_mode::CloneResult {
                     code: 0,
                     stderr: String::new(),
@@ -731,7 +756,7 @@ async fn a_remote_run_retains_its_published_snapshot() {
             let cwd = request.cwd.clone();
             let name = request.argv.last().cloned().unwrap_or_default();
             Box::pin(async move {
-                std::fs::create_dir_all(cwd.join(name)).expect("the clone directory");
+                clone_checkout(&cwd.join(name));
                 devboard::discover_mode::CloneResult {
                     code: 0,
                     stderr: String::new(),
@@ -825,7 +850,11 @@ async fn a_remote_run_retains_its_published_snapshot() {
     );
     assert_eq!(payload["target"]["checkout"], json!(false));
     assert_eq!(payload["repository"], json!("acme/fresh"));
-    assert!(payload["manifest"].is_object());
+    assert!(
+        payload["manifest"].is_object(),
+        "the published manifest reads back: {}",
+        payload["error"]
+    );
     assert!(payload["sheet"].is_object());
     assert_eq!(payload["retained"].as_array().unwrap().len(), 1);
 }
@@ -1417,4 +1446,98 @@ fn a_second_publication_keeps_unstaged_context_scores() {
         json!(95)
     );
     assert!(!billing_path.exists(), "the dropped glossary is deleted");
+}
+
+/// One staged glossary whose single concept grounds on `grounding`.
+fn grounded_glossary(grounding: &str) -> String {
+    format!(
+        "boundedContext: orders
+titles:
+  - language: en
+    text: \"Orders\"
+concepts:
+  - id: order
+    prefLabels:
+      - language: en
+        text: \"Order\"
+    altLabels: []
+    hiddenLabels: []
+    definitions:
+      - language: en
+        text: \"One customer order request.\"
+    status: unconfirmed
+    origin: owner
+    kind: entity
+    grounding:
+      - \"{grounding}\"
+    related: []
+"
+    )
+}
+
+fn staged_grounding_error(repo: &Path, grounding: &str) -> String {
+    let files = devboard::discover_mode::host_files(repo);
+    devboard::discover_mode::parse_glossary(
+        &grounded_glossary(grounding),
+        "orders.glossary.yaml",
+        repo,
+        &files,
+        false,
+        true,
+    )
+    .expect_err("the staged glossary is refused")
+}
+
+#[test]
+fn a_directory_grounding_is_refused() {
+    let scratch = Scratch::new("grounding-directory");
+    let repo = fixture_repo(&scratch, "repo", false);
+    assert!(
+        repo.join("src").is_dir(),
+        "the fixture carries a src directory"
+    );
+    let files = devboard::discover_mode::host_files(&repo);
+    assert!(
+        !files.iter().any(|file| file == "src"),
+        "the host list carries files only"
+    );
+    assert_eq!(
+        staged_grounding_error(&repo, "code:src"),
+        "orders.glossary.yaml:concepts[0].grounding[0]: names src, which the host does not carry"
+    );
+}
+
+#[test]
+fn an_excluded_tree_grounding_is_refused() {
+    let scratch = Scratch::new("grounding-excluded");
+    let repo = fixture_repo(&scratch, "repo", true);
+    assert!(
+        repo.join(".devboard/package.json").is_file(),
+        "the excluded tree exists on disk"
+    );
+    assert_eq!(
+        staged_grounding_error(&repo, "code:.devboard/package.json"),
+        "orders.glossary.yaml:concepts[0].grounding[0]: names .devboard/package.json, \
+         which the host does not carry"
+    );
+}
+
+#[test]
+fn a_tracked_host_file_grounds_a_concept() {
+    let scratch = Scratch::new("grounding-tracked");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let files = devboard::discover_mode::host_files(&repo);
+    let glossary = devboard::discover_mode::parse_glossary(
+        &grounded_glossary("code:src/order.ts"),
+        "orders.glossary.yaml",
+        &repo,
+        &files,
+        false,
+        true,
+    )
+    .expect("a tracked host file grounds the concept");
+    assert_eq!(
+        glossary.concepts[0].grounding,
+        vec!["code:src/order.ts".to_string()]
+    );
 }
