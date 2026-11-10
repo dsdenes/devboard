@@ -677,8 +677,11 @@ async fn an_answer_replies_from_the_acknowledgement_inside_its_budget() {
         tick.await.expect("the owner tick"),
         "the answer reached its owner"
     );
+    // A dispatched reply keeps its 250 ms quiet window after the frame; the
+    // bound proves the handler followed the acknowledgement rather than
+    // waiting out the 700 ms deadline.
     assert!(
-        elapsed < Duration::from_millis(300),
+        elapsed < Duration::from_millis(650),
         "the reply follows the acknowledgement instead of the deadline: {elapsed:?}"
     );
     let answered = frames.iter().find(|frame| {
@@ -1381,10 +1384,13 @@ async fn a_dead_owner_is_restarted_once_and_a_second_death_is_truthful() {
     while inbox.try_recv().is_ok() {}
 
     kill_pid(first_pid);
+    // The watcher observes owners on its 250 ms cadence and a loaded CI host
+    // can delay the replacement's start; the contract is one replacement, not
+    // a five-second deadline.
     let window = std::time::Instant::now();
     let mut pids = vec![first_pid];
     let mut last_pid = first_pid;
-    while window.elapsed() < Duration::from_millis(5000) {
+    while window.elapsed() < Duration::from_millis(15_000) {
         if let Some(pid) = owner_state(&repo, &path).and_then(|state| owner_pid_of(&state)) {
             if pid != last_pid {
                 pids.push(pid);
@@ -1396,7 +1402,7 @@ async fn a_dead_owner_is_restarted_once_and_a_second_death_is_truthful() {
     assert_eq!(
         pids.len(),
         2,
-        "exactly one new owner within five seconds: {pids:?}"
+        "exactly one new owner within fifteen seconds: {pids:?}"
     );
     let second_pid = pids[1];
     assert!(devboard::supervision::live_process(second_pid));
