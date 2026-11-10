@@ -355,6 +355,60 @@ fn a_lint_that_cannot_produce_json_is_unverified() {
 }
 
 #[test]
+fn a_json_number_a2ui_version_is_rejected_without_coercion() {
+    let fixture = Fixture::new("a2ui-numeric-version");
+    fixture.write(".design/a2ui/config.json", r#"{"version": 1.0}"#);
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["a2ui"]["status"], json!("invalid"));
+    let reason = result["checks"]["a2ui"]["reason"]
+        .as_str()
+        .expect("a reason");
+    assert!(reason.contains("1.0"), "reason: {reason}");
+    assert!(!reason.contains("\"1\""), "reason: {reason}");
+    assert_eq!(result["applicable"], json!(false));
+    let ids = result["missing"]
+        .as_array()
+        .expect("missing entries")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("an id").to_string())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"a2ui".to_string()), "missing: {ids:?}");
+}
+
+#[test]
+fn a_non_object_a2ui_config_is_rejected() {
+    for (name, text) in [
+        ("a2ui-scalar-config", r#""2.0""#),
+        ("a2ui-array-config", "[]"),
+    ] {
+        let fixture = Fixture::new(name);
+        fixture.write(".design/a2ui/config.json", text);
+        let result = fixture.preflight();
+        assert_eq!(
+            result["checks"]["a2ui"]["status"],
+            json!("invalid"),
+            "{text}"
+        );
+        assert_eq!(result["applicable"], json!(false), "{text}");
+    }
+}
+
+#[test]
+fn an_a2ui_config_version_is_read_verbatim() {
+    let fixture = Fixture::new("a2ui-config-string");
+    fixture.write(".design/a2ui/config.json", r#"{"version":"v1.0"}"#);
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["a2ui"],
+        json!({
+            "status": "provided-by-skill",
+            "version": "1.0",
+            "note": "Step 3 writes A2UI JSONL plus a standalone wireframe.",
+        })
+    );
+}
+
+#[test]
 fn an_unsupported_a2ui_version_disables_the_gate() {
     let fixture = Fixture::new("a2ui-invalid");
     fixture.write(".design/a2ui/config.json", r#"{"version":"2.0"}"#);

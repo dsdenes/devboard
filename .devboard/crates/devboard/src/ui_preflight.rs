@@ -772,14 +772,31 @@ fn a2ui_check(report: &mut Report, root: &Path) {
                 a2ui_invalid(report, reason);
                 return;
             }
-            Ok(value) => {
-                if let Some(version) = value
-                    .as_object()
-                    .and_then(|object| object.get("version"))
-                    .filter(|version| !version.is_null())
-                {
-                    raw = js_string(version);
+            Ok(Value::Object(object)) => {
+                if let Some(version) = object.get("version").filter(|version| !version.is_null()) {
+                    match version.as_str() {
+                        Some(text) => raw = text.to_string(),
+                        None => {
+                            a2ui_invalid(
+                                report,
+                                format!(
+                                    "A2UI version in .design/a2ui/config.json must be a JSON \
+                                     string, found {version}"
+                                ),
+                            );
+                            return;
+                        }
+                    }
                 }
+            }
+            Ok(other) => {
+                a2ui_invalid(
+                    report,
+                    format!(
+                        "invalid .design/a2ui/config.json: expected a JSON object, found {other}"
+                    ),
+                );
+                return;
             }
         }
     } else if version_path.is_file() {
