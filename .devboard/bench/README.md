@@ -14,6 +14,24 @@ available; otherwise the report is the Rust column.
 
 The benchmark measures one REST read per iteration and names the HTTP method and path it used.
 
+## Idle CPU and read bytes
+
+`devboard bench cpu` measures what one dashboard and its family workers spend while idle:
+
+```bash
+cd .devboard
+cargo run -p devboard -- bench cpu --scenario runs-view --json
+cargo run -p devboard -- bench cpu --scenario all-workers --json
+```
+
+Each run builds a scratch host under `.test-tmp`, starts a scratch `devboard serve --port 0`,
+drives the scenario (one Runs view, or every family worker live with an hour until its next
+due sync), and prints `cpuPercent` and `readBytesPerSecond` from `/proc/<pid>/io` and
+`/proc/<pid>/stat` over `--seconds` (30 by default). The top-level figures are the dashboard's
+for `runs-view` and the summed workers' for `all-workers`; `dashboard` and `workers` carry the
+per-process detail. Nothing is written to the operator's state directory and every process the
+run starts is ended before it returns.
+
 ## Forge load test
 
 `gitea-load.sh` measures the live forge and the dashboard's read path under concurrent load:
