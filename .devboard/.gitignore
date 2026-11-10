@@ -5,3 +5,9 @@
 /bench/.shadow-work/
 /.test-tmp/
 /crates/.test-tmp/
+
+# A stray nested harness (a benchmark or verification run whose working
+# directory was this one) is generated state, never source. Ignoring it keeps
+# it out of the client build, whose Tailwind scan otherwise picks utility
+# classes out of the logs and state it holds.
+/.devboard/
