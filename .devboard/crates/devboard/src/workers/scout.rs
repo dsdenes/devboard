@@ -306,6 +306,21 @@ pub fn activity_path(directory: &Path) -> PathBuf {
     directory.join("activity.json")
 }
 
+/// The activity file of the scan a sampled state names: the newest scan, else
+/// the scan still running.
+pub fn state_activity_path(repo_dir: &Path, state: &Value) -> Option<PathBuf> {
+    let scan_id = state
+        .get("newestScanId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            state
+                .get("scan")
+                .and_then(|scan| scan.get("scanId"))
+                .and_then(Value::as_str)
+        })?;
+    Some(activity_path(&scan_directory(repo_dir, scan_id)))
+}
+
 pub fn scan_claim_path(repo_dir: &Path) -> PathBuf {
     work_directory(repo_dir).join("scan-claim.json")
 }

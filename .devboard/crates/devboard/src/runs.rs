@@ -219,27 +219,38 @@ fn read_activity(path: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn worker_activity_path(repo_dir: &Path, family: &str, state: &Value) -> Option<PathBuf> {
-    let cycle = state
-        .get("newestCycleId")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| {
-            state
-                .get("activeCycleId")
+/// The activity file a sampled family state names, resolved by that family's
+/// own layout rather than by one guess: the Scout names its newest scan, the
+/// Release Train its run directory, and every cycle family its newest or
+/// active cycle.
+fn worker_activity_path(
+    state_dir: &Path,
+    repo_dir: &Path,
+    family: &str,
+    state: &Value,
+) -> Option<PathBuf> {
+    match family {
+        "scout" => crate::workers::scout::state_activity_path(repo_dir, state),
+        "release-train" => crate::workers::release_train::state_activity_path(
+            &crate::workers::release_train::release_train_directory(state_dir),
+            state,
+        ),
+        _ => {
+            let cycle = state
+                .get("newestCycleId")
                 .and_then(Value::as_str)
-                .map(str::to_string)
-        })?;
-    let directory = if family == "scout" { "scans" } else { "cycles" };
-    Some(
-        repo_dir
-            .join(".devboard")
-            .join(".tmp")
-            .join(family)
-            .join(directory)
-            .join(cycle)
-            .join("activity.json"),
-    )
+                .or_else(|| state.get("activeCycleId").and_then(Value::as_str))?;
+            Some(
+                repo_dir
+                    .join(".devboard")
+                    .join(".tmp")
+                    .join(family)
+                    .join("cycles")
+                    .join(cycle)
+                    .join("activity.json"),
+            )
+        }
+    }
 }
 
 /// One version directory's label: the directory's own name.
@@ -384,7 +395,7 @@ pub fn discover(app: &App) -> Vec<RunSource> {
             }
             let lifecycle = worker_lifecycle(&state);
             let id = format!("{family}--{version}");
-            let activity_path = worker_activity_path(repo_dir, family, &state);
+            let activity_path = worker_activity_path(state_dir, repo_dir, family, &state);
             let live = worker_run_live(&state);
             runs.push(RunSource {
                 id,
@@ -1166,6 +1177,140 @@ mod tests {
                 family: "worker".to_string(),
             },
         }
+    }
+
+    /// A fresh scratch root beside the crate, removed before each use.
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("runs-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch directory");
+        root
+    }
+
+    fn dashboard(state_dir: &Path, repo_dir: &Path) -> Arc<App> {
+        App::new(
+            crate::config::Config {
+                hostname: "127.0.0.1".to_string(),
+                port: 0,
+                adrs_dir: repo_dir.join("adrs"),
+                repo_dir: repo_dir.to_path_buf(),
+                goal_file: repo_dir.join("GOAL.md"),
+                static_dir: None,
+                agent_command: "omp acp".to_string(),
+                state_dir: state_dir.to_path_buf(),
+                allowed_hosts: Vec::new(),
+                feedback: None,
+            },
+            crate::journal::Journal::open(state_dir, repo_dir, 0),
+        )
+    }
+
+    fn write_json(path: &Path, value: &Value) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a record directory");
+        }
+        std::fs::write(path, serde_json::to_string(value).expect("record JSON"))
+            .expect("a record file");
+    }
+
+    /// The activity lines one worker run's socket frames carry.
+    fn streamed_activity(run: &RunSource) -> Vec<String> {
+        let hub = RunHub::new();
+        let (_, frames) = hub.read(run, None);
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "activity")
+            .filter_map(|frame| frame["text"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_scout_run_streams_the_activity_of_the_scan_its_state_names() {
+        let root = scratch("scout-activity");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let scan_id = "2026-11-10T12-00-00-000Z";
+        let activity = repo_dir
+            .join(".devboard")
+            .join(".tmp")
+            .join("scout")
+            .join("scans")
+            .join(scan_id)
+            .join("activity.json");
+        if let Some(parent) = activity.parent() {
+            std::fs::create_dir_all(parent).expect("a scan directory");
+        }
+        std::fs::write(&activity, "[\"scanning the backlog\"]\n").expect("an activity file");
+        write_json(
+            &state_dir
+                .join("scout")
+                .join(crate::journal::journal_key(&repo_dir))
+                .join("state.json"),
+            &json!({
+                "version": 4,
+                "lifecycle": "idle",
+                "newestScanId": scan_id,
+                "updatedAt": "2026-11-10T12:00:01.000Z"
+            }),
+        );
+        let app = dashboard(&state_dir, &repo_dir);
+        let runs = discover(&app);
+        let run = runs
+            .iter()
+            .find(|run| run.kind == "scout")
+            .expect("one Scout run");
+        let Source::Worker { activity_path, .. } = &run.source else {
+            panic!("a Scout run is a worker run");
+        };
+        assert_eq!(activity_path.as_deref(), Some(activity.as_path()));
+        assert_eq!(streamed_activity(run), ["scanning the backlog"]);
+    }
+
+    #[tokio::test]
+    async fn a_release_train_run_streams_the_activity_of_the_run_it_names() {
+        let root = scratch("release-train-activity");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let release_train = state_dir.join("release-train");
+        let run_id = "1794312995279-f83edbe0";
+        let activity = release_train
+            .join("runs")
+            .join(run_id)
+            .join("activity.json");
+        if let Some(parent) = activity.parent() {
+            std::fs::create_dir_all(parent).expect("a run directory");
+        }
+        std::fs::write(&activity, "[\"releasing 1.45.1\"]\n").expect("an activity file");
+        write_json(
+            &release_train
+                .join("workers")
+                .join("1.45.0")
+                .join("worker.json"),
+            &json!({
+                "version": 1,
+                "pid": std::process::id(),
+                "root": repo_dir.to_string_lossy(),
+                "stateDir": state_dir.to_string_lossy(),
+                "lifecycle": "running",
+                "activeRun": run_id,
+                "updatedAt": "2026-11-10T12:16:35.350Z"
+            }),
+        );
+        let app = dashboard(&state_dir, &repo_dir);
+        let runs = discover(&app);
+        let run = runs
+            .iter()
+            .find(|run| run.kind == "release-train")
+            .expect("one Release Train run");
+        assert_eq!(run.id, "release-train--1.45.0");
+        let Source::Worker { activity_path, .. } = &run.source else {
+            panic!("a Release Train run is a worker run");
+        };
+        assert_eq!(activity_path.as_deref(), Some(activity.as_path()));
+        assert_eq!(streamed_activity(run), ["releasing 1.45.1"]);
     }
 
     #[test]

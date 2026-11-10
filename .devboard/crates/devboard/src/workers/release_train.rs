@@ -159,6 +159,14 @@ pub fn activity_path(directory: &Path, id: &str) -> PathBuf {
     run_directory(directory, id).join("activity.json")
 }
 
+/// The activity file of the run the worker record names as active. The
+/// Release Train keeps one directory per run instead of a cycle directory, so
+/// the state's own `activeRun` is the only id the path needs.
+pub fn state_activity_path(directory: &Path, state: &Value) -> Option<PathBuf> {
+    let id = state.get("activeRun").and_then(Value::as_str)?;
+    Some(activity_path(directory, id))
+}
+
 /// The run's optional outcome document; the worker verifies it itself.
 pub fn result_path(directory: &Path, id: &str) -> PathBuf {
     run_directory(directory, id).join("result.json")
