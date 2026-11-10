@@ -1036,6 +1036,37 @@ fn is_queued(value: &Value) -> bool {
         && is_issue(value)
 }
 
+/// The Open issues list: the open issues the dashboard's own forge read
+/// returned, plus every issue a live worker reports it is processing.
+///
+/// The dashboard reads the tracker on its own slower cadence, so a worker can
+/// start a run for an issue that read does not list yet: the Queue page then
+/// claimed "No open issues." while the Runs and Agents pages showed that issue
+/// under implementation. A live run is proof the issue was open when its
+/// worker last read the tracker, so that worker's row is added until the
+/// dashboard's read catches up. A row the read already lists wins, because the
+/// read is the newer of the two.
+fn queue_rows(open: Option<Vec<Issue>>, states: &[IssuesState]) -> Vec<QueuedIssue> {
+    let mut rows: Vec<QueuedIssue> = open
+        .unwrap_or_default()
+        .iter()
+        .map(|issue| QueuedIssue::from_issue(issue, None, None))
+        .collect();
+    for state in states {
+        for issue in &state.queue {
+            if issue.agent_run_id.is_none() {
+                continue;
+            }
+            if rows.iter().any(|row| row.number == issue.number) {
+                continue;
+            }
+            rows.push(issue.clone());
+        }
+    }
+    rows.sort_by_key(|issue| issue.number);
+    rows
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunSummary {
@@ -3251,7 +3282,7 @@ impl IssuesBridge {
         map.insert(
             "queue".into(),
             Value::Array(
-                self.queue_for()
+                self.queue_for(&live_states)
                     .into_iter()
                     .map(|issue| serde_json::to_value(issue).unwrap_or(Value::Null))
                     .collect(),
@@ -3314,17 +3345,8 @@ impl IssuesBridge {
         Value::Object(map)
     }
 
-    /// The Open issues list: exactly the open issues one forge read returned.
-    fn queue_for(&self) -> Vec<QueuedIssue> {
-        let Some(open) = self.tracker.open_issues() else {
-            return Vec::new();
-        };
-        let mut rows: Vec<QueuedIssue> = open
-            .iter()
-            .map(|issue| QueuedIssue::from_issue(issue, None, None))
-            .collect();
-        rows.sort_by_key(|issue| issue.number);
-        rows
+    fn queue_for(&self, states: &[IssuesState]) -> Vec<QueuedIssue> {
+        queue_rows(self.tracker.open_issues(), states)
     }
 
     fn active_run_ids(&self, snapshot: &Value) -> Vec<String> {
@@ -7135,6 +7157,54 @@ mod tests {
         let published =
             read_state(&versioned_state_path(&state, &repo, Some("1.2.3"))).expect("the state");
         assert_eq!(published.deferral, None);
+    }
+
+    #[test]
+    fn a_processed_issue_fills_an_empty_dashboard_read() {
+        // The dashboard's own tracker read is slower than the worker's, so it
+        // can list nothing while the worker is already implementing an issue:
+        // the Queue page claimed "No open issues." beside two processing runs.
+        let mut state = empty_state("acme/app", "repo", 1_000, "running");
+        state.queue.push(QueuedIssue::from_issue(
+            &issue(17, &["processing"]),
+            None,
+            Some("run-17".to_string()),
+        ));
+        let rows = queue_rows(Some(Vec::new()), std::slice::from_ref(&state));
+        assert_eq!(
+            rows.iter().map(|row| row.number).collect::<Vec<_>>(),
+            vec![17]
+        );
+        assert_eq!(rows[0].agent_run_id.as_deref(), Some("run-17"));
+    }
+
+    #[test]
+    fn an_issue_the_read_lists_is_not_duplicated_by_its_worker_row() {
+        let mut state = empty_state("acme/app", "repo", 1_000, "running");
+        state.queue.push(QueuedIssue::from_issue(
+            &issue(17, &["processing"]),
+            None,
+            Some("run-17".to_string()),
+        ));
+        let rows = queue_rows(
+            Some(vec![issue(17, &["processing"])]),
+            std::slice::from_ref(&state),
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].agent_run_id.is_none(), "the read's row wins");
+    }
+
+    #[test]
+    fn an_unstarted_worker_row_waits_for_the_dashboard_read() {
+        // A queued issue no run has started is still only as fresh as the
+        // worker's last poll, so the read owns the list and this row is not
+        // added: a stale worker queue must never resurrect an unstarted issue.
+        let mut state = empty_state("acme/app", "repo", 1_000, "running");
+        state
+            .queue
+            .push(QueuedIssue::from_issue(&issue(17, &["scout"]), None, None));
+        let rows = queue_rows(Some(Vec::new()), std::slice::from_ref(&state));
+        assert!(rows.is_empty());
     }
 }
 
