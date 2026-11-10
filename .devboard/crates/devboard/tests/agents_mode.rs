@@ -1015,13 +1015,16 @@ async fn a_hanging_start_preflight_refuses_within_the_bound() {
     .await;
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     let all = frames(&mut inbox);
-    let errors = find(&all, "error");
-    let error = errors.first().expect("a refusal");
+    // A preflight that ran out of its own budget is latency: the card states it
+    // as the notice, and the command answers no error frame, so the page raises
+    // no notification and files no board issue for it.
+    assert!(find(&all, "error").is_empty(), "{all:?}");
+    let scout = agent(&all, "scout").expect("a scout snapshot");
     assert_eq!(
-        error["message"],
+        scout["notice"],
         "the start preflight did not finish within 20 ms; press Start to retry."
     );
-    let scout = agent(&all, "scout").expect("a scout snapshot");
+    assert_eq!(scout["error"], Value::Null);
     assert_ne!(scout["lifecycle"], "starting");
 }
 
@@ -1063,17 +1066,13 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
         let all = frames(&mut inbox);
         let snapshot = agent(&all, family).expect("a family snapshot");
         // A read that ran out of time against a forge that is slow, not broken:
-        // the card states why Start spawned nothing, and no error notification
-        // files a board issue against the same forge.
+        // the card states why Start spawned nothing, and no error frame reaches
+        // the page, so nothing raises an error notification or files a board
+        // issue against the same forge.
         assert_eq!(snapshot["notice"], json!(reason), "{family}");
         assert_eq!(snapshot["error"], Value::Null, "{family}");
         assert_ne!(snapshot["lifecycle"], json!("starting"), "{family}");
-        let refusal = find(&all, "error");
-        assert_eq!(
-            refusal.first().expect("a refusal")["message"],
-            json!(reason),
-            "{family}"
-        );
+        assert!(find(&all, "error").is_empty(), "{family}: {all:?}");
 
         // A refusal that names a fault the operator must fix keeps startError,
         // so the page still raises its alert.
@@ -1098,6 +1097,9 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
         let snapshot = agent(&all, family).expect("a family snapshot");
         assert_eq!(snapshot["error"], json!(fault), "{family}");
         assert_eq!(snapshot["notice"], Value::Null, "{family}");
+        let refusals = find(&all, "error");
+        assert_eq!(refusals.len(), 1, "{family}: {all:?}");
+        assert_eq!(refusals[0]["message"], json!(fault), "{family}");
     }
 }
 

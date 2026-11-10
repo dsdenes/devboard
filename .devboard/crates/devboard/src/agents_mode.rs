@@ -2492,6 +2492,11 @@ impl Drop for PreviewWindow<'_> {
 struct AgentResult {
     ok: bool,
     message: Option<String>,
+    /// True for a refusal that names latency rather than a fault. The family's
+    /// snapshot already carries that refusal as its notice, and an error frame
+    /// becomes a page notification that files a board issue, so the command
+    /// answers no frame at all for it.
+    latency: bool,
 }
 
 impl AgentResult {
@@ -2499,6 +2504,7 @@ impl AgentResult {
         Self {
             ok: true,
             message: None,
+            latency: false,
         }
     }
 
@@ -2506,6 +2512,15 @@ impl AgentResult {
         Self {
             ok: false,
             message: Some(text),
+            latency: false,
+        }
+    }
+
+    fn latency(text: String) -> Self {
+        Self {
+            ok: false,
+            message: Some(text),
+            latency: true,
         }
     }
 }
@@ -3008,12 +3023,17 @@ impl AgentsMode {
 
     fn finish(&self, conn: &Conn, adapter: &Adapter, result: AgentResult) {
         self.publish_agent(adapter);
-        if !result.ok {
-            conn.send(json!({
-                "type": "error",
-                "message": result.message.unwrap_or_default(),
-            }));
+        // A latency refusal already reached every page as the family's notice
+        // in the snapshot published above. Answering it as an error frame
+        // raises a page notification that files a board issue against the same
+        // forge, so only a fault is answered here.
+        if result.ok || result.latency {
+            return;
         }
+        conn.send(json!({
+            "type": "error",
+            "message": result.message.unwrap_or_default(),
+        }));
     }
 }
 
@@ -5031,13 +5051,14 @@ impl RepoFamily {
         match result {
             Ok(_) => self.spawn_worker().await,
             Err(message) => {
+                let refusal = StartRefusal::classify(message);
                 let mut mutable = self.mutable.lock().expect("family state");
                 mutable.starting = false;
                 mutable.starting_since = None;
-                let (start_error, notice) = start_refusal_fields(message.clone());
+                let (start_error, notice) = refusal.fields();
                 mutable.start_error = start_error;
                 mutable.notice = notice;
-                AgentResult::failure(message)
+                refusal.result()
             }
         }
     }
@@ -5993,7 +6014,7 @@ fn gitea_read_failure(
     }
 }
 
-/// The `start_error` and `notice` fields one Start preflight refusal publishes.
+/// One Start preflight refusal, and the fields and command answer it publishes.
 ///
 /// A refusal that names a step which ran out of time is latency: the request
 /// was still in flight against a forge that is slow, not broken, and the next
@@ -6001,13 +6022,35 @@ fn gitea_read_failure(
 /// raises an error notification, and the page files a board issue for that
 /// notification — more load for the forge already behind. It stays on the card
 /// as the family's notice instead, so the operator still reads why Start
-/// spawned nothing. Every other refusal names a fault the operator must fix
-/// and keeps `start_error`.
-fn start_refusal_fields(message: String) -> (Option<String>, Option<String>) {
-    if crate::forge::is_forge_read_latency(&message) {
-        (None, Some(message))
-    } else {
-        (Some(message), None)
+/// spawned nothing, and the command answers no error frame for the same
+/// reason. Every other refusal names a fault the operator must fix and keeps
+/// `start_error` and the page's alert.
+struct StartRefusal {
+    message: String,
+    latency: bool,
+}
+
+impl StartRefusal {
+    fn classify(message: String) -> Self {
+        let latency = crate::forge::is_forge_read_latency(&message);
+        Self { message, latency }
+    }
+
+    /// The `(start_error, notice)` pair this refusal publishes.
+    fn fields(&self) -> (Option<String>, Option<String>) {
+        if self.latency {
+            (None, Some(self.message.clone()))
+        } else {
+            (Some(self.message.clone()), None)
+        }
+    }
+
+    fn result(self) -> AgentResult {
+        if self.latency {
+            AgentResult::latency(self.message)
+        } else {
+            AgentResult::failure(self.message)
+        }
     }
 }
 
@@ -7239,12 +7282,13 @@ impl WatchdogFamily {
         }
         if let Err(message) = result {
             self.end_start();
+            let refusal = StartRefusal::classify(message);
             if let Ok(mut mutable) = self.mutable.lock() {
-                let (start_error, notice) = start_refusal_fields(message.clone());
+                let (start_error, notice) = refusal.fields();
                 mutable.start_error = start_error;
                 mutable.notice = notice;
             }
-            return AgentResult::failure(message);
+            return refusal.result();
         }
         {
             let mut mutable = self.mutable.lock().expect("watchdog state");
@@ -8249,13 +8293,14 @@ impl McpFamily {
             )),
         };
         if let Err(message) = result {
+            let refusal = StartRefusal::classify(message);
             let mut mutable = self.mutable.lock().expect("mcp state");
             mutable.starting = false;
             mutable.starting_since = None;
-            let (start_error, notice) = start_refusal_fields(message.clone());
+            let (start_error, notice) = refusal.fields();
             mutable.start_error = start_error;
             mutable.notice = notice;
-            return AgentResult::failure(message);
+            return refusal.result();
         }
         let argv = harness_argv(
             "mcp-optimizer",
