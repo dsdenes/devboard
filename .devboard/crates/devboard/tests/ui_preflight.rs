@@ -45,6 +45,15 @@ impl Fixture {
 
     /// A complete design stack: DESIGN.md, DTCG, OpenUI, and Storybook.
     fn complete_design(&self) {
+        self.design_stack();
+        self.write(
+            "openui.json",
+            r#"{"name":"Kit","version":"1.0","description":"Components","components":{"Button":{"description":"A button","props":{}}}}"#,
+        );
+    }
+
+    /// The design stack without its OpenUI catalog.
+    fn design_stack(&self) {
         self.write(
             "DESIGN.md",
             "# Product design\n\n## Layout\n\nBase unit 4px; grid rhythm 8px. Padding 16px, \
@@ -53,10 +62,6 @@ impl Fixture {
         self.write(
             "design/tokens.json",
             r##"{"color":{"primary":{"$value":"#3366ff","$type":"color"}}}"##,
-        );
-        self.write(
-            "openui.json",
-            r#"{"name":"Kit","version":"1.0","description":"Components","components":{"Button":{"description":"A button","props":{}}}}"#,
         );
         self.write(".storybook/main.ts", "export default {};\n");
         self.write("src/Button.stories.tsx", "export default {};\n");
@@ -469,6 +474,77 @@ fn an_openui_yaml_catalog_is_checked() {
             "problems": [],
         })
     );
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_zero_indented_props_sequence_passes() {
+    let fixture = Fixture::new("openui-yaml-zero-indented-props");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props:
+      variant:
+        type: string
+        enum:
+        - primary
+        - secondary
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_top_level_zero_indented_sequence_parses() {
+    let fixture = Fixture::new("openui-yaml-zero-indented-tags");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+tags:
+- a
+- b
+components:
+  Button:
+    description: A button
+    props:
+      size:
+      - s
+      - m
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
 }
 
 #[test]

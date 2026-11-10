@@ -1195,10 +1195,10 @@ fn number_value(value: Option<f64>) -> Value {
 /// A YAML subset reader for the OpenUI catalog shape.
 ///
 /// The original script used `Bun.YAML.parse`. The harness carries no YAML
-/// dependency, so this reader covers block mappings and sequences, plain,
-/// quoted, and block scalars, flow `[]`/`{}` empties, and the YAML 1.2 core
-/// scalars. Anchors, aliases, tags, merge keys, and non-empty flow collections
-/// are not supported.
+/// dependency, so this reader covers block mappings and sequences (a sequence
+/// may sit at its key's own indent), plain, quoted, and block scalars, flow
+/// `[]`/`{}` empties, and the YAML 1.2 core scalars. Anchors, aliases, tags,
+/// merge keys, and non-empty flow collections are not supported.
 struct YamlLine {
     indent: usize,
     content: String,
@@ -1233,6 +1233,10 @@ fn split_key(content: &str) -> Option<(String, String)> {
     Some((key.to_string(), rest.trim().to_string()))
 }
 
+fn yaml_sequence_entry(content: &str) -> bool {
+    content == "-" || content.starts_with("- ")
+}
+
 fn parse_yaml(text: &str) -> Result<Value, String> {
     let lines = yaml_lines(text);
     let Some(first) = lines.first() else {
@@ -1250,7 +1254,7 @@ fn parse_yaml(text: &str) -> Result<Value, String> {
 fn parse_yaml_value(lines: &[YamlLine], index: &mut usize, indent: usize) -> Result<Value, String> {
     let sequence = lines
         .get(*index)
-        .map(|line| line.content == "-" || line.content.starts_with("- "))
+        .map(|line| yaml_sequence_entry(&line.content))
         .unwrap_or(false);
     if sequence {
         parse_yaml_sequence(lines, index, indent)
@@ -1273,7 +1277,7 @@ fn parse_yaml_mapping(
         if line.indent > indent {
             return Err(format!("unexpected indentation: {}", line.content));
         }
-        if line.content == "-" || line.content.starts_with("- ") {
+        if yaml_sequence_entry(&line.content) {
             break;
         }
         let Some((key, raw)) = split_key(&line.content) else {
@@ -1281,7 +1285,7 @@ fn parse_yaml_mapping(
         };
         *index += 1;
         let value = if raw.is_empty() {
-            yaml_nested_or_null(lines, index, indent)?
+            yaml_mapping_value_or_null(lines, index, indent)?
         } else if is_block_scalar(&raw) {
             yaml_block_scalar(lines, index, indent, &raw)?
         } else {
@@ -1306,7 +1310,7 @@ fn parse_yaml_sequence(
         if line.indent > indent {
             return Err(format!("unexpected indentation: {}", line.content));
         }
-        if !(line.content == "-" || line.content.starts_with("- ")) {
+        if !yaml_sequence_entry(&line.content) {
             break;
         }
         let rest = if line.content == "-" {
@@ -1336,7 +1340,7 @@ fn parse_yaml_sequence(
         object.insert(key, value);
         let field_indent = lines
             .get(*index)
-            .filter(|next| next.indent > indent && !next.content.starts_with("- "))
+            .filter(|next| next.indent > indent && !yaml_sequence_entry(&next.content))
             .map(|next| next.indent);
         if let Some(field_indent) = field_indent {
             if let Value::Object(fields) = parse_yaml_mapping(lines, index, field_indent)? {
@@ -1348,6 +1352,21 @@ fn parse_yaml_sequence(
         out.push(Value::Object(object));
     }
     Ok(Value::Array(out))
+}
+
+/// A mapping key's value: a deeper-indented node, a block sequence written at
+/// the key's own indent (the zero-indented list style, valid YAML), or null.
+fn yaml_mapping_value_or_null(
+    lines: &[YamlLine],
+    index: &mut usize,
+    indent: usize,
+) -> Result<Value, String> {
+    match lines.get(*index) {
+        Some(next) if next.indent == indent && yaml_sequence_entry(&next.content) => {
+            parse_yaml_sequence(lines, index, indent)
+        }
+        _ => yaml_nested_or_null(lines, index, indent),
+    }
 }
 
 fn yaml_nested_or_null(
