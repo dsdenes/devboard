@@ -2,13 +2,11 @@
   "name": "closeIssue",
   "method": "DELETE",
   "path": "/issues/{number}",
-  "status": 200,
+  "status": 400,
   "body": {
-    "frames": [
-      {
-        "type": "error",
-        "message": "Closing an issue needs its number."
-      }
-    ]
+    "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "The request path number must be a number."
   }
 }
