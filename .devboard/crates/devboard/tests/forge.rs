@@ -157,6 +157,16 @@ fn text_response(status: u16, body: &str) -> StubResponse {
     }
 }
 
+/// One query parameter's value, empty when the request omits it.
+fn query_value(query: &str, name: &str) -> String {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.to_string())
+        .unwrap_or_default()
+}
+
 fn temp_dir(label: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -2333,6 +2343,133 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
     assert_eq!(
         String::from_utf8(patch.body).expect("utf8"),
         r#"{"state":"closed"}"#
+    );
+}
+
+/// How many issues the paging stub below holds.
+const PAGING_STUB_ISSUES: i64 = 260;
+
+/// One row of the paging stub: number `number`, created `number` minutes after
+/// the epoch, so the newest row is the highest number.
+fn paging_stub_issue(number: i64) -> Value {
+    json!({
+        "number": number,
+        "title": format!("Issue {number}"),
+        "html_url": format!("https://gitea.test/owner/name/issues/{number}"),
+        "created_at": format!("2024-01-01T{:02}:{:02}:00Z", number / 60, number % 60),
+        "state": "open",
+        "body": format!("body {number}"),
+        "labels": [],
+    })
+}
+
+/// One `/issues` page of the paging stub, honoring `limit`, `page`, and the
+/// requested direction, so a newest-first read sees the newest rows first.
+fn paging_stub_page(request: &RecordedRequest) -> StubResponse {
+    let page: usize = query_value(&request.query, "page").parse().unwrap_or(1);
+    let limit: usize = query_value(&request.query, "limit").parse().unwrap_or(50);
+    let mut numbers: Vec<i64> = (1..=PAGING_STUB_ISSUES).collect();
+    if query_value(&request.query, "direction") == "desc" {
+        numbers.reverse();
+    }
+    let rows: Vec<Value> = numbers
+        .into_iter()
+        .skip((page - 1) * limit)
+        .take(limit)
+        .map(paging_stub_issue)
+        .collect();
+    json_response(Value::Array(rows))
+}
+
+fn issue_page_requests(server: &StubServer) -> Vec<RecordedRequest> {
+    server
+        .requests()
+        .into_iter()
+        .filter(|request| {
+            request.method == "GET" && request.path == "/api/v1/repos/owner/name/issues"
+        })
+        .collect()
+}
+
+/// One `list` read of a large tracker costs one newest-first page, not the
+/// whole history: the read asks for one row more than it returns and stops
+/// there. `list_all` keeps the unbounded walk the dedup guard needs.
+#[tokio::test]
+async fn a_bounded_list_reads_only_the_newest_page_of_a_large_tracker() {
+    let server =
+        StubServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": false, "admin": false},
+                })),
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => paging_stub_page(request),
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo("bounded-list", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+    let newest = |count: usize| -> Vec<i64> {
+        (0..count as i64)
+            .map(|offset| PAGING_STUB_ISSUES - offset)
+            .collect()
+    };
+
+    // `issues_list` asks for `limit + 1` rows so it can report truncation.
+    let rows = client
+        .list(IssueQueryState::All, Some(101))
+        .await
+        .expect("a bounded read");
+    assert_eq!(
+        rows.iter().map(|row| row.number).collect::<Vec<_>>(),
+        newest(101)
+    );
+    let first_read = issue_page_requests(&server);
+    assert_eq!(first_read.len(), 1, "the newest page answers the read");
+    assert!(
+        first_read[0].query.contains("sort=created&direction=desc"),
+        "the read asks for the newest rows first: {}",
+        first_read[0].query
+    );
+
+    let before = issue_page_requests(&server).len();
+    let rows = client
+        .list(IssueQueryState::All, Some(201))
+        .await
+        .expect("a bounded read");
+    assert_eq!(
+        rows.iter().map(|row| row.number).collect::<Vec<_>>(),
+        newest(201)
+    );
+    let second_read = issue_page_requests(&server).len() - before;
+    assert!(
+        second_read <= 2,
+        "the read stops one row past the limit: {second_read} requests"
+    );
+
+    let before = issue_page_requests(&server).len();
+    let all = client
+        .list_all(IssueQueryState::All)
+        .await
+        .expect("the unbounded walk");
+    assert_eq!(all.len(), PAGING_STUB_ISSUES as usize);
+    assert_eq!(all[0].number, PAGING_STUB_ISSUES);
+    assert_eq!(
+        issue_page_requests(&server).len() - before,
+        (PAGING_STUB_ISSUES as usize).div_ceil(GITEA_PAGE_SIZE) + 1,
+        "every page is read, and one page ends it"
     );
 }
 

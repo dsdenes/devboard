@@ -1530,7 +1530,26 @@ pub async fn gitea_list_issues(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
-    gitea_list_issues_matching(target, state, None, transport, options).await
+    gitea_list_issues_matching(target, state, None, None, transport, options).await
+}
+
+/// The newest `limit` issues in the requested state, pull requests excluded.
+///
+/// The tracker can hold far more issues than one bounded read asks for, and
+/// every listed row carries its body, so the read asks the forge for a
+/// newest-first page and stops once it holds one row more than it returns.
+/// Walking the whole history and truncating afterwards cost one request per
+/// page of tracker rows on every `issues_list` call. The other Gitea issue
+/// reads keep the unbounded walk, which the dedup guard needs.
+async fn gitea_list_newest_issues(
+    target: &GiteaTarget,
+    state: IssueQueryState,
+    limit: usize,
+    transport: &Transport,
+    options: &GiteaCallOptions,
+) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
+    let bound = Some(limit.max(1));
+    gitea_list_issues_matching(target, state, None, bound, transport, options).await
 }
 
 /// Every issue in the requested state carrying `label`, ascending, with its body.
@@ -1548,25 +1567,30 @@ pub async fn gitea_list_labelled_issues(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
-    gitea_list_issues_matching(target, state, Some(label), transport, options).await
+    gitea_list_issues_matching(target, state, Some(label), None, transport, options).await
 }
 
 async fn gitea_list_issues_matching(
     target: &GiteaTarget,
     state: IssueQueryState,
     label: Option<&str>,
+    bound: Option<usize>,
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<Vec<GiteaIssueDocument>, GiteaError> {
+    let page_size = bound.unwrap_or(GITEA_PAGE_SIZE);
     let mut issues = Vec::new();
     let mut seen = HashSet::new();
     for page in 1..=GITEA_MAX_PAGES {
         let mut path = format!(
-            "{}/issues?state={}&type=issues&limit={}&page={page}",
+            "{}/issues?state={}&type=issues&limit={page_size}&page={page}",
             repo_path(target),
-            state.as_str(),
-            GITEA_PAGE_SIZE
+            state.as_str()
         );
+        if bound.is_some() {
+            // Ask for the newest rows first so the first page carries them.
+            path.push_str("&sort=created&direction=desc");
+        }
         if let Some(label) = label {
             path.push_str("&labels=");
             path.push_str(&encode_uri_component(label));
@@ -1591,6 +1615,9 @@ async fn gitea_list_issues_matching(
                 continue;
             }
             issues.push(issue);
+        }
+        if bound.is_some_and(|bound| issues.len() >= bound) {
+            break;
         }
         // A server that ignores the page parameter repeats the first response;
         // treating a page without new issues as the end keeps this loop finite.
@@ -5208,9 +5235,10 @@ impl ForgeIssuesClient {
         let limit = limit.unwrap_or(100);
         if self.forge == Forge::Gitea {
             let target = self.gitea_target(RequiredAccess::Read).await?;
-            let mut issues = gitea_list_issues(
+            let mut issues = gitea_list_newest_issues(
                 &target,
                 state,
+                limit.saturating_add(1),
                 &self.transport,
                 &GiteaCallOptions::default(),
             )

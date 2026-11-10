@@ -653,3 +653,151 @@ async fn a_refused_dedup_read_is_recorded_for_the_cycle() {
     );
     server.abort();
 }
+
+/// How many issues the paged tracker below holds.
+const PAGED_TRACKER_ISSUES: i64 = 260;
+
+/// One row of the paged tracker: number `number`, created `number` minutes
+/// after the epoch, so the newest row is the highest number.
+fn paged_tracker_issue(number: i64) -> Value {
+    json!({
+        "number": number,
+        "title": format!("Issue {number}"),
+        "html_url": format!("https://gitea.test/owner/name/issues/{number}"),
+        "created_at": format!("2024-01-01T{:02}:{:02}:00Z", number / 60, number % 60),
+        "state": "open",
+        "body": format!("body {number}"),
+        "labels": [],
+    })
+}
+
+fn stub_query_value(query: &str, name: &str) -> String {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.to_string())
+        .unwrap_or_default()
+}
+
+/// A Gitea tracker of `PAGED_TRACKER_ISSUES` issues that honors `limit`,
+/// `page`, and the requested direction.
+async fn stub_gitea_paged_tracker(
+    State(calls): State<StubCalls>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let method = request.method().as_str().to_string();
+    let uri = request.uri().clone();
+    calls
+        .lock()
+        .expect("calls")
+        .push(format!("{method} {}", uri.path()));
+    let query = uri.query().unwrap_or("").to_string();
+    let (status, body) = match (method.as_str(), uri.path()) {
+        ("GET", "/api/v1/user") => (200, json!({"login": "alice"}).to_string()),
+        ("GET", "/api/v1/repos/owner/name") => (
+            200,
+            json!({"permissions": {"pull": true, "push": false, "admin": false}}).to_string(),
+        ),
+        ("GET", "/api/v1/repos/owner/name/issues") => {
+            let page: usize = stub_query_value(&query, "page").parse().unwrap_or(1);
+            let limit: usize = stub_query_value(&query, "limit").parse().unwrap_or(50);
+            let mut numbers: Vec<i64> = (1..=PAGED_TRACKER_ISSUES).collect();
+            if stub_query_value(&query, "direction") == "desc" {
+                numbers.reverse();
+            }
+            let rows: Vec<Value> = numbers
+                .into_iter()
+                .skip((page - 1) * limit)
+                .take(limit)
+                .map(paged_tracker_issue)
+                .collect();
+            (200, Value::Array(rows).to_string())
+        }
+        _ => (500, format!("unexpected {method} {}", uri.path())),
+    };
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+/// One `issues_list` read of a large tracker costs one newest-first page per
+/// limit, and still reports the rows it returns as truncated.
+#[tokio::test]
+async fn issues_list_reads_one_bounded_page_from_a_large_tracker() {
+    let calls: StubCalls = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new()
+        .fallback(stub_gitea_paged_tracker)
+        .with_state(calls.clone());
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut context = fixture("issues-list-bounded");
+    let remote = format!("http://127.0.0.1:{port}/owner/name.git");
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&context.repo_dir)
+        .args(["remote", "add", "origin", &remote])
+        .status()
+        .expect("git runs");
+    assert!(added.success(), "the fixture origin is added");
+    context.environment = HashMap::from([
+        ("GITEA_TOKEN".to_string(), "secret".to_string()),
+        (
+            "DEVBOARD_GITEA_URL".to_string(),
+            format!("http://127.0.0.1:{port}"),
+        ),
+    ]);
+
+    let page_requests = || -> usize {
+        calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .filter(|call| call.as_str() == "GET /api/v1/repos/owner/name/issues")
+            .count()
+    };
+
+    for (id, limit) in [(60, 100usize), (61, 200usize)] {
+        let frames = drive(
+            &context,
+            &[json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "issues_list",
+                    "arguments": {"state": "open", "limit": limit}
+                }
+            })],
+        )
+        .await;
+        let listed = tool_result(&frames, id);
+        let rows = listed["issues"].as_array().expect("issue rows");
+        assert_eq!(rows.len(), limit, "the limit is the row count");
+        assert_eq!(rows[0]["number"], PAGED_TRACKER_ISSUES);
+        assert_eq!(
+            rows[limit - 1]["number"],
+            PAGED_TRACKER_ISSUES - limit as i64 + 1,
+            "newest first across the returned rows"
+        );
+        assert_eq!(
+            listed["truncated"], true,
+            "a tracker larger than the limit is truncated"
+        );
+    }
+
+    assert_eq!(
+        page_requests(),
+        2,
+        "one newest-first page per issues_list read"
+    );
+    server.abort();
+}
