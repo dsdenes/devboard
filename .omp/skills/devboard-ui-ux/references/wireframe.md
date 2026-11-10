@@ -6,7 +6,9 @@ structure. They do not choose production components or visual design.
 ## Version
 
 Use A2UI v0.9.1 unless the project pins another supported version in
-`.design/a2ui/config.json` or `.design/a2ui/version`.
+`.design/a2ui/config.json` or `.design/a2ui/version`. The `config.json` pin is a JSON string,
+`{"version": "0.9.1"}`; a number such as `{"version": 1.0}` is rejected, not read as a shortcut.
+The `version` file is plain text, with or without a leading `v`.
 
 ```json
 {

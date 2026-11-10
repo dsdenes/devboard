@@ -45,6 +45,15 @@ impl Fixture {
 
     /// A complete design stack: DESIGN.md, DTCG, OpenUI, and Storybook.
     fn complete_design(&self) {
+        self.design_stack();
+        self.write(
+            "openui.json",
+            r#"{"name":"Kit","version":"1.0","description":"Components","components":{"Button":{"description":"A button","props":{}}}}"#,
+        );
+    }
+
+    /// The design stack without its OpenUI catalog.
+    fn design_stack(&self) {
         self.write(
             "DESIGN.md",
             "# Product design\n\n## Layout\n\nBase unit 4px; grid rhythm 8px. Padding 16px, \
@@ -53,10 +62,6 @@ impl Fixture {
         self.write(
             "design/tokens.json",
             r##"{"color":{"primary":{"$value":"#3366ff","$type":"color"}}}"##,
-        );
-        self.write(
-            "openui.json",
-            r#"{"name":"Kit","version":"1.0","description":"Components","components":{"Button":{"description":"A button","props":{}}}}"#,
         );
         self.write(".storybook/main.ts", "export default {};\n");
         self.write("src/Button.stories.tsx", "export default {};\n");
@@ -355,6 +360,60 @@ fn a_lint_that_cannot_produce_json_is_unverified() {
 }
 
 #[test]
+fn a_json_number_a2ui_version_is_rejected_without_coercion() {
+    let fixture = Fixture::new("a2ui-numeric-version");
+    fixture.write(".design/a2ui/config.json", r#"{"version": 1.0}"#);
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["a2ui"]["status"], json!("invalid"));
+    let reason = result["checks"]["a2ui"]["reason"]
+        .as_str()
+        .expect("a reason");
+    assert!(reason.contains("1.0"), "reason: {reason}");
+    assert!(!reason.contains("\"1\""), "reason: {reason}");
+    assert_eq!(result["applicable"], json!(false));
+    let ids = result["missing"]
+        .as_array()
+        .expect("missing entries")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("an id").to_string())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"a2ui".to_string()), "missing: {ids:?}");
+}
+
+#[test]
+fn a_non_object_a2ui_config_is_rejected() {
+    for (name, text) in [
+        ("a2ui-scalar-config", r#""2.0""#),
+        ("a2ui-array-config", "[]"),
+    ] {
+        let fixture = Fixture::new(name);
+        fixture.write(".design/a2ui/config.json", text);
+        let result = fixture.preflight();
+        assert_eq!(
+            result["checks"]["a2ui"]["status"],
+            json!("invalid"),
+            "{text}"
+        );
+        assert_eq!(result["applicable"], json!(false), "{text}");
+    }
+}
+
+#[test]
+fn an_a2ui_config_version_is_read_verbatim() {
+    let fixture = Fixture::new("a2ui-config-string");
+    fixture.write(".design/a2ui/config.json", r#"{"version":"v1.0"}"#);
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["a2ui"],
+        json!({
+            "status": "provided-by-skill",
+            "version": "1.0",
+            "note": "Step 3 writes A2UI JSONL plus a standalone wireframe.",
+        })
+    );
+}
+
+#[test]
 fn an_unsupported_a2ui_version_disables_the_gate() {
     let fixture = Fixture::new("a2ui-invalid");
     fixture.write(".design/a2ui/config.json", r#"{"version":"2.0"}"#);
@@ -415,6 +474,77 @@ fn an_openui_yaml_catalog_is_checked() {
             "problems": [],
         })
     );
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_zero_indented_props_sequence_passes() {
+    let fixture = Fixture::new("openui-yaml-zero-indented-props");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props:
+      variant:
+        type: string
+        enum:
+        - primary
+        - secondary
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_top_level_zero_indented_sequence_parses() {
+    let fixture = Fixture::new("openui-yaml-zero-indented-tags");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+tags:
+- a
+- b
+components:
+  Button:
+    description: A button
+    props:
+      size:
+      - s
+      - m
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
 }
 
 #[test]
