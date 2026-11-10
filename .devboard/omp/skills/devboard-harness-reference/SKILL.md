@@ -488,9 +488,7 @@ on queued behind the page's own refreshes: the server answered `GET /providers` 
 page measured 842 ms. Three connections stay free for an operator action, a first-paint read,
 and the bundle's own requests, and the queue drains as each refresh answers, so a cycle still
 reads every registered resource. The replay itself starts once the six first-paint reads answer,
-or one cadence later when one of them never answers, so the modes are never left unread. The
-run's output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks
-another background request beside the refreshes.
+or one cadence later when one of them never answers, so the modes are never left unread.
 
 The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
 refresh, poll, a polling surface's repeat request, and every send issued while the connection is
@@ -4493,16 +4491,16 @@ The dashboard's only WebSocket belongs to one live ACP run:
 - One sample serves every viewer. A run's state is sampled once per 500 ms and its activity
   journals are checked once per 250 ms, however many sockets are open; the sample fans out to
   each socket's own cursor. Every state file is read through one `(mtime, len)` cache, so an
-  unchanged file is never re-read and a page with several runs open costs one `stat` per file
+  unchanged file is never re-read and a viewer with several runs open costs one `stat` per file
   per interval. A socket's first tick samples its run, so a new subscriber starts current.
 - `GET /agent-runs` carries an `ETag`; a request whose `If-None-Match` names it answers `304`
   with an empty body and reads no run record, and only a record whose file changed is read
-  again. The run-output client sends that validator on its collection poll.
+  again. The bench's runs-view client sends that validator on its collection poll.
 - A run record still says `running` after its worker died. The recorded worker pid and the kernel
   start tick recorded beside it are the authority: a record is live only while a process holds
   that pid with that start tick, so a recycled pid never revives it. A record whose pid is gone or
   whose start tick is absent or different is represented with a stopped lifecycle, is not in the
-  live set the page opens sockets for, and its bytes are never rewritten. A socket another viewer
+  live set a viewer opens sockets for, and its bytes are never rewritten. A socket another viewer
   already holds samples the record on the tick that finds the worker gone, pushes the one terminal
   `status` frame naming that stopped lifecycle, and only then closes; the `state` frame on the
   same sample names the same word, so the two frames never disagree.

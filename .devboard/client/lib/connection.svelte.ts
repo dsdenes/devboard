@@ -92,8 +92,8 @@ interface BackgroundRead {
  * Owns every dashboard read and action. A mounted page registers its own GET
  * resource, which is polled once a second while the document is visible; an
  * action is one HTTP request whose reply frames still reach the registered
- * handlers. The only socket the interface opens is a live run's output
- * client, which lives in `run-output.svelte.ts`.
+ * handlers. The interface opens no socket: every read, poll, and action is an
+ * HTTP request.
  */
 export class ConnectionStore {
   state = $state<ConnectionState>("connecting");

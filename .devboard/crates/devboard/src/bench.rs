@@ -554,8 +554,8 @@ async fn wait_ready(base: &str, timeout: Duration) -> anyhow::Result<()> {
     }
 }
 
-/// The one Runs view: the collection poll and one reconciled socket per live
-/// run.
+/// The benchmark's runs view: the collection poll and one reconciled socket
+/// per live run.
 mod runs_view {
     use std::collections::{HashMap, HashSet};
 
@@ -564,7 +564,7 @@ mod runs_view {
 
     use super::*;
 
-    /// Opens the page's two reads: a conditional `/agent-runs` poll every
+    /// Opens the view's two reads: a conditional `/agent-runs` poll every
     /// second, and the output socket each live run keeps.
     pub fn open(base: String, port: u16) {
         tokio::spawn(async move {
@@ -615,9 +615,9 @@ mod runs_view {
 
     impl LiveSockets {
         /// Reconciles this view with one `/agent-runs` body, the way the page
-        /// does: open a socket only for a live run that has none, abort the
-        /// socket of a run that left the live set, and reopen a run whose
-        /// socket ended with `after=<cursor>`.
+        /// client that owned this view did: open a socket only for a live run
+        /// that has none, abort the socket of a run that left the live set, and
+        /// reopen a run whose socket ended with `after=<cursor>`.
         async fn reconcile(
             &mut self,
             body: &[u8],

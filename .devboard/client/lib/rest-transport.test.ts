@@ -128,7 +128,7 @@ test("no_command_frames", async () => {
     if (text.includes("new WebSocket")) socketFiles.push(file);
     if (/JSON\.stringify\(\s*\{\s*type:/.test(text)) commandFrames.push(file);
   }
-  expect(socketFiles.map((file) => file.split("/").pop())).toEqual(["run-output.svelte.ts"]);
+  expect(socketFiles.map((file) => file.split("/").pop())).toEqual([]);
   expect(commandFrames).toEqual([]);
 
   const requests: string[] = [];

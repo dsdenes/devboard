@@ -1,9 +1,10 @@
 /**
- * The transport is REST, and the only WebSocket is a live run's own output.
+ * The transport is REST: the page opens no WebSocket at all.
  *
- * A page with no live run opens none across five polling intervals. Starting
- * one family opens exactly one socket whose URL names that run; every frame
- * carries that run's identity; stopping the run closes it.
+ * A page with no live run opens none across five polling intervals, and a page
+ * with one live family run opens none either. The run's activity reaches the
+ * page as `issuesActivity` frames on the connection's own reads, and
+ * `GET /agent-runs` stays a REST read no page polls.
  */
 
 import { expect, test, type Page } from "@playwright/test";
@@ -13,31 +14,12 @@ import { readState } from "./support.ts";
 
 interface ObservedSocket {
   url: string;
-  closed: boolean;
-  runs: string[];
 }
 
 function observe(page: Page): ObservedSocket[] {
   const sockets: ObservedSocket[] = [];
   page.on("websocket", (socket) => {
-    const url = socket.url();
-    const observed: ObservedSocket = { url, closed: false, runs: [] };
-    sockets.push(observed);
-    socket.on("framereceived", (event) => {
-      const text =
-        typeof event.payload === "string"
-          ? event.payload
-          : Buffer.from(event.payload as Buffer).toString("utf8");
-      try {
-        const frame = JSON.parse(text) as Record<string, unknown>;
-        if (typeof frame.run === "string") observed.runs.push(frame.run);
-      } catch {
-        // A binary or partial frame is not a run frame.
-      }
-    });
-    socket.on("close", () => {
-      observed.closed = true;
-    });
+    sockets.push({ url: socket.url() });
   });
   return sockets;
 }
@@ -62,26 +44,15 @@ test("a page with no live run opens no WebSocket", async ({ page }) => {
   expect(sockets).toEqual([]);
 });
 
-test("one live family run opens one socket and stopping it closes it", async ({ page }) => {
+test("a live family run opens no WebSocket", async ({ page }) => {
   const sockets = observe(page);
   await openDashboard(page);
   await startFamily(page, "dead-code");
-  await expect
-    .poll(async () => sockets.filter((socket) => !socket.closed).length, { timeout: 60_000 })
-    .toBe(1);
-  const live = await liveRunIds(page);
-  expect(live.length).toBe(1);
-  const id = live[0];
-  const socket = sockets.find((candidate) => !candidate.closed);
-  expect(socket?.url).toContain(`/agent-runs/${id}/output`);
-  await expect.poll(() => socket?.runs.length ?? 0, { timeout: 30_000 }).toBeGreaterThan(0);
-  for (const run of socket?.runs ?? []) {
-    expect(run).toBe(id);
-  }
+  await expect.poll(async () => (await liveRunIds(page)).length, { timeout: 60_000 }).toBe(1);
+  // Five polling intervals with one live run.
+  await page.waitForTimeout(5_500);
+  expect(sockets).toEqual([]);
 
   await stopFamily(page, "dead-code");
-  await expect
-    .poll(() => sockets.every((candidate) => candidate.closed), { timeout: 30_000 })
-    .toBe(true);
   await expect.poll(async () => (await liveRunIds(page)).length, { timeout: 30_000 }).toBe(0);
 });
