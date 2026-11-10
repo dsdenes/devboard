@@ -1493,6 +1493,25 @@ fn write_published_state(
     devboard::workers::scout::write_state(&path, state).expect("a published state");
 }
 
+/// A worker on an injected clock, so a retry cadence is due without waiting.
+fn clocked_worker(
+    repo: &Path,
+    forge: FixtureForge,
+    agent: devboard::workers::scout::ScanAgent,
+    clock: Arc<AtomicI64>,
+) -> ScoutWorker {
+    let mut options = ScoutWorkerOptions::new(repo, repo.join(".devboard").join("state"));
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(forge));
+    options.agent = Some(agent);
+    options.sync_ms = Some(1000);
+    options.cadence_ms = Some(1000);
+    options.tick_ms = Some(10);
+    options.timeout_ms = Some(10_000);
+    options.now = Some(Arc::new(move || clock.load(Ordering::SeqCst)));
+    ScoutWorker::new(options)
+}
+
 /// A worker whose cadence comes from the published interval, not an override.
 fn cadence_worker(repo: &Path, forge: FixtureForge, clock: Arc<AtomicI64>) -> ScoutWorker {
     let mut options = ScoutWorkerOptions::new(repo, repo.join(".devboard").join("state"));
@@ -1597,6 +1616,116 @@ async fn a_completed_run_keeps_the_cadence_and_a_later_tick_consumes_a_control()
         "the worker still consumes a control command after a run"
     );
     worker.stop().await;
+}
+
+/// Polls a condition on the worker loop, failing the test instead of hanging.
+async fn wait_for(description: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !ready() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{description} did not happen within 15 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_that_never_starts_leaves_failed_and_the_next_due_tick_scans_again() {
+    let repo = scratch("start-failure");
+    let now = 1_780_000_000_000i64;
+    let clock = Arc::new(AtomicI64::new(now));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let counter = Arc::clone(&runs);
+    let agent: devboard::workers::scout::ScanAgent = Arc::new(move |_context| {
+        let run = counter.fetch_add(1, Ordering::SeqCst);
+        let gate = Arc::clone(&gate);
+        Box::pin(async move {
+            if run == 0 {
+                // The ACP spawn fails before it ever reports started.
+                return Err("omp is missing".to_string());
+            }
+            gate.notified().await;
+            Ok(())
+        })
+    });
+    let worker = clocked_worker(&repo, FixtureForge::default(), agent, Arc::clone(&clock));
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+
+    let state = worker.current_state();
+    assert_eq!(state.lifecycle, "failed");
+    assert_eq!(state.last_error.as_deref(), Some("omp is missing"));
+    assert!(state.next_attempt_at.is_some(), "the retry is scheduled");
+    assert!(!worker.scanning(), "the failed scan released its slot");
+    assert_eq!(scan_ids(&repo).len(), 1);
+
+    clock.store(now + 2000, Ordering::SeqCst);
+    worker.tick().await;
+    let state = worker.current_state();
+    assert_eq!(state.lifecycle, "scanning", "the next due tick scans again");
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "a second scan started");
+    assert_eq!(scan_ids(&repo).len(), 2, "a second scan directory exists");
+    worker.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicked_scan_task_releases_the_slot_and_the_next_due_tick_scans() {
+    let repo = scratch("join-error");
+    let now = 1_780_000_000_000i64;
+    let clock = Arc::new(AtomicI64::new(now));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&runs);
+    let agent: devboard::workers::scout::ScanAgent = Arc::new(move |_context| {
+        let run = counter.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            assert!(run > 0, "the first scan task panicked");
+            Ok(())
+        })
+    });
+    let worker = Arc::new(clocked_worker(
+        &repo,
+        FixtureForge::default(),
+        agent,
+        Arc::clone(&clock),
+    ));
+    assert!(worker.start("acme/fixture"));
+    let loop_worker = Arc::clone(&worker);
+    let task =
+        tokio::spawn(async move { devboard::workers::scout::run_worker(&loop_worker).await });
+
+    let loop_state = Arc::clone(&worker);
+    wait_for("the panicked scan to be recorded", move || {
+        loop_state.current_state().lifecycle == "failed"
+    })
+    .await;
+    assert!(!worker.scanning(), "the panicked task released its slot");
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 1, "one scan directory exists");
+    let failed = read_scan_file(&scan_directory(&repo, &ids[0])).expect("the panicked record");
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.error.as_deref(), Some("the scan task panicked"));
+
+    clock.store(now + 2000, Ordering::SeqCst);
+    let loop_state = Arc::clone(&worker);
+    wait_for("the next due scan to complete", move || {
+        scan_ids(&repo).len() == 2 && loop_state.current_state().lifecycle == "idle"
+    })
+    .await;
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        2,
+        "the next tick started a scan"
+    );
+    assert!(!worker.scanning(), "the completed scan released its slot");
+
+    worker.stop().await;
+    let ran = tokio::time::timeout(Duration::from_secs(15), task)
+        .await
+        .expect("the worker loop stops")
+        .expect("the worker task");
+    assert!(ran);
 }
 
 #[tokio::test]

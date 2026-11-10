@@ -3554,8 +3554,9 @@ impl ScoutWorker {
                 }
             };
             if let Some(join) = finished {
-                if let Ok(completion) = join.await {
-                    self.finish_scan(completion).await;
+                match join.await {
+                    Ok(completion) => self.finish_scan(completion).await,
+                    Err(failure) => self.finish_failed_task(failure).await,
                 }
                 continue;
             }
@@ -3817,26 +3818,107 @@ impl ScoutWorker {
         self.release_scan_slot_locked(&mut runtime);
     }
 
+    /// Releases the in-flight scan and clears it from the published state.
+    /// Every completion path ends here, so no branch can leave the slot held.
+    fn clear_active_scan_locked(&self, runtime: &mut Runtime) {
+        runtime.active = None;
+        runtime.state.scan = None;
+        self.publish_locked(runtime);
+    }
+
+    /// Fails the in-flight scan, records the reason, and schedules the retry.
+    /// A scan that never started and a task that never reported a completion
+    /// both end here, so `runtime.active` is always released.
+    fn fail_active_scan_locked(
+        &self,
+        runtime: &mut Runtime,
+        scan_id: Option<String>,
+        error: Option<String>,
+        now: i64,
+    ) -> bool {
+        if let Some(scan_id) = scan_id {
+            runtime.state.newest_scan_id = Some(scan_id);
+        }
+        runtime.state.lifecycle = ScoutLifecycle::Failed.as_str().to_string();
+        runtime.state.last_error = error.clone();
+        runtime.state.notice = error.as_ref().map(|error| format!("Scan failed: {error}"));
+        runtime.state.next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
+        self.clear_active_scan_locked(runtime);
+        self.release_scan_slot_locked(runtime);
+        runtime.draining
+    }
+
+    /// Records a scan whose task ended without a completion, such as a panic or
+    /// an abort, and releases the slot so the next due tick can start one.
+    async fn finish_failed_task(&self, failure: tokio::task::JoinError) {
+        let now = (self.clock)();
+        let error = if failure.is_panic() {
+            "the scan task panicked".to_string()
+        } else if failure.is_cancelled() {
+            "the scan task was cancelled".to_string()
+        } else {
+            format!("the scan task ended unexpectedly: {failure}")
+        };
+        let record = {
+            let runtime = lock_unpoisoned(&self.runtime);
+            runtime.active.as_ref().map(|active| {
+                (
+                    active.scan_id.clone(),
+                    active.directory.clone(),
+                    active.prompt.clone(),
+                    active.requested,
+                    active.started_at.clone(),
+                    runtime.state.repo.clone(),
+                )
+            })
+        };
+        let Some((scan_id, directory, prompt, requested, started_at, repo)) = record else {
+            return;
+        };
+        let detail = error.clone();
+        write_scan_record(
+            &directory,
+            &scan_id,
+            &repo,
+            &self.repo_dir,
+            "failed",
+            &started_at,
+            Some(iso_from_millis(now)),
+            requested,
+            0,
+            &prompt,
+            None,
+            Some(&detail),
+            None,
+            self.harness_version.as_deref(),
+        );
+        let draining = {
+            let mut runtime = lock_unpoisoned(&self.runtime);
+            // A concurrent Stop already closed this scan; leave its state alone.
+            if runtime.active.is_none() {
+                return;
+            }
+            self.fail_active_scan_locked(&mut runtime, Some(scan_id), Some(error), now)
+        };
+        if draining {
+            self.stop().await;
+        }
+    }
+
     async fn finish_scan(&self, completion: ScanCompletion) {
         if let Some(detail) = &completion.sync_failure {
             self.record_sync_failure(detail);
         }
         if completion.start_failure {
+            let now = (self.clock)();
             let draining = {
                 let mut runtime = lock_unpoisoned(&self.runtime);
-                runtime.state.scan = None;
-                runtime.state.newest_scan_id = Some(completion.scan_id);
-                runtime.state.lifecycle = ScoutLifecycle::Failed.as_str().to_string();
-                runtime.state.last_error = completion.error.clone();
-                runtime.state.notice = completion
-                    .error
-                    .as_ref()
-                    .map(|error| format!("Scan failed: {error}"));
-                runtime.state.next_attempt_at =
-                    Some(iso_from_millis((self.clock)() + self.sync_ms as i64));
-                self.publish_locked(&mut runtime);
-                self.release_scan_slot_locked(&mut runtime);
-                runtime.draining
+                self.fail_active_scan_locked(
+                    &mut runtime,
+                    Some(completion.scan_id),
+                    completion.error,
+                    now,
+                )
             };
             if draining {
                 self.stop().await;
@@ -3858,7 +3940,6 @@ impl ScoutWorker {
                     error: None,
                 };
             }
-            runtime.state.scan = None;
             runtime.state.newest_scan_id = Some(completion.scan_id.clone());
             // A refused create stays the last error whether or not it reduced
             // the batch; only a failed scan drives the notice and lifecycle.
@@ -3908,8 +3989,7 @@ impl ScoutWorker {
                 )
             };
             runtime.state.next_attempt_at = next;
-            runtime.active = None;
-            self.publish_locked(&mut runtime);
+            self.clear_active_scan_locked(&mut runtime);
         }
         self.release_scan_slot();
         let draining = lock_unpoisoned(&self.runtime).draining;
@@ -4852,8 +4932,9 @@ pub async fn run_worker(worker: &ScoutWorker) -> bool {
             }
         }
         if let Some(join) = worker.take_finished_join() {
-            if let Ok(completion) = join.await {
-                worker.finish_scan(completion).await;
+            match join.await {
+                Ok(completion) => worker.finish_scan(completion).await,
+                Err(failure) => worker.finish_failed_task(failure).await,
             }
             continue;
         }
