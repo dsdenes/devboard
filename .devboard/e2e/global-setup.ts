@@ -304,7 +304,8 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
   const env = {
     ...workerEnvironment(prepared),
     DEVBOARD_ALLOWED_HOSTS: "127.0.0.1,localhost",
-    DEVBOARD_FEEDBACK_TIMEOUT_MS: "30000",
+    // The fixture runs the shipped delivery bound: the live Gitea files a
+    // report well past 30 s, and the proof measures the overlay, not the forge.
     STATIC_DIR: staticDir,
   };
   const log = path.join(tmpDir, "dashboard.log");

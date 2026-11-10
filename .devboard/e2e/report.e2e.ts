@@ -61,13 +61,16 @@ test("the report overlay files an issue the UI links and the suite closes", asyn
   // The dashboard answers as soon as it owns the delivery, so one accepted
   // report answers 202 and the issue exists once the record settles.
   expect(response.status()).toBe(202);
+  // The accepted record states the bound its own delivery holds.
+  const accepted = (await response.json()) as { delivery_timeout_ms: number };
 
   let number: number | undefined;
   try {
     const toast = page.locator('[data-testid="feedback-result"]');
-    await expect(toast).toBeVisible({ timeout: 60_000 });
+    // Acceptance toasts first and carries no link; the link arrives when the
+    // delivery settles, inside the bound the record itself states.
     const link = toast.locator("a.feedback-result__link");
-    await expect(link).toBeVisible();
+    await expect(link).toBeVisible({ timeout: accepted.delivery_timeout_ms + 15_000 });
     const href = await link.getAttribute("href");
     if (href === null) throw new Error("the report toast linked no issue");
     number = issueNumber(href);
@@ -89,7 +92,8 @@ test("the report overlay files an issue the UI links and the suite closes", asyn
     "closed",
   );
 
-  // Leave the selection mode and the toast behind.
+  // Leave the selection mode and the toast behind: a success toast hides on
+  // its own, so only a lingering one is dismissed.
   await page.keyboard.press("Escape");
   const toast = page.locator('[data-testid="feedback-result"]');
   if (await toast.isVisible()) {
