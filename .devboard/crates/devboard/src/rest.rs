@@ -33,6 +33,18 @@ pub struct Field {
     pub field: &'static str,
 }
 
+/// Where a creation's `Location` comes from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Location {
+    /// The operation answers no `Location`: it creates no addressable resource.
+    None,
+    /// The created run's own path, `/agent-runs/{run_id}`, from the run id the
+    /// answer's `agentState` frame carries.
+    AgentRun,
+    /// The created draft's own item path, derived from the request path.
+    Draft,
+}
+
 /// One REST operation.
 pub struct Route {
     /// The retired command this operation replaces.
@@ -43,8 +55,10 @@ pub struct Route {
     pub fields: &'static [Field],
     /// The success status.
     pub status: u16,
-    /// True when the operation creates a resource and answers `Location`.
+    /// True when the operation creates a resource.
     pub creation: bool,
+    /// Where the answer's `Location` comes from.
+    pub location: Location,
 }
 
 const fn field(from: From, name: &'static str, field: &'static str) -> Field {
@@ -65,6 +79,17 @@ macro_rules! body_field {
 
 macro_rules! route {
     ($command:literal, $method:ident, $path:literal, [$($field:expr),* $(,)?], $status:literal, $creation:literal) => {
+        route!(
+            $command,
+            $method,
+            $path,
+            [$($field),*],
+            $status,
+            $creation,
+            Location::None
+        )
+    };
+    ($command:literal, $method:ident, $path:literal, [$($field:expr),* $(,)?], $status:literal, $creation:literal, $location:expr) => {
         Route {
             command: $command,
             method: Method::$method,
@@ -72,6 +97,7 @@ macro_rules! route {
             fields: &[$($field),*],
             status: $status,
             creation: $creation,
+            location: $location,
         }
     };
 }
@@ -167,7 +193,8 @@ pub static ROUTES: &[Route] = &[
         "/goal-drafts/{path}/runs",
         [path_field!("path", "path")],
         201,
-        true
+        true,
+        Location::Draft
     ),
     route!(
         "stopGoalDraft",
@@ -220,7 +247,8 @@ pub static ROUTES: &[Route] = &[
         "/agents/{id}/runs",
         [path_field!("id", "id")],
         201,
-        true
+        true,
+        Location::AgentRun
     ),
     route!(
         "stopAgent",
@@ -965,6 +993,28 @@ fn absolute(url: &Url, path: &str) -> String {
     )
 }
 
+/// The item path a creation's answer names, or `None` when the operation
+/// creates nothing addressable and answers no `Location`.
+fn created_location(route: &Route, request_path: &str, body: &Value) -> Option<String> {
+    match route.location {
+        Location::None => None,
+        Location::AgentRun => {
+            let frame = body
+                .get("frames")
+                .and_then(Value::as_array)?
+                .iter()
+                .rev()
+                .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentState"))?;
+            let run_id = frame
+                .get("agent")
+                .and_then(|agent| agent.get("runId"))
+                .and_then(Value::as_str)?;
+            Some(format!("/agent-runs/{}", percent_encode(run_id)))
+        }
+        Location::Draft => request_path.strip_suffix("/runs").map(str::to_string),
+    }
+}
+
 fn page_links(url: &Url, path: &str, cursor: u64, limit: u64, next: bool, prev: bool) -> Value {
     let link = |cursor: u64| absolute(url, &format!("{path}?cursor={cursor}&limit={limit}"));
     let self_link = absolute(url, &format!("{path}?cursor={cursor}&limit={limit}"));
@@ -1132,9 +1182,8 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
         }
     }
     let mut extra: Vec<(&str, String)> = Vec::new();
-    if matched.route.creation {
-        let location = url.clone();
-        extra.push(("Location", location.to_string()));
+    if let Some(item) = created_location(matched.route, path, &response_body) {
+        extra.push(("Location", absolute(&url, &item)));
     }
     let status = matched.route.status;
     if let Some(key) = idempotency {
@@ -1202,6 +1251,108 @@ mod tests {
         assert_eq!(method, Method::GET);
         assert_eq!(path, "/inquiries/conversations/conversation-1");
         assert!(body.as_object().map(|object| object.is_empty()) == Some(true));
+    }
+
+    #[test]
+    fn only_a_creation_with_an_addressable_answer_names_a_location() {
+        for route in ROUTES {
+            if !route.creation {
+                assert_eq!(
+                    route.location,
+                    Location::None,
+                    "{} creates nothing and answers no Location",
+                    route.command
+                );
+            }
+        }
+        let source = |command: &str| {
+            ROUTES
+                .iter()
+                .find(|route| route.command == command)
+                .unwrap_or_else(|| panic!("{command} is served"))
+                .location
+        };
+        assert_eq!(source("startAgent"), Location::AgentRun);
+        assert_eq!(source("startGoalDraft"), Location::Draft);
+        assert_eq!(source("startRun"), Location::None);
+        assert_eq!(source("createProvider"), Location::None);
+        assert_eq!(source("retryFlowPr"), Location::None);
+    }
+
+    #[test]
+    fn every_creation_either_answers_no_location_or_names_a_served_read() {
+        let body = json!({"frames": [
+            {"type": "agentState", "agent": {"id": "scout", "runId": "scout--1.2.3"}},
+        ]});
+        for route in ROUTES.iter().filter(|route| route.creation) {
+            match route.location {
+                Location::None => assert_eq!(
+                    created_location(route, route.path, &body),
+                    None,
+                    "{} creates nothing addressable",
+                    route.command
+                ),
+                Location::AgentRun => {
+                    let path = created_location(route, route.path, &body)
+                        .expect("a run creation names its run");
+                    assert_eq!(path, "/agent-runs/scout--1.2.3");
+                }
+                Location::Draft => {
+                    let path = created_location(
+                        route,
+                        "/goal-drafts/.devboard%2Fgoal-proposals%2Fa.md/runs",
+                        &body,
+                    )
+                    .expect("a draft creation names its draft");
+                    assert!(
+                        methods_for_path(&path).contains(&"GET"),
+                        "{path} is served by a GET"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_location_names_the_run_the_answer_reports() {
+        let route = ROUTES
+            .iter()
+            .find(|route| route.command == "startAgent")
+            .expect("startAgent is served");
+        let body = json!({"frames": [
+            {"type": "agentState", "agent": {"id": "scout", "runId": null}},
+            {"type": "agentState", "agent": {"id": "scout", "runId": "scout--1.2.3"}},
+        ]});
+        assert_eq!(
+            created_location(route, "/agents/scout/runs", &body).as_deref(),
+            Some("/agent-runs/scout--1.2.3")
+        );
+        let stopped = json!({"frames": [
+            {"type": "agentState", "agent": {"id": "scout", "runId": null}},
+            {"type": "error", "message": "unknown"},
+        ]});
+        assert_eq!(
+            created_location(route, "/agents/scout/runs", &stopped),
+            None,
+            "a start that created no run answers no Location"
+        );
+    }
+
+    #[test]
+    fn a_draft_location_names_the_draft_not_the_run_collection() {
+        let route = ROUTES
+            .iter()
+            .find(|route| route.command == "startGoalDraft")
+            .expect("startGoalDraft is served");
+        assert_eq!(
+            created_location(
+                route,
+                "/goal-drafts/.devboard%2Fgoal-proposals%2Fa.md/runs",
+                &json!({"frames": []}),
+            )
+            .as_deref(),
+            Some("/goal-drafts/.devboard%2Fgoal-proposals%2Fa.md")
+        );
     }
 
     #[test]

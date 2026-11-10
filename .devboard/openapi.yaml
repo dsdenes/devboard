@@ -142,8 +142,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -300,8 +298,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -358,8 +354,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -387,8 +381,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -532,8 +524,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -619,8 +609,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -726,8 +714,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -787,8 +773,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -816,8 +800,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -871,8 +853,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -926,8 +906,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -955,8 +933,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -984,8 +960,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1040,8 +1014,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1095,8 +1067,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1124,8 +1094,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1214,8 +1182,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1342,8 +1308,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1436,8 +1400,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1465,8 +1427,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1494,8 +1454,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1678,8 +1636,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1746,8 +1702,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1827,8 +1781,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1940,8 +1892,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -1995,8 +1945,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -2082,8 +2030,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -2139,8 +2085,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -2346,8 +2290,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -2375,8 +2317,6 @@ paths:
       responses:
         "202":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -2404,8 +2344,6 @@ paths:
       responses:
         "201":
           description: "The operation result."
-          headers:
-            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}
@@ -2523,6 +2461,8 @@ paths:
       responses:
         "202":
           description: "The accepted report record the dashboard files."
+          headers:
+            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Report"}
@@ -2622,6 +2562,8 @@ paths:
       responses:
         "201":
           description: "The operation result."
+          headers:
+            Location: {schema: {type: string, format: uri}}
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Frames"}

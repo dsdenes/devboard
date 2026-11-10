@@ -492,6 +492,9 @@ struct SnapshotInput {
     enabled: bool,
     owned: bool,
     attached: bool,
+    /// The `/agent-runs` identity a start of this family's own version created,
+    /// or `None` while no such run exists.
+    run_id: Option<String>,
     minutes: u32,
     last_run_at: Option<String>,
     next_run_at: Option<String>,
@@ -652,6 +655,7 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
         "enabled": input.enabled,
         "owned": input.owned,
         "attached": input.attached,
+        "runId": input.run_id,
         "cadence": {
             "minutes": minutes,
             "defaultMinutes": descriptor.default_minutes,
@@ -709,6 +713,14 @@ fn worker_version_key(version: Option<&str>) -> String {
             }
         })
         .collect()
+}
+
+/// The `/agent-runs` identity a family's own worker publishes, while a start of
+/// that version has actually spawned a process. The run collection names a
+/// family worker `<family>--<version directory>`, so this is the identity its
+/// `agentState` answer names and a creation's `Location` points at.
+fn started_run_id(family: &str, spawned: bool, version: Option<&str>) -> Option<String> {
+    spawned.then(|| format!("{family}--{}", worker_version_key(version)))
 }
 
 #[cfg(test)]
@@ -3536,6 +3548,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             enabled,
             owned,
             attached,
+            run_id: None,
             minutes,
             last_run_at,
             next_run_at,
@@ -4750,6 +4763,11 @@ impl RepoFamily {
                 enabled,
                 owned: attached,
                 attached,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
                 minutes: settings.interval_minutes,
                 last_run_at,
                 next_run_at,
@@ -5856,6 +5874,7 @@ fn empty_repo_input(descriptor: &Descriptor) -> SnapshotInput {
         enabled: false,
         owned: false,
         attached: false,
+        run_id: None,
         minutes: descriptor.default_minutes,
         last_run_at: None,
         next_run_at: None,
@@ -7031,6 +7050,11 @@ impl WatchdogFamily {
                     && !mutable.starting,
                 owned,
                 attached,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
                 minutes: settings.interval_minutes,
                 last_run_at,
                 next_run_at: if attached {
@@ -8214,6 +8238,11 @@ impl McpFamily {
                 enabled,
                 owned: attached,
                 attached,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
                 minutes: settings.interval_minutes,
                 last_run_at,
                 next_run_at: if attached {
@@ -9051,6 +9080,11 @@ impl ReleaseFamily {
                     && lifecycle != "stopped",
                 owned,
                 attached,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
                 minutes: settings.interval_minutes,
                 last_run_at: active
                     .as_ref()

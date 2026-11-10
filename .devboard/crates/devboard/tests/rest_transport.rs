@@ -374,14 +374,150 @@ async fn provider_creation_posts_to_the_collection() {
         .expect("a response");
     assert_eq!(response.status().as_u16(), 201);
     assert!(
-        response.headers().get(reqwest::header::LOCATION).is_some(),
-        "a creation names the collection"
+        response.headers().get(reqwest::header::LOCATION).is_none(),
+        "a provider collection creation names no addressable item"
     );
     let body: Value = response.json().await.expect("a JSON body");
     let frames = body["frames"].as_array().expect("frames");
     assert_eq!(frames[0]["type"], "providerError");
     assert_eq!(frames[0]["requestId"], 1);
     assert_eq!(frames[0]["message"], "Choose OpenCode Go or OpenRouter.");
+}
+
+#[tokio::test]
+async fn a_retry_answers_no_location_and_its_get_is_still_refused() {
+    let instance = start("retry-no-location").await;
+    let (status, headers, _body) = send_json(
+        &instance.base,
+        Method::POST,
+        "/flows/pull-request-retries",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 202);
+    assert!(
+        headers.get(reqwest::header::LOCATION).is_none(),
+        "a retry creates nothing and names no Location"
+    );
+    let (status, headers, _body) = send(
+        &instance.base,
+        Method::GET,
+        "/flows/pull-request-retries",
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(
+        status.as_u16(),
+        405,
+        "the retry collection serves POST only"
+    );
+    assert_eq!(
+        headers
+            .get(reqwest::header::ALLOW)
+            .and_then(|value| value.to_str().ok()),
+        Some("POST")
+    );
+}
+
+#[tokio::test]
+async fn a_draft_start_names_the_draft_it_elaborates() {
+    let instance = start("draft-location").await;
+    let drafts = instance.repo.join(".devboard").join("goal-proposals");
+    std::fs::create_dir_all(&drafts).expect("a drafts directory");
+    std::fs::write(drafts.join("draft.md"), "# Draft\n").expect("a draft");
+    // No owner executable exists, so the start records a run and answers
+    // without spawning a process; the draft itself is what it addresses.
+    std::env::set_var("DEVBOARD_OWNER_EXECUTABLE", drafts.join("missing-owner"));
+    let path = "/goal-drafts/.devboard%2Fgoal-proposals%2Fdraft.md";
+    let (status, headers, _body) = send(
+        &instance.base,
+        Method::POST,
+        &format!("{path}/runs"),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 201);
+    assert_eq!(
+        headers
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some(format!("{}{}", instance.base, path).as_str()),
+        "a draft start names the draft, never the run collection"
+    );
+    let (status, _headers, _body) = send(&instance.base, Method::GET, path, HeaderMap::new()).await;
+    assert_eq!(
+        status.as_u16(),
+        200,
+        "GET of the Location answers the draft"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_start_names_the_run_its_answer_reports() {
+    let instance = start("agent-run-location").await;
+    let app = std::sync::Arc::clone(&instance.server.app);
+    let preflight: devboard::agents_mode::PreflightCallback =
+        std::sync::Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    devboard::agents_mode::set_spawn(&app, |_argv, _environment| Some(std::process::id()));
+    let (status, headers, body) = send(
+        &instance.base,
+        Method::POST,
+        "/agents/dead-code/runs",
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 201);
+    let location = headers
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let frames = frames(&body);
+    let run_id = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "agentState")
+        .and_then(|frame| frame["agent"]["runId"].as_str())
+        .expect("the answering agentState frame names its run")
+        .to_string();
+    assert_eq!(
+        location,
+        format!("{}/agent-runs/{run_id}", instance.base),
+        "a Start names the run it created, never its own request"
+    );
+    // The created run is the family worker run the dashboard collects; a
+    // published state makes the run addressable at its own path.
+    let version = run_id
+        .strip_prefix("dead-code--")
+        .expect("the run id names the family and its version");
+    let directory = instance
+        .state
+        .join("dead-code")
+        .join(devboard::journal::journal_key(&instance.repo))
+        .join("workers")
+        .join(version);
+    std::fs::create_dir_all(&directory).expect("a run directory");
+    std::fs::write(
+        directory.join("state.json"),
+        format!("{}\n", json!({"lifecycle": "running"})),
+    )
+    .expect("a run state");
+    let (status, _headers, body) = send(
+        &instance.base,
+        Method::GET,
+        location
+            .strip_prefix(&instance.base)
+            .expect("a served path"),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200, "GET of the Location answers the run");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["id"], json!(run_id));
 }
 
 #[tokio::test]
