@@ -102,6 +102,12 @@ fn connection() -> (Conn, UnboundedReceiver<String>) {
     (Conn::new(outbox), inbox)
 }
 
+/// The ephemeral handle one REST request answers through.
+fn request_connection() -> (Conn, UnboundedReceiver<String>) {
+    let (outbox, inbox) = mpsc::unbounded_channel();
+    (Conn::new_request(outbox), inbox)
+}
+
 fn drain(inbox: &mut UnboundedReceiver<String>) -> Vec<Value> {
     let mut frames = Vec::new();
     while let Ok(text) = inbox.try_recv() {
@@ -455,6 +461,124 @@ fn ask_directory_empty(scratch: &Scratch) -> bool {
             })
         })
         .unwrap_or(true)
+}
+
+/// Every turn is its own REST request. A follow-up continues the conversation
+/// on a new handle, and that handle receives the streamed answer.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn ask_answers_a_follow_up_requested_by_a_new_handle() {
+    let _env = env_guard();
+    let scratch = Scratch::new("follow-up-request");
+    let log = scratch.path.join("agent.log");
+    save_subscriptions(
+        &scratch.state(),
+        &[StoredSubscription {
+            id: "subscription-1".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "Test".to_string(),
+            key: "test-key".to_string(),
+            enabled: true,
+            created_at: "2026-11-03T00:00:00.000Z".to_string(),
+            updated_at: "2026-11-03T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("the credentials file is written");
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = app_for(&scratch, stub_command(&log));
+
+    let (first, mut first_inbox) = request_connection();
+    app.command(
+        &first,
+        Command::Ask {
+            conversation_id: Some(json!("conversation-1")),
+            question: Some(json!("What does the issues indicator show?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    let frames = drain(&mut first_inbox);
+    assert!(
+        frames.iter().all(|frame| frame["type"] != "askError"),
+        "the first request answers: {frames:?}"
+    );
+
+    let (follow_up, mut follow_up_inbox) = request_connection();
+    app.command(
+        &follow_up,
+        Command::Ask {
+            conversation_id: Some(json!("conversation-1")),
+            question: Some(json!("Which component renders it?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    let frames = drain(&mut follow_up_inbox);
+    assert!(
+        frames.iter().all(|frame| frame["type"] != "askError"),
+        "a new request handle continues the conversation: {frames:?}"
+    );
+    let chunks: String = frames
+        .iter()
+        .filter(|frame| frame["type"] == "askChunk")
+        .map(|frame| frame["text"].as_str().expect("chunk text").to_string())
+        .collect();
+    assert_eq!(chunks, streamed(ANSWER_TWO));
+    assert_eq!(
+        frames.last(),
+        Some(&json!({"type": "askDone", "conversationId": "conversation-1"}))
+    );
+    assert!(
+        drain(&mut first_inbox).is_empty(),
+        "the request that asked the first turn receives nothing of the follow-up"
+    );
+}
+
+/// Two live sockets still refuse each other's conversation; the request
+/// exemption never hands one page's panel to another.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn ask_refuses_a_second_live_client() {
+    let _env = env_guard();
+    let scratch = Scratch::new("live-owner");
+    let log = scratch.path.join("agent.log");
+    let app = app_for(&scratch, stub_command(&log));
+
+    let (owner, mut owner_inbox) = connection();
+    app.command(
+        &owner,
+        Command::Ask {
+            conversation_id: Some(json!("conversation-1")),
+            question: Some(json!("What does the issues indicator show?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    drain(&mut owner_inbox);
+
+    let (other, mut other_inbox) = connection();
+    app.command(
+        &other,
+        Command::Ask {
+            conversation_id: Some(json!("conversation-1")),
+            question: Some(json!("Which component renders it?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    assert_eq!(
+        drain(&mut other_inbox),
+        vec![json!({
+            "type": "askError",
+            "conversationId": "conversation-1",
+            "message": "This conversation belongs to another client.",
+        })],
+        "a live socket owns its conversation"
+    );
 }
 
 // The environment guard serializes process-wide env across concurrently

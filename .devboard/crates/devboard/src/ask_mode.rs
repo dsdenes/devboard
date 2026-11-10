@@ -455,29 +455,35 @@ impl AskMode {
             .is_some_and(|conversation| conversation.live(turn, socket_id))
     }
 
-    /// Relays one assistant chunk and records it as turn progress.
-    fn text_callback(self: &Arc<Self>, socket: &Conn, id: &str) -> TextCallback {
+    /// Relays one assistant chunk to the conversation's current owner and
+    /// records it as turn progress.
+    ///
+    /// The owner is read per chunk rather than captured when the peer starts:
+    /// a REST turn arrives on its own ephemeral connection, so the request
+    /// that asked a follow-up must receive that turn's text even though the
+    /// peer process was created for an earlier one.
+    fn text_callback(self: &Arc<Self>, id: &str) -> TextCallback {
         let mode = Arc::clone(self);
         let text_id = id.to_string();
-        let text_socket = socket.clone();
         Arc::new(move |text: String| {
-            let frame = {
+            let relayed = {
                 let mut state = lock(&mode.inner);
                 match state.conversations.get_mut(&text_id) {
                     Some(conversation) if conversation.busy && !conversation.closed => {
                         conversation.last_progress = Instant::now();
                         conversation.answer.push_str(&text);
-                        Some(json!({
+                        let frame = json!({
                             "type": "askChunk",
                             "conversationId": conversation.id,
                             "text": text,
-                        }))
+                        });
+                        conversation.socket.clone().map(|socket| (socket, frame))
                     }
                     _ => None,
                 }
             };
-            if let Some(frame) = frame {
-                text_socket.send(frame);
+            if let Some((socket, frame)) = relayed {
+                socket.send(frame);
             }
         })
     }
@@ -530,7 +536,7 @@ impl AskMode {
     }
 
     /// Builds the detached handle for one conversation's peer.
-    fn detached(self: &Arc<Self>, socket: &Conn, id: &str, attach_only: bool) -> Arc<DetachedPeer> {
+    fn detached(self: &Arc<Self>, id: &str, attach_only: bool) -> Arc<DetachedPeer> {
         let mut options = DetachedPeerOptions::new(
             self.repo_dir.clone(),
             self.state_dir.clone(),
@@ -544,7 +550,7 @@ impl AskMode {
         .multi(true)
         .attach_only(attach_only)
         .activity(self.activity_callback(id))
-        .text(self.text_callback(socket, id));
+        .text(self.text_callback(id));
         options.harness_version = self.harness_version.clone();
         DetachedPeer::new(options)
     }
@@ -569,14 +575,17 @@ impl AskMode {
         };
         let id = request.conversation_id.clone();
 
+        // A REST request is one ephemeral handle, not a durable client: every
+        // turn of one open panel arrives on a fresh connection, so a request
+        // never conflicts with the handle that asked the previous turn. Two
+        // live sockets still refuse each other's conversation.
         let refusal = {
             let state = lock(&self.inner);
             match state.conversations.get(&id) {
                 Some(existing)
-                    if existing
-                        .socket
-                        .as_ref()
-                        .is_some_and(|owner| owner.id() != socket.id()) =>
+                    if existing.socket.as_ref().is_some_and(|owner| {
+                        !owner.is_request() && !socket.is_request() && owner.id() != socket.id()
+                    }) =>
                 {
                     Some("This conversation belongs to another client.")
                 }
@@ -607,7 +616,7 @@ impl AskMode {
         };
 
         if attach {
-            let peer = self.detached(socket, &id, true);
+            let peer = self.detached(&id, true);
             {
                 let mut state = lock(&self.inner);
                 if let Some(conversation) = state.conversations.get_mut(&id) {
@@ -724,7 +733,7 @@ impl AskMode {
         .multi(true)
         .env(environment)
         .activity(self.activity_callback(id))
-        .text(self.text_callback(socket, id));
+        .text(self.text_callback(id));
         options.harness_version = self.harness_version.clone();
         let created = DetachedPeer::new(options);
         {
@@ -1127,19 +1136,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streamed_text_and_activity_mark_turn_progress() {
+    async fn streamed_text_follows_the_conversation_owner() {
         let mode = mode_with_timeouts(Duration::from_secs(5), Duration::from_secs(10));
         let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
         let socket = Conn::new(outbox);
+        lock(&mode.inner)
+            .conversations
+            .get_mut("conversation")
+            .expect("the fixture conversation")
+            .socket = Some(socket);
 
         let before = last_progress(&mode);
         tokio::time::sleep(Duration::from_millis(5)).await;
-        mode.text_callback(&socket, "conversation")("An answer.".to_string());
+        mode.text_callback("conversation")("An answer.".to_string());
         assert!(last_progress(&mode) > before);
         let frame = inbox.try_recv().expect("one askChunk frame");
         let frame: Value = serde_json::from_str(&frame).expect("a JSON frame");
         assert_eq!(frame["type"], "askChunk");
         assert_eq!(frame["text"], "An answer.");
+
+        // A follow-up arrives on a new connection while the peer created for
+        // the previous one keeps relaying: its text reaches the new owner.
+        let (next_outbox, mut next_inbox) = tokio::sync::mpsc::unbounded_channel();
+        lock(&mode.inner)
+            .conversations
+            .get_mut("conversation")
+            .expect("the fixture conversation")
+            .socket = Some(Conn::new(next_outbox));
+        mode.text_callback("conversation")("A second answer.".to_string());
+        assert!(
+            inbox.try_recv().is_err(),
+            "the previous owner receives nothing"
+        );
+        let frame = next_inbox.try_recv().expect("the new owner's one frame");
+        let frame: Value = serde_json::from_str(&frame).expect("a JSON frame");
+        assert_eq!(frame["text"], "A second answer.");
 
         let before = last_progress(&mode);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1148,7 +1179,10 @@ mod tests {
             append: false,
         });
         assert!(last_progress(&mode) > before);
-        assert!(inbox.try_recv().is_err(), "activity stays off the wire");
+        assert!(
+            next_inbox.try_recv().is_err(),
+            "activity stays off the wire"
+        );
     }
 
     #[test]
