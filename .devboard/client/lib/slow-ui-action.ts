@@ -1,4 +1,4 @@
-import { slowUiActionIdempotencyKey } from "./notification-issue";
+import { codePointPrefix, slowUiActionIdempotencyKey } from "./notification-issue";
 import type { NotificationIssueState } from "./types";
 
 /**
@@ -215,7 +215,7 @@ export function actionIdentity(command: string, subject: string, route: string):
 }
 
 function capped(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`;
+  return value.length <= limit ? value : `${codePointPrefix(value, limit - 1)}…`;
 }
 
 /**

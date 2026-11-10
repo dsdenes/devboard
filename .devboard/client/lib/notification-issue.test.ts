@@ -106,6 +106,18 @@ describe("notification issue report", () => {
     const report = notificationReport(notification({ text: "y".repeat(10_000) }));
     expect(report.split("\n")[0]!.length).toBeLessThanOrEqual(MAX_NOTIFICATION_REPORT);
   });
+
+  test("a cut inside a surrogate pair keeps whole characters and parses as JSON", () => {
+    const report = notificationReport(
+      notification({ text: "😀".repeat(5000) }),
+      AUTOMATIC_ISSUE_INSTRUCTION,
+    );
+    expect(report.length).toBeLessThanOrEqual(MAX_NOTIFICATION_REPORT);
+    expect(report).toContain("😀…");
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toMatch(/\\ud[89ab]/i);
+    expect(JSON.parse(serialized)).toBe(report);
+  });
 });
 
 describe("notification issue request", () => {

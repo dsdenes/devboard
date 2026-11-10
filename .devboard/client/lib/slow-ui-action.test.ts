@@ -480,6 +480,29 @@ test("the subject reads the identifying field and leaves elapsed time out", () =
   )).toContain("Slow UI action: startAgent scout exceeded the 1000 ms budget.");
 });
 
+test("a context field cut inside a surrogate pair keeps every character whole", () => {
+  const astral = "😀".repeat(2000);
+  const report = slowActionReport(
+    {
+      label: "startAgent scout",
+      command: "startAgent",
+      subject: "scout",
+      route: "/issues",
+      budgetMs: SLOW_UI_ACTION_BUDGET_MS,
+      dispatchedAt: "2026-11-07T12:00:00.000Z",
+    },
+    {
+      ...context,
+      url: `http://localhost:3001/${"😀".repeat(400)}`,
+      visibleText: "😀".repeat(600),
+      domExcerpt: astral,
+    },
+  );
+  const serialized = JSON.stringify(report);
+  expect(serialized).not.toMatch(/\\ud[89ab]/i);
+  expect(JSON.parse(serialized)).toBe(report);
+});
+
 /** Stands in for the browser socket: the frames the page sends are explicit. */
 class FakeSocket {
   static CONNECTING = 0;

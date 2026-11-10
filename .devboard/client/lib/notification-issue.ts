@@ -24,6 +24,20 @@ const SEVERITY_LABEL: Record<Severity, string> = {
 };
 
 /**
+ * The first `units` UTF-16 units of `value`, stopping short of one that would
+ * split a surrogate pair: a cut unit that is a high surrogate is dropped, so
+ * every kept unit belongs to a whole code point. `JSON.stringify` therefore
+ * never emits the lone `\ud8`–`\udb` escape that the server's `serde_json`
+ * refuses to parse.
+ */
+export function codePointPrefix(value: string, units: number): string {
+  const kept = Math.max(0, units);
+  if (value.length <= kept) return value;
+  const last = value.charCodeAt(kept - 1);
+  return last >= 0xd800 && last <= 0xdbff ? value.slice(0, kept - 1) : value.slice(0, kept);
+}
+
+/**
  * The report a notification files. Its first line becomes the issue title, so
  * the notification text leads, labelled with its severity; the source and
  * timestamp follow as context. An optional instruction closes the report, and
@@ -36,7 +50,7 @@ export function notificationReport(item: AppNotification, instruction?: string):
   const budget = Math.max(0, MAX_NOTIFICATION_REPORT - prefix.length - suffix.length - closing.length);
   const text = item.text.trim();
   const body =
-    text.length <= budget ? text : `${text.slice(0, Math.max(0, budget - 1)).trimEnd()}…`;
+    text.length <= budget ? text : `${codePointPrefix(text, budget - 1).trimEnd()}…`;
   return `${prefix}${body}${suffix}${closing}`;
 }
 
