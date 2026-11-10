@@ -1124,7 +1124,22 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
             &[("Allow", allow.as_str())],
         ));
     };
-    let (parts, body) = request.into_parts();
+    let idempotency_key = match crate::idempotency::parse_idempotency_key(
+        headers
+            .get("idempotency-key")
+            .and_then(|value| value.to_str().ok()),
+    ) {
+        Ok(key) => key,
+        Err(error) => {
+            return Some(Replies::problem(
+                &headers,
+                error.status,
+                &error.message,
+                &[],
+            ))
+        }
+    };
+    let body = request.into_body();
     let body_object = match read_object(body).await {
         Ok(object) => object,
         Err(detail) => return Some(Replies::problem(&headers, 400, &detail, &[])),
@@ -1133,32 +1148,9 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
         Ok(command) => command,
         Err(detail) => return Some(Replies::problem(&headers, 400, &detail, &[])),
     };
-    let idempotency = headers
-        .get("idempotency-key")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    if let Some(key) = &idempotency {
-        if let Some(cached) = app.rest_cached(&method, path, key) {
-            let extra: Vec<(&str, String)> = cached
-                .extra
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.clone()))
-                .collect();
-            return Some(representation(
-                &method,
-                &headers,
-                cached.status,
-                cached.body.clone(),
-                &extra,
-            ));
-        }
-    }
-    let frames = app.dispatch_captured(command).await;
-    let mut response_body = envelope(frames);
     let url = Url::parse(&format!(
         "http://{}{}{}",
-        parts
-            .headers
+        headers
             .get(header::HOST)
             .and_then(|value| value.to_str().ok())
             .unwrap_or("127.0.0.1"),
@@ -1170,44 +1162,96 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
         }
     ))
     .unwrap_or_else(|_| Url::parse("http://127.0.0.1/").expect("a fixed URL"));
-    if matched.route.command == "listRecords" {
-        let mut frames = response_body
-            .get("frames")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        paginate_records(&url, &parsed_query, &mut frames, &mut response_body);
-        if let Some(object) = response_body.as_object_mut() {
-            object.insert("frames".to_string(), Value::Array(frames));
+    let scope = format!("{} {}", method.as_str(), path);
+    let cached = match app
+        .idempotency
+        .run(&scope, idempotency_key.as_deref(), || async move {
+            let frames = app.dispatch_captured(command).await;
+            let mut response_body = envelope(frames);
+            if matched.route.command == "listRecords" {
+                let mut records = response_body
+                    .get("frames")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                paginate_records(&url, &parsed_query, &mut records, &mut response_body);
+                if let Some(object) = response_body.as_object_mut() {
+                    object.insert("frames".to_string(), Value::Array(records));
+                }
+            }
+            let mut extra: Vec<(&str, String)> = Vec::new();
+            if let Some(item) = created_location(matched.route, path, &response_body) {
+                extra.push(("Location", absolute(&url, &item)));
+            }
+            Ok(stored_rest(matched.route.status, &response_body, &extra))
+        })
+        .await
+    {
+        Ok(cached) => cached,
+        Err(error) => {
+            return Some(Replies::problem(
+                &headers,
+                error.status,
+                &error.message,
+                &[],
+            ))
         }
-    }
-    let mut extra: Vec<(&str, String)> = Vec::new();
-    if let Some(item) = created_location(matched.route, path, &response_body) {
-        extra.push(("Location", absolute(&url, &item)));
-    }
-    let status = matched.route.status;
-    if let Some(key) = idempotency {
-        app.remember_rest(
-            &method,
-            path,
-            &key,
-            crate::app::CachedRest {
-                status,
-                body: response_body.clone(),
-                extra: extra
-                    .iter()
-                    .map(|(name, value)| (name.to_string(), value.clone()))
-                    .collect(),
-            },
-        );
-    }
-    Some(representation(
-        &method,
-        &headers,
-        status,
-        response_body,
-        &extra,
-    ))
+    };
+    let (status, body, extra) = replay_rest(&cached);
+    let extra: Vec<(&str, String)> = extra
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.clone()))
+        .collect();
+    Some(representation(&method, &headers, status, body, &extra))
+}
+
+/// The answer one keyed request keeps in the idempotency store.
+///
+/// The status, the body, and the headers a replay must reproduce travel as
+/// one JSON value, so the store persists exactly what the first request
+/// answered and a restart replays it unchanged.
+fn stored_rest(status: u16, body: &Value, extra: &[(&str, String)]) -> Value {
+    let headers: Vec<Value> = extra
+        .iter()
+        .map(|(name, value)| {
+            Value::Array(vec![
+                Value::String((*name).to_string()),
+                Value::String(value.clone()),
+            ])
+        })
+        .collect();
+    let mut stored = Map::new();
+    stored.insert("status".to_string(), Value::from(status));
+    stored.insert("body".to_string(), body.clone());
+    stored.insert("headers".to_string(), Value::Array(headers));
+    Value::Object(stored)
+}
+
+/// The status, body, and extra headers a replay answers.
+fn replay_rest(stored: &Value) -> (u16, Value, Vec<(String, String)>) {
+    let status = stored
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+        .unwrap_or(500);
+    let body = stored.get("body").cloned().unwrap_or(Value::Null);
+    let extra = stored
+        .get("headers")
+        .and_then(Value::as_array)
+        .map(|pairs| {
+            pairs
+                .iter()
+                .filter_map(|pair| {
+                    let pair = pair.as_array()?;
+                    Some((
+                        pair.first()?.as_str()?.to_string(),
+                        pair.get(1)?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (status, body, extra)
 }
 
 /// The 421 for a host this listener does not serve, or the 403 for a

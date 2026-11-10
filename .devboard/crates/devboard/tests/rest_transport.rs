@@ -181,6 +181,46 @@ fn client() -> reqwest::Client {
         .expect("a client")
 }
 
+/// Starts a second dashboard over the same state and repository, as a restart
+/// does, and retires the first listener.
+async fn restart(instance: &Instance) -> Instance {
+    let repo = instance.repo.clone();
+    let state = instance.state.clone();
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let listener = devboard::http::bind(&config.hostname, 0)
+        .await
+        .expect("a listener");
+    let port = listener.local_addr().expect("an address").port();
+    let mut config = config;
+    config.port = port;
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
+    let server = Server::new(config, journal);
+    let served = std::sync::Arc::clone(&server);
+    tokio::spawn(async move {
+        let _ = devboard::http::serve_on(listener, served).await;
+    });
+    instance.server.app.shared.shutdown.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    Instance {
+        base: format!("http://127.0.0.1:{port}"),
+        port,
+        state,
+        repo,
+        server,
+    }
+}
+
 fn headers_with(name: reqwest::header::HeaderName, value: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(name, HeaderValue::from_str(value).expect("a header value"));
@@ -1461,4 +1501,233 @@ async fn an_appended_activity_reaches_a_socket_within_500_ms() {
     .expect("the appended line arrives within 500 ms");
     assert_eq!(frames["run"], id);
     assert!(started.elapsed() < Duration::from_millis(500));
+}
+
+/// Two concurrent requests carrying one `Idempotency-Key` reach the command
+/// once: the second waits on the first's claim and replays its answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_idempotency_key_starts_one_agent() {
+    let instance = start("idempotent-agent").await;
+    let app = std::sync::Arc::clone(&instance.server.app);
+    let spawns = std::sync::Arc::new(AtomicU64::new(0));
+    let preflight: devboard::agents_mode::PreflightCallback =
+        std::sync::Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    let counted = std::sync::Arc::clone(&spawns);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        None
+    });
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::HeaderName::from_static("idempotency-key"),
+        HeaderValue::from_static("start-dead-code-1"),
+    );
+    let first = tokio::spawn({
+        let base = instance.base.clone();
+        let headers = headers.clone();
+        async move {
+            client()
+                .post(format!("{base}/agents/dead-code/runs"))
+                .headers(headers)
+                .send()
+                .await
+                .expect("a response")
+        }
+    });
+    let second = tokio::spawn({
+        let base = instance.base.clone();
+        let headers = headers.clone();
+        async move {
+            client()
+                .post(format!("{base}/agents/dead-code/runs"))
+                .headers(headers)
+                .send()
+                .await
+                .expect("a response")
+        }
+    });
+    let first = first.await.expect("the first request");
+    let second = second.await.expect("the second request");
+    assert_eq!(first.status().as_u16(), 201);
+    assert_eq!(second.status().as_u16(), 201);
+    // This Start's stub spawn fails, so its answer names no addressable run.
+    assert_eq!(
+        first
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        second
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        "a replay answers the same Location"
+    );
+    let first_body: Value = first.json().await.expect("a JSON body");
+    let second_body: Value = second.json().await.expect("a JSON body");
+    assert_eq!(first_body, second_body, "a replay answers the same body");
+    // The Start answers its first frame before it spawns, so wait for the one
+    // spawn it owns and give a second dispatch the same window to appear.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while spawns.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        1,
+        "one keyed creation dispatched once: {first_body}"
+    );
+}
+
+/// Every unusable key `POST /reports` refuses is refused on a REST route too.
+#[tokio::test]
+async fn rest_refuses_an_unusable_idempotency_key() {
+    let instance = start("idempotency-keys").await;
+    let long = "k".repeat(devboard::idempotency::MAX_IDEMPOTENCY_KEY + 1);
+    for (key, expected) in [
+        ("", "must not be empty"),
+        (long.as_str(), "longer than"),
+        ("bad\tkey", "control characters"),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("idempotency-key"),
+            HeaderValue::from_str(key).expect("a header value"),
+        );
+        let response = client()
+            .post(format!("{}/providers", instance.base))
+            .headers(headers)
+            .body("{}")
+            .send()
+            .await
+            .expect("a response");
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.bytes().await.expect("a body").to_vec();
+        assert_problem(status, &headers, &body, 400);
+        let problem: Value = serde_json::from_slice(&body).expect("a problem body");
+        assert!(
+            problem["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(expected),
+            "detail names {expected}: {problem}"
+        );
+    }
+}
+
+/// A keyed creation replayed after a dashboard restart answers the same
+/// status, `Location`, and body without dispatching the creation again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_keyed_creation_replays_after_a_restart() {
+    let instance = start("idempotent-restart").await;
+    let first_app = std::sync::Arc::clone(&instance.server.app);
+    let first_spawns = std::sync::Arc::new(AtomicU64::new(0));
+    let counted = std::sync::Arc::clone(&first_spawns);
+    let preflight: devboard::agents_mode::PreflightCallback =
+        std::sync::Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&first_app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&first_app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    devboard::agents_mode::set_spawn(&first_app, move |_argv, _environment| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Some(std::process::id())
+    });
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::HeaderName::from_static("idempotency-key"),
+        HeaderValue::from_static("restart-dead-code-1"),
+    );
+    let first = client()
+        .post(format!("{}/agents/dead-code/runs", instance.base))
+        .headers(headers.clone())
+        .send()
+        .await
+        .expect("a response");
+    assert_eq!(first.status().as_u16(), 201);
+    let first_status = first.status().as_u16();
+    let first_location = first
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    assert!(
+        first_location.is_some(),
+        "the creation names the run its answer reports"
+    );
+    let first_etag = first
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    assert!(first_etag.is_some(), "the answer carries its validator");
+    let first_body: Value = first.json().await.expect("a JSON body");
+    // The Start answers its first frame before it spawns.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while first_spawns.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(first_spawns.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let restarted = restart(&instance).await;
+    let second_app = std::sync::Arc::clone(&restarted.server.app);
+    let second_spawns = std::sync::Arc::new(AtomicU64::new(0));
+    let counted = std::sync::Arc::clone(&second_spawns);
+    let preflight: devboard::agents_mode::PreflightCallback =
+        std::sync::Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&second_app, "dead-code", preflight);
+    devboard::agents_mode::set_agent_environment(&second_app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    devboard::agents_mode::set_spawn(&second_app, move |_argv, _environment| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        None
+    });
+    let replayed = client()
+        .post(format!("{}/agents/dead-code/runs", restarted.base))
+        .headers(headers)
+        .send()
+        .await
+        .expect("a response");
+    assert_eq!(replayed.status().as_u16(), first_status);
+    assert_eq!(
+        replayed
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        first_location,
+        "the replayed Location is the stored one"
+    );
+    assert_eq!(
+        replayed
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        first_etag,
+        "the replayed validator is the stored body's"
+    );
+    let replayed_body: Value = replayed.json().await.expect("a JSON body");
+    assert_eq!(
+        replayed_body, first_body,
+        "the replayed body is the stored one"
+    );
+    // A replay schedules no start; give a stray one the same window to appear.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        second_spawns.load(Ordering::SeqCst),
+        0,
+        "a replay dispatches nothing after a restart"
+    );
 }

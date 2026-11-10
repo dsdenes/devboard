@@ -365,14 +365,6 @@ fn config_repo_dir(shared: &Arc<Shared>) -> PathBuf {
     shared.config.repo_dir.clone()
 }
 
-/// One creation answer kept for an `Idempotency-Key`.
-#[derive(Debug, Clone)]
-pub struct CachedRest {
-    pub status: u16,
-    pub body: Value,
-    pub extra: Vec<(String, String)>,
-}
-
 /// The dashboard application.
 pub struct App {
     pub shared: Arc<Shared>,
@@ -413,8 +405,6 @@ pub struct App {
     restarting: std::sync::atomic::AtomicBool,
     /// ACP children the previous process recorded for its replacement to end.
     restored_children: Mutex<Vec<crate::detached_run::RecordedChild>>,
-    /// Creation answers replayed for one `Idempotency-Key`.
-    rest_cache: Mutex<HashMap<(String, String, String), CachedRest>>,
     /// The retained output journal each live run's socket follows.
     pub run_output: Arc<crate::runs::RunHub>,
 }
@@ -509,7 +499,6 @@ impl App {
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             restarting: std::sync::atomic::AtomicBool::new(false),
             restored_children: Mutex::new(Vec::new()),
-            rest_cache: Mutex::new(HashMap::new()),
             run_output: Arc::new(crate::runs::RunHub::new()),
         });
         {
@@ -791,33 +780,6 @@ impl App {
         self.unregister(id).await;
         self.complexity.unsubscribe(id);
         frames
-    }
-
-    /// One creation answer already produced for this key.
-    pub fn rest_cached(&self, method: &Method, path: &str, key: &str) -> Option<CachedRest> {
-        self.rest_cache.lock().ok().and_then(|cache| {
-            cache
-                .get(&(
-                    method.as_str().to_string(),
-                    path.to_string(),
-                    key.to_string(),
-                ))
-                .cloned()
-        })
-    }
-
-    /// Remembers one creation answer under its idempotency key.
-    pub fn remember_rest(&self, method: &Method, path: &str, key: &str, answer: CachedRest) {
-        if let Ok(mut cache) = self.rest_cache.lock() {
-            cache.insert(
-                (
-                    method.as_str().to_string(),
-                    path.to_string(),
-                    key.to_string(),
-                ),
-                answer,
-            );
-        }
     }
 
     async fn dispatch(&self, conn: &Conn, command: Command) -> Result<(), String> {

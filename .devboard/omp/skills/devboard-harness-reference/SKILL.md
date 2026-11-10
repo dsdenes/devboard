@@ -4308,12 +4308,17 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
 the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
-Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. A goal
-proposal's result is retained under `<STATE_DIR>/idempotency/` for 24 hours, so a retry answers
-the first draft instead of creating a second, while a failed proposal is never retained. A
+Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header, and so does
+every REST route. A keyed REST request runs through the same store under a `METHOD path` scope: the
+first request claims the key, a concurrent retry waits for that claim instead of dispatching the
+command again, and the stored answer — status, `Location`, and body — replays for 24 hours,
+bounded at 1000 entries, so a retry after a dashboard restart answers the same status and body. A
+goal proposal's result is retained under `<STATE_DIR>/idempotency/` for 24 hours, so a retry
+answers the first draft instead of creating a second, while a failed proposal is never retained. A
 report's key owns one record under `<STATE_DIR>/reports/` for 24 hours: a `FILING` or `FILED`
 record replays, and a `FAILED` record is filed again under the same record. A key is 1–255
-characters with no control characters; an empty or oversized key is refused with `400`.
+characters with no control characters; an empty, oversized, or control-character key is refused
+with `400`.
 
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
