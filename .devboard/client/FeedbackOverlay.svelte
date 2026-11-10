@@ -88,6 +88,8 @@
   let transcript = $state<AskTurn[]>([]);
   let askPending = $state(false);
   let askError = $state<string | null>(null);
+  /** True while this panel polls the conversation the server accepted. */
+  let following = false;
   /** The turn in flight; a failed turn returns it to the composer. */
   let askedQuestion = $state("");
   /** Counts each server answer to an Ask turn: the busy word's evidence. */
@@ -312,9 +314,6 @@
     askedQuestion = question;
     transcript = [...transcript, { role: "DEVELOPER", text: question }];
     report = "";
-    // The creation answers at once; the turn streams into the conversation the
-    // page polls, so the ask never holds a request open for the agent.
-    connection.send({ type: "getInquiry", conversationId: id }, "refresh");
     focusComposer();
   }
 
@@ -346,8 +345,20 @@
     return turns;
   }
 
+  /**
+   * Follows the conversation the server accepted. The creation's own answer is
+   * the first frame, so the read never names a conversation the server has not
+   * stored yet, and the one registration survives every later turn.
+   */
+  function followInquiry(): void {
+    if (following || conversationId === null) return;
+    following = true;
+    connection.send({ type: "getInquiry", conversationId }, "refresh");
+  }
+
   /** Stops following a conversation whose turn settled or is gone. */
   function forgetInquiry(): void {
+    following = false;
     if (conversationId !== null) {
       connection.forget({ type: "getInquiry", conversationId });
     }
@@ -376,6 +387,7 @@
       if (message.busy === true) {
         askPending = true;
         askError = null;
+        followInquiry();
         return;
       }
       const error =
@@ -428,6 +440,7 @@
   function closeConversation(): void {
     const id = conversationId;
     conversationId = null;
+    following = false;
     transcript = [];
     askPending = false;
     askError = null;

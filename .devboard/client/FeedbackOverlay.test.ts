@@ -153,10 +153,13 @@ test("an Ask renders the answer the page's conversation reports", async () => {
     .find((frame) => frame.type === "ask");
   if (ask === undefined) throw new Error("the page sent no ask");
   const conversationId = ask.conversationId as string;
-  expect(socket.sent.some((frame) => JSON.parse(frame).type === "getInquiry")).toBe(true);
+  // The read waits for the creation's own answer, so it never names a
+  // conversation the server has not stored yet — an inquiry missing for that
+  // id would drop the registration and leave the turn unwatched.
+  expect(socket.sent.some((frame) => JSON.parse(frame).type === "getInquiry")).toBe(false);
 
-  // The turn streams into the polled conversation: the partial answer renders
-  // while the control still shows the busy word.
+  // The creation answers with its accepted conversation, and the page follows
+  // it: the turn streams in while the control still shows the busy word.
   socket.deliver({
     type: "inquiry",
     conversationId,
@@ -166,6 +169,7 @@ test("an Ask renders the answer the page's conversation reports", async () => {
     transcript: [{ role: "developer", text: "What does this tab do?" }],
   });
   await tick();
+  expect(socket.sent.some((frame) => JSON.parse(frame).type === "getInquiry")).toBe(true);
   expect(view.container.textContent).toContain("The tab opens the issues");
   expect(view.container.textContent).toContain("Asking…");
 
