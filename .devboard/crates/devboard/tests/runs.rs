@@ -411,6 +411,27 @@ fn alive(pid: u32) -> bool {
     devboard::supervision::live_process(pid)
 }
 
+/// A live process this test owns: a fixture record's recorded pid stays alive
+/// until the test kills it, so the socket follows a live run first.
+fn live_worker() -> Child {
+    ProcessCommand::new("sleep")
+        .arg("60")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("a live worker process")
+}
+
+/// Reads the next socket event after a terminal frame: a close, never another
+/// frame.
+async fn closed_after_terminal(socket: &mut Socket) {
+    match tokio::time::timeout(Duration::from_secs(10), socket.next()).await {
+        Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => {}
+        other => panic!("the socket closed after its terminal frame: {other:?}"),
+    }
+}
+
 /// Every live process whose command line names the fixture log, which only the
 /// ACP stub a run started uses.
 fn children_naming(log: &Path) -> Vec<(u32, String)> {
@@ -1147,6 +1168,137 @@ async fn an_orphaned_running_record_is_stopped_and_unrewritten() {
             libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
         }
     }
+    let _ = server.child.kill();
+}
+
+/// A run record still says `running` after its worker died. The socket must
+/// carry the one terminal status frame before it closes, and its state frame
+/// must name the same word.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_killed_run_socket_receives_its_terminal_status_frame() {
+    let scratch = Scratch::new("dead-socket");
+    let _repo = fixture_repo(&scratch);
+    let mut worker = live_worker();
+    seed_issue_run(&scratch, "orphan", "running", worker.id());
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+    let id = run_id(&base, "orphan").await;
+    let represented: Value = reqwest::Client::new()
+        .get(format!("{base}/agent-runs/{id}"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a representation")
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(
+        represented["live"],
+        json!(true),
+        "the recorded pid is this test's live worker: {represented}"
+    );
+    let mut socket = run_socket(port, &id, None).await;
+    let frames = frames_until(
+        &mut socket,
+        |frame| frame["type"] == "state",
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(
+        by_type(&frames, "state").last().expect("a state frame")["state"]["status"],
+        json!("running"),
+        "the live worker's record reads live"
+    );
+
+    worker.kill().expect("the worker is killed");
+    let _ = worker.wait();
+    let frames = frames_until(
+        &mut socket,
+        |frame| frame["type"] == "state" && frame["state"]["status"] == json!("stopped"),
+        Duration::from_secs(20),
+    )
+    .await;
+    let statuses = by_type(&frames, "status");
+    assert_eq!(statuses.len(), 1, "one terminal status frame: {frames:?}");
+    assert_eq!(
+        statuses[0]["status"],
+        json!("stopped"),
+        "the dead worker's run is stopped"
+    );
+    assert_eq!(
+        by_type(&frames, "state")[0]["state"]["status"],
+        json!("stopped"),
+        "the state frame names the terminal word"
+    );
+    closed_after_terminal(&mut socket).await;
+    let _ = server.child.kill();
+}
+
+/// A family worker whose recorded pid died is the same run shape: its record
+/// still says `running`, so its socket owes the terminal frame too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_killed_family_worker_run_receives_its_terminal_status_frame() {
+    let scratch = Scratch::new("dead-worker");
+    let repo = fixture_repo(&scratch);
+    let mut worker = live_worker();
+    let directory = repo.join(".devboard/.tmp/watchdog/workers/1.45.0");
+    write(
+        &directory.join("worker.json"),
+        &json!({
+            "version": 1,
+            "pid": worker.id(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "root": repo.to_string_lossy(),
+            "stateDir": scratch.state().to_string_lossy(),
+            "lifecycle": "running",
+            "enabled": true,
+            "harnessVersion": "1.45.0",
+            "argv": [],
+            "lastRunAt": null,
+            "nextRunAt": null,
+            "lastError": null,
+            "notice": null,
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+        })
+        .to_string(),
+    );
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+    let id = run_id(&base, "watchdog").await;
+    let mut socket = run_socket(port, &id, None).await;
+    let frames = frames_until(
+        &mut socket,
+        |frame| frame["type"] == "state",
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(
+        by_type(&frames, "state").last().expect("a state frame")["state"]["lifecycle"],
+        json!("running"),
+        "the live worker's record reads live"
+    );
+
+    worker.kill().expect("the worker is killed");
+    let _ = worker.wait();
+    let frames = frames_until(
+        &mut socket,
+        |frame| frame["type"] == "state" && frame["state"]["lifecycle"] == json!("stopped"),
+        Duration::from_secs(20),
+    )
+    .await;
+    let statuses = by_type(&frames, "status");
+    assert_eq!(statuses.len(), 1, "one terminal status frame: {frames:?}");
+    assert_eq!(statuses[0]["status"], json!("stopped"));
+    assert_eq!(
+        by_type(&frames, "state")[0]["state"]["lifecycle"],
+        json!("stopped"),
+        "the state frame names the terminal word"
+    );
+    closed_after_terminal(&mut socket).await;
     let _ = server.child.kill();
 }
 

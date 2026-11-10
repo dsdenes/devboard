@@ -4495,7 +4495,10 @@ The dashboard's only WebSocket belongs to one live ACP run:
   again. The run-output client sends that validator on its collection poll.
 - A run record still says `running` after its worker died. The recorded worker pid is the
   authority: such a record is represented with a stopped lifecycle, is not in the live set the
-  page opens sockets for, and its bytes are never rewritten.
+  page opens sockets for, and its bytes are never rewritten. A socket another viewer already
+  holds samples the record on the tick that finds the worker gone, pushes the one terminal
+  `status` frame naming that stopped lifecycle, and only then closes; the `state` frame on the
+  same sample names the same word, so the two frames never disagree.
 - The MCP server, the desktop launcher, and `devboard bench` use the same REST API. The launcher
   restarts a dashboard with one `POST /server-restarts`; `devboard bench` measures a REST read
   and names the method and path, and `devboard bench cpu --scenario runs-view --json` (or

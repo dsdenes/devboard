@@ -202,6 +202,9 @@ fn worker_lifecycle(state: &Value) -> String {
         .unwrap_or("stopped");
     match raw {
         "stopped" | "failed" => raw.to_string(),
+        // The recorded pid is the authority: a record still says `running`
+        // after its worker died, so that record's lifecycle is stopped.
+        _ if !worker_run_live(state) => "stopped".to_string(),
         _ if state.get("draining") == Some(&Value::Bool(true)) => "stopping".to_string(),
         _ => "running".to_string(),
     }
@@ -619,21 +622,21 @@ impl RunJournal {
                 let Some(state) = crate::sampling::json(&detached_run_state_path(directory)) else {
                     return;
                 };
-                self.emit_state(run, &state, "status");
+                self.emit_state(run, &state);
                 self.emit_error(run, &state);
             }
             Source::Worker { state_path, .. } => {
                 let Some(state) = crate::sampling::json(state_path) else {
                     return;
                 };
-                self.emit_state(run, &state, "lifecycle");
+                self.emit_state(run, &state);
                 self.emit_error(run, &state);
             }
             Source::Issues { run_path, .. } => {
                 let Some(state) = crate::sampling::json(run_path) else {
                     return;
                 };
-                self.emit_state(run, &state, "status");
+                self.emit_state(run, &state);
                 self.emit_error(run, &state);
             }
         }
@@ -696,20 +699,17 @@ impl RunJournal {
         }
     }
 
-    fn emit_state(&mut self, run: &RunSource, state: &Value, cursor_key: &str) {
+    fn emit_state(&mut self, run: &RunSource, state: &Value) {
         let filtered = project_state(run, state);
         let text = crate::jsjson::stringify(&filtered);
         if self.last_state.as_deref() == Some(text.as_str()) {
             return;
         }
         self.last_state = Some(text);
-        // The status is the already-sampled state's own field, or the same
-        // lifecycle the collection reports for this record.
-        let status = state
-            .get(cursor_key)
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| run.lifecycle_of(Some(state)));
+        // The status is the lifecycle the collection reports for this record,
+        // derived from the same sampled state, so a state frame never reports
+        // a non-live lifecycle without its one terminal status frame.
+        let status = run.lifecycle_of(Some(state));
         if !live_lifecycle(&status) && self.last_status.as_deref() != Some(status.as_str()) {
             let mut status_frame = Map::new();
             status_frame.insert("type".to_string(), Value::String("status".to_string()));
@@ -808,12 +808,11 @@ fn project_state(run: &RunSource, state: &Value) -> Value {
             }
         }
         Source::Worker { .. } => {
+            // The recorded pid outranks the raw field here too, so the state
+            // frame names the lifecycle the collection reports.
             projected.insert(
                 "lifecycle".to_string(),
-                state
-                    .get("lifecycle")
-                    .cloned()
-                    .unwrap_or_else(|| Value::String("stopped".to_string())),
+                Value::String(worker_lifecycle(state)),
             );
             for key in ["paused", "enabled", "sync", "question", "error", "notice"] {
                 if let Some(value) = state.get(key) {
@@ -1113,7 +1112,11 @@ async fn run_socket(
                 let state = run.state();
                 run.lifecycle = run.lifecycle_of(state.as_deref());
                 run.live = run.live_of(state.as_deref());
-                let (reset, entries) = hub.read_at(&run, sent, Instant::now(), fresh);
+                // A run that just stopped owes its terminal status frame, so
+                // that tick samples the journal regardless of its interval;
+                // the close follows the frames the sample pushed.
+                let (reset, entries) =
+                    hub.read_at(&run, sent, Instant::now(), fresh || !run.live);
                 fresh = false;
                 if let Some(cursor) = reset {
                     if send_frame(&mut socket, &json!({"type": "reset", "run": run.id, "cursor": cursor})).await.is_err() {
