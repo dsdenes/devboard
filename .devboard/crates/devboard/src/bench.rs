@@ -115,7 +115,7 @@ pub async fn cpu(options: &CpuOptions) -> anyhow::Result<Value> {
     } else {
         options.seconds
     };
-    let root = scratch(scenario);
+    let root = scratch(scenario)?;
     let repo = root.join("repo");
     let state = root.join("state");
     fixture(&repo)?;
@@ -192,26 +192,47 @@ pub async fn cpu(options: &CpuOptions) -> anyhow::Result<Value> {
     }))
 }
 
-/// The harness directory's scratch root, discovered from the working
-/// directory: the harness directory itself, or `<repo>/.devboard`.
-fn scratch_root() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let harness = if cwd.join(".devboard").is_dir() {
-        cwd.join(".devboard")
-    } else {
-        cwd
-    };
-    harness.join(".test-tmp")
+/// The harness directory a working directory belongs to.
+///
+/// The harness is the nearest ancestor named `.devboard` — a working directory
+/// that is itself a harness root resolves to itself — or the `.devboard`
+/// directory of the nearest ancestor that holds one. The walk never descends,
+/// so a stray `<harness>/.devboard` cannot become the harness, and
+/// `<harness>/crates/devboard` resolves to the harness rather than to the crate
+/// directory. A directory with no harness above it is an error, never a
+/// scratch location where the working directory happens to be.
+fn harness_root(cwd: &Path) -> anyhow::Result<PathBuf> {
+    for ancestor in cwd.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some(".devboard") {
+            return Ok(ancestor.to_path_buf());
+        }
+        let harness = ancestor.join(".devboard");
+        if harness.is_dir() {
+            return Ok(harness);
+        }
+    }
+    anyhow::bail!(
+        "no .devboard harness directory at or above {}",
+        cwd.display()
+    )
 }
 
-fn scratch(label: &str) -> PathBuf {
+/// The harness directory's scratch root: always `<harness>/.test-tmp`, so a
+/// benchmark run never writes scratch state inside the harness tree itself.
+fn scratch_root(cwd: &Path) -> anyhow::Result<PathBuf> {
+    Ok(harness_root(cwd)?.join(".test-tmp"))
+}
+
+fn scratch(label: &str) -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let root = scratch_root().join(format!("bench-cpu-{label}-{}-{nanos}", std::process::id()));
+    let root =
+        scratch_root(&cwd)?.join(format!("bench-cpu-{label}-{}-{nanos}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    root
+    Ok(root)
 }
 
 fn write(path: &Path, text: &str) -> anyhow::Result<()> {
@@ -711,5 +732,56 @@ pub fn print(result: &Value, json: bool) {
                 worker["readBytesPerSecond"].as_f64().unwrap_or(0.0),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// A fixture checkout under the ignored scratch root: a repository holding
+    /// a harness directory, and the crate directory inside that harness.
+    fn fixture(name: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("bench-scratch-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo/.devboard/crates/devboard"))
+            .expect("a fixture harness");
+        root
+    }
+
+    #[test]
+    fn a_working_directory_resolves_to_the_harness_scratch_root() {
+        let root = fixture("resolve");
+        let repo = root.join("repo");
+        let harness = repo.join(".devboard");
+        let crate_dir = harness.join("crates/devboard");
+        // The leaked `<harness>/.devboard` tree this resolver must never
+        // descend into.
+        std::fs::create_dir_all(harness.join(".devboard/.test-tmp")).expect("a stray harness");
+        let expected = harness.join(".test-tmp");
+
+        assert_eq!(scratch_root(&harness).expect("the harness root"), expected);
+        assert_eq!(scratch_root(&repo).expect("the repository root"), expected);
+        assert_eq!(
+            scratch_root(&crate_dir).expect("the crate directory"),
+            expected
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_outside_any_harness_is_an_error() {
+        let outside = Path::new("/bench-scratch-outside-any-harness");
+        let error = scratch_root(outside).expect_err("no harness above the directory");
+        assert!(
+            error
+                .to_string()
+                .contains(outside.to_str().expect("a utf-8 path")),
+            "{error}"
+        );
     }
 }
