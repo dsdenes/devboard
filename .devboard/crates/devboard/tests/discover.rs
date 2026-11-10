@@ -1203,3 +1203,218 @@ fn an_escaping_manifest_contributes_no_install_root() {
         assert_eq!(links, json!({}), "{manifest} contributes no install root");
     }
 }
+
+fn glossary_document(context: &str, concepts: &[(&str, &str)]) -> String {
+    let mut lines = vec![
+        format!("boundedContext: {context}"),
+        "titles:".to_string(),
+        "  - language: en".to_string(),
+        format!("    text: {}", json!(format!("{context} fixture terms"))),
+        "concepts:".to_string(),
+    ];
+    for (id, label) in concepts {
+        lines.push(format!("  - id: {id}"));
+        lines.push("    prefLabels:".to_string());
+        lines.push("      - language: en".to_string());
+        lines.push(format!("        text: {}", json!(label)));
+        lines.push("    altLabels: []".to_string());
+        lines.push("    hiddenLabels: []".to_string());
+        lines.push("    definitions:".to_string());
+        lines.push("      - language: en".to_string());
+        lines.push(format!(
+            "        text: {}",
+            json!(format!("{label} is a fixture term."))
+        ));
+        lines.push("    status: unconfirmed".to_string());
+        lines.push("    origin: owner".to_string());
+        lines.push("    kind: entity".to_string());
+        lines.push("    grounding:".to_string());
+        lines.push("      - \"code:src/order.ts\"".to_string());
+        lines.push("    related: []".to_string());
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn glossary_skill_document(contexts: &[&str]) -> String {
+    let mut lines = vec![
+        "---".to_string(),
+        "name: discover-glossary".to_string(),
+        "description: Use the canonical glossary, honor human decisions, and propose new terms explicitly."
+            .to_string(),
+        "metadata:".to_string(),
+        "  devboard-managed: \"true\"".to_string(),
+        "  devboard-family: \"discover\"".to_string(),
+        "  devboard-skill: glossary".to_string(),
+        "---".to_string(),
+        String::new(),
+        "# Glossary".to_string(),
+        String::new(),
+    ];
+    for context in contexts {
+        lines.push(format!(
+            "- Treat .omp/discover/glossary/{context}.glossary.yaml as canonical for {context}."
+        ));
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn stage_glossary_run(
+    staging: &Path,
+    glossaries: &[(&str, &[(&str, &str)])],
+    significance: &Value,
+) {
+    for (context, concepts) in glossaries {
+        write(
+            &staging.join(format!("glossary/{context}.glossary.yaml")),
+            &glossary_document(context, concepts),
+        );
+    }
+    write(
+        &staging.join("glossary/significance.json"),
+        &serde_json::to_string(significance).expect("a sidecar"),
+    );
+    let contexts: Vec<&str> = glossaries.iter().map(|(context, _)| *context).collect();
+    write(
+        &staging.join("skills/discover-glossary/SKILL.md"),
+        &glossary_skill_document(&contexts),
+    );
+}
+
+#[test]
+fn a_second_publication_keeps_unstaged_context_scores() {
+    let scratch = Scratch::new("second-publish");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let facts = devboard::discover_mode::host_facts(&repo);
+    let first = scratch.path().join("staging-one");
+    stage_glossary_run(
+        &first,
+        &[
+            (
+                "orders",
+                &[("order-line", "Order Line"), ("order-total", "Order Total")],
+            ),
+            ("billing", &[("invoice-total", "Invoice Total")]),
+        ],
+        &json!({
+            "schemaVersion": 1,
+            "contexts": {
+                "orders": {
+                    "order-line": {"score": 40, "reason": "One line of an order."},
+                    "order-total": {"score": 90, "reason": "The domain's central summed value."},
+                },
+                "billing": {
+                    "invoice-total": {"score": 70, "reason": "Billing's central summed value."},
+                },
+            },
+        }),
+    );
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-one",
+        &facts,
+        &first,
+        "fixture",
+        "discover-glossary",
+    )
+    .expect("the first publication succeeds");
+
+    // The second run re-crawls only the orders context.
+    let second = scratch.path().join("staging-two");
+    stage_glossary_run(
+        &second,
+        &[("orders", &[("order-total", "Order Total")])],
+        &json!({
+            "schemaVersion": 1,
+            "contexts": {
+                "orders": {
+                    "order-total": {"score": 95, "reason": "Restaged at the current score."},
+                },
+            },
+        }),
+    );
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-two",
+        &facts,
+        &second,
+        "fixture",
+        "discover-glossary",
+    )
+    .expect("the second publication succeeds");
+
+    let sidecar_path = repo.join(".omp/discover/significance.json");
+    let sidecar: Value = serde_json::from_str(
+        &std::fs::read_to_string(&sidecar_path).expect("the published sidecar"),
+    )
+    .expect("a JSON sidecar");
+    assert_eq!(
+        sidecar["contexts"]["orders"]["order-total"]["score"],
+        json!(95)
+    );
+    assert_eq!(
+        sidecar["contexts"]["orders"]["order-line"],
+        Value::Null,
+        "a preserved concept absent from the staged sidecar stays unscored"
+    );
+    assert_eq!(
+        sidecar["contexts"]["billing"]["invoice-total"]["score"],
+        json!(70),
+        "the unstaged context keeps every score it had"
+    );
+
+    let artifacts = devboard::discover_mode::read_artifacts(&repo);
+    let artifacts = artifacts.artifacts.expect("the publication is readable");
+    assert_eq!(
+        artifacts.significance["billing"]["invoice-total"]["score"],
+        json!(70)
+    );
+    assert_eq!(
+        artifacts.significance["orders"]["order-total"]["score"],
+        json!(95)
+    );
+    assert_eq!(artifacts.significance["orders"]["order-line"], Value::Null);
+
+    // A context whose concepts are no longer confirmed drops out entirely.
+    let billing_path = repo.join(".omp/discover/glossary/billing.glossary.yaml");
+    let billing = std::fs::read_to_string(&billing_path).expect("the billing glossary");
+    write(
+        &billing_path,
+        &billing.replace("status: 'confirmed'", "status: 'deprecated'"),
+    );
+    let third = scratch.path().join("staging-three");
+    stage_glossary_run(
+        &third,
+        &[("orders", &[("order-total", "Order Total")])],
+        &json!({
+            "schemaVersion": 1,
+            "contexts": {
+                "orders": {
+                    "order-total": {"score": 95, "reason": "Restaged at the current score."},
+                },
+            },
+        }),
+    );
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-three",
+        &facts,
+        &third,
+        "fixture",
+        "discover-glossary",
+    )
+    .expect("the third publication succeeds");
+    let sidecar: Value = serde_json::from_str(
+        &std::fs::read_to_string(&sidecar_path).expect("the published sidecar"),
+    )
+    .expect("a JSON sidecar");
+    assert_eq!(
+        sidecar["contexts"]["billing"],
+        Value::Null,
+        "a dropped context leaves no sidecar entries"
+    );
+    assert_eq!(
+        sidecar["contexts"]["orders"]["order-total"]["score"],
+        json!(95)
+    );
+    assert!(!billing_path.exists(), "the dropped glossary is deleted");
+}

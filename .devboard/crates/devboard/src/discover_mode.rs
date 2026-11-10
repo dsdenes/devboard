@@ -6171,11 +6171,31 @@ pub fn publish_agent_staged(
                 }
             }
         }
+        let staged_significance = staged
+            .significance
+            .clone()
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let previous_significance = previous_paths
+            .as_ref()
+            .and_then(|paths| paths.get("significance"))
+            .and_then(Value::as_str)
+            .map(|path| read_significance(repo_dir, path, &merged))
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let mut contexts = Map::new();
+        for glossary in &merged {
+            let context = &glossary.bounded_context;
+            let entries = staged_significance
+                .get(context)
+                .or_else(|| previous_significance.get(context));
+            if let Some(entries) = entries {
+                contexts.insert(context.clone(), entries.clone());
+            }
+        }
         writes.push(FileWrite {
             path: significance_path(repo_dir),
             content: render_json(&json!({
                 "schemaVersion": 1,
-                "contexts": staged.significance.clone().unwrap_or_else(|| Value::Object(Map::new())),
+                "contexts": Value::Object(contexts),
             })),
         });
         for glossary in &merged {
