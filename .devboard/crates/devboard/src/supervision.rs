@@ -221,11 +221,37 @@ fn parse_stat(pid: u32, text: &str) -> Option<ProcessStat> {
 
 /// True when the pid names a running process that is not a zombie. A killed
 /// child whose parent has not reaped it yet is dead for supervision's purpose.
+///
+/// This is an existence check, never proof of identity: the kernel reuses a
+/// dead pid, so a caller that must prove which process holds a pid compares
+/// the start tick with [`live_identity`] instead.
 pub fn live_process(pid: u32) -> bool {
     if let Some(stat) = process_stat(pid) {
         return stat.state != "Z";
     }
     !cfg!(target_os = "linux") && pid_alive(pid)
+}
+
+/// The kernel start tick that identifies one process among the pids the
+/// kernel hands out. `None` when the kernel exposes no start time, or when no
+/// process holds the pid.
+pub fn start_ticks(pid: u32) -> Option<i64> {
+    process_stat(pid).map(|stat| stat.start_ticks)
+}
+
+/// True when the pid still names the process a record wrote: the kernel start
+/// tick must equal the one recorded beside the pid, so a recycled pid never
+/// proves a dead owner alive. A record without a tick predates the identity
+/// and is never live on a kernel that reports one, because a bare pid cannot
+/// say which process holds it.
+pub fn live_identity(pid: u32, start_ticks: Option<i64>) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    match process_stat(pid) {
+        Some(stat) => stat.state != "Z" && start_ticks == Some(stat.start_ticks),
+        None => !cfg!(target_os = "linux") && live_process(pid),
+    }
 }
 
 /// True when a signal of zero would be delivered, `EPERM` included.

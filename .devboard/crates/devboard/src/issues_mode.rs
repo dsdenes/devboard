@@ -1125,6 +1125,10 @@ struct Agent {
 #[serde(rename_all = "camelCase")]
 struct WorkerRecord {
     pid: u32,
+    /// The pid's kernel start tick: without it a recycled pid cannot be told
+    /// from the worker this record names.
+    #[serde(default)]
+    start_ticks: Option<i64>,
     started_at: String,
     state_dir: String,
     harness_version: Option<String>,
@@ -1530,6 +1534,11 @@ struct RunFile {
     issues: Vec<Issue>,
     first_stderr_line: Option<String>,
     worker_pid: u32,
+    /// The worker's kernel start tick, the identity `worker_pid` alone cannot
+    /// prove once the kernel reuses the pid. Absent on records written before
+    /// it was kept.
+    #[serde(default)]
+    start_ticks: Option<i64>,
     harness_version: Option<String>,
 }
 
@@ -1570,6 +1579,10 @@ fn parse_run_file(text: &str) -> Option<RunFile> {
     if worker_pid == 0 || worker_pid > u32::MAX as u64 {
         return None;
     }
+    let start_ticks = match object.get("startTicks") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_i64()?),
+    };
     if !nullable_string(object.get("harnessVersion")) {
         return None;
     }
@@ -1596,6 +1609,7 @@ fn parse_run_file(text: &str) -> Option<RunFile> {
             .and_then(Value::as_str)
             .map(str::to_string),
         worker_pid: worker_pid as u32,
+        start_ticks,
         harness_version: object
             .get("harnessVersion")
             .and_then(Value::as_str)
@@ -4848,6 +4862,7 @@ impl IssuesWorker {
         state.enabled = true;
         state.worker = Some(WorkerRecord {
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: now.clone(),
             state_dir: self.state_dir.display().to_string(),
             harness_version: self.harness_version.clone(),
@@ -5537,6 +5552,7 @@ impl IssuesWorker {
             issues: vec![issue.clone()],
             first_stderr_line: None,
             worker_pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             harness_version: self.harness_version.clone(),
         };
         if let Err(error) = write_run_file(&directory, &run) {

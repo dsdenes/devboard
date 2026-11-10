@@ -518,6 +518,9 @@ impl AgentLifecycle {
 pub struct WatchdogWorkerState {
     pub version: i64,
     pub pid: u32,
+    /// The pid's kernel start tick, the identity that tells this worker from
+    /// a later process the kernel gave the same pid.
+    pub start_ticks: Option<i64>,
     pub started_at: String,
     pub root: String,
     pub state_dir: String,
@@ -539,6 +542,7 @@ impl WatchdogWorkerState {
         let mut value = json!({
             "version": self.version,
             "pid": self.pid,
+            "startTicks": self.start_ticks,
             "startedAt": self.started_at,
             "root": self.root,
             "stateDir": self.state_dir,
@@ -588,6 +592,7 @@ pub fn parse_worker_state(text: &str) -> Option<WatchdogWorkerState> {
     Some(WatchdogWorkerState {
         version: WORKER_STATE_VERSION,
         pid: pid as u32,
+        start_ticks: record.get("startTicks").and_then(Value::as_i64),
         started_at: started_at.to_string(),
         root: root.to_string(),
         state_dir: state_dir.to_string(),
@@ -6767,6 +6772,7 @@ impl WorkerLoop {
         let state = WatchdogWorkerState {
             version: WORKER_STATE_VERSION,
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: self.started_at.clone(),
             root: self.root.to_string_lossy().into_owned(),
             state_dir: self.owner_state_dir.to_string_lossy().into_owned(),

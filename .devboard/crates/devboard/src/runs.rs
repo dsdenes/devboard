@@ -149,8 +149,9 @@ fn live_lifecycle(lifecycle: &str) -> bool {
 }
 
 /// The lifecycle one Issues run record represents. A record still says
-/// `running` after its worker died; the recorded pid is the authority, so a
-/// dead worker is reported stopped without rewriting the record.
+/// `running` after its worker died; the recorded pid and its kernel start tick
+/// are the authority, so a dead or recycled worker is reported stopped without
+/// rewriting the record.
 fn issue_run_lifecycle(state: &Value) -> String {
     let status = state
         .get("status")
@@ -161,7 +162,8 @@ fn issue_run_lifecycle(state: &Value) -> String {
     }
     match state.get("workerPid").and_then(Value::as_u64) {
         Some(pid) if (1..=u32::MAX as u64).contains(&pid) => {
-            if crate::supervision::live_process(pid as u32) {
+            let start_ticks = state.get("startTicks").and_then(Value::as_i64);
+            if crate::supervision::live_identity(pid as u32, start_ticks) {
                 status.to_string()
             } else {
                 "stopped".to_string()
@@ -171,9 +173,11 @@ fn issue_run_lifecycle(state: &Value) -> String {
     }
 }
 
-/// A family worker is live while its recorded pid is alive; between cycles
-/// its lifecycle is `idle` but the worker still serves the family. The
-/// repository-scoped families nest the pid under `worker`; the families that
+/// A family worker is live while the process its record names still runs;
+/// between cycles its lifecycle is `idle` but the worker still serves the
+/// family. The recorded pid alone proves nothing, because the kernel reuses it:
+/// the start tick written beside that pid must match the live process. The
+/// repository-scoped families nest the pair under `worker`; the families that
 /// publish a flat record put it at the top level.
 fn worker_run_live(state: &Value) -> bool {
     let recorded = state
@@ -183,7 +187,12 @@ fn worker_run_live(state: &Value) -> bool {
         .or_else(|| state.get("pid").and_then(Value::as_u64));
     if let Some(pid) = recorded {
         if (1..=u32::MAX as u64).contains(&pid) {
-            return crate::supervision::live_process(pid as u32);
+            let start_ticks = state
+                .get("worker")
+                .and_then(|worker| worker.get("startTicks"))
+                .and_then(Value::as_i64)
+                .or_else(|| state.get("startTicks").and_then(Value::as_i64));
+            return crate::supervision::live_identity(pid as u32, start_ticks);
         }
     }
     !matches!(

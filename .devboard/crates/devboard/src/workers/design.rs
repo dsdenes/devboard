@@ -368,6 +368,10 @@ pub enum DesignSyncState {
 #[serde(rename_all = "camelCase")]
 pub struct DesignWorkerRecord {
     pub pid: u32,
+    /// The pid's kernel start tick, the identity that tells this worker from
+    /// a later process the kernel gave the same pid.
+    #[serde(default)]
+    pub start_ticks: Option<i64>,
     pub started_at: String,
     pub state_dir: String,
     pub harness_version: Option<String>,
@@ -3193,6 +3197,7 @@ impl DesignWorker {
         state.enabled = true;
         state.worker = Some(DesignWorkerRecord {
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: now_text.clone(),
             state_dir: inner.options.state_dir.to_string_lossy().into_owned(),
             harness_version: inner.options.harness_version.clone(),

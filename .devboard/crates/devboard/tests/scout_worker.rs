@@ -1084,6 +1084,7 @@ async fn a_fresh_worker_closes_a_dead_workers_scan_without_an_error() {
     );
     previous.worker = Some(ScoutWorkerRecord {
         pid: u32::MAX,
+        start_ticks: None,
         started_at: "2026-11-05T14:01:24.899Z".to_string(),
         state_dir: state_dir.to_string_lossy().into_owned(),
         harness_version: Some("0.0.1".to_string()),

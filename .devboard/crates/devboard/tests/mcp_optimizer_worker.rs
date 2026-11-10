@@ -1367,6 +1367,7 @@ async fn a_newer_harness_starts_once_and_drains_the_older_worker() {
     .expect("the old worker's lock");
     let old_state = mcp::WorkerState {
         pid: std::process::id(),
+        start_ticks: devboard::supervision::start_ticks(std::process::id()),
         started_at: NOW_TEXT.to_string(),
         root: fixture.repo_dir.to_string_lossy().into_owned(),
         state_dir: fixture.state_dir.to_string_lossy().into_owned(),

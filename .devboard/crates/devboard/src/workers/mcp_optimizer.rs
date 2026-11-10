@@ -502,6 +502,9 @@ impl Lifecycle {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerState {
     pub pid: u32,
+    /// The pid's kernel start tick, the identity that tells this worker from
+    /// a later process the kernel gave the same pid.
+    pub start_ticks: Option<i64>,
     pub started_at: String,
     pub root: String,
     pub state_dir: String,
@@ -522,6 +525,10 @@ impl WorkerState {
         let mut record = Map::new();
         record.insert("version".into(), Value::from(WORKER_VERSION));
         record.insert("pid".into(), Value::from(self.pid));
+        record.insert(
+            "startTicks".into(),
+            self.start_ticks.map(Value::from).unwrap_or(Value::Null),
+        );
         record.insert("startedAt".into(), Value::from(self.started_at.clone()));
         record.insert("root".into(), Value::from(self.root.clone()));
         record.insert("stateDir".into(), Value::from(self.state_dir.clone()));
@@ -587,6 +594,7 @@ impl WorkerState {
         };
         Some(Self {
             pid: pid as u32,
+            start_ticks: record.get("startTicks").and_then(Value::as_i64),
             started_at: text("startedAt")?,
             root: text("root")?,
             state_dir: text("stateDir")?,
@@ -5900,6 +5908,7 @@ impl WorkerRuntime {
     fn publish(&self, lifecycle: Lifecycle, enabled: bool) {
         let state = WorkerState {
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: self.started_at.clone(),
             root: self.root.to_string_lossy().into_owned(),
             state_dir: self.owner_state_dir.to_string_lossy().into_owned(),

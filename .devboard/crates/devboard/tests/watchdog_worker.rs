@@ -444,6 +444,7 @@ fn worker_state_rejects_bad_documents_and_the_newest_wins() {
     let state = |version: Option<&str>, updated_at: &str| WatchdogWorkerState {
         version: WORKER_STATE_VERSION,
         pid: 12_345,
+        start_ticks: None,
         started_at: "2026-10-24T12:00:00.000Z".to_string(),
         root: "/repo".to_string(),
         state_dir: "/repo/.devboard/.tmp".to_string(),

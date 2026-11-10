@@ -358,6 +358,9 @@ impl SyncState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerRecord {
     pub pid: u32,
+    /// The pid's kernel start tick, the identity that tells this worker from
+    /// a later process the kernel gave the same pid.
+    pub start_ticks: Option<i64>,
     pub started_at: String,
     pub state_dir: String,
     pub harness_version: Option<String>,
@@ -474,6 +477,7 @@ impl State {
         let worker = match &self.worker {
             Some(record) => json!({
                 "pid": record.pid,
+                "startTicks": record.start_ticks,
                 "startedAt": record.started_at,
                 "stateDir": record.state_dir,
                 "harnessVersion": record.harness_version,
@@ -631,6 +635,7 @@ fn parse_worker(value: &Value) -> Option<WorkerRecord> {
     let argv = record.get("argv")?.as_array()?;
     Some(WorkerRecord {
         pid: pid as u32,
+        start_ticks: record.get("startTicks").and_then(Value::as_i64),
         started_at: record.get("startedAt")?.as_str()?.to_string(),
         state_dir: record.get("stateDir")?.as_str()?.to_string(),
         harness_version: record
@@ -2704,6 +2709,7 @@ impl Worker {
         state.enabled = true;
         state.worker = Some(WorkerRecord {
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: now_text,
             state_dir: self.state_dir.to_string_lossy().into_owned(),
             harness_version: self.harness_version.clone(),

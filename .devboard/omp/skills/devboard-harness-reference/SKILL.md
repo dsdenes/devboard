@@ -4493,10 +4493,12 @@ The dashboard's only WebSocket belongs to one live ACP run:
 - `GET /agent-runs` carries an `ETag`; a request whose `If-None-Match` names it answers `304`
   with an empty body and reads no run record, and only a record whose file changed is read
   again. The run-output client sends that validator on its collection poll.
-- A run record still says `running` after its worker died. The recorded worker pid is the
-  authority: such a record is represented with a stopped lifecycle, is not in the live set the
-  page opens sockets for, and its bytes are never rewritten. A socket another viewer already
-  holds samples the record on the tick that finds the worker gone, pushes the one terminal
+- A run record still says `running` after its worker died. The recorded worker pid and the kernel
+  start tick recorded beside it are the authority: a record is live only while a process holds
+  that pid with that start tick, so a recycled pid never revives it. A record whose pid is gone or
+  whose start tick is absent or different is represented with a stopped lifecycle, is not in the
+  live set the page opens sockets for, and its bytes are never rewritten. A socket another viewer
+  already holds samples the record on the tick that finds the worker gone, pushes the one terminal
   `status` frame naming that stopped lifecycle, and only then closes; the `state` frame on the
   same sample names the same word, so the two frames never disagree.
 - The MCP server, the desktop launcher, and `devboard bench` use the same REST API. The launcher

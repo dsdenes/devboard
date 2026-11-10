@@ -909,6 +909,10 @@ pub enum AgentLifecycle {
 pub struct ReleaseTrainWorkerRecord {
     pub version: i64,
     pub pid: u32,
+    /// The pid's kernel start tick, the identity that tells this worker from
+    /// a later process the kernel gave the same pid.
+    #[serde(default)]
+    pub start_ticks: Option<i64>,
     pub started_at: String,
     pub root: String,
     pub state_dir: String,
@@ -962,6 +966,7 @@ pub fn parse_worker_state(text: &str) -> Option<ReleaseTrainWorkerRecord> {
     Some(ReleaseTrainWorkerRecord {
         version: WORKER_VERSION,
         pid: pid as u32,
+        start_ticks: object.get("startTicks").and_then(Value::as_i64),
         started_at: object.get("startedAt")?.as_str()?.to_string(),
         root: object.get("root")?.as_str()?.to_string(),
         state_dir: object.get("stateDir")?.as_str()?.to_string(),
@@ -3287,6 +3292,7 @@ impl ReleaseTrainWorker {
         inner.worker = Some(ReleaseTrainWorkerRecord {
             version: WORKER_VERSION,
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: started_at.clone(),
             root: self.repo_dir.to_string_lossy().into_owned(),
             state_dir: self.owner_state_dir.to_string_lossy().into_owned(),

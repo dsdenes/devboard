@@ -436,6 +436,10 @@ pub fn is_valid_cadence(value: i64) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct ScoutWorkerRecord {
     pub pid: u32,
+    /// The pid's kernel start tick, the identity that tells this worker from
+    /// a later process the kernel gave the same pid.
+    #[serde(default)]
+    pub start_ticks: Option<i64>,
     pub started_at: String,
     pub state_dir: String,
     pub harness_version: Option<String>,
@@ -610,6 +614,7 @@ fn parse_worker(value: &Value) -> Option<ScoutWorkerRecord> {
         .collect::<Option<Vec<String>>>()?;
     Some(ScoutWorkerRecord {
         pid: pid as u32,
+        start_ticks: object.get("startTicks").and_then(Value::as_i64),
         started_at: value_string(object.get("startedAt"))?,
         state_dir: value_string(object.get("stateDir"))?,
         harness_version: nullable_string(object.get("harnessVersion"))?,
@@ -2923,6 +2928,7 @@ impl ScoutWorker {
         state.enabled = true;
         state.worker = Some(ScoutWorkerRecord {
             pid: std::process::id(),
+            start_ticks: crate::supervision::start_ticks(std::process::id()),
             started_at: iso_from_millis(now),
             state_dir: self.state_dir.to_string_lossy().into_owned(),
             harness_version: self.harness_version.clone(),

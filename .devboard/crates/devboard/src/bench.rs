@@ -291,6 +291,7 @@ fn seed_run(
         "repo": "fixture",
         "status": status,
         "workerPid": worker_pid,
+        "startTicks": crate::supervision::start_ticks(worker_pid),
         "startedAt": "2026-11-10T00:00:00.000Z",
         "finishedAt": if status == "running" { Value::Null } else { json!("2026-11-10T00:05:00.000Z") },
         "harnessVersion": "1.0.0",

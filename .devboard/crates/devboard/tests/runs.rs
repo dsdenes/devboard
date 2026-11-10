@@ -879,8 +879,15 @@ async fn ask_runs_survive_a_replacement_with_one_answer() {
 }
 
 /// One Issues run record plus its activity file: the durable source the
-/// collection and the output sockets read.
-fn seed_issue_run(scratch: &Scratch, id: &str, status: &str, worker_pid: u32) -> PathBuf {
+/// collection and the output sockets read. `start_ticks` is the identity the
+/// record keeps beside the pid; `None` writes a record that predates it.
+fn seed_issue_run(
+    scratch: &Scratch,
+    id: &str,
+    status: &str,
+    worker_pid: u32,
+    start_ticks: Option<i64>,
+) -> PathBuf {
     let repo = scratch.repo();
     let directory = scratch
         .state()
@@ -888,21 +895,19 @@ fn seed_issue_run(scratch: &Scratch, id: &str, status: &str, worker_pid: u32) ->
         .join(devboard::journal::journal_key(&repo))
         .join("runs")
         .join(id);
-    write(
-        &directory.join("run.json"),
-        &format!(
-            "{}\n",
-            json!({
-                "version": 1,
-                "runId": id,
-                "repo": "fixture",
-                "status": status,
-                "workerPid": worker_pid,
-                "startedAt": "2026-11-10T00:00:00.000Z",
-                "harnessVersion": "1.0.0",
-            })
-        ),
-    );
+    let mut record = json!({
+        "version": 1,
+        "runId": id,
+        "repo": "fixture",
+        "status": status,
+        "workerPid": worker_pid,
+        "startedAt": "2026-11-10T00:00:00.000Z",
+        "harnessVersion": "1.0.0",
+    });
+    if let Some(ticks) = start_ticks {
+        record["startTicks"] = json!(ticks);
+    }
+    write(&directory.join("run.json"), &format!("{record}\n"));
     write(
         &directory.join("activity.json"),
         &format!("{}\n", json!(["one", "two"])),
@@ -923,7 +928,13 @@ fn file_identity(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
 async fn four_sockets_read_one_run_once_per_interval() {
     let scratch = Scratch::new("sample");
     let _repo = fixture_repo(&scratch);
-    let directory = seed_issue_run(&scratch, "fixture", "running", std::process::id());
+    let directory = seed_issue_run(
+        &scratch,
+        "fixture",
+        "running",
+        std::process::id(),
+        devboard::supervision::start_ticks(std::process::id()),
+    );
     let mut server = spawn_server(&scratch, "true");
     let port = server.listening_port().await;
     let base = server.base();
@@ -990,7 +1001,13 @@ async fn four_sockets_read_one_run_once_per_interval() {
 async fn a_cursor_from_the_previous_process_resynchronizes_after_a_replacement() {
     let scratch = Scratch::new("stale-cursor");
     let _repo = fixture_repo(&scratch);
-    let directory = seed_issue_run(&scratch, "fixture", "running", std::process::id());
+    let directory = seed_issue_run(
+        &scratch,
+        "fixture",
+        "running",
+        std::process::id(),
+        devboard::supervision::start_ticks(std::process::id()),
+    );
     let mut first = spawn_server(&scratch, "true");
     let port = first.listening_port().await;
     let base = first.base();
@@ -1116,7 +1133,7 @@ async fn a_cursor_from_the_previous_process_resynchronizes_after_a_replacement()
 async fn an_orphaned_running_record_is_stopped_and_unrewritten() {
     let scratch = Scratch::new("orphan");
     let _repo = fixture_repo(&scratch);
-    let directory = seed_issue_run(&scratch, "orphan", "running", 999_995);
+    let directory = seed_issue_run(&scratch, "orphan", "running", 999_995, None);
     let before = file_identity(&directory.join("run.json"));
     let mut server = spawn_server(&scratch, "true");
     let port = server.listening_port().await;
@@ -1179,7 +1196,13 @@ async fn a_killed_run_socket_receives_its_terminal_status_frame() {
     let scratch = Scratch::new("dead-socket");
     let _repo = fixture_repo(&scratch);
     let mut worker = live_worker();
-    seed_issue_run(&scratch, "orphan", "running", worker.id());
+    seed_issue_run(
+        &scratch,
+        "orphan",
+        "running",
+        worker.id(),
+        devboard::supervision::start_ticks(worker.id()),
+    );
     let mut server = spawn_server(&scratch, "true");
     let port = server.listening_port().await;
     let base = server.base();
@@ -1249,6 +1272,7 @@ async fn a_killed_family_worker_run_receives_its_terminal_status_frame() {
         &json!({
             "version": 1,
             "pid": worker.id(),
+            "startTicks": devboard::supervision::start_ticks(worker.id()),
             "startedAt": "2026-01-01T00:00:00.000Z",
             "root": repo.to_string_lossy(),
             "stateDir": scratch.state().to_string_lossy(),
@@ -1302,6 +1326,101 @@ async fn a_killed_family_worker_run_receives_its_terminal_status_frame() {
     let _ = server.child.kill();
 }
 
+/// A live pid is not proof of a live run: the kernel reuses a dead worker's
+/// pid, so the start tick recorded beside it is what tells the two processes
+/// apart. A record whose tick differs, or that carries none, is stopped and
+/// holds no socket; a record whose tick names the live owner stays live.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recycled_pid_does_not_revive_a_finished_run() {
+    let scratch = Scratch::new("recycled");
+    let _repo = fixture_repo(&scratch);
+    let owner = std::process::id();
+    let actual = devboard::supervision::start_ticks(owner).expect("the owner's start tick");
+    seed_issue_run(&scratch, "recycled", "running", owner, Some(actual + 1));
+    seed_issue_run(&scratch, "unproven", "running", owner, None);
+    seed_issue_run(&scratch, "owned", "running", owner, Some(actual));
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+
+    let client = reqwest::Client::new();
+    let body: Value = client
+        .get(format!("{base}/agent-runs"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a collection")
+        .json()
+        .await
+        .expect("JSON");
+    let runs = body["runs"].as_array().expect("a run list").clone();
+    let find = |id: &str| {
+        runs.iter()
+            .find(|run| run["id"] == json!(format!("issues--{id}")))
+            .cloned()
+            .unwrap_or_else(|| panic!("the {id} record: {body}"))
+    };
+    let recycled = find("recycled");
+    assert_eq!(
+        recycled["live"],
+        json!(false),
+        "a different start tick is a different process"
+    );
+    assert_eq!(recycled["lifecycle"], json!("stopped"));
+    let unproven = find("unproven");
+    assert_eq!(
+        unproven["live"],
+        json!(false),
+        "a record without a start tick cannot prove its owner"
+    );
+    assert_eq!(unproven["lifecycle"], json!("stopped"));
+    let owned = find("owned");
+    assert_eq!(
+        owned["live"],
+        json!(true),
+        "the recorded start tick names the live owner"
+    );
+    assert_eq!(owned["lifecycle"], json!("running"));
+
+    let body: Value = client
+        .get(format!("{base}/agent-runs/issues--recycled"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a representation")
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(body["live"], json!(false));
+    assert_eq!(body["lifecycle"], json!("stopped"));
+
+    let mut socket = run_socket(port, "issues--recycled", None).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let closed = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, socket.next()).await {
+            Ok(Some(Ok(Message::Close(_)))) | Ok(None) => break true,
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(_))) => break true,
+            Err(_) => break false,
+        }
+    };
+    assert!(
+        closed,
+        "a record that cannot prove its owner holds no output socket"
+    );
+
+    if let Some(lease) =
+        devboard::detached_run::read_detached_lease(&scratch.state(), &scratch.repo())
+    {
+        unsafe {
+            libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    let _ = server.child.kill();
+}
+
 /// A worker that publishes its record beside the repository is still a run
 /// the collection lists, and its representation is one the socket can open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1314,6 +1433,7 @@ async fn a_live_watchdog_worker_is_a_collected_run() {
         &json!({
             "version": 1,
             "pid": std::process::id(),
+            "startTicks": devboard::supervision::start_ticks(std::process::id()),
             "startedAt": "2026-01-01T00:00:00.000Z",
             "root": repo.to_string_lossy(),
             "stateDir": scratch.state().to_string_lossy(),
