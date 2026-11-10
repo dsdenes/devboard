@@ -4110,10 +4110,15 @@ the forge through the shared dashboard reader, so a closure reaches the table wi
 own fresh read; a stopped worker is left stopped and receives no command. The page shows the
 shared lifecycle, last-read clock, cadence, limits, filed-issues table, and detail panel described
 above, plus `scout-activity` for the current or newest scan. The page also shows `agent-error` for
-the last error and `agent-sync-error` for a failed forge read. A fresh worker that inherits a scan
-the previous worker left `running` closes that scan in its record as failed with the cause, and
-raises no `agent-error`: the interruption belongs to the worker that exited, not to the worker that
-starts, and an error notification is never the recovery of a scan the running worker never began.
+the last error and `agent-sync-error` for a failed forge read. A read the forge never answered — a
+refused or reset connection, a `5xx`, a timeout, or another transport failure — spends the retry
+schedule and keeps its reason in `agent-sync-error` alone: it raises no `agent-error`, because that
+error notification files a board issue back into the forge that is down. A refusal the forge
+answered, such as an unusable credential or a missing repository, still raises `agent-error`. A
+fresh worker that inherits a scan the previous worker left `running` closes that scan in its
+record as failed with the cause, and raises no `agent-error`: the interruption belongs to the
+worker that exited, not to the worker that starts, and an error notification is never the recovery
+of a scan the running worker never began.
 
 There is no review path. While a worker runs, each scan turn describes the complete survey and lets
 the agent file its own accepted items: every recommendation scored 4 or 5 is created as a GitHub

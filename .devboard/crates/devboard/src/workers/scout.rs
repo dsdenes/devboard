@@ -22,10 +22,10 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent};
 use crate::forge::{
     classify_forge_read_failure, git, gitea_closing_commits, gitea_json, gitea_list_issues,
-    gitea_list_labelled_issues, gitea_list_releases, is_forge_read_latency, origin_forge_with,
-    resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge, ForgeReadFailureKind,
-    ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState, RepositoryGitHub,
-    RepositoryGitHubOptions, VersionResolution,
+    gitea_list_labelled_issues, gitea_list_releases, is_forge_read_latency, is_forge_read_outage,
+    origin_forge_with, resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge,
+    ForgeReadFailureKind, ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState,
+    RepositoryGitHub, RepositoryGitHubOptions, VersionResolution,
 };
 use crate::journal::journal_key;
 use crate::providers::{create_worker_provider_environment, ProviderOptions};
@@ -3300,8 +3300,16 @@ impl ScoutWorker {
             at: runtime.state.sync.at.clone(),
             error: Some(detail.to_string()),
         };
-        runtime.state.last_error =
-            (kind != ForgeReadFailureKind::RateLimit).then(|| detail.to_string());
+        // A forge that could not answer is not the agent's own error. The spent
+        // schedule already wrote the request and its cause to `agent-sync-error`,
+        // where the page renders it with the last-read clock; raising it as
+        // `agent-error` would open a dashboard error notification and file a
+        // board issue back into the forge that is down. A refusal the forge
+        // actually answered — an unusable credential, a missing repository — is
+        // the operator's to fix and still takes the agent's error.
+        runtime.state.last_error = (kind != ForgeReadFailureKind::RateLimit
+            && !is_forge_read_outage(detail))
+        .then(|| detail.to_string());
         runtime.state.notice = Some(format!("Could not read the forge: {detail}"));
         runtime.state.next_attempt_at = None;
         runtime.next_sync_at = now + self.sync_ms as i64;

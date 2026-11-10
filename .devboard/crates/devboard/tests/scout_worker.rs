@@ -691,6 +691,109 @@ async fn a_transient_read_failure_keeps_the_last_rows_and_retries_shortly() {
     worker.stop().await;
 }
 
+/// A forge that cannot answer its issue read: the same message comes back on
+/// every attempt, so a test drives the shared retry schedule to exhaustion.
+struct UnavailableForge {
+    detail: String,
+}
+
+impl ClosingCommitClient for UnavailableForge {
+    fn closing_commit(&self, _n: i64) -> ClientFuture<'_, Option<String>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn resolve_commit(&self, _s: String) -> ClientFuture<'_, Option<String>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn containing_release_tags(
+        &self,
+        _c: String,
+        _r: Vec<GitHubRelease>,
+    ) -> ClientFuture<'_, Vec<String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+impl ScoutForge for UnavailableForge {
+    fn list_issues(&self) -> ForgeFuture<Vec<ScoutForgeIssue>> {
+        let detail = self.detail.clone();
+        Box::pin(async move { Err(detail) })
+    }
+    fn list_open_issue_titles(&self) -> ForgeFuture<Vec<String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn list_releases(&self) -> ForgeFuture<Vec<GitHubRelease>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    fn closing_client(&self) -> &dyn ClosingCommitClient {
+        self
+    }
+}
+
+fn failing_worker(repo: &Path, detail: &str) -> ScoutWorker {
+    let mut options = ScoutWorkerOptions::new(repo, repo.join(".devboard").join("state"));
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(UnavailableForge {
+        detail: detail.to_string(),
+    }));
+    options.agent = Some(Arc::new(|_context| Box::pin(async { Ok(()) })));
+    options.sync_ms = Some(1000);
+    ScoutWorker::new(options)
+}
+
+/// The fifth consecutive transport failure names its request on the card, but
+/// a forge that never answered is not the agent's own error: raising
+/// `agent-error` opens a dashboard error notification that files a board issue
+/// back into the forge that is down.
+#[tokio::test]
+async fn an_unavailable_forge_keeps_its_reason_on_the_card() {
+    let detail =
+        "GET /repos/acme/fixture/issues?state=all&type=issues&limit=50&page=1&labels=scout \
+                  failed: error sending request for url \
+                  (http://localhost:3001/api/v1/repos/acme/fixture/issues): client error \
+                  (Connect): tcp connect error: Connection refused (os error 111)";
+    let repo = scratch("unavailable");
+    let worker = failing_worker(&repo, detail);
+    assert!(worker.start("acme/fixture"));
+    for _ in 0..5 {
+        worker.refresh().await;
+    }
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, "error", "the schedule is spent");
+    assert_eq!(
+        state.sync.error.as_deref(),
+        Some(detail),
+        "the card names the request that failed"
+    );
+    assert!(
+        state.last_error.is_none(),
+        "an outage raises no error notification: {:?}",
+        state.last_error
+    );
+    assert_eq!(
+        state.notice.as_deref(),
+        Some(format!("Could not read the forge: {detail}").as_str())
+    );
+    worker.stop().await;
+}
+
+/// A refusal the forge answered is the credential's problem, not an outage, so
+/// the exhausted schedule still raises `agent-error`.
+#[tokio::test]
+async fn a_refused_read_still_raises_the_error_alarm() {
+    let detail = "GET /repos/acme/fixture/issues failed (HTTP 401): \
+                  invalid username, password or token";
+    let repo = scratch("refused");
+    let worker = failing_worker(&repo, detail);
+    assert!(worker.start("acme/fixture"));
+    for _ in 0..5 {
+        worker.refresh().await;
+    }
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, "error");
+    assert_eq!(state.last_error.as_deref(), Some(detail));
+    worker.stop().await;
+}
+
 /// A forge that answers in 39 seconds is slow, not broken: the read's deadline
 /// expires, and the worker must keep the last rows and read again on its normal
 /// cadence instead of spending the failure schedule and raising the
