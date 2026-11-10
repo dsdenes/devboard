@@ -45,8 +45,8 @@ function layout(log: HTMLElement): { grow: (by: number) => void } {
   };
 }
 
-async function mount(lines: string[], runId: string) {
-  const view = render(IssuesAgentLog, { props: { lines, testid: "activity", runId } });
+async function mount(lines: string[], props: { runId?: string; identity?: string } = {}) {
+  const view = render(IssuesAgentLog, { props: { lines, testid: "activity", ...props } });
   const log = view.getByTestId("activity");
   const pane = layout(log);
   await tick();
@@ -54,7 +54,7 @@ async function mount(lines: string[], runId: string) {
 }
 
 test("selecting another run returns the log to that run's tail", async () => {
-  const { view, log } = await mount(["first run line"], "run-1");
+  const { view, log } = await mount(["first run line"], { runId: "run-1" });
 
   log.scrollTop = 40;
   await fireEvent.scroll(log);
@@ -68,7 +68,7 @@ test("selecting another run returns the log to that run's tail", async () => {
 });
 
 test("the selected run keeps following its appended lines", async () => {
-  const { view, log, pane } = await mount(["first run line"], "run-1");
+  const { view, log, pane } = await mount(["first run line"], { runId: "run-1" });
 
   log.scrollTop = 40;
   await fireEvent.scroll(log);
@@ -85,7 +85,7 @@ test("the selected run keeps following its appended lines", async () => {
 });
 
 test("scrolling up inside one run keeps the operator's offset", async () => {
-  const { view, log, pane } = await mount(["line one"], "run-1");
+  const { view, log, pane } = await mount(["line one"], { runId: "run-1" });
 
   log.scrollTop = 40;
   await fireEvent.scroll(log);
@@ -98,9 +98,32 @@ test("scrolling up inside one run keeps the operator's offset", async () => {
   expect(log.scrollTop).toBe(40);
 });
 
+test("a caller's reset identity returns the log to its subject's tail without a run id", async () => {
+  const { view, log, pane } = await mount(["draft a line"], { identity: "draft-a" });
+
+  log.scrollTop = 40;
+  await fireEvent.scroll(log);
+  await tick();
+  expect(log.scrollTop).toBe(40);
+
+  pane.grow(VIEWPORT);
+  await view.rerender({ lines: ["draft a line", "draft a appended"], identity: "draft-a" });
+  await tick();
+  expect(log.scrollTop).toBe(40);
+
+  await view.rerender({ lines: ["draft b line"], identity: "draft-b" });
+  await tick();
+  expect(log.scrollTop).toBe(log.scrollHeight - log.clientHeight);
+
+  pane.grow(VIEWPORT);
+  await view.rerender({ lines: ["draft b line", "draft b appended"], identity: "draft-b" });
+  await tick();
+  expect(log.scrollTop).toBe(log.scrollHeight - log.clientHeight);
+});
+
 test("renders one span per entry with its kind, prompt, and literal newlines", async () => {
   const lines = ["$ cargo test", "", "2 passed"];
-  const { log } = await mount(lines, "run-1");
+  const { log } = await mount(lines, { runId: "run-1" });
 
   expect(log.textContent).toBe(lines.join("\n"));
 

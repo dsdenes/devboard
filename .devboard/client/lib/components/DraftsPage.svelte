@@ -317,7 +317,11 @@
               aria-label="Elaboration activity"
             >
               <h3 class="issues-draft-detail__label">Elaboration activity</h3>
-              <IssuesAgentLog lines={run.activity} testid="issues-draft-activity" />
+              <IssuesAgentLog
+                lines={run.activity}
+                testid="issues-draft-activity"
+                identity={goalDrafts.draft.path}
+              />
             </section>
           {/if}
         </div>

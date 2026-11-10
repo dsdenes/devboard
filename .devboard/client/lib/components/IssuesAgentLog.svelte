@@ -2,20 +2,28 @@
   interface Props {
     lines: string[];
     testid: string;
+    /** The Issues run this log renders, for `data-run`. */
     runId?: string;
+    /** What the log follows; a change starts at the new subject's newest line. */
+    identity?: string;
   }
 
-  let { lines, testid, runId }: Props = $props();
+  let { lines, testid, runId, identity }: Props = $props();
 
   let element = $state<HTMLPreElement | null>(null);
   let follow = $state(true);
-  let shownRunId = $state<string | undefined>(undefined);
+  let shownIdentity = $state<string | undefined>(undefined);
 
-  // The offset and follow flag belong to the run the operator scrolled, so a
-  // switch to another run starts at that run's newest line.
+  // A caller that renders something other than an Issues run names its subject
+  // with `identity`; the run id is the default identity.
+  const resetIdentity = $derived(identity ?? runId);
+
+  // The offset and follow flag belong to the subject the operator scrolled, so
+  // a switch to another subject starts at that subject's newest line.
   $effect(() => {
-    if (runId === shownRunId) return;
-    shownRunId = runId;
+    const next = resetIdentity;
+    if (next === shownIdentity) return;
+    shownIdentity = next;
     follow = true;
     if (element !== null) element.scrollTop = element.scrollHeight;
   });
