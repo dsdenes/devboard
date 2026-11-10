@@ -519,6 +519,18 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   with a 1px `border-subtle` outline, 4px radius, and a `clamp(240px, 46vh, 480px)` height cap.
   The MCP optimizer template uses the same region, and a loading or absent line is one 12px
   `muted-foreground` sentence. It is closed on every load and renders no source-only marker.
+- **Documentation changes panel** (`.agent-documentation` in `AgentDocumentationPanel.svelte`) —
+  the Design System page's released documentation list above the filed-issues table: a
+  content-height panel (`flex: 0 0 auto` in the scrolling agent column) whose list carries no
+  height cap and no inner scrollbar, so the page's scroll region shows every release and the
+  panel never clips its own rows. Each release is one disclosure row: a two-line summary of the
+  12px `body-small` change title with a 14px `muted-foreground` chevron on its trailing edge,
+  then an 11.5px `mono-small` metadata row holding the `accent` version link, the local release
+  clock, and the changed file names, with the shared `row-hover`, 2px inset `ring`, and 90° 120ms
+  chevron rotation (none under `prefers-reduced-motion`). The open row holds the exact unified
+  diff in one 12px mono scrollable `PRE` on `background` with a 1px `border-subtle` outline, 4px
+  radius, and the shared `clamp(240px, 46vh, 480px)` height cap. Rows separate on a 1px `border`
+  hairline and the empty line is one 12px `muted-foreground` sentence.
 - **Stage track** (`stage-track.svelte`) — five equal-width stage cells (Goal, Epics, ADRs,
   Implementation, Finished) at 11px/600, 4px gaps, 3px radius, `border-subtle` for future stages,
   `border` for complete stages, and `accent-surface` plus a 1px `accent` edge for the current
