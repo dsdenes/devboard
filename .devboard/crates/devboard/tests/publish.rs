@@ -2315,7 +2315,13 @@ impl CommandRunner for RebuildRunner {
         invocation: CommandInvocation,
     ) -> Pin<Box<dyn Future<Output = CommandOutcome> + Send + 'a>> {
         Box::pin(async move {
-            if invocation.program == "bun" {
+            // `bun` is started through the resolved path, so the seam matches
+            // the program's file name rather than the bare command.
+            let program = std::path::Path::new(&invocation.program)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if program == "bun" {
                 let arguments: Vec<&str> = invocation.args.iter().map(String::as_str).collect();
                 return match arguments.as_slice() {
                     ["run", "build"] => {

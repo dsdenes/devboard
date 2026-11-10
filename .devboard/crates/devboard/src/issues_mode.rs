@@ -47,7 +47,11 @@ const TRACKER_SYNC_INTERVAL_MS: u64 = 30_000;
 /// Whole-read deadline for one tracker read.
 const TRACKER_TIMEOUT_MS: u64 = 20_000;
 /// The dashboard's own snapshot cadence.
-const DASHBOARD_POLL_MS: u64 = 250;
+/// The dashboard's own Issues snapshot cadence. The page refreshes every
+/// registered resource once a second, so one build per second serves it: the
+/// bridge no longer rebuilds a history-sized projection four times a second
+/// whether or not anything changed.
+const DASHBOARD_POLL_MS: u64 = 1_000;
 /// A page polls one resource every 1000 ms while the document is visible, so
 /// one sync interval plus this window still names a page that is reading.
 const CLIENT_POLL_MS: i64 = 1_000;
@@ -2740,9 +2744,19 @@ impl IssuesOptions {
     }
 }
 
+/// One built Issues projection and its serialized frame, so a page poll
+/// answers from what the bridge already published instead of rebuilding it.
+struct CachedProjection {
+    snapshot: Value,
+    frame_text: String,
+}
+
 #[derive(Default)]
 struct BridgeInner {
     last_signature: String,
+    /// The last built projection. `replay` and the mode gate answer from it;
+    /// `refresh` and an action's reply replace it.
+    cached: Option<CachedProjection>,
     last_activities: HashMap<String, Vec<String>>,
     run_versions: HashMap<String, Option<String>>,
     stopping: HashMap<u32, u64>,
@@ -3005,7 +3019,38 @@ impl IssuesBridge {
     /* Snapshot                                                            */
     /* ------------------------------------------------------------------ */
 
+    /// A current projection, rebuilt now. A caller that asks for the state
+    /// reflects the files as they stand.
     pub fn snapshot(&self) -> Value {
+        self.refresh_projection().0
+    }
+
+    /// The projection the bridge already published, built on first use. A
+    /// page's poll answers from this, so one snapshot serves every viewer.
+    fn cached_projection(&self) -> (Value, String) {
+        if let Ok(inner) = self.inner.lock() {
+            if let Some(cached) = &inner.cached {
+                return (cached.snapshot.clone(), cached.frame_text.clone());
+            }
+        }
+        self.refresh_projection()
+    }
+
+    /// Rebuilds the projection and stores it with its serialized frame.
+    fn refresh_projection(&self) -> (Value, String) {
+        let snapshot = self.build_snapshot();
+        let frame = Self::typed_snapshot(snapshot.clone());
+        let frame_text = crate::jsjson::stringify(&frame);
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.cached = Some(CachedProjection {
+                snapshot: snapshot.clone(),
+                frame_text: frame_text.clone(),
+            });
+        }
+        (snapshot, frame_text)
+    }
+
+    fn build_snapshot(&self) -> Value {
         let owners = self.owners();
         let attached_owners: Vec<LockOwner> = owners
             .iter()
@@ -3410,8 +3455,8 @@ impl IssuesBridge {
     /// each of those pages reads it on its own next read.
     pub fn replay(&self, conn: &Conn) {
         self.demand_at.store(monotonic_millis(), Ordering::Relaxed);
-        let snapshot = self.snapshot();
-        conn.send(Self::typed_snapshot(snapshot.clone()));
+        let (snapshot, frame_text) = self.cached_projection();
+        conn.send_payload(frame_text);
         for run_id in self.active_run_ids(&snapshot) {
             let activity = self.read_activity(&run_id);
             {
@@ -3432,7 +3477,8 @@ impl IssuesBridge {
     /// reaches 1 MiB, so replaying every running agent's log here made a
     /// Start's answer 32 MB on a dashboard with sixteen running agents.
     pub fn reply(&self, conn: &Conn) {
-        conn.send(Self::typed_snapshot(self.snapshot()));
+        let (_, frame_text) = self.refresh_projection();
+        conn.send_payload(frame_text);
     }
 
     /// One snapshot with the frame type the page reads it by.
@@ -3449,8 +3495,8 @@ impl IssuesBridge {
 
     /// Recomputes the state and publishes a changed snapshot and activity.
     pub fn refresh(&self) {
-        let snapshot = self.snapshot();
-        let signature = crate::jsjson::stringify(&snapshot);
+        let (snapshot, frame_text) = self.refresh_projection();
+        let signature = frame_text;
         let changed = {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             if inner.last_signature == signature {
