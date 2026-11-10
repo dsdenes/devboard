@@ -24,6 +24,15 @@ pub enum From {
     Body,
 }
 
+/// The JSON shape one body field must carry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Any JSON value; the dispatcher reads it.
+    Any,
+    /// A JSON boolean.
+    Boolean,
+}
+
 /// One field the request carries for an operation.
 pub struct Field {
     pub from: From,
@@ -31,6 +40,10 @@ pub struct Field {
     pub name: &'static str,
     /// The command field the dispatcher reads.
     pub field: &'static str,
+    /// True when a request that omits the field is refused.
+    pub required: bool,
+    /// The JSON shape the value must carry.
+    pub kind: Kind,
 }
 
 /// Where a creation's `Location` comes from.
@@ -62,7 +75,24 @@ pub struct Route {
 }
 
 const fn field(from: From, name: &'static str, field: &'static str) -> Field {
-    Field { from, name, field }
+    Field {
+        from,
+        name,
+        field,
+        required: false,
+        kind: Kind::Any,
+    }
+}
+
+/// A body field that must be present and a JSON boolean.
+const fn required_boolean(name: &'static str, field: &'static str) -> Field {
+    Field {
+        from: From::Body,
+        name,
+        field,
+        required: true,
+        kind: Kind::Boolean,
+    }
 }
 
 macro_rules! path_field {
@@ -74,6 +104,12 @@ macro_rules! path_field {
 macro_rules! body_field {
     ($name:literal, $field:literal) => {
         field(From::Body, $name, $field)
+    };
+}
+
+macro_rules! boolean_field {
+    ($name:literal, $field:literal) => {
+        required_boolean($name, $field)
     };
 }
 
@@ -388,7 +424,10 @@ pub static ROUTES: &[Route] = &[
         "acceptFlowWidget",
         PATCH,
         "/flows/widgets/{id}",
-        [path_field!("id", "id"), body_field!("accepted", "accepted"),],
+        [
+            path_field!("id", "id"),
+            boolean_field!("accepted", "accepted")
+        ],
         200,
         false
     ),
@@ -806,10 +845,23 @@ fn build_command(
                 Some(value) => scalar(value),
                 None => return Err(format!("The query parameter {} is required.", field.name)),
             },
-            From::Body => match body.get(field.name).or_else(|| body.get(field.field)) {
-                Some(value) => value.clone(),
-                None => continue,
-            },
+            From::Body => {
+                let value = body.get(field.name).or_else(|| body.get(field.field));
+                let value = match value {
+                    Some(value) => value,
+                    None if field.required => {
+                        return Err(format!("The request body has no {}.", field.name))
+                    }
+                    None => continue,
+                };
+                if field.kind == Kind::Boolean && !value.is_boolean() {
+                    return Err(format!(
+                        "The request body {} must be a boolean.",
+                        field.name
+                    ));
+                }
+                value.clone()
+            }
         };
         object.insert(field.field.to_string(), value);
     }
@@ -1462,6 +1514,43 @@ mod tests {
         );
         assert!(body["next"].is_string());
         assert!(body["prev"].is_string());
+    }
+
+    #[test]
+    fn a_widget_acceptance_requires_a_boolean_decision() {
+        let matched = match_route(&Method::PATCH, "/flows/widgets/widget-1").expect("a route");
+        let build = |body: Value| {
+            let object = body.as_object().expect("an object").clone();
+            build_command(&matched, &[], &object)
+        };
+        for body in [
+            json!({}),
+            json!({"accepted": "false"}),
+            json!({"accepted": 0}),
+            json!({"accepted": null}),
+        ] {
+            let error = build(body.clone()).expect_err(&format!("{body} is refused"));
+            assert!(
+                error.contains("accepted"),
+                "the refusal names the field: {error}"
+            );
+        }
+        for (body, decision) in [
+            (json!({"accepted": true}), true),
+            (json!({"accepted": false}), false),
+        ] {
+            let command = build(body).expect("a boolean decision");
+            match command {
+                Command::AcceptFlowWidget {
+                    id: Some(id),
+                    accepted: Some(Value::Bool(accepted)),
+                } => {
+                    assert_eq!(id, "widget-1");
+                    assert_eq!(accepted, decision);
+                }
+                other => panic!("{other:?} is not a widget acceptance"),
+            }
+        }
     }
 
     #[test]

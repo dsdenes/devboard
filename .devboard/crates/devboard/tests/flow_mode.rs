@@ -258,6 +258,39 @@ fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
         .join(session_id)
 }
 
+/// The answer one widget acceptance request receives at the REST surface.
+async fn patch_widget(app: &Arc<App>, id: &str, body: &str) -> (u16, Value) {
+    let request = axum::http::Request::builder()
+        .method("PATCH")
+        .uri(format!("/flows/widgets/{id}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("a widget acceptance request");
+    let response = devboard::rest::handle(app, request)
+        .await
+        .expect("the widget acceptance route");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("the response body");
+    let problem = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, problem)
+}
+
+/// The session's accepted widget signatures, in acceptance order.
+fn accepted_signatures(directory: &Path) -> Vec<String> {
+    let document: Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.join("accepted.json")).expect("accepted.json"),
+    )
+    .expect("accepted JSON");
+    document["signatures"]
+        .as_array()
+        .expect("signatures")
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_goal_widgets_steering_and_conversation_round_trip() {
     let _env = ENV_LOCK.lock().await;
@@ -383,16 +416,34 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
         .await;
     assert_eq!(draft["pr"]["number"], json!(7));
 
-    // --- widget acceptance
-    send(
-        &app,
-        &client.conn,
-        Command::AcceptFlowWidget {
-            id: Some(json!(first_id)),
-            accepted: Some(json!(true)),
-        },
-    )
-    .await;
+    // --- widget acceptance is a required boolean at the REST surface
+    assert_eq!(
+        accepted_signatures(&directory),
+        Vec::<String>::new(),
+        "a widget list starts with nothing accepted"
+    );
+    for body in [
+        "{}",
+        r#"{"accepted": "false"}"#,
+        r#"{"accepted": 0}"#,
+        r#"{"accepted": null}"#,
+    ] {
+        let (status, problem) = patch_widget(&app, &first_id, body).await;
+        assert_eq!(status, 400, "PATCH {body} is refused");
+        assert!(
+            problem["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("accepted")),
+            "the refusal names the field: {problem}"
+        );
+        assert_eq!(
+            accepted_signatures(&directory),
+            Vec::<String>::new(),
+            "PATCH {body} accepts nothing"
+        );
+    }
+    let (status, _) = patch_widget(&app, &first_id, r#"{"accepted": true}"#).await;
+    assert_eq!(status, 200);
     let accepted = client
         .wait_for("an accepted widget", |frame| {
             frame["type"] == "flowWidgets"
@@ -404,6 +455,25 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
         })
         .await;
     assert_eq!(accepted["type"], "flowWidgets");
+    assert_eq!(
+        accepted_signatures(&directory),
+        vec![first_id.clone()],
+        "an accepted decision adds the widget signature"
+    );
+    let (status, _) = patch_widget(&app, &first_id, r#"{"accepted": false}"#).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        accepted_signatures(&directory),
+        Vec::<String>::new(),
+        "a refused decision removes the widget signature"
+    );
+    let (status, _) = patch_widget(&app, &first_id, r#"{"accepted": true}"#).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        accepted_signatures(&directory),
+        vec![first_id.clone()],
+        "the accepted widget stays accepted for the rest of the session"
+    );
 
     // --- widget refusal becomes a steering note with the exact sentence
     send(

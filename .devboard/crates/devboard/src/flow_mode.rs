@@ -5031,7 +5031,13 @@ impl FlowMode {
             self.error("A widget acceptance needs the widget id.");
             return;
         };
-        let should_accept = accepted.as_ref() != Some(&Value::Bool(false));
+        let should_accept = match accepted {
+            Some(Value::Bool(accepted)) => accepted,
+            _ => {
+                self.error("A widget acceptance needs a boolean decision.");
+                return;
+            }
+        };
         let (widgets, signatures, path) = {
             let mut inner = self.lock();
             let Some(session) = inner

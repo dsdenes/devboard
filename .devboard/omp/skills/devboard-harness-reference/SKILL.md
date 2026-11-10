@@ -1165,6 +1165,8 @@ Flow Mode uses REST at `/flows`. The page polls the workspace and posts its acti
 `POST /flows/widget-refusals`, `POST /flows/widget-opens`, `DELETE /flows/widget-opens`,
 `POST /flows/conversations/messages`, `POST /flows/conclusions`, `DELETE /flows/blockers/{id}`, and
 `POST /flows/answers` (with `target` naming the goal, implementation, or conversation question).
+`PATCH /flows/widgets/{id}` requires an `accepted` boolean in the body and refuses its absence or
+any other JSON type with a 400.
 The workspace representation carries `flowSnapshot`, `flowGoalStarted`, `flowGoalStopped`,
 `flowImplementationStarted`, `flowStopped`, `flowActivity`, `flowQuestion`, `flowFiles`,
 `flowWidgets`, `flowSteering`, `flowDecisions`, `flowCheckpoints`, `flowVerification`,
