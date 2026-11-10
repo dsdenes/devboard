@@ -26,7 +26,7 @@ use crate::forge;
 pub use crate::forge::Environment;
 use crate::gitea::{self, GiteaTarget};
 use crate::jsjson;
-use crate::release::{MANIFEST_ASSET, RELEASE_REPOSITORY};
+use crate::release::{configured_project, MANIFEST_ASSET, RELEASE_REPOSITORY};
 use crate::release_suite;
 
 /// The workflow cargo-dist generates for the GitHub release host.
@@ -2771,19 +2771,13 @@ async fn resolve_gitea_target(
     let git = Git::new(runner, &args.repo_dir, &args.environment);
     let origin = git.run(&["remote", "get-url", remote]).await.stdout;
     let parsed = forge::parse_forge_remote(&origin, &args.environment);
-    let project = args
-        .environment
-        .get("DEVBOARD_RELEASE_REPO")
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let target = forge::gitea_target(
-        parsed.as_ref(),
-        project.as_deref(),
-        None,
-        None,
-        &args.environment,
-    )
-    .map_err(|error| anyhow!(error.to_string()))?;
+    let project = configured_project(
+        args.environment
+            .get("DEVBOARD_RELEASE_REPO")
+            .map(String::as_str),
+    );
+    let target = forge::gitea_target(parsed.as_ref(), project, None, None, &args.environment)
+        .map_err(|error| anyhow!(error.to_string()))?;
     Ok(GiteaTarget {
         base_url: target.base_url,
         project: target.project,

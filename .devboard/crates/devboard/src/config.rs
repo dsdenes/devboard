@@ -34,24 +34,26 @@ impl FeedbackConfig {
     /// Resolves the configuration from the environment, or `None` when
     /// harness reporting is disabled.
     pub fn from_env() -> Option<Self> {
-        let base_url = env::var("DEVBOARD_GITEA_URL").ok()?.trim().to_string();
+        Self::from_environment(|name| env::var(name).ok())
+    }
+
+    /// The resolution [`Self::from_env`] applies, over one environment read.
+    fn from_environment(read: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let base_url = read("DEVBOARD_GITEA_URL")?.trim().to_string();
         if base_url.is_empty() {
             return None;
         }
-        let token = env::var("GITEA_TOKEN")
-            .ok()
-            .or_else(|| env::var("DEVBOARD_GITEA_TOKEN").ok())
+        let token = read("GITEA_TOKEN")
+            .or_else(|| read("DEVBOARD_GITEA_TOKEN"))
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let timeout_ms = env::var("DEVBOARD_FEEDBACK_TIMEOUT_MS")
-            .ok()
+        let timeout_ms = read("DEVBOARD_FEEDBACK_TIMEOUT_MS")
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(60_000);
         Some(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            repo: env::var("DEVBOARD_RELEASE_REPO")
-                .unwrap_or_else(|_| "dsdenes/devboard".to_string()),
+            repo: crate::release::release_project(read("DEVBOARD_RELEASE_REPO").as_deref()),
             token,
             timeout_ms,
         })
@@ -204,6 +206,48 @@ mod tests {
             allowed_hosts: Vec::new(),
             feedback: None,
         }
+    }
+
+    fn feedback(environment: &[(&str, &str)]) -> FeedbackConfig {
+        FeedbackConfig::from_environment(|name| {
+            environment
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        })
+        .expect("DEVBOARD_GITEA_URL enables reporting")
+    }
+
+    fn feedback_with_repo(repo: Option<&str>) -> FeedbackConfig {
+        let mut environment = vec![("DEVBOARD_GITEA_URL", "http://forge.example:3000")];
+        if let Some(repo) = repo {
+            environment.push(("DEVBOARD_RELEASE_REPO", repo));
+        }
+        feedback(&environment)
+    }
+
+    #[test]
+    fn a_blank_release_repo_resolves_the_default_report_project() {
+        for blank in ["", " ", "\t\n "] {
+            assert_eq!(
+                feedback_with_repo(Some(blank)).repo,
+                crate::release::RELEASE_REPOSITORY,
+                "{blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_release_repo_resolves_the_default_report_project() {
+        assert_eq!(
+            feedback_with_repo(None).repo,
+            crate::release::RELEASE_REPOSITORY
+        );
+    }
+
+    #[test]
+    fn a_set_release_repo_names_the_report_project() {
+        assert_eq!(feedback_with_repo(Some(" owner/name ")).repo, "owner/name");
     }
 
     #[test]

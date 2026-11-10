@@ -98,11 +98,8 @@ pub fn manifest_source(
             download_base: String::new(),
         });
     }
-    let repository = environment
-        .get("DEVBOARD_RELEASE_REPO")
-        .cloned()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| release::RELEASE_REPOSITORY.to_string());
+    let repository =
+        release::release_project(environment.get("DEVBOARD_RELEASE_REPO").map(String::as_str));
     if let Some(base_url) = gitea_base(environment) {
         let token = environment
             .get("GITEA_TOKEN")

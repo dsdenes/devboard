@@ -20,6 +20,21 @@ pub const INSTALLED_MANIFEST: &str = "devboard.json";
 /// The release repository the updater reads.
 pub const RELEASE_REPOSITORY: &str = "dsdenes/devboard";
 
+/// The project `DEVBOARD_RELEASE_REPO` names: the trimmed value, or `None`
+/// when the variable is unset or blank.
+pub fn configured_project(configured: Option<&str>) -> Option<&str> {
+    configured.map(str::trim).filter(|value| !value.is_empty())
+}
+
+/// The release project a reporting or update read targets: the configured
+/// project, or [`RELEASE_REPOSITORY`] when the variable is unset or blank. One
+/// rule, so no two consumers resolve the same variable differently.
+pub fn release_project(configured: Option<&str>) -> String {
+    configured_project(configured)
+        .unwrap_or(RELEASE_REPOSITORY)
+        .to_string()
+}
+
 /// One platform artifact named by the manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseAsset {
@@ -684,6 +699,14 @@ mod tests {
             ReleaseInfo::from_manifest(&release.to_manifest()),
             Some(release)
         );
+    }
+
+    #[test]
+    fn a_blank_release_project_falls_back_to_the_release_repository() {
+        for blank in [None, Some(""), Some(" \t\n ")] {
+            assert_eq!(release_project(blank), RELEASE_REPOSITORY, "{blank:?}");
+        }
+        assert_eq!(release_project(Some(" owner/name ")), "owner/name");
     }
 
     #[test]
