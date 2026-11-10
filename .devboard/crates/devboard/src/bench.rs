@@ -567,17 +567,23 @@ async fn wait_ready(base: &str, timeout: Duration) -> anyhow::Result<()> {
     }
 }
 
-/// The one Runs view: the collection poll and one socket per live run.
+/// The one Runs view: the collection poll and one reconciled socket per live
+/// run.
 mod runs_view {
-    use super::*;
+    use std::collections::{HashMap, HashSet};
+
     use futures_util::StreamExt;
+    use tokio::task::JoinHandle;
+
+    use super::*;
 
     /// Opens the page's two reads: a conditional `/agent-runs` poll every
-    /// second, and the output socket the collection's live runs open.
+    /// second, and the output socket each live run keeps.
     pub fn open(base: String, port: u16) {
         tokio::spawn(async move {
             let client = reqwest::Client::new();
             let mut etag: Option<String> = None;
+            let mut view = LiveSockets::default();
             loop {
                 let mut request = client
                     .get(format!("{base}/agent-runs"))
@@ -597,7 +603,8 @@ mod runs_view {
                     let body = response.bytes().await.ok();
                     if status.is_success() {
                         if let Some(body) = body {
-                            open_live_sockets(port, &body);
+                            view.reconcile(&body, |id, cursor| spawn_socket(port, id, cursor))
+                                .await;
                         }
                     }
                 }
@@ -606,33 +613,182 @@ mod runs_view {
         });
     }
 
-    fn open_live_sockets(port: u16, body: &[u8]) {
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        let Ok(value) = serde_json::from_slice::<Value>(body) else {
-            return;
-        };
-        let Some(runs) = value.get("runs").and_then(Value::as_array) else {
-            return;
-        };
-        for run in runs {
-            if run.get("live").and_then(Value::as_bool) != Some(true) {
-                continue;
+    /// The sockets this view holds, keyed by run id.
+    ///
+    /// One socket exists per live run the poll sees: the first poll that sees
+    /// a run opens it, a run that leaves the live set has its socket aborted,
+    /// and a socket whose own read ended is the only one reopened, at its last
+    /// cursor. Spawning a socket on every poll instead left the scratch
+    /// dashboard serving one socket per elapsed second for the same run.
+    #[derive(Default)]
+    struct LiveSockets {
+        sockets: HashMap<String, JoinHandle<Option<u64>>>,
+        cursors: HashMap<String, u64>,
+    }
+
+    impl LiveSockets {
+        /// Reconciles this view with one `/agent-runs` body, the way the page
+        /// does: open a socket only for a live run that has none, abort the
+        /// socket of a run that left the live set, and reopen a run whose
+        /// socket ended with `after=<cursor>`.
+        async fn reconcile(
+            &mut self,
+            body: &[u8],
+            mut spawn: impl FnMut(&str, Option<u64>) -> JoinHandle<Option<u64>>,
+        ) {
+            let live: HashSet<String> = live_ids(body).into_iter().collect();
+            let absent: Vec<String> = self
+                .sockets
+                .keys()
+                .filter(|id| !live.contains(*id))
+                .cloned()
+                .collect();
+            for id in absent {
+                if let Some(socket) = self.sockets.remove(&id) {
+                    socket.abort();
+                }
+                self.cursors.remove(&id);
             }
-            let Some(id) = run.get("id").and_then(Value::as_str).map(str::to_string) else {
-                continue;
+            let ended: Vec<String> = self
+                .sockets
+                .iter()
+                .filter(|(_id, socket)| socket.is_finished())
+                .map(|(id, _socket)| id.clone())
+                .collect();
+            for id in ended {
+                if let Some(socket) = self.sockets.remove(&id) {
+                    if let Ok(Some(cursor)) = socket.await {
+                        self.cursors.insert(id, cursor);
+                    }
+                }
+            }
+            for id in live {
+                if self.sockets.contains_key(&id) {
+                    continue;
+                }
+                let cursor = self.cursors.get(&id).copied();
+                self.sockets.insert(id.clone(), spawn(&id, cursor));
+            }
+        }
+    }
+
+    /// The ids of the live runs one `/agent-runs` body names.
+    fn live_ids(body: &[u8]) -> Vec<String> {
+        let Ok(value) = serde_json::from_slice::<Value>(body) else {
+            return Vec::new();
+        };
+        value
+            .get("runs")
+            .and_then(Value::as_array)
+            .map(|runs| {
+                runs.iter()
+                    .filter(|run| run.get("live").and_then(Value::as_bool) == Some(true))
+                    .filter_map(|run| run.get("id").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Opens one run's output socket at its last cursor and follows it,
+    /// returning that cursor so a socket that ends reconnects with `after`.
+    fn spawn_socket(port: u16, id: &str, cursor: Option<u64>) -> JoinHandle<Option<u64>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let id = id.to_string();
+        tokio::spawn(async move {
+            let after = cursor
+                .map(|cursor| format!("?after={cursor}"))
+                .unwrap_or_default();
+            let Ok(request) = format!("ws://127.0.0.1:{port}/agent-runs/{id}/output{after}")
+                .into_client_request()
+            else {
+                return cursor;
             };
-            tokio::spawn(async move {
-                let Ok(request) =
-                    format!("ws://127.0.0.1:{port}/agent-runs/{id}/output").into_client_request()
-                else {
-                    return;
+            let Ok((socket, _)) = tokio_tungstenite::connect_async(request).await else {
+                return cursor;
+            };
+            let (_write, mut read) = socket.split();
+            let mut cursor = cursor;
+            while let Some(Ok(message)) = read.next().await {
+                let Ok(text) = message.into_text() else {
+                    continue;
                 };
-                let Ok((socket, _)) = tokio_tungstenite::connect_async(request).await else {
+                if let Ok(frame) = serde_json::from_str::<Value>(text.as_str()) {
+                    if let Some(next) = frame.get("cursor").and_then(Value::as_u64) {
+                        cursor = Some(next);
+                    }
+                }
+            }
+            cursor
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const ONE_LIVE: &[u8] = br#"{"runs":[{"id":"run-1","live":true}]}"#;
+        const NONE_LIVE: &[u8] = br#"{"runs":[{"id":"run-1","live":false}]}"#;
+
+        fn note(
+            opens: &mut Vec<(String, Option<u64>)>,
+            id: &str,
+            cursor: Option<u64>,
+        ) -> JoinHandle<Option<u64>> {
+            opens.push((id.to_string(), cursor));
+            tokio::spawn(std::future::pending::<Option<u64>>())
+        }
+
+        async fn settle(socket: &tokio::task::AbortHandle) {
+            for _ in 0..10 {
+                if socket.is_finished() {
                     return;
-                };
-                let (_write, mut read) = socket.split();
-                while let Some(Ok(_)) = read.next().await {}
-            });
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+
+        /// The same body twice keeps one socket, and a run that left the live
+        /// set loses its socket.
+        #[tokio::test]
+        async fn reconcile_holds_one_socket_per_live_run() {
+            let mut view = LiveSockets::default();
+            let mut opens = Vec::new();
+            view.reconcile(ONE_LIVE, |id, cursor| note(&mut opens, id, cursor))
+                .await;
+            view.reconcile(ONE_LIVE, |id, cursor| note(&mut opens, id, cursor))
+                .await;
+            assert_eq!(opens, vec![("run-1".to_string(), None)]);
+            assert_eq!(view.sockets.len(), 1);
+            let socket = view
+                .sockets
+                .get("run-1")
+                .expect("the live run's socket")
+                .abort_handle();
+            assert!(!socket.is_finished());
+            view.reconcile(NONE_LIVE, |id, cursor| note(&mut opens, id, cursor))
+                .await;
+            assert!(view.sockets.is_empty());
+            settle(&socket).await;
+            assert!(socket.is_finished());
+        }
+
+        /// A socket that ended reopens once at the cursor it reported.
+        #[tokio::test]
+        async fn a_closed_socket_reopens_at_its_cursor() {
+            let mut view = LiveSockets::default();
+            let mut opens = Vec::new();
+            let socket = tokio::spawn(async { Some(7u64) });
+            view.sockets.insert("run-1".to_string(), socket);
+            settle(&view.sockets["run-1"].abort_handle()).await;
+            view.reconcile(ONE_LIVE, |id, cursor| note(&mut opens, id, cursor))
+                .await;
+            assert_eq!(
+                opens,
+                vec![("run-1".to_string(), Some(7))],
+                "a closed socket reconnects with after"
+            );
+            assert_eq!(view.sockets.len(), 1);
         }
     }
 }
