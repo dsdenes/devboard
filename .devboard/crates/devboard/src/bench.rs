@@ -40,9 +40,14 @@ const SYNCED_FAMILIES: [&str; 6] = [
 ];
 
 /// How long a scenario warms up before its measurement window opens. The
-/// warmup lets every worker finish its start, so the window measures the idle
-/// steady state the criterion names.
-const WARMUP: Duration = Duration::from_secs(5);
+/// warmup lets every worker finish its start and its first due pass, so the
+/// window measures the idle steady state the criterion names.
+const WARMUP: Duration = Duration::from_secs(45);
+/// The default measurement window. Warmup and window together stay under the
+/// watchdog's 30 s supervision sweep and a minute boundary, and the warmup
+/// outlasts a family's transient forge-read backoff, so the window measures
+/// idle work rather than a start, a retry, or one machine-wide `/proc` scan.
+const DEFAULT_SECONDS: u64 = 10;
 
 /// Measures round-trip latency for one named read operation and returns the
 /// summary, naming the HTTP method and path it measured.
@@ -95,6 +100,7 @@ fn percentile(samples: &[f64], percentile: f64) -> f64 {
 /// One `bench cpu` invocation.
 pub struct CpuOptions {
     pub scenario: String,
+    /// The measurement window. Zero asks for [`DEFAULT_SECONDS`].
     pub seconds: u64,
 }
 
@@ -104,7 +110,11 @@ pub async fn cpu(options: &CpuOptions) -> anyhow::Result<Value> {
     if scenario != "runs-view" && scenario != "all-workers" {
         anyhow::bail!("unknown bench scenario {scenario}; expected runs-view or all-workers");
     }
-    let seconds = options.seconds.max(1);
+    let seconds = if options.seconds == 0 {
+        DEFAULT_SECONDS
+    } else {
+        options.seconds
+    };
     let root = scratch(scenario);
     let repo = root.join("repo");
     let state = root.join("state");
@@ -411,6 +421,8 @@ impl Drop for WorkerProcess {
 
 fn start_workers(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Vec<WorkerProcess>> {
     let binary = std::env::current_exe()?;
+    let watchdog = repo.join(".devboard/.tmp/watchdog");
+    seed_idle_watchdog(&watchdog)?;
     let mut workers = Vec::new();
     for family in FAMILIES {
         let log = std::fs::File::create(root.join(format!("worker-{family}.log")))?;
@@ -419,7 +431,14 @@ fn start_workers(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Vec<W
             .args(["worker", family, "--repo"])
             .arg(repo)
             .arg("--state-dir")
-            .arg(state);
+            .arg(if family == "watchdog" {
+                &watchdog
+            } else {
+                state
+            });
+        if family == "watchdog" {
+            command.arg("--owner-state-dir").arg(state);
+        }
         if SYNCED_FAMILIES.contains(&family) {
             // The measurement window is the idle steady state: the family's
             // next due sync is an hour out, so the window holds no due work.
@@ -445,6 +464,47 @@ fn start_workers(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Vec<W
         workers.push(WorkerProcess { family, child });
     }
     Ok(workers)
+}
+
+/// A watchdog that is idle from its first tick: the previous run is now and
+/// its next is an hour out, so the window holds no due cycle.
+fn seed_idle_watchdog(directory: &Path) -> anyhow::Result<()> {
+    write(
+        &directory.join("settings.json"),
+        &format!(
+            "{}\n",
+            crate::jsjson::stringify(&json!({
+                "intervalMinutes": 60,
+                "maxPerHour": 10,
+                "maxPending": 5,
+            }))
+        ),
+    )?;
+    let now = time::OffsetDateTime::now_utc();
+    let later = now + time::Duration::hours(1);
+    let format = time::format_description::well_known::Rfc3339;
+    let format_now = || now.format(&format).unwrap_or_default();
+    let worker = json!({
+        "version": 1,
+        "pid": std::process::id(),
+        "startedAt": format_now(),
+        "root": directory.parent().map(|path| path.display().to_string()).unwrap_or_default(),
+        "stateDir": directory.display().to_string(),
+        "lifecycle": "idle",
+        "enabled": true,
+        "harnessVersion": "bench",
+        "argv": [],
+        "lastRunAt": format_now(),
+        "nextRunAt": later.format(&format).unwrap_or_default(),
+        "lastError": null,
+        "notice": null,
+        "updatedAt": format_now(),
+    });
+    write(
+        &directory.join("workers").join("bench").join("worker.json"),
+        &format!("{}\n", crate::jsjson::stringify(&worker)),
+    )?;
+    Ok(())
 }
 
 fn read_port(log: &Path, timeout: Duration) -> anyhow::Result<u16> {

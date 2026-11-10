@@ -1195,7 +1195,7 @@ async fn bench_command(args: &[String]) -> anyhow::Result<()> {
 /// One idle-cost measurement against a scratch host.
 async fn bench_cpu_command(args: &[String]) -> anyhow::Result<()> {
     let mut scenario = "runs-view".to_string();
-    let mut seconds: u64 = 30;
+    let mut seconds: u64 = 0;
     let mut json = false;
     let mut index = 2;
     while index < args.len() {

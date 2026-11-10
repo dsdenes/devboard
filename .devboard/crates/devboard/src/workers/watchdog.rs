@@ -365,20 +365,7 @@ pub fn pid_alive(pid: u32) -> bool {
 /// The instant a live process started, in epoch milliseconds, derived from
 /// `/proc/<pid>/stat` and the kernel's own uptime.
 pub(crate) fn process_started_at(pid: u32) -> Option<i64> {
-    if !cfg!(target_os = "linux") || pid == 0 {
-        return None;
-    }
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let suffix = stat.get(close + 2..)?;
-    let start_ticks = suffix.split(' ').nth(19)?.parse::<f64>().ok()?;
-    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
-    let uptime_seconds = uptime.split(' ').next()?.parse::<f64>().ok()?;
-    if !uptime_seconds.is_finite() || !start_ticks.is_finite() {
-        return None;
-    }
-    let now = epoch_ms() as f64;
-    Some((now - uptime_seconds * 1000.0 + start_ticks * 10.0) as i64)
+    crate::supervision::process_age_ms(pid).map(|age| epoch_ms() - age as i64)
 }
 
 /// Slack between a recorded start and the same process's start read back from

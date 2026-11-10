@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -125,13 +126,67 @@ pub struct ProcessStat {
     pub state: String,
 }
 
+/// How long one liveness read is reused. Every caller in one tick asks about
+/// the same few pids within microseconds, and a sampler that checks its owners
+/// several times per tick would otherwise read `/proc` several times; a dead
+/// process is still reported within this bound.
+const PROCESS_STAT_TTL: Duration = Duration::from_millis(1000);
+
+struct CachedStat {
+    at: Instant,
+    value: Option<ProcessStat>,
+}
+
+static PROCESS_STATS: LazyLock<Mutex<HashMap<u32, CachedStat>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static UPTIME: LazyLock<Mutex<Option<(Instant, f64)>>> = LazyLock::new(|| Mutex::new(None));
+
 /// Reads the `/proc/<pid>/stat` fields supervision relies on.
 pub fn process_stat(pid: u32) -> Option<ProcessStat> {
     if !cfg!(target_os = "linux") || pid == 0 {
         return None;
     }
-    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    parse_stat(pid, &text)
+    if let Ok(cache) = PROCESS_STATS.lock() {
+        if let Some(entry) = cache.get(&pid) {
+            if entry.at.elapsed() < PROCESS_STAT_TTL {
+                return entry.value.clone();
+            }
+        }
+    }
+    let value = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|text| parse_stat(pid, &text));
+    if let Ok(mut cache) = PROCESS_STATS.lock() {
+        cache.retain(|_, entry| entry.at.elapsed() < PROCESS_STAT_TTL);
+        cache.insert(
+            pid,
+            CachedStat {
+                at: Instant::now(),
+                value: value.clone(),
+            },
+        );
+    }
+    value
+}
+
+/// The kernel's uptime in seconds, reused for one liveness window.
+fn uptime_seconds() -> Option<f64> {
+    if let Ok(cache) = UPTIME.lock() {
+        if let Some((at, value)) = cache.as_ref() {
+            if at.elapsed() < PROCESS_STAT_TTL {
+                return Some(*value);
+            }
+        }
+    }
+    let text = std::fs::read_to_string("/proc/uptime").ok()?;
+    let value = text.split(' ').next()?.parse::<f64>().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    if let Ok(mut cache) = UPTIME.lock() {
+        *cache = Some((Instant::now(), value));
+    }
+    Some(value)
 }
 
 /// Parses one `/proc/<pid>/stat` line.
@@ -202,11 +257,7 @@ pub fn process_argv(pid: u32) -> Option<Vec<String>> {
 /// True when a process started less than `ms` ago.
 pub fn process_age_ms(pid: u32) -> Option<f64> {
     let stat = process_stat(pid)?;
-    let uptime_text = std::fs::read_to_string("/proc/uptime").ok()?;
-    let uptime = uptime_text.split(' ').next()?.parse::<f64>().ok()?;
-    if !uptime.is_finite() {
-        return None;
-    }
+    let uptime = uptime_seconds()?;
     Some((uptime * 1000.0 - stat.start_ticks as f64 * 1000.0 / CLOCK_TICKS_PER_SECOND).max(0.0))
 }
 

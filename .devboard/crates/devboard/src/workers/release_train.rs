@@ -1060,17 +1060,7 @@ fn pid_alive(pid: u32) -> bool {
 
 /// The instant a live process started, from `/proc/<pid>/stat` and uptime.
 fn process_started_at(pid: u32) -> Option<i64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let start_ticks: f64 = stat.get(close + 2..)?.split(' ').nth(19)?.parse().ok()?;
-    let uptime: f64 = std::fs::read_to_string("/proc/uptime")
-        .ok()?
-        .split(' ')
-        .next()?
-        .parse()
-        .ok()?;
-    let now = now_millis() as f64;
-    Some((now - uptime * 1000.0 + start_ticks * 10.0) as i64)
+    crate::supervision::process_age_ms(pid).map(|age| now_millis() - age as i64)
 }
 
 fn own_started_at() -> String {
@@ -1130,9 +1120,7 @@ fn parse_lock(text: &str) -> Option<LockOwner> {
 }
 
 fn read_lock(path: &Path) -> Option<LockOwner> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| parse_lock(&text))
+    crate::sampling::text(path).and_then(|text| parse_lock(&text))
 }
 
 /// The live owner of a lock, or none when it is missing or stale.
@@ -1201,7 +1189,8 @@ pub enum LockAcquisition {
 }
 
 fn read_lock_token(path: &Path) -> Option<String> {
-    let parsed: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let text = crate::sampling::text(path)?;
+    let parsed: Value = serde_json::from_str(&text).ok()?;
     parsed.get("token")?.as_str().map(str::to_string)
 }
 

@@ -546,9 +546,7 @@ pub fn parse_state(text: &str) -> Option<DesignState> {
 }
 
 pub fn read_state(path: &Path) -> Option<DesignState> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| parse_state(&text))
+    crate::sampling::text(path).and_then(|text| parse_state(&text))
 }
 
 pub fn quarantine(path: &Path) -> Option<PathBuf> {
@@ -632,9 +630,7 @@ pub fn parse_settings(text: &str) -> Option<DesignSettings> {
 }
 
 pub fn read_settings(path: &Path) -> Option<DesignSettings> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| parse_settings(&text))
+    crate::sampling::text(path).and_then(|text| parse_settings(&text))
 }
 
 pub fn write_settings(path: &Path, settings: &DesignSettings) -> std::io::Result<()> {
@@ -1392,16 +1388,7 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 fn process_started_at(pid: u32) -> Option<i64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let start_ticks: f64 = stat.get(close + 2..)?.split(' ').nth(19)?.parse().ok()?;
-    let uptime: f64 = std::fs::read_to_string("/proc/uptime")
-        .ok()?
-        .split(' ')
-        .next()?
-        .parse()
-        .ok()?;
-    Some((now_millis() as f64 - uptime * 1000.0 + start_ticks * 10.0) as i64)
+    crate::supervision::process_age_ms(pid).map(|age| now_millis() - age as i64)
 }
 
 fn own_started_at() -> String {
@@ -1462,9 +1449,7 @@ fn parse_lock(text: &str) -> Option<LockOwner> {
 }
 
 fn read_lock(path: &Path) -> Option<LockOwner> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| parse_lock(&text))
+    crate::sampling::text(path).and_then(|text| parse_lock(&text))
 }
 
 pub fn live_lock_owner(path: &Path) -> Option<LockOwner> {

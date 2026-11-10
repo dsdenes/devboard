@@ -1204,7 +1204,7 @@ fn parse_lock(text: &str) -> Option<LockOwner> {
 }
 
 pub fn read_lock(path: &Path) -> Option<LockOwner> {
-    parse_lock(&std::fs::read_to_string(path).ok()?)
+    parse_lock(crate::sampling::text(path)?.as_str())
 }
 
 fn process_started_at(pid: u32) -> Option<i64> {

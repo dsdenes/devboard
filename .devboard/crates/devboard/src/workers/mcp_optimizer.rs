@@ -5426,17 +5426,7 @@ pub fn pid_alive(pid: u32) -> bool {
 /// The instant a live process started, in epoch milliseconds, derived from
 /// `/proc/<pid>/stat` and the kernel's own uptime.
 fn process_started_at(pid: u32) -> Option<i64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let suffix = &stat[close + 1..];
-    let start_ticks: f64 = suffix.split_whitespace().nth(19)?.parse().ok()?;
-    let uptime: f64 = std::fs::read_to_string("/proc/uptime")
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    Some((now_millis() as f64 - uptime * 1000.0 + start_ticks * 10.0) as i64)
+    crate::supervision::process_age_ms(pid).map(|age| now_millis() - age as i64)
 }
 
 /// The instant this process started, for the lock it writes.
@@ -5524,7 +5514,7 @@ fn parse_lock(content: &str) -> (Option<LockOwner>, Option<String>) {
 
 /// The lock's owner, if the file is present and readable.
 pub fn read_lock(path: &Path) -> Option<LockOwner> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = crate::sampling::text(path)?;
     parse_lock(&content).0
 }
 
@@ -5580,7 +5570,7 @@ fn read_snapshot(path: &Path) -> Option<LockSnapshot> {
     {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(path).ok()?;
-        let content = std::fs::read_to_string(path).ok()?;
+        let content = crate::sampling::text(path)?;
         let (owner, token) = parse_lock(&content);
         return Some(LockSnapshot {
             owner,
