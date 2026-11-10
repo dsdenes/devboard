@@ -1248,6 +1248,49 @@ async fn rest_refusals_are_problem_json() {
     }
 }
 
+/// A close path segment reaches the dispatcher as a JSON number, so the close
+/// is attempted for that issue instead of being refused as a missing number; a
+/// segment that is not a number is refused as a Problem naming the field.
+#[tokio::test]
+async fn a_close_request_carries_its_number_and_refuses_a_non_numeric_segment() {
+    let instance = start("close-issue").await;
+    let (status, _, body) = send(
+        &instance.base,
+        Method::DELETE,
+        "/issues/1730",
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200);
+    let frames = frames(&body);
+    assert!(
+        !frames.iter().any(|frame| frame["type"] == "error"),
+        "no error frame: {frames:?}"
+    );
+    let closed = frames
+        .iter()
+        .find(|frame| frame["type"] == "issuesClosed")
+        .expect("an issuesClosed frame");
+    assert_eq!(closed["number"], json!(1730));
+
+    let (status, headers, body) = send(
+        &instance.base,
+        Method::DELETE,
+        "/issues/not-a-number",
+        HeaderMap::new(),
+    )
+    .await;
+    assert_problem(status, &headers, &body, 400);
+    let problem: Value = serde_json::from_slice(&body).expect("a problem body");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("number"),
+        "the refusal names the field: {problem}"
+    );
+}
+
 /// One Issues run record under the instance's state directory: the durable
 /// source the run collection and its sockets read.
 fn seed_issue_run(instance: &Instance, id: &str, status: &str, worker_pid: u32) -> PathBuf {

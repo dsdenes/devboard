@@ -1830,7 +1830,8 @@ paths:
         - name: number
           in: path
           required: true
-          schema: {type: string}
+          schema: {type: integer, minimum: 1}
+          description: "The issue number, parsed as a JSON number; a non-numeric segment answers 400."
       requestBody:
         required: false
         content:
