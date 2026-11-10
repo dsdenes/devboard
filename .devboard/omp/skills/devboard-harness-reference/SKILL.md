@@ -3694,18 +3694,16 @@ missing, non-numeric, or multi-token argument before changing anything. It fetch
 one issue and never fetches, surveys, or builds a dependency graph for the rest of the backlog.
 It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the issue, never in
 the canonical checkout and never in another agent's worktree, and writes nothing outside
-`<REPO_DIR>`. Forge write access is a precondition it resolves once per session: a `canWrite: true`
-result already in context is reused as-is, and only when the context lacks one does it run one
-canonical auth check, `<devboard> forge-auth check --required write --json`, from the
-repository root, with `<devboard>` the absolute harness binary it resolves once per session as
-`.devboard/prompts/forge-auth.md` states: the wrapper takes the target from `DEVBOARD_GITEA_URL`,
-`GITEA_TOKEN`, and the `origin` remote, so no forge, host, project, or URL flag is passed, the
-exit status and JSON are read directly, and no further auth probe runs in the session. The shared
-credential rule every tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is
-the only authority for forge host, project, and token scope, and enumerating the environment or
-reading credential files to find them is forbidden. It changes only that issue's implementation,
-tests, and documentation; it may read other issues and code but never edits, comments on, closes,
-or reopens another issue.
+`<REPO_DIR>`. Forge access arrives with the session, which runs no credential preflight: the
+dashboard selects the forge, host, project, and credential from the checkout's `origin` and hands
+that selection to every tracker tool, so the run issues no credential command and resolves no
+harness binary for one. The first tracker tool call is where an unusable credential surfaces, and
+its error names the forge, the operation it attempted, and the concrete cause, which the run
+reports verbatim as its blocker. The prohibition on discovering a forge host, project, or token
+by enumerating the environment or reading credential files still holds, and
+`.devboard/prompts/forge-auth.md` states it in full for the prompts that resolve an identity. It
+changes only that issue's implementation, tests, and documentation; it may read other issues and
+code but never edits, comments on, closes, or reopens another issue.
 When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
 task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another

@@ -634,12 +634,16 @@ async fn a_refused_dedup_read_is_recorded_for_the_cycle() {
         .expect("tool text")
         .to_string();
     assert!(text.contains("HTTP 401"), "{text}");
+    assert!(
+        text.contains("Gitea list issues for owner/name failed: "),
+        "the tool names the forge, the operation, and the cause: {text}"
+    );
 
     let errors = devboard::workers::watchdog::read_dedup_errors(&run_dir);
     assert_eq!(errors.len(), 1, "the refused read is recorded once");
     assert!(
-        errors[0].starts_with("issues_list: GET "),
-        "the record names the tool and the request: {}",
+        errors[0].starts_with("issues_list: Gitea list issues for owner/name failed: GET "),
+        "the record names the tool, the forge, the operation, and the request: {}",
         errors[0]
     );
     assert!(

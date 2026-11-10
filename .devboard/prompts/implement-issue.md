@@ -11,10 +11,11 @@ The argument must be exactly one positive integer issue number. If it is missing
 carries more than one token, refuse before changing anything: write the refusal to stderr, exit
 nonzero, and stop. Never guess an issue number and never accept a range, a list, or a URL.
 
-This run serves one issue. After the single `devboard_status` host-resolution call and the auth gate
-in *Inputs and paths*, read exactly that one issue with `issue_get` and never fetch, survey, or
-build a dependency graph for the rest of the backlog. You may read other issues and code for
-context, but you never edit, comment on, close, or reopen another issue.
+This run serves one issue. After the single `devboard_status` host-resolution call in *Inputs and
+paths*, read exactly that one issue with `issue_get` — the first tracker tool call, and the one
+place an unusable forge credential surfaces — and never fetch, survey, or build a dependency graph
+for the rest of the backlog. You may read other issues and code for context, but you never edit,
+comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
@@ -29,7 +30,7 @@ context, but you never edit, comment on, close, or reopen another issue.
   a branch, worktree, or divergence either reports. A ref the result does not name — a task branch
   that is not that upstream — is never counted either: the one `git status --short --branch` of
   the checkout that has that branch checked out reports it, and the same count is never re-run
-  between steps. Issue the call before the auth decision below. Never issue more than one
+  between steps. Issue the call before the first tracker read below. Never issue more than one
   `devboard_status` call in a turn, except for the one read immediately after a dashboard reload
   that confirms the newly running version; never poll it before each step or
   between successive forge reads and writes.
@@ -41,13 +42,11 @@ context, but you never edit, comment on, close, or reopen another issue.
 - Never orient the session with a shell probe, and never chain orientation probes: no
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
-  directory, no `env | grep`, and no
-  `cd <root> && … && forge-auth check` line. The `devboard_status`
-  result covers the roots, and the session's auth result — already in context, otherwise the one
-  `forge-auth check` JSON line below — covers the forge, host, project, and identity; neither
-  is re-derived to orient the run.
-- Fall back to a shell probe only for a field neither the `devboard_status` result nor the auth
-  gate reports, and then at most one probe, run alone: never a chained discovery line, never
+  directory, no `env | grep`, and no credential-preflight command. The `devboard_status`
+  result covers the roots, the checkout's `origin` names the forge, and a tracker tool answers
+  the project it read; none of them is re-derived to orient the run.
+- Fall back to a shell probe only for a field neither the `devboard_status` result nor a tracker
+  tool call reports, and then at most one probe, run alone: never a chained discovery line, never
   `git remote get-url origin`, and never a probe that merely confirms a value one of them already
   reported.
 - Worktree root: `<REPO_DIR>/.worktree/`. Cut the worktree from the integration line the one
@@ -97,77 +96,22 @@ context, but you never edit, comment on, close, or reopen another issue.
   already landed on main under a new hash — a `docs(prompt)` commit whose text main already
   carries is that duplicate, not a fix. After a resolved conflict, continue until the rebase
   completes and never re-run the rebase to re-check state.
-- Forge write access is a precondition of the run, not a discovery step to repeat: the harness
-  resolves it once, before the first forge read or write, and the turn's context carries `forge`,
-  `host`, `project`, `login`, `source`, `permission`, and `canWrite` — injected before the turn,
-  or produced by the one check below. Keep those fields in the run's own context instead of
-  re-deriving them. A `canWrite: true` result authorizes every forge write in the task and ends
-  the auth question for the session, so it never earns a probe.
-- Only when the context carries no `canWrite: true` result, resolve it once with the canonical,
-  argument-free auth check, after the single `devboard_status` call above and before the first
-  forge read or write, run verbatim from the repository root:
-
-  ```sh
-  <devboard> forge-auth check --required write --json
-  ```
-
-  `<devboard>` is the absolute harness binary the run resolves once, from the `harnessDirectory`
-  of the `devboard_status` result above, exactly as `.devboard/prompts/forge-auth.md` states:
-  `<harnessDirectory>/bin/devboard` when it is executable, otherwise the newer, by modification
-  time, of `<harnessDirectory>/target/release/devboard` and
-  `<harnessDirectory>/target/debug/devboard`. Only the program path is absolute; the arguments
-  never change. A bare `devboard` is never used, because the peer's PATH holds no harness
-  directory and that invocation exits 127.
-
-  This is the only pre-write auth gate and the session's only auth invocation: a run whose
-  context already carries `canWrite: true` issues none. The canonical form infers the forge,
-  host, project, and identity from the `origin` remote and `DEVBOARD_GITEA_URL`, so this check
-  has exactly one argument spelling: that literal command line, with no `--forge`, `--host`,
-  `--project`, or `--url` flag and no derived replacement for any of them. The wrapper resolves
-  all of them from the checkout, so this prompt never overrides one: never preempt the check with
-  a guessed `--forge`, never re-run it with a target flag because the answer looks wrong, and
-  never derive the values with `sed`, `git remote get-url`, or any other shell substitution. When
-  the `origin` remote cannot name the forge, stop and report that as the blocker.
-
-  A session following this prompt issues at most one call matching `forge-auth check` in
-  total, and none once its context carries `canWrite: true`; that call carries no `cd` or
-  `PATH="<dir>:$PATH"` prefix, no `--forge`, and no `--host` in its command text. Invoke that one
-  line alone: never prefix it with `cd <absolute repository path> &&` (the `cd /home/... &&`
-  shape), a `PATH="<dir>:$PATH"` assignment, or `git rev-parse --show-toplevel &&`, and never
-  chain it into a compound command with a `curl`
-  request to the forge API or any other command. Set the tool's working directory to the
-  repository root instead of prefixing the command.
-
-  Read the JSON line, add its fields to the run's context, and treat it as final for the session:
-  exit status 0 with `canWrite: true` authorizes every forge write in the task — labels, the one
-  close, and any other forge write the task requires — so never re-run the check after that
-  result, between successive issue reads or writes, or before, between, or after those writes.
-  A nonzero exit, or an exit 0 without `canWrite: true`, ends the task: stop, report `forge`,
-  `host`, `source`, and `permission` from the JSON, and include its `error` text verbatim when
-  present.
-  Never retry the check, never inspect its `--help`, and never fall back to `curl` or any other
-  forge API probe. Never retry across `localhost`,
-  `localhost:2223`, `localhost:3001`, `origin`, `ds@localhost:2223`, `gitea`, `127.0.0.1`, a bare
-  IP, or a bare port, and never re-derive the host with `git remote get-url origin | sed` or any
-  other shell substitution. Never append `echo $?`, `echo "exit=$?"`, `echo "EXIT:$?"`, or
-  any other exit-status echo, never append `2>&1 | head`, `2>&1 | tail`, or any other consumer,
-  and never append `env | grep` or a `printenv` sweep. The credentialed target is
-  `DEVBOARD_GITEA_URL` with `GITEA_TOKEN`; a host is a label only, so
-  never pass `origin`, `github.com`, `localhost`, `localhost:3000`, `localhost:2223`,
-  `localhost:3001`, `127.0.0.1`, `ds@localhost:2223`, `gitea`, a bare IP, or a bare port as
-  `--host`. Do not rerun the check in the same session. That JSON line is the only supported way
-  to learn the forge host, project, or credential state: it reports presence and resolution
-  without exposing a value, so an environment sweep answers nothing it does not. Forge and
-  registry configuration MUST be
-  resolved through the `<devboard> forge-auth check` gate and MUST NOT be discovered with
-  an `env | grep` probe, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or any
-  other environment or credential-file sweep: never enumerate the process environment or hunt
-  for credential files, and `.devboard/prompts/forge-auth.md` holds that rule in full. Never
-  inspect the harness binary to rediscover its resolution order; run `<devboard> forge-auth
-  --help` only when the run changes it. `DEVBOARD_GITEA_URL` is supplied by the host at run time:
-  use it exactly as supplied, verbatim, with no derived or default port, so never hardcode it
-  or fall back to a guessed base such as `http://localhost:2223`. Verify access only through
-  the `check --json` call above; never probe a forge endpoint such as `/api/v1/version` to
+- Forge access arrives with the session: never resolve it with a preflight command. The dashboard
+  selects the forge, host, project, and credential from the checkout's `origin` and hands that
+  selection to every tracker tool, so this run invokes no credential preflight, resolves no
+  harness binary for a credential, and never probes a forge endpoint. The first tracker tool call
+  — the `issue_get` read below — is where an unusable credential surfaces: the tool answers an
+  error naming the forge, the operation it attempted, and the concrete cause, so stop, report
+  that text verbatim as the blocker, and write nothing to the forge. Never retry the call to look
+  for a different answer, never switch host or account by hand, and never fall back to `curl` or
+  another forge API probe.
+- Never discover forge or registry configuration from the environment or a credential file: no
+  `env | grep`, `printenv`, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or
+  any other sweep of the process environment or a credential file, and no invocation of a
+  harness credential wrapper to learn the host, project, or token scope.
+  `DEVBOARD_GITEA_URL` is supplied by the host at run time: use it exactly as supplied,
+  verbatim, with no derived or default port, so never hardcode it or fall back to a guessed base
+  such as `http://localhost:2223`. Never probe a forge endpoint such as `/api/v1/version` to
   confirm the base URL or the credential. Never pipe `env` or `printenv` into `grep` (an
   `env | grep` probe) for `gitea`, `forge`, `github`, `gitlab`, or `token`: the tool shell
   carries an exported `MATCH` variable holding a token-bearing grep match

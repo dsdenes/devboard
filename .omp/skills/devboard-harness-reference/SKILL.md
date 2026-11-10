@@ -447,6 +447,13 @@ notifications keep the `File issue` button and file one issue per click. When au
 fails, or reporting is disabled because `DEVBOARD_GITEA_URL` is absent, the card reads
 `Issue not filed:` with the reason and reveals the `File issue` button again, so a retry files
 the issue and replaces the message with the issue link.
+A filing is one forge write, and a forge answers an issue creation in seconds when it is busy, so
+`POST /reports` never waits for it: the server records the report, answers `202` with the record's
+own `Location` and `links.report.href`, and files the issue on its own runtime. The record is
+`FILING` until the delivery settles, then `FILED` with `links.issue.href`, or `FAILED` with the
+reason the card shows. `GET /reports/{id}` serves that record, and a page re-reads it at its own
+refresh cadence until it settles. A record a stopped dashboard left `FILING` is answered `FAILED`,
+and a `FAILED` key is filed again under the same record.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
@@ -457,24 +464,33 @@ card, every other failure in the notice stack above the page.
 Every operator-initiated REST action and every operator-initiated `POST /reports` or
 `POST /goal-proposals` runs under a background 1000 ms latency budget, and so do the six
 first-paint reads a page load sends (`listRecords`, `getGoal`, `getSkills`, `getProject`,
-`getVersion`, `getProviders`). Those six are dispatched before every mode read on the same open,
-so they hold the page's first six browser connections and a slow mode read never queues one of
-them behind it. An action is complete when its first answer arrives — the frame that answers it,
-or the response to the request that carried it, whatever its status. A frame for another action
-or a broadcast does not complete it. A request that never answers keeps its budget and still
-files, so a lost or refused connection, a problem document, and a 304 file nothing while an
-unanswered read is still reported. The guard is observational: it never changes the 10-second
-command ceiling, a server timeout, a retry schedule, a polling interval, the busy control, or the
-request lifecycle. It does not dismiss a busy state, clear a control's timer, or abort a request.
+`getVersion`, `getProviders`). Those six are the page's first requests: nothing else is issued
+before them, not the mode reads an open replays and not a read a surface dispatches as it mounts
+while the page is still connecting. They hold the page's first six browser connections, so a slow
+mode read never queues one of them behind it. Every mode read — the open's replay and a page's own
+mount-time read alike — is queued rather than issued, so it takes the first freed connection
+instead of the back of the replay. An action is complete when its first
+answer arrives — the frame that answers it, or the response to the request that carried it,
+whatever its status. A frame for another action or a broadcast does not complete it. A request
+that never answers keeps its budget and still files, so a lost or refused connection, a problem
+document, and a 304 file nothing while an unanswered read is still reported. The guard is
+observational: it never changes the 10-second command ceiling, a server timeout, a retry
+schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
+busy state, clear a control's timer, or abort a request. An operator `POST /reports` is complete
+at the accepted record: the wait for the issue is the background delivery the server owns, and
+the page reads that record again until it settles.
 
-A page refreshes every registered resource once a second, and that refresh keeps at most three of
-the browser's six origin connections in flight. A poll that dispatched its whole registry at once
-took all six, so the read the operator waited on queued behind the page's own refreshes: the
-server answered `GET /providers` in 5 ms while the page measured 842 ms. Three connections stay
-free for an operator action, a first-paint read, and the bundle's own requests, and the queue
-drains as each refresh answers, so a cycle still reads every registered resource. The run's
-output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks another
-background request beside the refreshes.
+A page refreshes every registered resource once a second, and every read the page issues for
+itself — a poll tick's refresh and an open's replay alike — keeps at most three of the
+browser's six origin connections in flight, starting the next one as an answer frees its slot.
+A poll that dispatched its whole registry at once took all six, so the read the operator waited
+on queued behind the page's own refreshes: the server answered `GET /providers` in 5 ms while the
+page measured 842 ms. Three connections stay free for an operator action, a first-paint read,
+and the bundle's own requests, and the queue drains as each refresh answers, so a cycle still
+reads every registered resource. The replay itself starts once the six first-paint reads answer,
+or one cadence later when one of them never answers, so the modes are never left unread. The
+run's output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks
+another background request beside the refreshes.
 
 The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
 refresh, poll, a polling surface's repeat request, and every send issued while the connection is
@@ -703,11 +719,14 @@ exit code. A suite that cannot compile, or whose output names no test, is struct
 nonzero, files nothing, and prints the first concrete error line. A build that could not write its
 artifacts because the host filesystem is full is structural too, and its reason starts with
 `the host filesystem is full:` and quotes that write failure, never a compile error: no repository
-change frees the disk, and the release is refused until space is available. An attempt whose test
-binary the kernel refused to start is the one retried case: another build writing the same target
-directory leaves that binary without its executable bit, so the attempt ran no test at all. The run
-retries the whole suite and reports the condition only once the attempt budget is spent, with the
-binary path and the errno.
+change frees the disk, and the release is refused until space is available. Every attempt builds
+with `TMPDIR`, `TMP`, and `TEMP` naming a per-run directory under the workspace's `target/tmp`, so
+the compiler temporaries `cargo`, `rustc`, and a build script's C compiler write stay on the disk
+the build already uses instead of the host temporary directory, and the run removes that directory
+when the suite ends. An attempt whose test binary the kernel refused to start is the one retried
+case: another build writing the same target directory leaves that binary without its executable
+bit, so the attempt ran no test at all. The run retries the whole suite and reports the condition
+only once the attempt budget is spent, with the binary path and the errno.
 
 ### Publish-only source refresh
 
@@ -1019,6 +1038,11 @@ Every agentic run the dashboard starts owns a detached process, not a peer insid
 lifecycle lanes, a manual ADR run, goal creation, goal revision, skills preparation, goal-draft
 elaboration, Discover, Flow, and Ask. Each owner spawns the ACP peer, appends activity to a
 run-keyed file, publishes its question, and consumes answer, stop, pause, and resume commands.
+A goal-draft owner consumes commands every 25 ms and records the id of the answer it applied in
+its published state, because a peer that asks its next question at once replaces the applied run
+state in the same tick. The answer reply waits for that acknowledgement, bounded at 700 ms, so it
+carries the applied state without waiting out the bound; a slower owner still leaves the page's
+poll as the fallback.
 When a newer harness replaces the dashboard, the owners stay alive; the replacement leases and
 re-attaches to the same runs, so state and activity replay after reconnect, an answer reaches the
 same run, Stop ends it, and no replacement records the run as stopped or interrupted. A non-
@@ -2452,11 +2476,27 @@ scheduled attempt.
 A Start preflight's Gitea read is the one exception inside an operation. It runs through the
 shared Gitea client and spends this same 1, 2, 4, and 8 second schedule while the preflight's
 20-second deadline lasts, so a fast transient refusal — a locked access-token table's `HTTP 401`,
-a `5xx`, or a reset connection — earns another attempt instead of refusing Start. A read that
-stalls reports the request it was making, for example
-`GET /repos/<owner>/<name> failed: the request timed out after 19750 ms`, and Start answers a
-bounded refusal that says the repository could not be read before Start's deadline; only a
-permanent answer is reported as a missing prerequisite.
+a `5xx`, or a reset connection — earns another attempt instead of refusing Start. The repository
+read and the label read share that policy, so a label read that stalls never reports a bare
+transport error on the Start card. A read that stalls reports the request it was making, for
+example `GET /repos/<owner>/<name>/labels?limit=50&page=1 failed: the request timed out after
+17175 ms`, and Start answers a bounded refusal that names the stalled read — the repository, or
+the labels — as unreadable before Start's deadline; only a permanent answer is reported as a
+missing prerequisite. A forge request starts only while the preflight's remaining budget carries
+a window worth spending: the time left, short of a 250 ms margin, at least two seconds. A step
+the earlier ones left below that floor refuses in its own name with the window it had — for
+example `reading the Gitea labels did not finish within 533 ms; press Start to retry.` — so a
+spent budget never reports a sub-second request timeout the forge had no chance to answer, and a
+label create is never sent on a window its caller would abandon. A refusal that names a step
+which ran out of time is latency, not a fault: the request was still in flight against a forge
+that is slow, not broken, and the next Start runs the same preflight again. It is published as
+the family's `notice`, so the card states why Start spawned nothing, and never as its
+`startError`; the command's answer carries no error frame either, because the page turns that
+frame into an error notification and files a board issue for it — more load for the forge
+already behind. That rule covers every family whose Start preflight reads the forge: Auto Scout
+and the other repo families, Watchdog, and MCP optimizer. A refusal that names a missing
+prerequisite, a refused credential, or a rejected answer keeps `startError` and renders
+`agent-error`.
 
 A Gitea `HTTP 401` carrying `invalid username, password or token` is the one refusal that is
 retried. Gitea answers that exact body when its own token store could not be read — a locked or
@@ -2583,7 +2623,9 @@ title with its category.
 System renders `design-activity`, both streamed as `agentActivity`. Watchdog renders its retained
 cycle history (`watchdog-cycles`, `watchdog-cycle`,
 `watchdog-cycle-at/-window/-action/-findings/-reason`, `watchdog-cycles-empty`), capped at the
-newest 100 run directories.
+newest 100 run directories. Each `runs/<cycle>/` records a bounded `cycle.json` beside its report,
+and the panel reads that summary: a report carries the whole cycle evidence, which can reach tens
+of megabytes, while a cycle row needs six fields.
 
 ### API Standards
 
@@ -2607,7 +2649,8 @@ rule id, its level, its chapter, the skill's directive verbatim, and both skill 
 chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
-the 80 `METHOD /path` operations in `contract/command-map.json`, `POST /reports`, `/ready` for
+the 80 `METHOD /path` operations in `contract/command-map.json`, `POST /reports` and
+`GET /reports/{id}`, `/ready` for
 `GET` and `HEAD` with a `405` and `Allow: GET, HEAD` for every other method,
 `POST /goal-proposals`, `GET /agent-runs/{id}/output`, and the static-file fallback, together with
 any route added later. The audit input carries every Rust module under
@@ -2850,7 +2893,11 @@ unchanged read costs no forge call for a row it already failed to resolve. A rel
 waiting for fills the version and clears the reason. The periodic read asks the forge for the
 `dead-code` label instead of paging every issue and reading each match back, and the open-issue
 titles its duplicate guard needs are read once at cycle start, so one sync stays well inside its
-30-second deadline against a large history.
+30-second deadline against a large history. A read that outlives that deadline is latency, not a
+fault: the page stays `stale` with no `agent-sync-error`, the last read's rows stay, and the next
+read runs on the normal 60-second cadence instead of spending the shared 1, 2, 4, and 8 second
+failure schedule, so a slow forge never raises an error notification that files a board issue
+back into the same forge.
 
 ### Single Responsibility
 
@@ -2911,7 +2958,11 @@ each created issue from the origin, and publishes a row only for an issue it rea
 the `single-responsibility` label and a body whose category, skill path, directive, component,
 evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
 recorded in activity as a verification failure and is not published as a row; a tool error files
-nothing and is recorded, never claimed as a filing. The issue lands in the origin: on GitHub
+nothing and is recorded, never claimed as a filing. A tool error that names a forge request bound
+that expired — the forge was slow, not broken — is recorded in activity and leaves no reason on
+the card, so the next cycle files again instead of the dashboard raising an error notification
+that returns as a new board issue for the same forge; any other tool error still sets the cycle's
+reason. The issue lands in the origin: on GitHub
 through the forge-auth wrapper and `gh`, on Gitea through the HTTP API with the identity
 `forge-auth check` selects. The periodic forge sync marks a known row `pending` while its issue
 is open and `implemented` once it is closed, and records a failed sync in `agent-sync-error`
@@ -3043,7 +3094,20 @@ that refusal as an empty open set: when a turn recorded no read and no decision,
 names the recorded failure — `the deduplication agent failed: <tool>: <refusal>` — and a turn that
 read the open set but had no decision recorded for a candidate names the same failure in that
 candidate's `reason`. A refused credential therefore reports its HTTP status and message instead
-of reading as a repository with no open issue.
+of reading as a repository with no open issue. The Gitea client resolves a refused token to the
+repository's public view before the turn records any failure, so a token Gitea accepts for the
+repository but refuses at the `/user` account probe still reads the open set; only a repository
+that needs the credential answers 401 again, and only that refusal is recorded.
+
+A completed turn whose only recorded failure names a timed-out read met a slow forge, and one that
+names a `5xx` answer, a reset connection, or no answer at all met an unavailable one; neither is a
+refused read. The cycle defers in both cases instead of failing: every candidate the turn never
+decided stays pending with a `deferred` decision naming the read that failed, `report.json` carries
+`action: deferred` with that reason (`the forge read is slow: <error>` or
+`the forge is unavailable: <error>`), and the cycle files no issue and exits zero. A stalled or
+unavailable forge is therefore never handed an error notification, a filed board issue, or an
+immediate walk of the pages that failed. The next cadence sends the same candidates again, and a
+refusal the forge actually answered — a `4xx` status — still fails the gate as above.
 
 Suppression is open-only. While the matched issue is open, the candidate is not sent again. Once
 that issue is closed, the next cycle that observes the same evidence sends the candidate to the
@@ -3065,10 +3129,10 @@ rewritten answer.
 
 `report.json` carries a `deduplication` section with the number of candidates requested, the
 number of open issues the agent read, every candidate's disposition (`unique`, `duplicate` with
-`issue` and/or `representative`, or `failed` with `reason`), and the candidates suppressed because
-their matched issue is still open. The existing `action`, `reason`, `findings`, `issues`, and
-`pending` fields keep their meaning, and `/api/watchdog`, the Watchdog page, and the footer
-indicator are unchanged.
+`issue` and/or `representative`, `deferred` with `reason` for a slow or unavailable read, or
+`failed` with `reason`), and the candidates suppressed because their matched issue is still open.
+The existing `action`, `reason`, `findings`, `issues`, and `pending` fields keep their meaning, and
+`/api/watchdog`, the Watchdog page, and the footer indicator are unchanged.
 
 ### State-directory cleanup
 
@@ -3133,10 +3197,20 @@ branch is deleted. A branch checked out in any worktree is never deleted.
 Under `.devboard/target/debug/deps`, files named `<stem>-<16 hex>.<ext>` are grouped by
 `<stem>.<ext>`; only the newest file by mtime in each group survives and the rest are removed. If
 `target/debug` still exceeds `21_474_836_480` bytes afterwards, the whole directory is removed.
-Neither step runs while a `cargo` or `rustc` process is alive; the `cargo run` wrapper that
-started a manual sweep is not a concurrent build. The dedup step leaves `target/debug/devboard`
-and every file outside `deps`; only the cap backstop removes them. A missing or unreadable
-`target/debug/deps` is reported, not treated as empty.
+Neither step runs while a `cargo` or `rustc` process builds inside the canonical checkout; the
+`cargo run` wrapper that started a manual sweep is not a concurrent build. The dedup step leaves
+`target/debug/devboard` and every file outside `deps`; only the cap backstop removes them. A missing
+or unreadable `target/debug/deps` is reported, not treated as empty.
+
+The same pass removes every checked-out worktree's `<worktree>/.devboard/target/debug` in full.
+The worktree directory and its branch stay; only the reproducible build output leaves. A worktree
+whose directory, or whose serving dashboard's checkout, holds a live process's working directory
+keeps its build output. A live build elsewhere does not hold it back: the canonical checkout waits
+only for a `cargo` or `rustc` process working inside that checkout, and a worktree waits only for a
+process working inside itself. The build output is removed before the worktree pass runs, so a
+worktree that pass removes has already been reported by its build candidate. Without this rule an
+abandoned unmerged worktree, which the worktree pass never removes, grows its build tree without
+bound on the filesystem the CI runner builds on.
 
 Run the sweep by hand from `.devboard`:
 
@@ -3174,11 +3248,11 @@ command one detached worker per repository state directory.
 
 MCP optimizer's files live under `<STATE_DIR>/coach/`: `worker.json` (published lifecycle),
 `settings.json`, `control/`, `state.json` (the ledger), `lock`,
-`runs/<cycle>/report.json|report.md`, `latest.json`, and `projection.json` (the dashboard's last
-forge projection, rendered by the page). The directory keeps its historical `coach/` name: an
-upgrade can leave a worker of the previous harness version live on the same lock, control
-channel, and ledger, so moving the state would strand that worker and start a second one beside
-it. The synthesizer also needs the generated per-peer directory under
+`runs/<cycle>/report.json|report.md|cycle.json`, `latest.json`, and `projection.json` (the
+dashboard's last forge projection, rendered by the page). The directory keeps its historical
+`coach/` name: an upgrade can leave a worker of the previous harness version live on the same
+lock, control channel, and ledger, so moving the state would strand that worker and start a
+second one beside it. The synthesizer also needs the generated per-peer directory under
 `<STATE_DIR>/providers/agents/`, written with the same shared helpers every peer uses. Start reaches
 `starting` before the worker exists and `running` once its state is readable; Stop reaches
 `stopping` and then `stopped` after the running cycle ends and before any further cycle starts. A
@@ -3245,7 +3319,7 @@ identical families and prompt bytes.
 ### Synthesis and validation
 
 Each selected family gets exactly one ACP synthesis call, at most four at a time, with a
-120-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
+240-second timeout. The peer is `AGENT_COMMAND` (default `omp acp`) built from every enabled
 OpenCode Go subscription, led by the dashboard's published selection when it still names an enabled
 key and otherwise by the operator's list order, pinned to
 `opencode-go/deepseek-v4.1-flash`; permission and elicitation requests are cancelled. The MCP
@@ -3256,9 +3330,15 @@ a 401 or "unauthorized" quoted inside assistant text never rotates. The prompt s
 `## Manifesto`, carries the family summary, every fragment with its count, at most five excerpts,
 the MCP catalog as name/title pairs plus every `covers` entry, every open MCP optimizer issue as
 number/title/URL, the configured allowlist, `maxIssuesPerCycle`, the rolling-hour room, the family
-tag, and the exact body sections; it stays under 24 KiB. A cycle whose synthesis calls all fail
-records the failure and files nothing. A failed call among successful ones is recorded for its
-family and does not discard what the other calls filed.
+tag, and the exact body sections; it stays under 24 KiB, and its first rule states that the turn
+runs no repository read, search, list, or command. A peer that runs out of its own wall-clock
+budget is slow model latency, not a refusal: its family is recorded as `deferred` with rule
+`timeout`, stays unmarked in the ledger, and the next cadence reconsiders it. A cycle whose
+synthesis calls all timed out records `action: deferred` with its reason and exits zero, so no
+error notification is raised for a slow peer. Every other all-failed cycle records the failure and
+files nothing. Within a cycle that also has successful calls, a timed-out call is recorded as
+`deferred` for its family and any other failed call is recorded as failed; neither discards what
+the other calls filed.
 
 The agent reads the open MCP optimizer issues through the MCP read tools and files at most one
 proposal itself through the MCP `issue_create` tool, or records why it filed nothing through
@@ -3313,8 +3393,9 @@ discarded on load, the report states `ledgerReset: true`, and deduplication reli
 selected keys with scores, omitted count, each synthesis call's model and duration, each recorded
 outcome with its rule or skip reason, filed URLs, duplicate skips with both the matched and the
 created URL, dropped count, and `pending: 0`.
-The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`, `failed`),
-`reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`, and `cycles`.
+The dashboard's `McpOptimizerStatus` exposes `cycle`, `action` (`filed`, `none`, `capped`,
+`deferred`, `failed`), `reason`, `families`, `selected`, `filed`, `dropped`, `pending`, `issues`,
+and `cycles`.
 
 A cycle edits no prompt, wrapper, source, session file, or journal record, and writes only
 `<STATE_DIR>/coach/` plus the generated provider agent directory the synthesizer peer needs. The
@@ -3445,7 +3526,9 @@ from those headers and parses only the matching file, so one read does not cost 
   credential probe or forge command that outlives its deadline (60 seconds by default) fails the
   call with a retryable timeout message instead of leaving it pending. A Gitea read that presents a
   credential the forge refuses with HTTP 401 is retried once without it, so a long-running worker
-  whose launcher's token was since rotated away still reads a public repository; a repository that
+  whose launcher's token was since rotated away still reads a public repository; the same fallback
+  covers a token Gitea accepts for the repository view but refuses at the account probe `/user`,
+  because neither answer proves the repository unreadable. A repository that
   needs the credential answers 401 again and the refusal is reported, and a write is never retried
   without it. Only a resolved credential is remembered, so a forge that could not answer is probed
   again by the next call instead of failing this client for its lifetime.
@@ -3611,18 +3694,16 @@ missing, non-numeric, or multi-token argument before changing anything. It fetch
 one issue and never fetches, surveys, or builds a dependency graph for the rest of the backlog.
 It creates and works in one worktree under `<REPO_DIR>/.worktree/` named for the issue, never in
 the canonical checkout and never in another agent's worktree, and writes nothing outside
-`<REPO_DIR>`. Forge write access is a precondition it resolves once per session: a `canWrite: true`
-result already in context is reused as-is, and only when the context lacks one does it run one
-canonical auth check, `<devboard> forge-auth check --required write --json`, from the
-repository root, with `<devboard>` the absolute harness binary it resolves once per session as
-`.devboard/prompts/forge-auth.md` states: the wrapper takes the target from `DEVBOARD_GITEA_URL`,
-`GITEA_TOKEN`, and the `origin` remote, so no forge, host, project, or URL flag is passed, the
-exit status and JSON are read directly, and no further auth probe runs in the session. The shared
-credential rule every tracker prompt follows is `.devboard/prompts/forge-auth.md`: the wrapper is
-the only authority for forge host, project, and token scope, and enumerating the environment or
-reading credential files to find them is forbidden. It changes only that issue's implementation,
-tests, and documentation; it may read other issues and code but never edits, comments on, closes,
-or reopens another issue.
+`<REPO_DIR>`. Forge access arrives with the session, which runs no credential preflight: the
+dashboard selects the forge, host, project, and credential from the checkout's `origin` and hands
+that selection to every tracker tool, so the run issues no credential command and resolves no
+harness binary for one. The first tracker tool call is where an unusable credential surfaces, and
+its error names the forge, the operation it attempted, and the concrete cause, which the run
+reports verbatim as its blocker. The prohibition on discovering a forge host, project, or token
+by enumerating the environment or reading credential files still holds, and
+`.devboard/prompts/forge-auth.md` states it in full for the prompts that resolve an identity. It
+changes only that issue's implementation, tests, and documentation; it may read other issues and
+code but never edits, comments on, closes, or reopens another issue.
 When the issue declares an open prerequisite (`depends on`, `blocked by`, or a
 task-list issue reference), it writes `blocked: #<prerequisite>` as the first stderr line, exits
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
@@ -3893,8 +3974,11 @@ transcript and still-pending question. The detail refreshes when the page opens,
 panel writes a draft through `POST /goal-proposals`, after an elaboration finishes or stops,
 and when a listed draft disappears. The page polls the list every two seconds while it is mounted,
 so an external deletion is visible without a reload, and the report panel's write broadcast
-reaches an open page immediately. A browser reload restores the Draft goals page and the selected
-path; when the file no longer exists, the page opens the list.
+reaches an open page immediately. That poll is the whole read path: a detail read is one file
+under the drafts directory and answers on its own request handle, and a request handle never joins
+the list a publish replays to, so polling, opening, and starting drafts for hours leaves a start's
+own cost flat. A browser reload restores the Draft goals page and the selected path; when the file
+no longer exists, the page opens the list.
 
 The read path accepts only `.devboard/goal-proposals/<name>.md`: an absolute path, `..`, a nested
 path, a directory, a missing file, or a symlink whose real path leaves the drafts directory is
@@ -4045,7 +4129,9 @@ probe that does not settle is killed at the deadline, Start answers a bounded re
 and the cleared task lets the next Start run the preflight again and spawn the worker. A Gitea
 origin is read through the shared Gitea client instead: the preflight asks
 `/api/v1/repos/<owner>/<name>` for the token's permissions, reports the request and its bound when
-the read stalls, and retries a fast transient refusal within the same deadline.
+the read stalls, and retries a fast transient refusal within the same deadline. A stalled read is
+latency: it stays on the card as Auto Scout's notice, not its error, so the page raises no error
+notification and files no board issue against the forge already behind.
 
 Auto Scout's persisted settings live at
 `<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
@@ -4155,13 +4241,14 @@ click or one double-click files at most one issue.
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
 selected element's selector path; the report text is free-form. `File issue`, or `Enter` in the
 composer (`Shift+Enter` inserts a newline), posts the report and the captured context to
-`POST /reports`, the server files the issue through the configured Gitea API, and the panel
-closes back into report selection mode so another element can be picked without leaving and
-re-entering the mode. A successful filing shows a `Report filed.` toast with an `Open issue` link
-to the created issue. `Esc`, the control again, or `Cancel` leaves the mode, a failed report stays
-in the panel with its error, and a click in selection mode never activates the element. The toast
-survives leaving the mode: a success dismisses itself after eight seconds, a failure stays until
-dismissed or replaced.
+`POST /reports`, the server records the report and files the issue through the configured Gitea
+API as its own background work, and the panel closes back into report selection mode so another
+element can be picked without leaving and re-entering the mode. A successful filing shows a
+`Report filed.` toast with an `Open issue` link to the created issue, which appears when the
+record settles even though the action answered at once. `Esc`, the control again, or `Cancel`
+leaves the mode, a failed report stays in the panel with its error, and a click in selection mode
+never activates the element. The toast survives leaving the mode: a success dismisses itself after
+eight seconds, a failure stays until dismissed or replaced.
 
 The panel also answers questions. `Ask` sends the typed question and the captured element
 context — route, URL, selector, viewport, visible text, DOM excerpt, and capture time — over the
@@ -4216,11 +4303,12 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
 the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
-Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
-server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
-same key answers with the first issue or draft instead of creating a second resource, while a
-failed attempt is never retained. A key is 1–255 characters with no control characters; an empty
-or oversized key is refused with `400`.
+Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. A goal
+proposal's result is retained under `<STATE_DIR>/idempotency/` for 24 hours, so a retry answers
+the first draft instead of creating a second, while a failed proposal is never retained. A
+report's key owns one record under `<STATE_DIR>/reports/` for 24 hours: a `FILING` or `FILED`
+record replays, and a `FAILED` record is filed again under the same record. A key is 1–255
+characters with no control characters; an empty or oversized key is refused with `400`.
 
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
@@ -4284,10 +4372,13 @@ endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and
 disabled-reporting `503`, which therefore answers a `POST` only.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
-`title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
-`POST /reports` answers `201` with `title` and the `links.issue.href` hypertext control carrying
-the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
-property remains. An idempotent replay answers the same `201` body and the same `Location`.
+`title`, `status`, and `detail`, so a client reads one media type and one body shape. An accepted
+`POST /reports` answers `202` with the report record: `id`, `title`, `status` (`FILING`, `FILED`,
+or `FAILED`), `delivery_timeout_ms`, the `links.report.href` control naming the record, a
+`Location` header naming that same URL, and, once the forge created the issue,
+`links.issue.href` with the issue's absolute URL. `GET /reports/{id}` serves the same record and
+answers `404` for an id this dashboard never issued. A keyed replay answers the record's current
+state: `200` once it is `FILED`, `202` while it is `FILING`. No top-level `url` property remains.
 
 `POST /reports`, `POST /goal-proposals`, `/agent-runs/{id}/output`, `/ready`, and the goal-draft
 documents require no credential. The dashboard requires no credential on any bind address or Host
@@ -4321,8 +4412,19 @@ Build the container from the `.devboard` context at the repository root:
 ```bash
 docker build -t devboard-adr-ui .devboard
 docker run --rm -d --name devboard-adr-ui -p 127.0.0.1:8080:8080 \
-  -v "$PWD:/repo" devboard-adr-ui
+  -v "$PWD:/repo" \
+  -v "$(command -v omp):/usr/local/bin/omp:ro" \
+  devboard-adr-ui
 ```
+
+The image ships `git` for every git-backed action it spawns by name and `ca-certificates` for TLS.
+The agent CLI is the operator's mount: the run above places the host's `omp` on the image's `PATH`,
+where the default `AGENT_COMMAND` (`omp acp`) resolves, and `-e AGENT_COMMAND=<command>` selects a
+different program. `serve` refuses to start, naming the program, when it cannot resolve an
+executable it could spawn, so a container never serves pages whose every Start and git-backed
+action would fail on a missing executable. The container runs as root while the mounted repository
+belongs to the invoking user, so the image's system git config trusts the mount; every
+git-backed action reads it as the same repository without a "dubious ownership" refusal.
 
 The container reads `/repo/adrs` and listens on port `8080`. The repository mount is writable because agent runs write their worktrees, goal documents, and Discover artifacts into `/repo`; the dashboard itself writes no document by hand. Docker publishes the port on the host's loopback interface only. The container process binds `0.0.0.0` because Docker forwards published traffic to the container interface; the local-only access boundary is enforced by the `127.0.0.1` host publish.
 
@@ -4343,9 +4445,10 @@ to the `METHOD /path` that replaced it.
   `application/problem+json` carrying `type`, `title`, `status`, and `detail`.
 - A collection that can exceed 200 entries (`GET /records`) accepts `cursor` and `limit` and
   answers a page object with `self`, `next`, and `prev`.
-- `POST /reports` replaces the retired `POST /reports` and keeps its submission fields, its
-  `201` plus `Location` to the filed issue, its `Idempotency-Key` behavior, and its `503` without
-  `DEVBOARD_GITEA_URL`. `/reports` answers `404 Problem JSON`.
+- `POST /reports` records the report, answers `202` with its `Location` and `links.report.href`,
+  files the issue as its own background work, and serves the record at `GET /reports/{id}`; it
+  keeps the submission fields, the `Idempotency-Key` behavior, and the `503` without
+  `DEVBOARD_GITEA_URL`. `/feedback` answers `404 Problem JSON`.
 - `POST /goal-proposals` and `/ready` keep their request, response, and header contracts.
 - The API is loopback-only and presents no credential. A Host this listener does not serve
   answers `421` (or `403` on the mutating reporting endpoints), and a cross-origin request
@@ -4353,6 +4456,11 @@ to the `METHOD /path` that replaced it.
 - A 404 Problem on any path in `openapi.yaml` is the documented stale-bundle refusal: a page
   built against an older revision reloads once. A second refusal is reported and starts no
   reload loop.
+- A path under a root the REST surface owns, or under `flows`, `agent-runs`, `goal-proposals`,
+  `ready`, or `reports`, that matches no route answers `404` Problem JSON naming the request —
+  `This server serves no GET /issues/runs/.` — never the static file refusal, so a page that
+  sends a path this server does not serve reads which request was refused. Any other missing
+  path answers `The requested file was not found.`
 
 ### Per-run output sockets
 

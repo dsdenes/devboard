@@ -1264,6 +1264,20 @@ fn issues_client(context: &McpContext) -> Result<ForgeIssuesClient, String> {
     ForgeIssuesClient::new(options).map_err(|error| error.message)
 }
 
+/// One tracker failure named with its forge, the operation it attempted, and
+/// the cause that failed it.
+///
+/// A run's first tracker call is the one place an unusable credential
+/// surfaces, so the sentence a run reports as its blocker carries all three
+/// parts: a bare cause would leave the caller guessing which forge answered.
+fn tracker_failure(forge: &ForgeIssuesClient, operation: &str, cause: String) -> String {
+    format!(
+        "{} {operation} for {} failed: {cause}",
+        forge.forge().label(),
+        forge.repository()
+    )
+}
+
 async fn file_goal_draft(context: &McpContext, args: &Map<String, Value>) -> Result<Value, String> {
     let mut step = "validate".to_string();
     let outcome: Result<Value, String> = async {
@@ -2247,7 +2261,7 @@ async fn list_issues(context: &McpContext, args: &Map<String, Value>) -> Result<
     let issues = forge
         .list(query_state(state), Some(limit + 1))
         .await
-        .map_err(|error| error.message)?;
+        .map_err(|error| tracker_failure(&forge, "list issues", error.message))?;
     let truncated = issues.len() > limit;
     let rows: Vec<Value> = issues.iter().take(limit).map(issue_row).collect();
     if let Some(directory) = dedup_run_directory(context) {
@@ -2262,7 +2276,11 @@ async fn list_issues(context: &McpContext, args: &Map<String, Value>) -> Result<
 async fn get_issue(context: &McpContext, args: &Map<String, Value>) -> Result<Value, String> {
     let number = positive_issue_number(args.get("number"))?;
     let forge = issues_client(context)?;
-    let issue = forge.get(number).await.map_err(|error| error.message)?;
+    let operation = format!("read issue {number}");
+    let issue = forge
+        .get(number)
+        .await
+        .map_err(|error| tracker_failure(&forge, &operation, error.message))?;
     let bounded = bound_bytes(&issue.body, ISSUE_BODY_MAX_BYTES, "...");
     Ok(issue_document(&issue, &bounded.text, bounded.truncated))
 }
@@ -2276,6 +2294,7 @@ async fn close_issue(context: &McpContext, args: &Map<String, Value>) -> Result<
         Some(_) => return Err("reason must be \"completed\" or \"not planned\".".to_string()),
     };
     let forge = issues_client(context)?;
+    let operation = format!("close issue {number}");
     let close_reason = if reason == "not planned" {
         CloseReason::NotPlanned
     } else {
@@ -2284,7 +2303,7 @@ async fn close_issue(context: &McpContext, args: &Map<String, Value>) -> Result<
     let issue = forge
         .close(number, close_reason)
         .await
-        .map_err(|error| error.message)?;
+        .map_err(|error| tracker_failure(&forge, &operation, error.message))?;
     if let Some(run_id) = environment_value(context, "DEVBOARD_ISSUES_RUN_ID") {
         if !run_id.is_empty() {
             crate::issues_mode::record_closed_by_run(
@@ -2438,7 +2457,7 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
         for issue in forge
             .list_all(IssueQueryState::All)
             .await
-            .map_err(|error| error.message)?
+            .map_err(|error| tracker_failure(&forge, "list issues", error.message))?
         {
             if issue.state.as_str() == "open" || issue.labels.iter().any(|entry| entry == label) {
                 known.insert(normalize_issue_title(&issue.title));
@@ -2458,7 +2477,7 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
         forge
             .ensure_label(label)
             .await
-            .map_err(|error| error.message)?;
+            .map_err(|error| tracker_failure(&forge, "create the issue", error.message))?;
     }
     let issue = forge
         .create(&CreateForgeIssueInput {
@@ -2467,7 +2486,7 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
             labels,
         })
         .await
-        .map_err(|error| error.message)?;
+        .map_err(|error| tracker_failure(&forge, "create the issue", error.message))?;
     if let (Some(directory), Some(fingerprint)) = (dedup_directory, fingerprint) {
         record_watchdog_filed(&directory, &fingerprint, &issue)?;
     }
@@ -2491,10 +2510,11 @@ async fn comment_issue(context: &McpContext, args: &Map<String, Value>) -> Resul
         ));
     }
     let forge = issues_client(context)?;
+    let operation = format!("comment on issue {number}");
     forge
         .comment(&CommentTarget::Number(number), &body)
         .await
-        .map_err(|error| error.message)?;
+        .map_err(|error| tracker_failure(&forge, &operation, error.message))?;
     Ok(json!({"number": number, "commented": true}))
 }
 
