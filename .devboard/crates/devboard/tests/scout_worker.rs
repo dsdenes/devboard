@@ -465,6 +465,130 @@ async fn a_refused_create_after_a_complete_batch_keeps_the_succeeded_status() {
     worker.stop().await;
 }
 
+/// A failed scan publishes `Scan failed:`; the next scan that files nothing is
+/// a correct outcome, so the page must stop reporting the old failure instead of
+/// keeping text the worker no longer holds.
+#[tokio::test]
+async fn a_clean_scan_after_a_failed_one_clears_the_failure_notice() {
+    let repo = scratch("notice-after-failure");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = 1_780_000_000_000i64;
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &published_state(&repo, &anchor, "scan-previous", (2, 2), "v1", &anchor),
+    );
+    let clock = Arc::new(AtomicI64::new(now));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let agent: devboard::workers::scout::ScanAgent = {
+        let runs = Arc::clone(&runs);
+        Arc::new(move |context: devboard::workers::scout::ScanAgentContext| {
+            let runs = Arc::clone(&runs);
+            Box::pin(async move {
+                (context.started)();
+                if runs.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err("the scan timed out".to_string());
+                }
+                Ok(())
+            })
+        })
+    };
+    let mut options = ScoutWorkerOptions::new(&repo, repo.join(".devboard").join("state"));
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(FixtureForge::default()));
+    options.agent = Some(agent);
+    options.sync_ms = Some(1000);
+    options.cadence_ms = Some(1000);
+    options.tick_ms = Some(10);
+    options.timeout_ms = Some(10_000);
+    options.now = Some(Arc::new({
+        let clock = Arc::clone(&clock);
+        move || clock.load(Ordering::SeqCst)
+    }));
+    let worker = ScoutWorker::new(options);
+    assert!(worker.start("acme/fixture"));
+
+    worker.begin_scan().await;
+    worker.settle().await;
+    let failed = worker.current_state();
+    assert_eq!(failed.lifecycle, "failed", "the first scan fails");
+    assert_eq!(
+        failed.notice.as_deref(),
+        Some("Scan failed: the scan timed out")
+    );
+
+    clock.store(now + 120_000, Ordering::SeqCst);
+    worker.begin_scan().await;
+    worker.settle().await;
+    let recovered = worker.current_state();
+    assert_eq!(scan_ids(&repo).len(), 2, "the clean scan ran");
+    assert_eq!(recovered.lifecycle, "idle");
+    assert_eq!(
+        recovered.notice, None,
+        "a clean scan that files nothing clears the previous failure text"
+    );
+    assert_eq!(
+        recovered.last_error, None,
+        "the successful scan leaves no error alert"
+    );
+    worker.stop().await;
+}
+
+/// A failure the previous process recorded is not this worker's: it started no
+/// scan, so its page must not open on a status line for that failure.
+#[tokio::test]
+async fn a_started_worker_does_not_republish_an_inherited_scan_failure() {
+    let repo = scratch("notice-inherited-failure");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = 1_780_000_000_000i64;
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    let mut previous = published_state(&repo, &anchor, "scan-previous", (2, 2), "v1", &anchor);
+    previous.lifecycle = "failed".to_string();
+    previous.notice = Some("Scan failed: the scan timed out".to_string());
+    write_published_state(&state_dir, &repo, Some("test-version"), &previous);
+    let worker = worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.notice, None,
+        "a failure the previous process recorded is not republished"
+    );
+    assert_eq!(state.lifecycle, "idle");
+    worker.stop().await;
+}
+
+/// The inherited notice filter is narrow: every notice that is not a scan
+/// failure still carries into the new worker's state.
+#[tokio::test]
+async fn a_started_worker_keeps_an_inherited_notice_that_is_not_a_scan_failure() {
+    let repo = scratch("notice-inherited-settings");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = 1_780_000_000_000i64;
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    let mut previous = published_state(&repo, &anchor, "scan-previous", (2, 2), "v1", &anchor);
+    previous.notice = Some("Settings saved: every 7 minute(s), 2 per hour, 3 open.".to_string());
+    write_published_state(&state_dir, &repo, Some("test-version"), &previous);
+    let worker = worker(
+        &repo,
+        FixtureForge::default(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    let state = worker.current_state();
+    assert_eq!(
+        state.notice.as_deref(),
+        Some("Settings saved: every 7 minute(s), 2 per hour, 3 open."),
+        "a notice that is not a scan failure is inherited"
+    );
+    worker.stop().await;
+}
+
 #[tokio::test]
 async fn a_short_batch_is_incomplete_and_names_its_shortfall() {
     let repo = scratch("short-batch");

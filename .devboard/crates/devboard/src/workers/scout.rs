@@ -46,6 +46,9 @@ pub const SCAN_VERSION: i64 = 2;
 /// A scan that filed fewer issues than its finite quota; `succeeded` means the
 /// quota was reached, or that an unlimited scan has no quota to miss.
 pub const SCAN_STATUS_INCOMPLETE: &str = "incomplete";
+/// The status line a failed scan publishes. A worker that starts against an
+/// inherited state never republishes it: that worker started no scan.
+pub const SCAN_FAILED_PREFIX: &str = "Scan failed: ";
 /// A scan's agent phase ends after this long without a session update, and its
 /// separately timed settle-and-file phase ends after this long in total.
 pub const SCAN_TIMEOUT_MS: i64 = 15 * 60_000;
@@ -2974,7 +2977,14 @@ impl ScoutWorker {
         state.newest_scan_id = previous
             .as_ref()
             .and_then(|state| state.newest_scan_id.clone());
-        state.notice = previous.as_ref().and_then(|state| state.notice.clone());
+        // A scan failure the previous state recorded is not a status this worker
+        // may publish: it started no scan and failed nothing, and the page's
+        // status line follows this process's own scans alone. Any other notice
+        // is inherited as it stands.
+        state.notice = previous
+            .as_ref()
+            .and_then(|state| state.notice.clone())
+            .filter(|notice| !notice.starts_with(SCAN_FAILED_PREFIX));
         state.updated_at = iso_from_millis(now);
 
         let github = match &self.injected_github {
@@ -3785,7 +3795,7 @@ impl ScoutWorker {
         let mut runtime = lock_unpoisoned(&self.runtime);
         runtime.state.newest_scan_id = Some(scan.scan_id.clone());
         runtime.state.last_error = Some(detail.to_string());
-        runtime.state.notice = Some(format!("Scan failed: {detail}"));
+        runtime.state.notice = Some(format!("{SCAN_FAILED_PREFIX}{detail}"));
         runtime.state.lifecycle = ScoutLifecycle::Failed.as_str().to_string();
         runtime.state.next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
         self.publish_locked(&mut runtime);
@@ -3841,7 +3851,9 @@ impl ScoutWorker {
         }
         runtime.state.lifecycle = ScoutLifecycle::Failed.as_str().to_string();
         runtime.state.last_error = error.clone();
-        runtime.state.notice = error.as_ref().map(|error| format!("Scan failed: {error}"));
+        runtime.state.notice = error
+            .as_ref()
+            .map(|error| format!("{SCAN_FAILED_PREFIX}{error}"));
         runtime.state.next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
         self.clear_active_scan_locked(runtime);
         self.release_scan_slot_locked(runtime);
@@ -3949,12 +3961,14 @@ impl ScoutWorker {
                 .or_else(|| completion.filing_error.clone());
             let rate_limited = failure.as_deref().is_some_and(is_github_rate_limited);
             runtime.state.last_error = if rate_limited { None } else { failure };
-            if let Some(notice) = &completion.notice {
-                runtime.state.notice = Some(notice.clone());
-            }
-            if let Some(error) = &completion.error {
-                runtime.state.notice = Some(format!("Scan failed: {error}"));
-            }
+            // A completed scan owns the status line, including an empty one: a
+            // clean scan that files nothing clears a previous failure's text
+            // instead of letting it outlive the state that recorded it.
+            runtime.state.notice = completion
+                .error
+                .as_ref()
+                .map(|error| format!("{SCAN_FAILED_PREFIX}{error}"))
+                .or_else(|| completion.notice.clone());
             runtime.state.lifecycle = if completion.error.is_none() {
                 ScoutLifecycle::Idle.as_str().to_string()
             } else {
