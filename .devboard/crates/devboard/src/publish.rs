@@ -2211,6 +2211,17 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             if let Some(suite_dir) = args.release_suite_dir.clone() {
                 run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
             }
+            if head_moved_after_proof(
+                &git,
+                &published_head,
+                &preflight.remote,
+                attempt,
+                log.as_ref(),
+            )
+            .await?
+            {
+                continue;
+            }
 
             let manifest_path = args.harness_root.join("Cargo.toml");
             // An earlier attempt of this same version committed the bump and then
@@ -4443,6 +4454,13 @@ fn dist_is_stale(harness_root: &Path) -> Result<bool> {
     let embedded = embedded_client_root(harness_root);
     let dist = harness_root.join("dist");
     let reference = if embedded.is_dir() {
+        // A fast-forward writes the committed copy now while `dist` is build
+        // output from an earlier run, so its mtime proves nothing: a `dist`
+        // whose bytes differ from the embedded copy must be rebuilt, or the
+        // release tags sources its bundle predates.
+        if verify_embedded_client(harness_root, &dist).is_err() {
+            return Ok(true);
+        }
         embedded
     } else if dist.is_dir() {
         dist
@@ -4450,6 +4468,41 @@ fn dist_is_stale(harness_root: &Path) -> Result<bool> {
         return Ok(false);
     };
     Ok(newest_source_mtime(harness_root)? > newest_mtime(&reference))
+}
+
+/// Whether another landing advanced the checkout after this attempt proved its
+/// bundle.
+///
+/// The integration checkout is shared, so an agent's landing can fast-forward
+/// it while the suite runs; tagging the new head would then ship sources this
+/// attempt never proved. The caller derives again from the landed tip instead.
+async fn head_moved_after_proof(
+    git: &Git<'_>,
+    proven: &str,
+    remote: &str,
+    attempt: u32,
+    log: &(dyn Fn(&str) + Send + Sync),
+) -> Result<bool> {
+    let head = git
+        .must(
+            &["rev-parse", "HEAD"],
+            "could not read HEAD after the release suite",
+        )
+        .await?;
+    if head == proven {
+        return Ok(false);
+    }
+    if attempt >= RACE_INTEGRATION_ATTEMPTS {
+        bail!(
+            "the checkout moved during all {attempt} attempts; nothing was tagged or pushed to {remote}/main"
+        );
+    }
+    (log)(&format!(
+        "integrating the landing at {} and deriving again (attempt {})",
+        short_sha(&head),
+        attempt + 1
+    ));
+    Ok(true)
 }
 
 /// Rebuilds the client bundle from the released sources and embeds the result
@@ -4960,6 +5013,30 @@ mod tests {
         assert!(instances
             .iter()
             .any(|instance| instance.pid == 424245 && instance.harness == root.join(".devboard")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dist_that_differs_from_the_embedded_copy_is_rebuilt() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.tmp")
+            .join(format!("publish-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let embedded = root.join("crates/devboard/assets");
+        let dist = root.join("dist");
+        std::fs::create_dir_all(&embedded).expect("an embedded copy");
+        std::fs::create_dir_all(&dist).expect("a built bundle");
+        std::fs::write(embedded.join("index.html"), "new").expect("the embedded index");
+        std::fs::write(dist.join("index.html"), "old").expect("the older bundle");
+        assert!(
+            dist_is_stale(&root).expect("a verdict"),
+            "a dist whose bytes differ from the embedded copy is rebuilt"
+        );
+        std::fs::write(dist.join("index.html"), "new").expect("the current bundle");
+        assert!(
+            !dist_is_stale(&root).expect("a verdict"),
+            "an identical dist is not rebuilt"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
