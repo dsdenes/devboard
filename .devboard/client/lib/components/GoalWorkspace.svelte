@@ -52,12 +52,6 @@
           : "Start goal creation.",
   );
 
-  const runStartTitle = $derived(
-    goal.lifecycleActive
-      ? "Interrupt the lifecycle and resolve the ADRs manually."
-      : undefined,
-  );
-
   const resolvedCount = $derived(goal.records.filter((record) => !record.pending).length);
   const pendingCount = $derived(goal.pendingCount);
   const progressLine = $derived(
@@ -201,7 +195,7 @@
           data-command={`goal.adr.start.${record.file}`}
           data-testid="start"
           data-file={record.file}
-          title={runStartTitle}
+          title={goal.runStartTitle}
           disabled={goal.runStartDisabled}
         >
           Start this record
@@ -388,7 +382,7 @@
             command={() => goal.startNext()}
             data-command="goal.adr.start-next"
             data-testid="start-next"
-            title={runStartTitle}
+            title={goal.runStartTitle}
             disabled={goal.runStartDisabled || goal.next === null}
           >
             Resolve next ADR

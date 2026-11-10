@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -16,8 +16,27 @@ afterAll(() => {
 const { cleanup, render } = await import("@testing-library/svelte");
 const userEvent = (await import("@testing-library/user-event")).default;
 const { default: AdrTable } = await import("./AdrTable.svelte");
+// The store reaches the connection module, so it loads after the DOM globals exist.
+const { goal } = await import("../goal.svelte");
 
 afterEach(() => cleanup());
+
+beforeEach(() => {
+  goal.records = [];
+  goal.next = null;
+  goal.goalText = "";
+  goal.goalReady = true;
+  goal.creationActive = false;
+  goal.revisionActive = false;
+  goal.skillsPrepActive = false;
+  goal.runFile = null;
+  goal.runTitle = null;
+  goal.runState = "idle";
+  goal.manualRunActive = false;
+  goal.lifecycle = { stage: "goal", pass: 1, work: null, paused: false };
+  goal.lifecycleSeen = false;
+  goal.skills = [];
+});
 
 const record = {
   file: "0001-keyboard.md",
@@ -70,4 +89,21 @@ test("Enter on the row itself opens the record", async () => {
 
   expect(opened).toEqual([record.file]);
   expect(started).toEqual([]);
+});
+
+test("a pending row's Start is enabled and untitled when no operation is active", () => {
+  const { view } = renderTable();
+  const button = view.getByTestId("start");
+
+  expect(button.hasAttribute("disabled")).toBe(false);
+  expect(button.hasAttribute("title")).toBe(false);
+});
+
+test("a pending row's Start is disabled and names the active manual run", () => {
+  goal.manualRunActive = true;
+  const { view } = renderTable();
+  const button = view.getByTestId("start");
+
+  expect(button.hasAttribute("disabled")).toBe(true);
+  expect(button.getAttribute("title")).toContain("A run is active");
 });

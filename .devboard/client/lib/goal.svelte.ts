@@ -218,6 +218,17 @@ export class GoalStore {
     );
   }
 
+  get runStartTitle(): string | undefined {
+    if (this.creationActive) return "Goal creation is active. Wait for it to finish.";
+    if (this.revisionActive) return "The goal is being revised. Wait for it to finish.";
+    if (this.skillsPrepActive) return "Skills are being prepared. Wait for it to finish.";
+    if (this.manualRunActive || (!this.lifecycleActive && this.running)) {
+      return "A run is active. Interrupt it before starting another.";
+    }
+    if (this.lifecycleActive) return "Interrupt the lifecycle and resolve the ADRs manually.";
+    return undefined;
+  }
+
   get revisionDisabled(): boolean {
     return (
       this.creationActive ||

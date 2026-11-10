@@ -108,7 +108,7 @@
                 data-testid="start"
                 data-file={record.file}
                 data-command={`goal.adr.start.${record.file}`}
-                title={goal.startLifecycleTitle}
+                title={goal.runStartTitle}
                 aria-label={`Start the implementation of ${record.title}`}
                 disabled={goal.runStartDisabled}
               >
