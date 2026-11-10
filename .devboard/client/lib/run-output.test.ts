@@ -94,9 +94,9 @@ test("the collection poll revalidates with the previous ETag", async () => {
   const poll = (): Promise<void> => (store as unknown as { poll(): Promise<void> }).poll();
   await poll();
   expect(store.runs.length).toBe(1);
-  expect(seen[0]["if-none-match"]).toBeUndefined();
+  expect(seen[0]?.["if-none-match"]).toBeUndefined();
   await poll();
-  expect(seen[1]["if-none-match"]).toBe('"abc"');
+  expect(seen[1]?.["if-none-match"]).toBe('"abc"');
   expect(store.runs.length).toBe(1);
   expect(calls).toBe(2);
 });
