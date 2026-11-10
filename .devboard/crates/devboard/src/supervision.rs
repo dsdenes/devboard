@@ -126,11 +126,12 @@ pub struct ProcessStat {
     pub state: String,
 }
 
-/// How long one liveness read is reused. Every caller in one tick asks about
+/// How long one liveness read is reused: half the worker tick, so a stopped
+/// process is reported within that half tick. Every caller in one tick asks about
 /// the same few pids within microseconds, and a sampler that checks its owners
 /// several times per tick would otherwise read `/proc` several times; a dead
 /// process is still reported within this bound.
-const PROCESS_STAT_TTL: Duration = Duration::from_millis(1000);
+const PROCESS_STAT_TTL: Duration = Duration::from_millis(500);
 
 struct CachedStat {
     at: Instant,

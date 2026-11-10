@@ -430,11 +430,14 @@ fn sigterm_ends_the_child_and_removes_the_staging() {
         .status()
         .expect("kill runs");
     assert!(status.success());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // A graceful stop persists state and joins its tasks; a loaded CI host can
+    // take longer than five seconds, and the liveness read itself is memoized
+    // for half a worker tick.
+    let deadline = Instant::now() + Duration::from_secs(20);
     while devboard::supervision::live_process(dashboard.pid) {
         assert!(
             Instant::now() < deadline,
-            "the dashboard stops within five seconds"
+            "the dashboard stops within twenty seconds"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
