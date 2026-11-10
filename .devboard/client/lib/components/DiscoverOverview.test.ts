@@ -170,3 +170,34 @@ test("a remote target renders no path link and keeps its text", () => {
   expect(chip(view.container, "package.json")).toBeNull();
   expect(view.container.textContent).toContain("package.json");
 });
+
+function contextsValue(value: Array<Record<string, unknown>>): void {
+  const payload = discover.state as DiscoverStatePayload;
+  const architecture = payload.sheet?.architecture as {
+    contexts: { value: Array<Record<string, unknown>> };
+  };
+  architecture.contexts.value = value;
+}
+
+test("a context record with only a path renders no row and no count", () => {
+  discover.state = state({});
+  contextsValue([{ name: "", path: "src/orders" }]);
+  const view = render(DiscoverOverview);
+
+  expect(view.container.querySelectorAll("li.discover-context")).toHaveLength(0);
+  expect(view.container.querySelector('[data-testid="discover-contexts"]')).toBeNull();
+  const counts = [...view.container.querySelectorAll(".panel__subtitle")].map((element) =>
+    element.textContent?.trim().replace(/\s+/g, " ") ?? "",
+  );
+  expect(counts.some((text) => /^\d+ contexts?$/.test(text))).toBe(false);
+});
+
+test("a named context without a path still renders its row", () => {
+  discover.state = state({});
+  contextsValue([{ name: "Orders", responsibility: "Owns records." }]);
+  const view = render(DiscoverOverview);
+
+  const row = view.container.querySelector("li.discover-context");
+  expect(row?.getAttribute("data-context")).toBe("Orders");
+  expect(row?.textContent).toContain("Owns records.");
+});

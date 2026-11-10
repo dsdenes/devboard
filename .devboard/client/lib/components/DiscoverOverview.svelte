@@ -43,7 +43,6 @@
   const QUALITY_GATE_WIDTHS = { gate: "220px" };
   interface ContextRow {
     name: string;
-    path: string;
     responsibility: string;
     entryPoints: string[];
   }
@@ -170,18 +169,16 @@
   const contextRows: ContextRow[] = $derived(
     recordItems(contextsLeaf)
       .map((record) => {
-        const path = scalarText(record.path);
         const entryPoints = Array.isArray(record.entryPoints)
           ? record.entryPoints.map((entry) => scalarText(entry).trim()).filter(Boolean)
           : [];
         return {
           name: scalarText(record.name).trim(),
-          path,
           responsibility: scalarText(record.responsibility).trim(),
           entryPoints: [...new Set(entryPoints)],
         };
       })
-      .filter((row) => row.name.length > 0 || row.path.length > 0),
+      .filter((row) => row.name.length > 0),
   );
   const externalBoundariesLeaf = $derived(
     sectionLeaf(architectureSection, "externalBoundaries"),
