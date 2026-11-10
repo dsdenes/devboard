@@ -120,6 +120,37 @@ impl Delivery for MemoryDelivery {
     }
 }
 
+/// A delivery whose open-issue read fails with one diagnostic line, so a cycle
+/// can be run against a forge that is unavailable or refused the read.
+struct FailingListDelivery {
+    detail: String,
+    unavailable: bool,
+}
+
+impl Delivery for FailingListDelivery {
+    fn repository(&self) -> String {
+        "acme/fixture".to_string()
+    }
+
+    fn list(&self) -> DeliveryFuture<'_, anyhow::Result<Vec<OpenIssue>>> {
+        let detail = self.detail.clone();
+        let error = if self.unavailable {
+            anyhow::Error::new(mcp::ForgeReadUnavailable::new(detail))
+        } else {
+            anyhow::anyhow!(detail)
+        };
+        Box::pin(async move { Err(error) })
+    }
+
+    fn create<'a>(&'a self, _title: String, _body: String) -> DeliveryFuture<'a, DeliveryResult> {
+        Box::pin(async move {
+            DeliveryResult::Failed {
+                reason: "the open issue read failed, so nothing was filed".to_string(),
+            }
+        })
+    }
+}
+
 /// A synthesis replacement that performs the same MCP writes a real turn
 /// would: one `issue_create` record, or one skip record.
 fn stub_synthesis(calls: Arc<Mutex<Vec<(String, String)>>>) -> mcp::Synthesize {
@@ -739,6 +770,85 @@ async fn a_timed_out_synthesis_cycle_defers_without_failing() {
     assert_eq!(
         latest.get("action").and_then(Value::as_str),
         Some("deferred")
+    );
+}
+
+#[tokio::test]
+async fn a_forge_outage_on_the_open_issue_read_defers_the_cycle() {
+    let fixture = Fixture::new("outage");
+    seed_evidence(&fixture);
+    let detail = concat!(
+        "GET /repos/acme/fixture/issues?state=open&limit=100 failed (HTTP 500): ",
+        "database is locked (5) (SQLITE_BUSY)"
+    );
+    let mut options = CycleOptions::new(&fixture.repo_dir, &fixture.state_dir);
+    options.now = Some(now());
+    options.delivery = Some(Arc::new(FailingListDelivery {
+        detail: detail.to_string(),
+        unavailable: true,
+    }));
+    options.settings = Some(Settings {
+        interval_minutes: 60,
+        max_per_hour: Some(10),
+        max_pending: Some(20),
+        max_issues_per_cycle: 20,
+        allowlist: Vec::new(),
+    });
+    let result = run_cycle(options).await.expect("the cycle");
+    assert_eq!(
+        result.report.action, "deferred",
+        "{:?}",
+        result.report.reason
+    );
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(
+        result.report.reason,
+        Some(format!("the open issues could not be read: {detail}"))
+    );
+    assert!(result.report.issues.is_empty());
+    let latest: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture.directory().join("latest.json")).expect("latest.json"),
+    )
+    .expect("the latest report");
+    assert_eq!(
+        latest.get("action").and_then(Value::as_str),
+        Some("deferred")
+    );
+}
+
+#[tokio::test]
+async fn a_refused_open_issue_read_fails_the_cycle_with_one_reason() {
+    let fixture = Fixture::new("refused");
+    seed_evidence(&fixture);
+    let detail = "GET /repos/acme/fixture/issues?state=open&limit=100 failed (HTTP 404): \
+                  not found";
+    let mut options = CycleOptions::new(&fixture.repo_dir, &fixture.state_dir);
+    options.now = Some(now());
+    options.delivery = Some(Arc::new(FailingListDelivery {
+        detail: detail.to_string(),
+        unavailable: false,
+    }));
+    options.settings = Some(Settings {
+        interval_minutes: 60,
+        max_per_hour: Some(10),
+        max_pending: Some(20),
+        max_issues_per_cycle: 20,
+        allowlist: Vec::new(),
+    });
+    let result = run_cycle(options).await.expect("the cycle");
+    assert_eq!(result.report.action, "failed");
+    assert_eq!(result.exit_code, 1);
+    let reason = result.report.reason.clone().expect("the failure reason");
+    // The delivery's own line names the request and its answer, so the cycle
+    // prefix is added once: a doubled prefix names no fault.
+    assert_eq!(
+        reason,
+        format!("the open issues could not be read: {detail}")
+    );
+    assert_eq!(
+        reason.matches("the open issues could not be read").count(),
+        1,
+        "{reason}"
     );
 }
 

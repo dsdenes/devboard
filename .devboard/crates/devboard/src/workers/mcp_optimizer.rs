@@ -3925,6 +3925,35 @@ pub trait Delivery: Send + Sync {
     fn create<'a>(&'a self, title: String, body: String) -> DeliveryFuture<'a, DeliveryResult>;
 }
 
+/// One open-issue read that met a forge which was slow or unavailable.
+///
+/// The delivery knows the fault it hit, so the cycle never guesses it from a
+/// diagnostic: a 5xx answer, and one that never reached the forge at all, defer
+/// the cycle, while a refused request or a local configuration fault still
+/// fails it with that line. Failing the cycle on an unavailable forge raises an
+/// error notification that files a board issue and returns as more load for the
+/// same forge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForgeReadUnavailable {
+    detail: String,
+}
+
+impl ForgeReadUnavailable {
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ForgeReadUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for ForgeReadUnavailable {}
+
 /// A verification run injects this directory: the delivery then records each
 /// call in `calls.jsonl`, answers a deterministic issue URL, and lists the
 /// issues it created, so no test contacts a real forge.
@@ -4163,7 +4192,7 @@ impl NativeDelivery {
             anyhow::bail!(first_line(&String::from_utf8_lossy(&output.stderr)));
         }
         let parsed: Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| anyhow::anyhow!("the open issues could not be read: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("gh issue list returned invalid JSON: {error}"))?;
         let issues = parsed
             .as_array()
             .map(|entries| {
@@ -4222,7 +4251,10 @@ impl NativeDelivery {
             .or_else(|| self.origin.origin_url.clone())
     }
 
-    async fn list_gitea(&self) -> anyhow::Result<Vec<OpenIssue>> {
+    async fn list_gitea(
+        &self,
+        transport: &crate::forge::Transport,
+    ) -> anyhow::Result<Vec<OpenIssue>> {
         let base = self
             .gitea_base()
             .ok_or_else(|| anyhow::anyhow!("the Gitea address is not configured"))?;
@@ -4231,40 +4263,50 @@ impl NativeDelivery {
             .get("GITEA_TOKEN")
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("GITEA_TOKEN is not set"))?;
-        let url = format!(
-            "{base}/api/v1/repos/{}/issues?state=open&limit=100",
-            self.origin.project
-        );
-        let response = reqwest::Client::new()
-            .get(url)
-            .header("Authorization", format!("token {token}"))
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            anyhow::bail!("the open issues could not be read: {}", response.status());
-        }
-        let parsed: Value = response.json().await?;
-        Ok(parsed
-            .as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| {
-                        let record = entry.as_object()?;
-                        Some(OpenIssue {
-                            number: record.get("number")?.as_u64()?,
-                            title: record.get("title")?.as_str()?.to_string(),
-                            body: record
-                                .get("body")
-                                .and_then(Value::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                            url: record.get("html_url")?.as_str()?.to_string(),
-                        })
-                    })
-                    .collect()
+        let target = crate::forge::GiteaTarget {
+            base_url: base,
+            project: self.origin.project.clone(),
+            token: Some(token),
+        };
+        // The read carries the deduplication set for the whole cycle, so it is
+        // bounded and paged like every other forge read: the shared client
+        // answers a diagnostic naming the request, its status, and the forge's
+        // own cause, and a forge busy on its own database no longer holds the
+        // cycle for as long as its lock lasts.
+        let documents = match crate::forge::gitea_list_issues(
+            &target,
+            crate::forge::IssueQueryState::Open,
+            transport,
+            &crate::forge::GiteaCallOptions::default(),
+        )
+        .await
+        {
+            Ok(documents) => documents,
+            Err(error) => {
+                // A 5xx answer, and one that never reached the forge at all,
+                // describe a forge that could not serve the read; a 4xx is its
+                // verdict about the request or the credential. Only the former
+                // defers the cycle instead of raising a fault.
+                let unavailable = error.status.is_none_or(|status| status >= 500);
+                let detail = error.to_string();
+                return Err(if unavailable {
+                    anyhow::Error::new(ForgeReadUnavailable::new(detail))
+                } else {
+                    anyhow::anyhow!(detail)
+                });
+            }
+        };
+        Ok(documents
+            .into_iter()
+            .filter_map(|document| {
+                Some(OpenIssue {
+                    number: u64::try_from(document.number).ok()?,
+                    title: document.title,
+                    body: document.body,
+                    url: document.url,
+                })
             })
-            .unwrap_or_default())
+            .collect())
     }
 
     async fn create_gitea(&self, title: &str, body: &str) -> DeliveryResult {
@@ -4324,7 +4366,11 @@ impl Delivery for NativeDelivery {
         Box::pin(async move {
             match self.origin.forge {
                 ForgeKind::GitHub => self.list_github().await,
-                ForgeKind::Gitea => self.list_gitea().await,
+                ForgeKind::Gitea => {
+                    let transport =
+                        crate::forge::default_transport(crate::forge::GITEA_REQUEST_TIMEOUT_MS);
+                    self.list_gitea(&transport).await
+                }
                 ForgeKind::GitLab => {
                     anyhow::bail!(
                         "MCP optimizer supports a GitHub or Gitea origin, not a GitLab one"
@@ -4956,6 +5002,9 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
     let mut delivery_failure: Option<String> = None;
     let mut open_issues: Vec<OpenIssue> = Vec::new();
     let mut failure: Option<String> = None;
+    // Set when the deduplication read met a forge that was slow or
+    // unavailable rather than one that refused the request.
+    let mut deferred: Option<String> = None;
 
     // A queue written by an older revision is discarded, not filed: the
     // synthesis turn files its own proposal or records why it filed none.
@@ -4992,10 +5041,18 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
             (Some(active), None) => match active.list().await {
                 Ok(issues) => open_issues = issues,
                 Err(error) => {
-                    failure = Some(format!(
-                        "the open issues could not be read: {}",
-                        error_line(&error)
-                    ))
+                    let reason =
+                        format!("the open issues could not be read: {}", error_line(&error));
+                    // A slow or unavailable forge is not a refused read: failing
+                    // the cycle there raises an error notification that files a
+                    // board issue and returns as more load for the same forge, so
+                    // the cycle defers the families it never deduplicated and the
+                    // next cadence reads again.
+                    if error.downcast_ref::<ForgeReadUnavailable>().is_some() {
+                        deferred = Some(reason);
+                    } else {
+                        failure = Some(reason);
+                    }
                 }
             },
         }
@@ -5011,6 +5068,19 @@ pub async fn run_cycle(options: CycleOptions) -> anyhow::Result<CycleResult> {
             None,
             None,
             Some(failure),
+        );
+    }
+    if let Some(deferred) = deferred {
+        return finish_cycle(
+            &mut report,
+            &ledger,
+            &directory,
+            &run_dir,
+            &report_path,
+            selection.families.len(),
+            None,
+            Some(deferred),
+            None,
         );
     }
 
@@ -7404,5 +7474,99 @@ mod tick_bounds {
         // poll.
         let tick = super::CONTROL_POLL_MS;
         assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}
+
+#[cfg(test)]
+mod gitea_open_issue_read {
+    //! The deduplication read's fault split: a forge that could not answer
+    //! defers the cycle, while one that refused the request fails it.
+
+    use super::*;
+
+    fn delivery() -> NativeDelivery {
+        let mut environment = HashMap::new();
+        environment.insert(
+            "DEVBOARD_GITEA_URL".to_string(),
+            "http://127.0.0.1:3001".to_string(),
+        );
+        environment.insert("GITEA_TOKEN".to_string(), "fixture".to_string());
+        NativeDelivery {
+            origin: OriginRemote {
+                forge: ForgeKind::Gitea,
+                host: "127.0.0.1".to_string(),
+                project: "acme/fixture".to_string(),
+                origin_url: Some("http://127.0.0.1:3001".to_string()),
+            },
+            repository: "acme/fixture".to_string(),
+            environment,
+            redact: Arc::new(|text| text.to_string()),
+        }
+    }
+
+    fn answering(status: u16, body: &str) -> crate::forge::Transport {
+        let body = body.to_string();
+        Arc::new(move |_request| {
+            let body = body.clone();
+            Box::pin(async move {
+                Ok(crate::forge::HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.into_bytes(),
+                })
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_busy_forge_defers_the_read() {
+        let error = delivery()
+            .list_gitea(&answering(
+                500,
+                r#"{"message":"database is locked (5) (SQLITE_BUSY)","url":"http://127.0.0.1:3001/api/swagger"}"#,
+            ))
+            .await
+            .expect_err("the read met a busy forge");
+        assert!(
+            error.downcast_ref::<ForgeReadUnavailable>().is_some(),
+            "{error:#}"
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("HTTP 500"), "{text}");
+        assert!(text.contains("database is locked"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_read_is_not_an_outage() {
+        let error = delivery()
+            .list_gitea(&answering(404, r#"{"message":"not found"}"#))
+            .await
+            .expect_err("the read was refused");
+        assert!(
+            error.downcast_ref::<ForgeReadUnavailable>().is_none(),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains("HTTP 404"), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn an_answered_read_maps_every_open_issue() {
+        let issues = delivery()
+            .list_gitea(&answering(
+                200,
+                r#"[{"number":7,"title":"one","body":"body one",
+                    "html_url":"http://127.0.0.1:3001/acme/fixture/issues/7"}]"#,
+            ))
+            .await
+            .expect("the read");
+        assert_eq!(
+            issues,
+            vec![OpenIssue {
+                number: 7,
+                title: "one".to_string(),
+                body: "body one".to_string(),
+                url: "http://127.0.0.1:3001/acme/fixture/issues/7".to_string(),
+            }]
+        );
     }
 }
