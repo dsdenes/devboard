@@ -4,9 +4,9 @@
  * After every cycle the same dashboard answers `/ready`, the real client
  * bundle still loads, and the notification region holds no error entry. After
  * the final cycle the process table holds no worker for the fixture
- * repository and exactly one dashboard serves it. The soak files no
- * `[ui] Error notification:` issue: the open set is unchanged, and when the
- * board is empty before the run it is empty after it.
+ * repository and exactly one dashboard serves it. The soak files nothing: the
+ * open set after the five cycles equals the snapshot taken before them, so an
+ * issue of any shape that was not already open is a failure.
  */
 
 import { expect, test } from "@playwright/test";
@@ -30,11 +30,11 @@ test("five start/stop cycles keep one ready dashboard and file nothing", async (
   const state = readState();
   await openDashboard(page);
 
+  // The board's own contents are not the soak's precondition: Auto Scout keeps
+  // up to its pending limit of scout issues open there by design. The snapshot
+  // taken here names the issues the run may not add.
   const before = await openIssues();
-  // The proof's precondition: the board is empty before the soak. A run that
-  // left an error notification behind has already failed this.
-  expect(before).toEqual([]);
-  const errorsBefore = new Set(errorNotifications(before).map((issue) => issue.number));
+  const beforeNumbers = new Set(before.map((issue) => issue.number));
 
   for (let cycle = 0; cycle < 5; cycle += 1) {
     const family = ALL_FAMILIES[cycle % ALL_FAMILIES.length];
@@ -61,12 +61,22 @@ test("five start/stop cycles keep one ready dashboard and file nothing", async (
   ).toHaveLength(1);
 
   const after = await openIssues();
-  expect(after.length).toBe(before.length);
-  // No issue the soak could have caused exists; on an empty board this is
-  // exactly the empty error set.
-  for (const issue of errorNotifications(after)) {
-    expect(errorsBefore.has(issue.number)).toBe(true);
-  }
+  const afterNumbers = new Set(after.map((issue) => issue.number));
+
+  // An error notification filed during the cycles is the failure this proof
+  // exists to catch, on a busy board and an empty one alike.
+  expect(
+    errorNotifications(after).filter((issue) => !beforeNumbers.has(issue.number)),
+  ).toEqual([]);
+  // No issue outside the notification shape was filed either.
+  expect(
+    after.filter(
+      (issue) => !beforeNumbers.has(issue.number) && !issue.title.includes(ERROR_NOTIFICATION),
+    ),
+  ).toEqual([]);
+  // Every issue the board held before the cycles is still open, so the open set
+  // after the soak equals the snapshot it started from.
+  expect(before.filter((issue) => !afterNumbers.has(issue.number))).toEqual([]);
 
   // The history keeps every notification this session raised, not only the
   // four the live region shows.
