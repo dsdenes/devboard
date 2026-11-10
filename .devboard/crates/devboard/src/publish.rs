@@ -2436,7 +2436,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         if !preflight.remotes.iter().any(|remote| remote == "github") {
             bail!("the GitHub remote is required to build the release artifacts");
         }
-        push_github_build_ref(&git, &commit, &tag, &log).await?;
+        push_github_build_ref(&git, &args.environment, &commit, &tag, &log).await?;
 
         let workflow_run =
             dispatch_and_wait(&api, &clock, &sleeper, &args, &commit, &tag, &log).await?;
@@ -3888,11 +3888,22 @@ async fn write_gitea_release(
 /// source.
 async fn push_github_build_ref(
     git: &Git<'_>,
+    environment: &Environment,
     commit: &str,
     tag: &str,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
 ) -> Result<()> {
     let reference = build_ref(tag);
+    // `gh` is where the environment's PATH finds it: a host installs it under
+    // Homebrew, a version manager, or a nonstandard prefix, and an absolute
+    // host path would make the push depend on one machine's layout.
+    let Some(gh) = crate::forge::find_on_path("gh", environment) else {
+        bail!("pushing the GitHub build ref {reference} needs `gh` on PATH, and none was found");
+    };
+    let helper = format!(
+        "credential.https://github.com.helper=!{} auth git-credential",
+        gh.display()
+    );
     (log)(&format!(
         "pushing {} to the GitHub build ref {reference}",
         short_sha(commit)
@@ -3902,7 +3913,7 @@ async fn push_github_build_ref(
             "-c",
             "credential.helper=",
             "-c",
-            "credential.https://github.com.helper=!/usr/bin/gh auth git-credential",
+            &helper,
             "push",
             "github",
             &format!("{commit}:{reference}"),
@@ -5410,6 +5421,94 @@ mod tests {
         assert!(error.to_string().contains("HTTP 500"), "{error}");
         assert_eq!(transport.requests.lock().unwrap().len(), 1);
         assert!(sleeper.waits.lock().unwrap().is_empty());
+    }
+
+    /// Records every command it is handed and answers success, so a caller's
+    /// exact invocation can be read back.
+    struct IntegrationRecorder {
+        invocations: Mutex<Vec<CommandInvocation>>,
+    }
+
+    impl CommandRunner for IntegrationRecorder {
+        fn run<'a>(&'a self, invocation: CommandInvocation) -> BoxFuture<'a, CommandOutcome> {
+            Box::pin(async move {
+                self.invocations.lock().expect("recorded").push(invocation);
+                CommandOutcome::default()
+            })
+        }
+    }
+
+    fn gh_stub_root(label: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("{label}-{}", std::process::id()))
+    }
+
+    #[tokio::test]
+    async fn the_github_build_ref_push_resolves_gh_through_the_environment() {
+        let root = gh_stub_root("gh-probe");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let gh = root.join("bin/gh");
+        std::fs::write(&gh, b"#!/bin/sh\n").unwrap();
+        let mut environment = Environment::new();
+        environment.insert("PATH".to_string(), root.join("bin").display().to_string());
+
+        let runner = IntegrationRecorder {
+            invocations: Mutex::new(Vec::new()),
+        };
+        let git = Git::new(&runner, Path::new("/repo"), &environment);
+        let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_| {});
+        push_github_build_ref(&git, &environment, "abc1234", "v1.2.3", &log)
+            .await
+            .expect("the push invocation is recorded");
+
+        let invocations = runner.invocations.lock().expect("recorded");
+        let push = invocations
+            .iter()
+            .find(|invocation| invocation.args.iter().any(|arg| arg == "push"))
+            .expect("the build-ref push ran");
+        assert!(push.args.iter().any(|arg| arg == "credential.helper="));
+        assert_eq!(
+            push.args
+                .iter()
+                .find(|arg| arg.starts_with("credential.https://github.com.helper=")),
+            Some(&format!(
+                "credential.https://github.com.helper=!{} auth git-credential",
+                gh.display()
+            ))
+        );
+        assert!(push.args.iter().any(|arg| arg == "github"));
+        assert!(push
+            .args
+            .iter()
+            .any(|arg| arg == "abc1234:refs/heads/devboard-build/v1.2.3"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn the_github_build_ref_push_names_gh_when_none_is_on_the_path() {
+        let root = gh_stub_root("gh-missing");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        let mut environment = Environment::new();
+        environment.insert("PATH".to_string(), root.join("empty").display().to_string());
+
+        let runner = IntegrationRecorder {
+            invocations: Mutex::new(Vec::new()),
+        };
+        let git = Git::new(&runner, Path::new("/repo"), &environment);
+        let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_| {});
+        let error = push_github_build_ref(&git, &environment, "abc1234", "v1.2.3", &log)
+            .await
+            .expect_err("a missing gh fails before the push");
+        let message = error.to_string();
+        assert!(message.contains("`gh`"), "{message}");
+        assert!(
+            runner.invocations.lock().expect("recorded").is_empty(),
+            "no git command ran"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

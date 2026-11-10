@@ -1257,6 +1257,19 @@ fn test_args(
         "DEVBOARD_GITHUB_REPO".to_string(),
         "dsdenes/devboard".to_string(),
     );
+    // The GitHub build-ref push resolves `gh` through the environment's PATH,
+    // so the fixture puts a stub where that lookup finds it.
+    let gh_bin = package_dir().join(".test-tmp").join("gh-stub");
+    fs::create_dir_all(&gh_bin).expect("a gh stub directory");
+    let gh = gh_bin.join("gh");
+    if !gh.exists() {
+        fs::write(&gh, b"#!/bin/sh\nexit 1\n").expect("a gh stub");
+    }
+    let inherited_path = std::env::var("PATH").unwrap_or_default();
+    environment.insert(
+        "PATH".to_string(),
+        format!("{}:{inherited_path}", gh_bin.display()),
+    );
     let mut args = PublishArgs::new(repo);
     args.environment = environment;
     args.wait_timeout = Duration::from_secs(5);
