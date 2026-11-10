@@ -167,9 +167,9 @@ pub fn read_snapshots(directory: &Path) -> Vec<ComplexitySnapshot> {
         if !is_date(date) || name.len() != date.len() + 5 {
             continue;
         }
-        let text = match std::fs::read_to_string(directory.join(&name)) {
-            Ok(text) => text,
-            Err(_) => continue,
+        let text = match crate::sampling::text(&directory.join(&name)) {
+            Some(text) => text,
+            None => continue,
         };
         let parsed: Value = match serde_json::from_str(&text) {
             Ok(value) => value,

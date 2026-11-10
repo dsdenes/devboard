@@ -12,7 +12,13 @@ pub fn default_goal_path(repo_dir: &Path) -> PathBuf {
 
 /// Reads the goal document.
 pub async fn read_goal(path: &Path) -> std::io::Result<String> {
-    tokio::fs::read_to_string(path).await
+    match crate::sampling::text(path) {
+        Some(text) => Ok((*text).clone()),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "the goal document is missing",
+        )),
+    }
 }
 
 /// Replaces the goal document wholesale, staging beside it and renaming into

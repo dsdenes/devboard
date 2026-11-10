@@ -140,12 +140,19 @@ struct ParsedSkill {
 
 /// Reads `<root>/<directory>/SKILL.md`, or `None` when the directory has none.
 async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<ParsedSkill>, String> {
-    let bytes = match tokio::fs::read(root.join(directory).join("SKILL.md")).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+    let path = root.join(directory).join("SKILL.md");
+    // Sampled through the shared cache: a page that polls this list every
+    // second reads an unchanged skill document once, not once per poll.
+    let content = match crate::sampling::text(&path) {
+        Some(text) => (*text).clone(),
+        None if path.exists() => {
+            return Err(format!(
+                "the skill document {} could not be read",
+                path.display()
+            ))
+        }
+        None => return Ok(None),
     };
-    let content = String::from_utf8_lossy(&bytes).into_owned();
     let fields = parse_frontmatter(&content).unwrap_or_default();
     let field = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
     Ok(Some(ParsedSkill {
@@ -166,12 +173,16 @@ async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<ParsedSkil
 /// not exist. Every other key is returned untouched so a toggle never rewrites
 /// a setting this page does not own.
 pub async fn read_project_settings(path: &Path) -> Result<Value, String> {
-    let bytes = match tokio::fs::read(path).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(empty_document()),
-        Err(error) => return Err(error.to_string()),
+    let source = match crate::sampling::text(path) {
+        Some(text) => (*text).clone(),
+        None if path.exists() => {
+            return Err(format!(
+                "the project settings {} could not be read",
+                path.display()
+            ))
+        }
+        None => return Ok(empty_document()),
     };
-    let source = String::from_utf8_lossy(&bytes).into_owned();
     if js_trim(&source).is_empty() {
         return Ok(empty_document());
     }

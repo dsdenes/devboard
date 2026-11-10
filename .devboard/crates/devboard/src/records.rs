@@ -41,7 +41,10 @@ pub fn read_records(directory: &Path) -> Result<(Vec<Value>, Value), String> {
         if path.extension().and_then(|value| value.to_str()) != Some("md") {
             continue;
         }
-        let source = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        let source = match crate::sampling::text(&path) {
+            Some(text) => text,
+            None => continue,
+        };
         if let Some(record) = record_from_document(&path, &source) {
             records.push(record);
         }

@@ -70,7 +70,7 @@ pub fn installed_harness_dir(prefix: &Path) -> PathBuf {
 /// Reads a harness manifest: `devboard.json` first, then `package.json`.
 pub fn read_manifest(directory: &Path) -> Option<HarnessManifest> {
     for name in ["devboard.json", "package.json"] {
-        let Ok(source) = std::fs::read_to_string(directory.join(name)) else {
+        let Some(source) = crate::sampling::text(&directory.join(name)) else {
             continue;
         };
         let Ok(parsed) = serde_json::from_str::<Value>(&source) else {
