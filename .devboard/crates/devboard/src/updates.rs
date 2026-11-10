@@ -243,8 +243,9 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
     let release = match release::latest_manifest(&source).await {
         Ok(release) => release,
         Err(error) => {
-            // An offline or rate-limited check is a transient condition, not a
-            // failed update: `activity` names it, `update-error` does not.
+            // An offline, rate-limited, or overloaded forge is a transient
+            // condition, not a failed update: `activity` names it,
+            // `update-error` does not.
             if is_transient_update_failure(&error) {
                 app.shared.journal.write(
                     "activity",
@@ -280,12 +281,15 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
     }
 }
 
-/// True for a check failure the transport causes: an unreachable or
-/// rate-limited forge, or a release body that arrived empty, unreadable, or
-/// unparsable. The next interval retries it and the journal records only
-/// activity.
+/// True for a check failure the transport causes: an unreachable,
+/// rate-limited, or overloaded forge, or a release body that arrived empty,
+/// unreadable, or unparsable. The next interval retries it and the journal
+/// records only activity.
 pub fn is_transient_update_failure(error: &str) -> bool {
     let text = error.to_ascii_lowercase();
+    if names_server_error_status(&text) {
+        return true;
+    }
     [
         "http 429",
         "http 403",
@@ -308,6 +312,28 @@ pub fn is_transient_update_failure(error: &str) -> bool {
     ]
     .iter()
     .any(|token| text.contains(token))
+}
+
+/// True when the error names an HTTP status the forge could not serve, 500
+/// through 599.
+///
+/// Every release read formats a refusal as `... failed (HTTP <code>)`. A busy,
+/// restarting, or overloaded Gitea answers 500 with an empty message and
+/// answers the same request once it clears, so the next interval retries it
+/// like the transport failures above and the journal records only activity. A
+/// 4xx is the forge's verdict about the request and stays a real error.
+fn names_server_error_status(text: &str) -> bool {
+    let start = match text.find("(http ") {
+        Some(index) => index + "(http ".len(),
+        None => return false,
+    };
+    let digits: String = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits
+        .parse::<u16>()
+        .is_ok_and(|status| (500..600).contains(&status))
 }
 
 /// The installed version a restart would load, read from the running binary's

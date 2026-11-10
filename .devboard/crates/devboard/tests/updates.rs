@@ -51,3 +51,21 @@ fn only_a_transport_failure_is_transient() {
         "the Gitea manifest checksum does not match the manifest"
     ));
 }
+
+/// A forge that answers 5xx is serving no release right now, not refusing the
+/// request: the same line the live dashboard journaled for a restarting Gitea.
+#[test]
+fn a_server_error_status_is_a_transient_check_failure() {
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET http://localhost:3001/api/v1/repos/dsdenes/devboard/releases/latest failed (HTTP 500): {\"message\":\"\",\"url\":\"http://localhost:3001/api/swagger\"}"
+    ));
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET http://localhost:3001/dsdenes/devboard/releases/download/v1.44.13/devboard-manifest.json failed (HTTP 502)"
+    ));
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET https://github.com/dsdenes/devboard/releases/latest/download/devboard-manifest.json failed (HTTP 503)"
+    ));
+    assert!(!devboard::updates::is_transient_update_failure(
+        "GET http://localhost:3001/api/v1/repos/dsdenes/devboard/releases/latest failed (HTTP 404): not found"
+    ));
+}
