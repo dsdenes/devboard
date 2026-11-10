@@ -882,7 +882,7 @@ async fn an_oversized_report_is_refused_before_parsing() {
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())
-        .body("x".repeat(64_001))
+        .body("x".repeat(devboard::feedback::MAX_REPORT_BYTES + 1))
         .send()
         .await
         .expect("an answer");
@@ -902,7 +902,12 @@ async fn an_oversized_report_is_refused_before_parsing() {
 #[tokio::test]
 async fn a_chunked_feedback_body_over_the_bound_answers_413() {
     let fixture = start("chunked-oversized").await;
-    let (status, answer) = chunked_post(&fixture, "/reports", &report_body(64_002)).await;
+    let (status, answer) = chunked_post(
+        &fixture,
+        "/reports",
+        &report_body(devboard::feedback::MAX_REPORT_BYTES + 2),
+    )
+    .await;
     assert_eq!(status, 413, "{answer}");
     assert_eq!(header(&answer, "content-type"), "application/problem+json");
     assert_eq!(
@@ -917,13 +922,75 @@ async fn a_chunked_feedback_body_over_the_bound_answers_413() {
 #[tokio::test]
 async fn a_chunked_goal_proposal_body_over_the_bound_answers_413() {
     let fixture = start("chunked-proposal").await;
-    let (status, answer) = chunked_post(&fixture, "/goal-proposals", &report_body(64_002)).await;
+    let (status, answer) = chunked_post(
+        &fixture,
+        "/goal-proposals",
+        &report_body(devboard::feedback::MAX_REPORT_BYTES + 2),
+    )
+    .await;
     assert_eq!(status, 413, "{answer}");
     assert_eq!(header(&answer, "content-type"), "application/problem+json");
     assert!(
         !fixture.repo.join(".devboard/goal-proposals").exists(),
         "an oversized proposal writes no draft"
     );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+/// One submission whose every documented field sits exactly at its maximum,
+/// written in three-byte CJK characters: 42,500 UTF-16 units, 127,500 bytes.
+fn max_cjk_body() -> Value {
+    let cjk = |units: usize| "報".repeat(units);
+    json!({
+        "report": cjk(devboard::feedback::MAX_REPORT),
+        "turns": [
+            {"role": "DEVELOPER", "text": cjk(devboard::feedback::MAX_CONVERSATION_TURN)},
+            {"role": "AGENT", "text": cjk(devboard::feedback::MAX_CONVERSATION_TURN)},
+            {"role": "DEVELOPER", "text": cjk(devboard::feedback::MAX_CONVERSATION_TURN)},
+        ],
+        "route": cjk(devboard::feedback::MAX_CONTEXT_FIELD),
+        "url": cjk(devboard::feedback::MAX_CONTEXT_FIELD),
+        "selector": cjk(devboard::feedback::MAX_CONTEXT_FIELD),
+        "dom_excerpt": cjk(devboard::feedback::MAX_DOM_EXCERPT),
+        "visible_text": cjk(devboard::feedback::MAX_VISIBLE_TEXT),
+        "viewport": cjk(devboard::feedback::MAX_VIEWPORT),
+        "captured_at": "2026-11-10T12:00:00Z",
+    })
+}
+
+/// The field bounds count UTF-16 units and the body bound counts bytes, so a
+/// payload at every field maximum in three-byte characters must still fit.
+#[tokio::test]
+async fn a_cjk_payload_at_every_field_maximum_is_accepted() {
+    let fixture = start("cjk-maximum").await;
+    let body = max_cjk_body();
+    assert!(
+        serde_json::to_vec(&body).expect("JSON").len() <= devboard::feedback::MAX_REPORT_BYTES,
+        "the payload is inside the byte cap"
+    );
+
+    let response = client()
+        .post(format!("{}/goal-proposals", fixture.base))
+        .headers(bearer())
+        .json(&body)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 201);
+    assert!(fixture
+        .repo
+        .join(".devboard/goal-proposals/ui-goal.md")
+        .exists());
+
+    let response = client()
+        .post(format!("{}/reports", fixture.base))
+        .headers(bearer())
+        .json(&body)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 202);
     fixture.handle.abort();
     fixture.stub.abort();
 }

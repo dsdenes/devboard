@@ -16,6 +16,7 @@ use url::Url;
 
 use crate::command::Command;
 use crate::config::Config;
+use crate::feedback::MAX_REPORT_BYTES;
 use crate::http::{request_refusal, Replies};
 use crate::journal::Journal;
 
@@ -1578,9 +1579,6 @@ impl App {
     }
 }
 
-/// The largest body either mutating endpoint reads.
-const MAX_REPORT_BYTES: usize = 64_000;
-
 /// Why one report body could not be read.
 enum ReportRefusal {
     /// The body exceeds `MAX_REPORT_BYTES`, declared or as read.
@@ -1640,7 +1638,7 @@ fn too_large_answer(headers: &HeaderMap) -> axum::response::Response {
     Replies::problem(
         headers,
         413,
-        &format!("The report is larger than {MAX_REPORT_BYTES} bytes."),
+        &format!("The request body is larger than {MAX_REPORT_BYTES} bytes."),
         &[],
     )
 }
