@@ -54,6 +54,20 @@ function seed(): void {
   complexity.complexityLoaded = true;
 }
 
+/** Seeds `count` consecutive recorded dates, each carrying the latest project. */
+function seedDates(count: number): void {
+  const points = Array.from({ length: count }, (_, index) => {
+    const date = `2026-11-${String(index + 1).padStart(2, "0")}`;
+    return { date, recordedAt: `${date}T00:00:00.000Z`, project: LATEST };
+  });
+  const newest = points[points.length - 1];
+  complexity.complexity = {
+    points,
+    latest: newest === undefined ? null : { ...newest, files: FILES },
+  };
+  complexity.complexityLoaded = true;
+}
+
 afterEach(() => {
   cleanup();
   complexity.complexity = EMPTY_COMPLEXITY_VIEW;
@@ -171,6 +185,53 @@ test("states the recorded dates once for the whole panel", () => {
       entry.getAttribute("data-date"),
     ),
   ).toEqual(["2026-11-01", "2026-11-02"]);
+});
+
+test("places every axis label on the point it names", () => {
+  for (const count of [1, 3, 6]) {
+    seedDates(count);
+    const { container } = render(DevboardComplexity);
+
+    const chart = container.querySelector(".complexity-series__chart");
+    const trackWidth = Number(chart?.getAttribute("viewBox")?.split(" ")[2]);
+    expect(trackWidth).toBeGreaterThan(0);
+
+    const points = [
+      ...container.querySelectorAll(
+        '[data-testid="complexity-series"][data-metric="files"] ' +
+          '[data-testid="complexity-series-point"]',
+      ),
+    ];
+    const cxByDate = new Map(
+      points.map((point) => [point.getAttribute("data-date"), Number(point.getAttribute("cx"))]),
+    );
+
+    const labels = [...container.querySelectorAll<HTMLElement>(".complexity-series__date")];
+    expect(labels).toHaveLength(count <= 5 ? count : 3);
+
+    for (const label of labels) {
+      const date = label.getAttribute("data-date");
+      const offset = Number(label.getAttribute("data-offset"));
+      expect(offset).toBe(cxByDate.get(date) ?? Number.NaN);
+
+      // The label is centred on its point, and its left edge stays inside the
+      // track, so the outer labels never reach the value columns.
+      const width = label.clientWidth;
+      const left = Number.parseFloat(label.style.left);
+      expect(left).toBeGreaterThanOrEqual(0);
+      expect(left + width).toBeLessThanOrEqual(trackWidth);
+      expect(left).toBeLessThanOrEqual(offset);
+      expect(offset).toBeLessThanOrEqual(left + width);
+    }
+
+    if (count === 1) {
+      expect(labels.map((label) => Number(label.getAttribute("data-offset")))).toEqual([
+        trackWidth / 2,
+      ]);
+    }
+
+    cleanup();
+  }
 });
 
 test("a changed value moves its point and a flat one keeps its line level", () => {

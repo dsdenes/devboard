@@ -60,6 +60,9 @@
   let chartWidth = $state(0);
   const chartBoxWidth = $derived(chartWidth > 0 ? chartWidth : CHART_FALLBACK_WIDTH);
 
+  /** Each date label's measured width, keyed by its date. */
+  const labelWidths = $state<Record<string, number>>({});
+
   const view = $derived(complexity.complexity);
   const points = $derived(view.points);
   const latest = $derived(view.latest);
@@ -119,6 +122,15 @@
     return CHART_PADDING_X + (index * (chartBoxWidth - CHART_PADDING_X * 2)) / (count - 1);
   }
 
+  /**
+   * A label's left edge: centred on its point's `x`, then clamped inside the
+   * track so the outer labels never reach the value columns.
+   */
+  function labelLeft(offset: number, width: number): number {
+    const max = Math.max(0, chartBoxWidth - width);
+    return Math.min(Math.max(offset - width / 2, 0), max);
+  }
+
   function pointY(value: number, bounds: { min: number; max: number }): number {
     const span = bounds.max - bounds.min;
     const ratio = span === 0 ? 0.5 : (value - bounds.min) / span;
@@ -134,20 +146,23 @@
 
   /**
    * The date labels one series shows: every date while they still fit, and
-   * first, middle, and last once the history is long.
+   * first, middle, and last once the history is long. Each label carries the
+   * index of the point it names, so it can be placed on that point's `x`.
    */
-  function dateLabels(history: readonly ComplexityPoint[]): Array<{ date: string; text: string }> {
+  function dateLabels(
+    history: readonly ComplexityPoint[],
+  ): Array<{ date: string; text: string; index: number }> {
     const count = history.length;
     if (count === 0) return [];
     const indexes =
       count <= 5
         ? history.map((_, index) => index)
         : [...new Set([0, Math.floor((count - 1) / 2), count - 1])];
-    const labels: Array<{ date: string; text: string }> = [];
+    const labels: Array<{ date: string; text: string; index: number }> = [];
     for (const index of indexes) {
       const point = history[index];
       if (point === undefined) continue;
-      labels.push({ date: point.date, text: point.date.slice(5) });
+      labels.push({ date: point.date, text: point.date.slice(5), index });
     }
     return labels;
   }
@@ -291,7 +306,14 @@
       <div class="complexity-history__axis">
         <div class="complexity-series__dates">
           {#each dateLabels(points) as label (label.date)}
-            <span class="complexity-series__date mono" data-date={label.date}>{label.text}</span>
+            {@const offset = pointX(label.index, points.length)}
+            <span
+              class="complexity-series__date mono"
+              data-date={label.date}
+              data-offset={offset}
+              style={`left: ${labelLeft(offset, labelWidths[label.date] ?? 0)}px`}
+              bind:clientWidth={labelWidths[label.date]}
+            >{label.text}</span>
           {/each}
         </div>
       </div>
@@ -495,17 +517,23 @@
     padding: 4px 8px 8px;
   }
 
-  /* The chart's 8px inset, so a label sits under its point. */
+  /*
+   * The labels use the chart's own point positions: each one is absolutely
+   * placed from `pointX`, which already carries the chart's 8px inset.
+   */
   .complexity-series__dates {
-    display: flex;
     grid-column: 2;
-    justify-content: space-between;
-    padding: 0 8px;
+    height: 13px;
+    position: relative;
   }
 
   .complexity-series__date {
     color: var(--muted-foreground);
     font-size: 10px;
+    line-height: 1;
+    position: absolute;
+    top: 0;
+    white-space: nowrap;
   }
 
   .complexity-table-wrap {
