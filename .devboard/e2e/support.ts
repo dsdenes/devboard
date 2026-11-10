@@ -22,6 +22,20 @@ import { fileURLToPath } from "node:url";
 export const here = path.dirname(fileURLToPath(import.meta.url));
 export const harnessDir = path.resolve(here, "..");
 export const repoRoot = path.resolve(harnessDir, "..");
+
+/**
+ * The checkout that bounds every `.env` the suite may read: this checkout's
+ * root, or, inside a linked worktree under `.worktree/`, the checkout that
+ * spawned it. Nothing above it is read, so a `.env` the operator keeps
+ * elsewhere in the home directory cannot select the board or its token.
+ */
+export function dotEnvRootFor(root: string): string {
+  const checkout = path.resolve(root);
+  const parent = path.dirname(checkout);
+  return path.basename(parent) === ".worktree" ? path.dirname(parent) : checkout;
+}
+
+export const dotEnvRoot = dotEnvRootFor(repoRoot);
 export const binary =
   process.env.E2E_DEVBOARD_BIN ?? path.join(harnessDir, "target", "debug", "devboard");
 export const staticDir = path.join(harnessDir, "dist");
@@ -134,25 +148,58 @@ export function writeState(state: SuiteState): void {
   writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
+/** Whether `candidate` is `root` itself or a path below it. */
+function insideRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 /**
- * Loads the nearest `.env` above the harness for the keys the suite needs,
- * without overriding a value the caller already set. A worktree's own root
- * often has none; the checkout that spawned it holds the same file.
+ * Every `.env` candidate from `start` up to and including `root`, nearest
+ * first. A candidate outside `root` is never returned, so a checkout's
+ * `.env` search stops at the checkout that bounds it.
  */
-export function loadDotEnv(): void {
-  let directory = harnessDir;
-  let file = path.join(directory, ".env");
-  for (let depth = 0; depth < 4 && !existsSync(file); depth += 1) {
-    directory = path.dirname(directory);
-    file = path.join(directory, ".env");
+export function dotEnvCandidates(start: string, root: string): string[] {
+  const boundary = path.resolve(root);
+  const candidates: string[] = [];
+  let directory = path.resolve(start);
+  while (insideRoot(directory, boundary)) {
+    candidates.push(path.join(directory, ".env"));
+    if (directory === boundary) break;
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
   }
-  if (!existsSync(file)) return;
+  return candidates;
+}
+
+export interface DotEnvScope {
+  /** Where the search starts; the harness directory by default. */
+  start?: string;
+  /** The last directory the search may read; the bounding checkout by default. */
+  root?: string;
+  /** The process environment by default. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Loads the nearest `.env` at or below the bounding root for the keys the
+ * suite needs, without overriding a value the caller already set. A worktree's
+ * own root often has none; the checkout that spawned it holds the same file.
+ * A `.env` above that checkout is never read.
+ */
+export function loadDotEnv(scope: DotEnvScope = {}): void {
+  const env = scope.env ?? process.env;
+  const file = dotEnvCandidates(scope.start ?? harnessDir, scope.root ?? dotEnvRoot).find(
+    (candidate) => existsSync(candidate),
+  );
+  if (file === undefined) return;
   for (const line of readFileSync(file, "utf8").split("\n")) {
     const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
     if (match === null) continue;
     const [, key, raw] = match;
-    if (process.env[key] !== undefined) continue;
-    process.env[key] = raw.replace(/^(['"])(.*)\1$/, "$2");
+    if (key === undefined || raw === undefined || env[key] !== undefined) continue;
+    env[key] = raw.replace(/^(['"])(.*)\1$/, "$2");
   }
 }
 
