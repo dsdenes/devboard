@@ -834,7 +834,7 @@ fn target_duplicates_keep_only_the_newest_and_the_cap_removes_the_rest() {
     let binary = repo.join(".devboard/target/debug/devboard");
     write_bytes(&binary, 50);
 
-    let report = run_build_cleanup_with(&repo, false, u64::MAX, &|| false);
+    let report = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| Vec::new());
     assert!(!old.exists(), "the superseded duplicate leaves");
     assert!(new.exists(), "the newest duplicate survives");
     assert!(single.exists(), "a single artifact survives");
@@ -851,7 +851,7 @@ fn target_duplicates_keep_only_the_newest_and_the_cap_removes_the_rest() {
     std::fs::create_dir_all(&capped_deps).expect("a deps directory");
     write_bytes(&capped_deps.join("libx-dddddddddddddddd.rlib"), 100);
     write_bytes(&debug.join("devboard"), 100);
-    let capped_report = run_build_cleanup_with(&capped_repo, false, 10, &|| false);
+    let capped_report = run_build_cleanup_with(&capped_repo, false, 10, &|_| false, &|| Vec::new());
     assert!(!debug.exists(), "the cap removes the whole directory");
     assert!(capped_report.cap_removed);
     assert!(capped_report
@@ -867,13 +867,123 @@ fn target_duplicates_keep_only_the_newest_and_the_cap_removes_the_rest() {
     let busy_new = busy_deps.join("libfoo-bbbbbbbbbbbbbbbb.rlib");
     write_bytes(&busy_old, 100);
     write_bytes(&busy_new, 100);
-    let busy_report = run_build_cleanup_with(&busy_repo, false, 0, &|| true);
+    let busy_report = run_build_cleanup_with(&busy_repo, false, 0, &|_| true, &|| Vec::new());
     assert!(busy_old.exists() && busy_new.exists());
     assert!(busy_report.skipped.is_some());
     assert!(busy_report.removed.is_empty());
     let _ = std::fs::remove_dir_all(&directory);
     let _ = std::fs::remove_dir_all(&capped);
     let _ = std::fs::remove_dir_all(&busy);
+}
+
+#[test]
+fn a_worktree_build_directory_leaves_when_nothing_works_in_it() {
+    let directory = root("worktree-target");
+    let repo = directory.join("repo");
+    init_repo(&repo);
+    let abandoned = add_worktree(&repo, "abandoned", "abandoned-branch");
+    let taken = add_worktree(&repo, "taken", "taken-branch");
+    let abandoned_debug = abandoned.join(".devboard/target/debug");
+    let abandoned_deps = abandoned_debug.join("deps");
+    std::fs::create_dir_all(&abandoned_deps).expect("a deps directory");
+    write_bytes(&abandoned_deps.join("libfoo-aaaaaaaaaaaaaaaa.rlib"), 100);
+    write_bytes(&abandoned_debug.join("devboard"), 50);
+    let taken_debug = taken.join(".devboard/target/debug");
+    let taken_artifact = taken_debug.join("deps/libfoo-bbbbbbbbbbbbbbbb.rlib");
+    write_bytes(&taken_artifact, 100);
+    let canonical_deps = repo.join(".devboard/target/debug/deps");
+    std::fs::create_dir_all(&canonical_deps).expect("a deps directory");
+    let canonical_artifact = canonical_deps.join("libbar-cccccccccccccccc.rlib");
+    write_bytes(&canonical_artifact, 100);
+
+    let busy = taken.clone();
+    let dry = run_build_cleanup_with(&repo, true, u64::MAX, &|_| false, &|| vec![busy.clone()]);
+    assert!(
+        abandoned_debug.exists() && taken_debug.exists(),
+        "a dry run removes nothing"
+    );
+    assert!(
+        dry.candidates.iter().any(|candidate| candidate.kind
+            == BuildCandidateKind::WorktreeTargetDebug
+            && candidate.path == abandoned_debug),
+        "{:?}",
+        dry.candidates
+    );
+    assert!(
+        !dry.candidates
+            .iter()
+            .any(|candidate| candidate.path == taken_debug),
+        "a worktree a live process works in keeps its build output"
+    );
+
+    let busy = taken.clone();
+    let real = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| vec![busy.clone()]);
+    assert!(
+        !abandoned_debug.exists(),
+        "the abandoned worktree's build output leaves"
+    );
+    assert!(abandoned.exists(), "the worktree itself stays");
+    assert!(
+        taken_artifact.exists(),
+        "the worktree a live process works in keeps its artifact"
+    );
+    assert!(
+        canonical_artifact.exists(),
+        "the canonical checkout keeps its artifact"
+    );
+    assert!(
+        real.removed.iter().any(|candidate| candidate.kind
+            == BuildCandidateKind::WorktreeTargetDebug
+            && candidate.path == abandoned_debug),
+        "{:?}",
+        real.removed
+    );
+    assert!(
+        real.bytes_after < real.bytes_before,
+        "the report accounts for the reclaimed bytes"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_build_elsewhere_never_holds_the_canonical_retention_back() {
+    let directory = root("scoped-build-gate");
+    let repo = directory.join("repo");
+    init_repo(&repo);
+    let worktree = add_worktree(&repo, "building", "building-branch");
+    let deps = repo.join(".devboard/target/debug/deps");
+    std::fs::create_dir_all(&deps).expect("a deps directory");
+    let old = deps.join("libfoo-aaaaaaaaaaaaaaaa.rlib");
+    let new = deps.join("libfoo-bbbbbbbbbbbbbbbb.rlib");
+    write_bytes(&old, 100);
+    write_bytes(&new, 100);
+    let now = epoch_ms();
+    set_mtime(&old, now - 2 * HOUR_MS);
+    set_mtime(&new, now - HOUR_MS);
+
+    // The only build on the host runs inside the worktree, so the canonical
+    // checkout's own pass still runs its dedup step.
+    let building = worktree.clone();
+    let elsewhere = run_build_cleanup_with(
+        &repo,
+        false,
+        u64::MAX,
+        &|checkout| checkout != repo.as_path(),
+        &|| vec![building.clone()],
+    );
+    assert!(elsewhere.skipped.is_none(), "{:?}", elsewhere.skipped);
+    assert!(!old.exists(), "the canonical duplicate leaves");
+    assert!(new.exists());
+
+    // The same rule keeps the directory when the build is its own.
+    let busy_old = deps.join("libbar-dddddddddddddddd.rlib");
+    let busy_new = deps.join("libbar-eeeeeeeeeeeeeeee.rlib");
+    write_bytes(&busy_old, 100);
+    write_bytes(&busy_new, 100);
+    let local = run_build_cleanup_with(&repo, false, u64::MAX, &|_| true, &|| Vec::new());
+    assert!(local.skipped.is_some());
+    assert!(busy_old.exists() && busy_new.exists());
+    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -897,7 +1007,7 @@ fn a_dry_run_predicts_the_real_state_worktree_and_build_candidates() {
     set_mtime(&old_artifact, now - 2 * HOUR_MS);
     set_mtime(&new_artifact, now - HOUR_MS);
 
-    let dry = run_cleanup_with(&repo, now, true, &[], None, None, &|| false);
+    let dry = run_cleanup_with(&repo, now, true, &[], None, None, &|_| false);
     let mut dry_paths: std::collections::BTreeSet<PathBuf> = dry
         .roots
         .iter()
@@ -917,7 +1027,7 @@ fn a_dry_run_predicts_the_real_state_worktree_and_build_candidates() {
     );
     assert!(old_state.exists() && worktree.exists() && old_artifact.exists());
 
-    let real = run_cleanup_with(&repo, now, false, &[], None, None, &|| false);
+    let real = run_cleanup_with(&repo, now, false, &[], None, None, &|_| false);
     let mut real_paths: std::collections::BTreeSet<PathBuf> = real
         .roots
         .iter()

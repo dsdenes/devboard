@@ -2093,7 +2093,7 @@ fn a_cycle_applies_state_worktree_and_build_retention() {
     let mut options = CycleOptions::new(root.clone());
     options.state_dir = Some(state_dir.clone());
     options.now_ms = now;
-    options.build_running = Some(|| false);
+    options.build_running = Some(|_| false);
     let result = run_cycle(&options, &deps).expect("the cycle");
 
     let run_dir = result.run_dir.expect("the run directory");

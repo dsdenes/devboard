@@ -3193,10 +3193,20 @@ branch is deleted. A branch checked out in any worktree is never deleted.
 Under `.devboard/target/debug/deps`, files named `<stem>-<16 hex>.<ext>` are grouped by
 `<stem>.<ext>`; only the newest file by mtime in each group survives and the rest are removed. If
 `target/debug` still exceeds `21_474_836_480` bytes afterwards, the whole directory is removed.
-Neither step runs while a `cargo` or `rustc` process is alive; the `cargo run` wrapper that
-started a manual sweep is not a concurrent build. The dedup step leaves `target/debug/devboard`
-and every file outside `deps`; only the cap backstop removes them. A missing or unreadable
-`target/debug/deps` is reported, not treated as empty.
+Neither step runs while a `cargo` or `rustc` process builds inside the canonical checkout; the
+`cargo run` wrapper that started a manual sweep is not a concurrent build. The dedup step leaves
+`target/debug/devboard` and every file outside `deps`; only the cap backstop removes them. A missing
+or unreadable `target/debug/deps` is reported, not treated as empty.
+
+The same pass removes every checked-out worktree's `<worktree>/.devboard/target/debug` in full.
+The worktree directory and its branch stay; only the reproducible build output leaves. A worktree
+whose directory, or whose serving dashboard's checkout, holds a live process's working directory
+keeps its build output. A live build elsewhere does not hold it back: the canonical checkout waits
+only for a `cargo` or `rustc` process working inside that checkout, and a worktree waits only for a
+process working inside itself. The build output is removed before the worktree pass runs, so a
+worktree that pass removes has already been reported by its build candidate. Without this rule an
+abandoned unmerged worktree, which the worktree pass never removes, grows its build tree without
+bound on the filesystem the CI runner builds on.
 
 Run the sweep by hand from `.devboard`:
 

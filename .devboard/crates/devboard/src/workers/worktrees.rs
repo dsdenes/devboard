@@ -159,7 +159,7 @@ fn protected_directories(root: &Path, instances: &[Instance]) -> Vec<PathBuf> {
 }
 
 /// Every live process's working directory, canonicalized.
-fn live_working_directories() -> Vec<PathBuf> {
+pub(crate) fn live_working_directories() -> Vec<PathBuf> {
     let mut directories = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return directories;

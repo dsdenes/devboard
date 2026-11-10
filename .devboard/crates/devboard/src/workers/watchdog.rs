@@ -2538,7 +2538,7 @@ pub fn run_cleanup(
         instances,
         covered,
         watchdog_run_dir,
-        &crate::workers::builds::build_process_alive,
+        &crate::workers::builds::build_running_in,
     )
 }
 
@@ -2551,7 +2551,7 @@ pub fn run_cleanup_with(
     instances: &[Instance],
     covered: Option<&[CoveredStateDir]>,
     watchdog_run_dir: Option<&Path>,
-    build_running: &dyn Fn() -> bool,
+    build_running: &dyn Fn(&Path) -> bool,
 ) -> CleanupReport {
     let owned;
     let entries: &[CoveredStateDir] = match covered {
@@ -2569,17 +2569,30 @@ pub fn run_cleanup_with(
             report
         })
         .collect();
-    // The state directories are swept first, so a worktree's `.tmp` is gone
-    // before the worktree itself leaves. A dry run reports the same
-    // candidates and changes nothing.
-    let worktrees =
-        crate::workers::worktrees::run_worktree_cleanup(root, now_ms, dry_run, instances);
+    // The build output leaves first, so a dry run's build candidates are the
+    // real pass's removals even when a worktree that still holds one is removed
+    // afterwards and takes that directory with it. The state directories are
+    // swept first, so a worktree's `.tmp` is gone before the worktree itself
+    // leaves. A dry run reports the same candidates and changes nothing.
     let builds = crate::workers::builds::run_build_cleanup_with(
         root,
         dry_run,
         crate::workers::builds::TARGET_DEBUG_MAX_BYTES,
         build_running,
+        &|| {
+            let mut directories = crate::workers::worktrees::live_working_directories();
+            for instance in instances {
+                if instance.repo_dir.is_empty() {
+                    continue;
+                }
+                let directory = PathBuf::from(&instance.repo_dir);
+                directories.push(std::fs::canonicalize(&directory).unwrap_or(directory));
+            }
+            directories
+        },
     );
+    let worktrees =
+        crate::workers::worktrees::run_worktree_cleanup(root, now_ms, dry_run, instances);
     CleanupReport {
         now: iso_from_ms(now_ms),
         cutoff: iso_from_ms(now_ms - CLEANUP_RETENTION_MS),
@@ -4901,7 +4914,7 @@ pub struct CycleOptions {
     pub provider_state_dir: Option<PathBuf>,
     pub environment: HashMap<String, String>,
     /// Test seam; production reads the process table.
-    pub build_running: Option<fn() -> bool>,
+    pub build_running: Option<fn(&Path) -> bool>,
 }
 
 impl CycleOptions {

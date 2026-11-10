@@ -1,10 +1,18 @@
 //! Retention for Rust build output.
 //!
 //! Cargo keeps one artifact per source hash and never garbage-collects the
-//! old ones. One pass groups `target/debug/deps` files by their
-//! `<stem>.<ext>` name, keeps the newest file per group, and removes the rest.
-//! When `target/debug` still exceeds the cap afterwards, the whole directory
-//! leaves. Neither step runs while a build is alive.
+//! old ones. One pass groups the canonical checkout's `target/debug/deps`
+//! files by their `<stem>.<ext>` name, keeps the newest file per group, and
+//! removes the rest. When `target/debug` still exceeds the cap afterwards, the
+//! whole directory leaves. Neither step runs while a `cargo` or `rustc`
+//! process builds inside that checkout.
+//!
+//! Every checked-out worktree under `.worktree/` loses its whole
+//! `target/debug` in the same pass unless a live process works inside it. A
+//! worktree is removed only once its branch is merged, so an abandoned
+//! unmerged one would otherwise keep its build tree forever; that output
+//! shares the filesystem the CI runner builds on, and an unbounded one fills
+//! the host until a link step fails with `No space left on device`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,8 +25,12 @@ pub const TARGET_DEBUG_MAX_BYTES: u64 = 21_474_836_480;
 pub enum BuildCandidateKind {
     /// A superseded `deps` artifact.
     Duplicate,
-    /// The whole `target/debug` directory, removed by the cap backstop.
+    /// The whole canonical `target/debug` directory, removed by the cap
+    /// backstop.
     TargetDebug,
+    /// A worktree's whole `target/debug`, removed because no live process
+    /// works in that checkout.
+    WorktreeTargetDebug,
 }
 
 impl BuildCandidateKind {
@@ -26,6 +38,7 @@ impl BuildCandidateKind {
         match self {
             Self::Duplicate => "duplicate",
             Self::TargetDebug => "target-debug",
+            Self::WorktreeTargetDebug => "worktree-target-debug",
         }
     }
 }
@@ -43,8 +56,10 @@ pub struct BuildCleanupReport {
     pub candidates: Vec<BuildCandidate>,
     /// What a real pass removed.
     pub removed: Vec<BuildCandidate>,
+    /// The bytes every swept `target/debug` held before the pass.
     pub bytes_before: u64,
-    /// The size the tree has after the pass, or would have in a dry run.
+    /// The bytes the same directories hold after the pass, or would hold in a
+    /// dry run.
     pub bytes_after: u64,
     pub cap_removed: bool,
     pub errors: Vec<String>,
@@ -120,9 +135,17 @@ fn own_process_tree() -> std::collections::HashSet<u32> {
     pids
 }
 
-/// True when a build is running outside this sweep's own process tree.
-pub fn build_process_alive() -> bool {
+/// True when a `cargo` or `rustc` process outside this sweep's own process
+/// tree builds inside `checkout`.
+///
+/// The gate is per checkout on purpose. The workspace builds many checkouts at
+/// once, so one process table for the whole host stays busy almost always; the
+/// canonical `target/debug` then grew to four times its cap while every pass
+/// reported itself skipped. A build in one checkout never writes another
+/// checkout's `target`, so it never holds that checkout's retention back.
+pub fn build_running_in(checkout: &Path) -> bool {
     let own = own_process_tree();
+    let checkout = canonical(checkout);
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;
     };
@@ -141,7 +164,13 @@ pub fn build_process_alive() -> bool {
             continue;
         };
         let comm = comm.trim();
-        if comm == "cargo" || comm == "rustc" {
+        if comm != "cargo" && comm != "rustc" {
+            continue;
+        }
+        let Ok(cwd) = std::fs::read_link(entry.path().join("cwd")) else {
+            continue;
+        };
+        if canonical(&cwd).starts_with(&checkout) {
             return true;
         }
     }
@@ -199,43 +228,56 @@ fn duplicate_candidates(deps: &Path, report: &mut BuildCleanupReport) -> Vec<Bui
     candidates
 }
 
-/// Applies the build retention rule to `<root>/.devboard/target/debug`.
-///
-/// `max_bytes` is the cap the whole directory may keep. A dry run reports the
-/// same candidates and removes nothing.
-pub fn run_build_cleanup(root: &Path, dry_run: bool, max_bytes: u64) -> BuildCleanupReport {
-    run_build_cleanup_with(root, dry_run, max_bytes, &build_process_alive)
+/// Every checked-out worktree's `target/debug`, paired with the worktree
+/// directory it belongs to, in path order.
+fn worktree_debug_directories(root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(root.join(".worktree")) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let worktree = entry.path();
+        if !worktree.join(".git").exists() {
+            continue;
+        }
+        let debug = worktree.join(".devboard").join("target").join("debug");
+        // A symlinked build directory is left alone: the sweep never follows
+        // one out of the checkout it belongs to.
+        let real_directory = std::fs::symlink_metadata(&debug)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false);
+        if real_directory {
+            found.push((worktree, debug));
+        }
+    }
+    found.sort();
+    found
 }
 
-/// `run_build_cleanup` with an explicit live-build predicate, so a test never
-/// depends on the machine's process table.
-pub fn run_build_cleanup_with(
-    root: &Path,
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Applies the dedup rule and the cap to the canonical checkout's
+/// `target/debug`, and returns the bytes it holds afterwards.
+fn sweep_canonical_debug(
+    debug: &Path,
     dry_run: bool,
     max_bytes: u64,
-    build_running: &dyn Fn() -> bool,
-) -> BuildCleanupReport {
-    let mut report = BuildCleanupReport::default();
-    let debug = root.join(".devboard").join("target").join("debug");
-    if !debug.is_dir() {
-        return report;
-    }
-    if build_running() {
-        report.skipped = Some("a cargo or rustc process is alive".to_string());
-        return report;
-    }
+    report: &mut BuildCleanupReport,
+) -> u64 {
+    let before = apparent_size(debug);
     let deps = debug.join("deps");
     if !deps.is_dir() {
         report
             .errors
             .push(format!("{}: missing or unreadable", deps.display()));
-        return report;
+        return before;
     }
-    report.bytes_before = apparent_size(&debug);
-    let duplicates = duplicate_candidates(&deps, &mut report);
+    let duplicates = duplicate_candidates(&deps, report);
     let freed: u64 = duplicates.iter().map(|candidate| candidate.bytes).sum();
-    let mut remaining = report.bytes_before.saturating_sub(freed);
-    report.candidates = duplicates.clone();
+    let mut remaining = before.saturating_sub(freed);
+    report.candidates.extend(duplicates.iter().cloned());
     if !dry_run {
         for candidate in &duplicates {
             match std::fs::remove_file(&candidate.path) {
@@ -245,27 +287,96 @@ pub fn run_build_cleanup_with(
                     .push(format!("{}: {error}", candidate.path.display())),
             }
         }
-        remaining = apparent_size(&debug);
+        remaining = apparent_size(debug);
     }
-    if remaining > max_bytes {
+    if remaining <= max_bytes {
+        return remaining;
+    }
+    let candidate = BuildCandidate {
+        path: debug.to_path_buf(),
+        bytes: remaining,
+        kind: BuildCandidateKind::TargetDebug,
+    };
+    report.candidates.push(candidate.clone());
+    if !dry_run {
+        match std::fs::remove_dir_all(debug) {
+            Ok(()) => {
+                report.removed.push(candidate);
+                report.cap_removed = true;
+            }
+            Err(error) => report.errors.push(format!("{}: {error}", debug.display())),
+        }
+    }
+    0
+}
+
+/// Applies the build retention rule to the canonical checkout's
+/// `target/debug` and reclaims every worktree's build output that no live
+/// process is working in.
+///
+/// `max_bytes` is the cap the canonical checkout's directory may keep.
+/// `build_running_in` names the checkouts a live `cargo` or `rustc` process
+/// builds in: the canonical pass waits for its own checkout only.
+/// `busy_directories` names every directory a live process is working in or a
+/// running dashboard serves: a worktree holding one keeps its build output. A
+/// dry run reports the same candidates and removes nothing.
+pub fn run_build_cleanup_with(
+    root: &Path,
+    dry_run: bool,
+    max_bytes: u64,
+    build_running_in: &dyn Fn(&Path) -> bool,
+    busy_directories: &dyn Fn() -> Vec<PathBuf>,
+) -> BuildCleanupReport {
+    let mut report = BuildCleanupReport::default();
+    let debug = root.join(".devboard").join("target").join("debug");
+    let canonical_before = if debug.is_dir() {
+        apparent_size(&debug)
+    } else {
+        0
+    };
+    // A build inside the canonical checkout may be writing this directory, so
+    // the canonical pass waits for it. A worktree's own working directory is
+    // what holds its build output back, so a build elsewhere never blocks
+    // that reclaim.
+    let mut canonical_after = canonical_before;
+    if debug.is_dir() {
+        if build_running_in(root) {
+            report.skipped = Some("a cargo or rustc process builds in the checkout".to_string());
+        } else {
+            canonical_after = sweep_canonical_debug(&debug, dry_run, max_bytes, &mut report);
+        }
+    }
+    let busy = busy_directories();
+    let mut worktree_before = 0u64;
+    let mut worktree_after = 0u64;
+    for (worktree, worktree_debug) in worktree_debug_directories(root) {
+        let bytes = apparent_size(&worktree_debug);
+        worktree_before += bytes;
+        let real = canonical(&worktree);
+        if busy.iter().any(|directory| directory.starts_with(&real)) {
+            worktree_after += bytes;
+            continue;
+        }
         let candidate = BuildCandidate {
-            path: debug.clone(),
-            bytes: remaining,
-            kind: BuildCandidateKind::TargetDebug,
+            path: worktree_debug.clone(),
+            bytes,
+            kind: BuildCandidateKind::WorktreeTargetDebug,
         };
         report.candidates.push(candidate.clone());
-        if !dry_run {
-            match std::fs::remove_dir_all(&debug) {
-                Ok(()) => {
-                    report.removed.push(candidate);
-                    report.cap_removed = true;
-                }
-                Err(error) => report.errors.push(format!("{}: {error}", debug.display())),
+        if dry_run {
+            continue;
+        }
+        match std::fs::remove_dir_all(&worktree_debug) {
+            Ok(()) => report.removed.push(candidate),
+            Err(error) => {
+                worktree_after += bytes;
+                report
+                    .errors
+                    .push(format!("{}: {error}", worktree_debug.display()));
             }
         }
-        report.bytes_after = 0;
-    } else {
-        report.bytes_after = remaining;
     }
+    report.bytes_before = canonical_before + worktree_before;
+    report.bytes_after = canonical_after + worktree_after;
     report
 }
