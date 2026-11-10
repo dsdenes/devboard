@@ -1369,6 +1369,7 @@ async fn a_recovery_verifies_the_release_publish_actually_proved() {
                         written: Vec::new(),
                         applied: Vec::new(),
                         failed: Vec::new(),
+                        skipped: Vec::new(),
                     },
                     dashboards: Vec::new(),
                 })

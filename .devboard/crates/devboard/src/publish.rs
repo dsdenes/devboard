@@ -584,6 +584,16 @@ pub struct RefreshFailure {
     pub error: String,
 }
 
+/// One dashboard that serves this checkout's repository through another
+/// harness, so a request written for the checkout's own harness would never
+/// reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshSkip {
+    pub harness: PathBuf,
+    pub pid: u32,
+    pub port: u16,
+}
+
 /// What one source-refresh delivery did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRefreshReport {
@@ -592,6 +602,8 @@ pub struct SourceRefreshReport {
     /// Dashboards whose `applied.json` already named this commit.
     pub applied: Vec<RefreshTarget>,
     pub failed: Vec<RefreshFailure>,
+    /// Dashboards on this repository that another harness serves.
+    pub skipped: Vec<RefreshSkip>,
 }
 
 /// Inputs to one source-refresh delivery.
@@ -2522,6 +2534,7 @@ fn empty_refresh_report() -> SourceRefreshReport {
         written: Vec::new(),
         applied: Vec::new(),
         failed: Vec::new(),
+        skipped: Vec::new(),
     }
 }
 
@@ -3939,18 +3952,25 @@ pub async fn deliver_source_refresh(options: SourceRefreshOptions) -> Result<Sou
             written: Vec::new(),
             applied: Vec::new(),
             failed: Vec::new(),
+            skipped: Vec::new(),
         });
     }
 
     let mut written = Vec::new();
     let mut applied = Vec::new();
     let mut failed = Vec::new();
+    let mut skipped = Vec::new();
     let mut outcomes: HashMap<PathBuf, Result<(), String>> = HashMap::new();
     for instance in &options.instances {
         if !same_path(&instance.repo_dir, &repo_root) {
             continue;
         }
         if !same_path(&instance.harness, &harness_root) {
+            skipped.push(RefreshSkip {
+                harness: instance.harness.clone(),
+                pid: instance.pid,
+                port: instance.port,
+            });
             continue;
         }
         let state_dir = absolute_path(&instance.state_dir);
@@ -3981,6 +4001,7 @@ pub async fn deliver_source_refresh(options: SourceRefreshOptions) -> Result<Sou
         written,
         applied,
         failed,
+        skipped,
     })
 }
 
@@ -4064,6 +4085,14 @@ fn dashboard_instances(
     processes: &[crate::supervision::ProcessSnapshot],
     self_pid: u32,
 ) -> Vec<DashboardInstance> {
+    dashboard_instances_with(processes, self_pid, listening_ports_of)
+}
+
+fn dashboard_instances_with(
+    processes: &[crate::supervision::ProcessSnapshot],
+    self_pid: u32,
+    ports_of: impl Fn(u32) -> Vec<u16>,
+) -> Vec<DashboardInstance> {
     let mut instances = Vec::new();
     let mut seen = HashSet::new();
     for process in processes {
@@ -4080,12 +4109,11 @@ fn dashboard_instances(
         if repo_dir.is_empty() {
             continue;
         }
-        let Some(port) = process
-            .env
-            .get("PORT")
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|port| *port > 0)
-        else {
+        // `PORT` is inherited by every child of a dashboard, so it names the
+        // socket the caller was told about, not the one this process bound. An
+        // agent-started server in a worktree therefore claimed the host's port
+        // and hid the real dashboard from refresh delivery.
+        let Some(port) = dashboard_port(&process.env, &ports_of(process.pid)) else {
             continue;
         };
         if crate::supervision::is_verification_scratch(repo_dir)
@@ -4119,7 +4147,11 @@ fn dashboard_instances(
             .get("STATE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| harness.join(".tmp"));
-        let key = format!("{repo_dir}\0{port}");
+        // Two processes with the same repository and port are one dashboard
+        // during a handoff, but a process that serves the same repository
+        // through another harness is a different one and must never take the
+        // real dashboard's place.
+        let key = format!("{repo_dir}\0{port}\0{}", harness.display());
         if !seen.insert(key) {
             continue;
         }
@@ -4132,6 +4164,86 @@ fn dashboard_instances(
         });
     }
     instances
+}
+
+/// The port one dashboard actually owns: an inherited `PORT` counts only when
+/// this process listens on it.
+fn dashboard_port(environment: &HashMap<String, String>, listening: &[u16]) -> Option<u16> {
+    let port = environment
+        .get("PORT")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0 && listening.contains(port));
+    if port.is_some() {
+        return port;
+    }
+    match listening {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+/// The listening ports one process owns, read from `/proc`.
+fn listening_ports_of(pid: u32) -> Vec<u16> {
+    let inodes = socket_inodes_of(pid);
+    if inodes.is_empty() {
+        return Vec::new();
+    }
+    let mut table = HashMap::new();
+    for source in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(text) = std::fs::read_to_string(source) {
+            table.extend(listening_sockets_from(&text));
+        }
+    }
+    let mut ports: Vec<u16> = inodes
+        .iter()
+        .filter_map(|inode| table.get(inode).copied())
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// The socket inodes one process holds open.
+fn socket_inodes_of(pid: u32) -> Vec<u64> {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| {
+            let link = std::fs::read_link(entry.ok()?.path()).ok()?;
+            let text = link.to_str()?;
+            let inode = text.strip_prefix("socket:[")?.strip_suffix(']')?;
+            inode.parse().ok()
+        })
+        .collect()
+}
+
+/// Every listening socket in one `/proc/net/tcp` table: inode to local port.
+///
+/// Only `0A` (LISTEN) rows count; the port is the hex field after the address,
+/// and the inode is the tenth whitespace-separated field.
+fn listening_sockets_from(table: &str) -> HashMap<u64, u16> {
+    let mut sockets = HashMap::new();
+    for line in table.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 10 || fields[3] != "0A" {
+            continue;
+        }
+        let Some(port) = fields[1]
+            .rsplit(':')
+            .next()
+            .and_then(|hex| u16::from_str_radix(hex, 16).ok())
+        else {
+            continue;
+        };
+        let Some(inode) = fields[9].parse::<u64>().ok() else {
+            continue;
+        };
+        if inode != 0 {
+            sockets.insert(inode, port);
+        }
+    }
+    sockets
 }
 
 // ---------------------------------------------------------------------------
@@ -4782,11 +4894,99 @@ mod tests {
             cwd: Some(root.clone()),
             ancestors: vec![1],
         };
-        let instances = dashboard_instances(&[process], 999_999);
+        let instances = dashboard_instances_with(&[process], 999_999, |_| vec![8080]);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].harness, root.join(".devboard"));
         assert!(instances[0].state_dir.ends_with(".devboard/.tmp"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_port_is_the_socket_the_process_bound_not_the_one_it_inherited() {
+        use crate::supervision::ProcessSnapshot;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.tmp")
+            .join(format!("publish-bound-port-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".devboard")).expect("a source harness");
+        let mut env = std::collections::HashMap::new();
+        env.insert("REPO_DIR".to_string(), root.display().to_string());
+        env.insert("PORT".to_string(), "8080".to_string());
+        env.insert("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string());
+        let process = ProcessSnapshot {
+            pid: 424243,
+            cmdline: format!("{}/devboard serve --port 8204", root.display()),
+            env,
+            cwd: Some(root.clone()),
+            ancestors: vec![1],
+        };
+        let instances = dashboard_instances_with(&[process], 999_999, |_| vec![8204]);
+        assert_eq!(instances.len(), 1, "the inherited port names no socket");
+        assert_eq!(instances[0].port, 8204);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_inherited_port_hidden_behind_another_harness_never_hides_the_dashboard() {
+        use crate::supervision::ProcessSnapshot;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.tmp")
+            .join(format!("publish-shadow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".devboard")).expect("a source harness");
+        let environment = || {
+            let mut env = std::collections::HashMap::new();
+            env.insert("REPO_DIR".to_string(), root.display().to_string());
+            env.insert("PORT".to_string(), "8080".to_string());
+            env.insert("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string());
+            env
+        };
+        let shadow = ProcessSnapshot {
+            pid: 424244,
+            cmdline: format!("{}/devboard serve", root.display()),
+            env: environment(),
+            cwd: Some(root.join(".worktree/perf/.devboard")),
+            ancestors: vec![1],
+        };
+        let dashboard = ProcessSnapshot {
+            pid: 424245,
+            cmdline: format!("{}/devboard serve", root.display()),
+            env: environment(),
+            cwd: Some(root.clone()),
+            ancestors: vec![1],
+        };
+        let instances = dashboard_instances_with(&[shadow, dashboard], 999_999, |_| vec![8080]);
+        assert_eq!(instances.len(), 2, "another harness is its own instance");
+        assert!(instances
+            .iter()
+            .any(|instance| instance.pid == 424245 && instance.harness == root.join(".devboard")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bound_listener_is_found_through_the_proc_socket_tables() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+        let port = listener.local_addr().expect("an address").port();
+        let ports = listening_ports_of(std::process::id());
+        assert!(
+            ports.contains(&port),
+            "the bound listener is found: {ports:?}"
+        );
+    }
+
+    #[test]
+    fn the_listening_table_names_only_the_sockets_in_the_listen_state() {
+        let table = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 424242 1 0000000000000000 100 0 0 10 0\n\
+   1: 0100007F:8AE4 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 99 1 0000000000000000 20 4 30 10 -1\n";
+        let sockets = listening_sockets_from(table);
+        assert_eq!(sockets.get(&424242), Some(&8080));
+        assert!(
+            !sockets.contains_key(&99),
+            "an established socket is not a listener"
+        );
+        assert_eq!(listening_sockets_from(""), HashMap::new());
     }
 
     #[test]

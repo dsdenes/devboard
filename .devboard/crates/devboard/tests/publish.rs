@@ -2862,6 +2862,41 @@ async fn source_refresh_dedupes_against_applied() {
 }
 
 #[tokio::test]
+async fn a_dashboard_through_another_harness_is_reported_skipped() {
+    let scratch = Scratch::new("skipped");
+    let app = scratch.root.join("repo");
+    git_init(&app);
+    write_harness(&app);
+    let state_dir = scratch.root.join("state");
+    let instance = DashboardInstance {
+        pid: 8,
+        port: 7200,
+        repo_dir: app.clone(),
+        harness: app.join(".worktree/perf/.devboard"),
+        state_dir: state_dir.clone(),
+    };
+    let options = SourceRefreshOptions {
+        repo_root: app.clone(),
+        harness_root: app.join(".devboard"),
+        commit: "a".repeat(40),
+        version: "1.2.3".to_string(),
+        dist_dir: app.join(".devboard/dist"),
+        instances: vec![instance],
+        requested_at: "2026-11-03T00:00:00.000Z".to_string(),
+    };
+    let report = deliver_source_refresh(options)
+        .await
+        .expect("a skipped delivery");
+    assert!(report.written.is_empty(), "no other harness is refreshed");
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].pid, 8);
+    assert!(
+        !state_dir.join("source-refresh/request.json").exists(),
+        "a skipped dashboard receives nothing"
+    );
+}
+
+#[tokio::test]
 async fn the_release_lock_serialises_two_releases() {
     let scratch = Scratch::new("lock");
     let path = scratch.root.join("release.lock");

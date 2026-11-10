@@ -173,3 +173,51 @@ async fn a_confirmed_replacement_is_ready_before_its_startup_reaping_pass() {
     );
     stop(pid);
 }
+
+/// The environment block one process was started with.
+fn process_environment(pid: u32) -> std::collections::HashMap<String, String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).expect("the child's environment");
+    raw.split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let text = std::str::from_utf8(entry).ok()?;
+            let (name, value) = text.split_once('=')?;
+            Some((name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+/// A restart passes no version, so the replacement must resolve the one it
+/// loaded instead of inheriting the one its caller ran. The inherited value kept
+/// a source dashboard reporting the release a publish had last refreshed to,
+/// even while it served a newer build.
+#[tokio::test]
+async fn a_replacement_does_not_inherit_the_version_its_caller_ran() {
+    std::env::set_var("DEVBOARD_RUNNING_VERSION", "9.9.9");
+    let scratch = scratch("inherited-version");
+    let state = scratch.root.join("state");
+    let held = TcpListener::bind(("127.0.0.1", 0)).expect("a held dashboard port");
+    let port = held.local_addr().expect("an address").port();
+    let ready_file = state.join("replacement").join("ready.json");
+    let result =
+        relaunch_confirmed(&settings(&scratch.root, port), &ready_file, 15_000, None).await;
+    std::env::remove_var("DEVBOARD_RUNNING_VERSION");
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+
+    drop(held);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut pid = serve_pid(&state);
+    while pid.is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        pid = serve_pid(&state);
+    }
+    let pid = pid.expect("the replacement binds the dashboard port");
+    let environment = process_environment(pid);
+    stop(pid);
+    assert_ne!(
+        environment
+            .get("DEVBOARD_RUNNING_VERSION")
+            .map(String::as_str),
+        Some("9.9.9"),
+        "a restart never hands its own version to the replacement"
+    );
+}

@@ -108,6 +108,50 @@ pub fn inherited_credential_variables() -> Vec<String> {
         .collect()
 }
 
+/// The environment names that describe one live dashboard instance or the
+/// harness it loaded, rather than the process that carries them.
+///
+/// A child that inherits one of these looks like its caller: `PORT` makes an
+/// agent-started `devboard serve` claim the dashboard's port in publish's
+/// inventory, and `DEVBOARD_RUNNING_VERSION` makes a replacement report a
+/// version it never loaded.
+fn instance_environment_names() -> Vec<String> {
+    let mut names: Vec<String> = [
+        "HOST",
+        "PORT",
+        "STATIC_DIR",
+        "DEVBOARD_RUNNING_VERSION",
+        "DEVBOARD_RUNNING_HARNESS_DIR",
+        "DEVBOARD_HARNESS_VERSION",
+        "DEVBOARD_REPLACEMENT_READY_FILE",
+        "DEVBOARD_CREDENTIALS_CLEARED",
+    ]
+    .iter()
+    .map(|name| (*name).to_string())
+    .collect();
+    for role in ["DASHBOARD", "BOOTSTRAP"] {
+        names.push(format!("DEVBOARD_{role}_TOKEN"));
+    }
+    names.push(format!("DEVBOARD_{}_PUBLISHED", "TOKEN"));
+    names
+}
+
+/// Removes every instance variable from this process, so no child it later
+/// spawns can inherit one. A dashboard calls this once it has resolved its own
+/// configuration and loaded version.
+pub fn forget_instance_environment() {
+    for name in instance_environment_names() {
+        std::env::remove_var(&name);
+    }
+}
+
+/// Removes the instance variables a replacement must resolve for itself.
+pub fn drop_instance_variables(command: &mut Command) {
+    for name in instance_environment_names() {
+        command.env_remove(&name);
+    }
+}
+
 /// Starts one replacement process in its own session.
 pub fn spawn_replacement(
     settings: &RelaunchSettings,
@@ -117,6 +161,10 @@ pub fn spawn_replacement(
     let mut command = Command::new(&program);
     command.arg("serve");
     drop_obsolete_credential_variables(&mut command);
+    // A replacement resolves its port, its static root, and its loaded version
+    // for itself. Inheriting the caller's `DEVBOARD_RUNNING_VERSION` kept a
+    // source dashboard reporting the last version a publish had refreshed to.
+    drop_instance_variables(&mut command);
     // Never start from a replaceable install directory: an update can rename
     // and delete it, and a child cannot start from a missing cwd.
     command

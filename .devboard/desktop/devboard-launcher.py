@@ -45,6 +45,22 @@ TITLE = "Devboard"
 READY_TIMEOUT = 60.0
 RESTART_TIMEOUT = 60.0
 
+# The names that describe one live dashboard instance rather than the process
+# that carries them. The server resolves each for itself, so nothing this
+# launcher starts may inherit one from the shell it ran in.
+INSTANCE_VARIABLES = (
+    "HOST",
+    "PORT",
+    "STATIC_DIR",
+    "DEVBOARD_RUNNING_VERSION",
+    "DEVBOARD_RUNNING_HARNESS_DIR",
+    "DEVBOARD_HARNESS_VERSION",
+    "DEVBOARD_REPLACEMENT_READY_FILE",
+    "DEVBOARD_CREDENTIALS_CLEARED",
+    "DEVBOARD_DASHBOARD_TOKEN",
+    "DEVBOARD_BOOTSTRAP_TOKEN",
+)
+
 
 def log(message: str) -> None:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -335,6 +351,11 @@ def build() -> tuple[Path | None, str | None]:
 
 def start(binary: Path, tokens: dict[str, str]) -> subprocess.Popen:
     environment = dict(os.environ)
+    # The launcher may itself run under a shell that an agent or an older
+    # dashboard started. This process names its own port, repo, and version, so
+    # none of an instance's own variables may be carried into it.
+    for name in INSTANCE_VARIABLES:
+        environment.pop(name, None)
     environment["DEVBOARD_DASHBOARD_TOKEN"] = tokens["token"]
     environment["DEVBOARD_BOOTSTRAP_TOKEN"] = tokens["bootstrap"]
     environment.setdefault("ADRS_DIR", str(REPO / "adrs"))

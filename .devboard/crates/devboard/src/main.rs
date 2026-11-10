@@ -244,6 +244,10 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     devboard::resources::install_production(&config.state_dir);
     let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
     let server = Server::new(config.clone(), journal);
+    // Everything below spawns children, and none of them may inherit this
+    // instance's port, static root, or the version it was handed: an agent-run
+    // server that does looks like this dashboard to publish's inventory.
+    devboard::relaunch::forget_instance_environment();
     server.app.start_resource_watcher();
     {
         let app = std::sync::Arc::downgrade(&server.app);
@@ -713,6 +717,9 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
     let log = std::fs::File::create(&log_path).context("creating the dashboard log")?;
     let mut command = Command::new(&program);
     devboard::relaunch::drop_obsolete_credential_variables(&mut command);
+    // The CLI may itself run under an agent shell that inherited a dashboard's
+    // instance variables; this start names its own.
+    devboard::relaunch::drop_instance_variables(&mut command);
     command
         .arg("serve")
         .arg("--port")
@@ -1074,11 +1081,20 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
         );
     }
     println!(
-        "dashboards: {} live; source-refresh written {}; failed {}",
+        "dashboards: {} live; source-refresh written {}; failed {}; skipped {}",
         report.dashboards.len(),
         report.source_refresh.written.len(),
-        report.source_refresh.failed.len()
+        report.source_refresh.failed.len(),
+        report.source_refresh.skipped.len()
     );
+    for skip in &report.source_refresh.skipped {
+        println!(
+            "publish: source refresh skipped for pid {} port {}: harness {} is not this checkout's .devboard",
+            skip.pid,
+            skip.port,
+            skip.harness.display()
+        );
+    }
     if !report.source_refresh.failed.is_empty() {
         for failure in &report.source_refresh.failed {
             eprintln!(
