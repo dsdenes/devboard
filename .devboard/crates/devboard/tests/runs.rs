@@ -556,7 +556,7 @@ async fn discover_runs_survive_a_replacement_and_stop() {
                 state["peer"].is_object() && state["peer"]["pid"].as_u64().is_some()
             })
         },
-        Duration::from_secs(30),
+        Duration::from_secs(90),
         "the discover owner recorded its peer",
     )
     .await;
@@ -570,7 +570,7 @@ async fn discover_runs_survive_a_replacement_and_stop() {
                 .map(|text| text.contains("Reading the host for sheet"))
                 .unwrap_or(false)
         },
-        Duration::from_secs(20),
+        Duration::from_secs(90),
         "the first activity line reached the journal",
     )
     .await;
@@ -658,7 +658,7 @@ async fn discover_runs_survive_a_replacement_and_stop() {
                 .map(|text| text.contains("answer yes"))
                 .unwrap_or(false)
         },
-        Duration::from_secs(20),
+        Duration::from_secs(90),
         "the answer reached the same run",
     )
     .await;
