@@ -70,6 +70,11 @@ export class IssuesStore {
   run = $state<IssuesRunDetail | null>(null);
   runError = $state<string | null>(null);
   selectedRun = $state<string | null>(null);
+  /**
+   * The run this connection generation asked history for. A reconnect clears
+   * it, so a frame lost while the socket was down is asked for again; the
+   * selection never stands in for that answer.
+   */
   private requestedRun: string | null = null;
   /** Issue numbers whose close request is still unanswered. */
   closing = $state<number[]>([]);
@@ -247,14 +252,17 @@ export class IssuesStore {
   }
 
   /**
-   * Clears the pending close requests before a reconnect's state requests are
-   * sent. A close frame lost while the socket was down leaves its issue in
-   * `closing` forever, because the replay still lists it as open. The replayed
-   * `issuesState` stays authoritative: a close that landed drops the issue
-   * from the queue.
+   * Clears the pending close requests and the run history request before a
+   * reconnect's state requests are sent. A close frame lost while the socket
+   * was down leaves its issue in `closing` forever, because the replay still
+   * lists it as open. The replayed `issuesState` stays authoritative: a close
+   * that landed drops the issue from the queue. A history read whose answer
+   * never landed is cleared for the same reason: the selection alone never
+   * proves the fetch happened, so the focus tab must ask again.
    */
   resetActiveOperations(): void {
     this.closing = [];
+    this.requestedRun = null;
   }
 
   canClose(number: number): boolean {
@@ -303,11 +311,16 @@ export class IssuesStore {
     this.runError = null;
   }
 
-  /** Fetches one run's history once unless it is already selected. */
+  /**
+   * Requests one run's history unless its detail is already loaded or this
+   * connection generation already asked for it. The selection is not evidence
+   * that the history arrived: `openRun` sets `selectedRun` before the answer
+   * lands, so a frame lost to a closed socket would otherwise latch for the
+   * tab's whole life. One cleared marker per reconnect yields exactly one
+   * request per open transition.
+   */
   loadRun(runId: string): void {
-    if (this.requestedRun === runId && (this.run?.runId === runId || this.selectedRun === runId)) {
-      return;
-    }
+    if (this.run?.runId === runId || this.requestedRun === runId) return;
     this.openRun(runId);
   }
 
