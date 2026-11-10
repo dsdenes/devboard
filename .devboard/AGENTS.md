@@ -128,17 +128,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 bun run check
 bun test
-bun run build && bun scripts/embed-client.mjs   # only when the client changed
+bun run build   # builds the client and refreshes crates/devboard/assets when it changed
 ```
 
 A client change is verified with `cd .devboard && bun test`. `.gitea/workflows/devboard-ci.yml`
 runs the Rust checks and the embedded-client build, not the client suite, so a client change must
 pass `bun test` locally before it lands.
 
-A client change lands together with the refreshed, committed `crates/devboard/assets`: the binary
-embeds that copy, the release workflow builds the tagged commit without re-embedding it, and both
-the CI check and `devboard publish` refuse a tree whose committed copy differs from the rebuilt
-bundle.
+A client change lands together with the refreshed, committed `crates/devboard/assets`: `bun run
+build` embeds the bundle it just built, the binary serves that copy, the release workflow builds
+the tagged commit without re-embedding it, and both the CI check and `devboard publish` refuse a
+tree whose committed copy differs from the rebuilt bundle.
 
 Merge into `main` and push. A push releases nothing: `.github/workflows/devboard-build.yml` runs
 only when `devboard publish` dispatches it at the temporary build ref, and `devboard publish`

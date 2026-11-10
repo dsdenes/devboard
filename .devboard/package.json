@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Devboard harness: ADR dashboard server, client, prompts, wrappers, and installer.",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && bun scripts/embed-client.mjs",
     "dev": "vite",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "cargo test --workspace",

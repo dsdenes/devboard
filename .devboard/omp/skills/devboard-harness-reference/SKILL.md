@@ -565,8 +565,9 @@ action group, not the status bar.
 
 ### Verifying the interface
 
-The client is built with `bun run build`, embedded into the binary by
-`bun scripts/embed-client.mjs`, and served from memory. Start a private dashboard with
+The client is built with `bun run build`, which also embeds the bundle into
+`crates/devboard/assets` for the binary to serve from memory; `bun scripts/embed-client.mjs`
+refreshes that copy on its own. Start a private dashboard with
 `cargo run -p devboard -- serve --port <free> --state-dir <dir> --repo-dir <dir>` and open it in
 a browser; the corpus tests cover the protocol and HTTP behavior the page depends on.
 

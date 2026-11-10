@@ -39,22 +39,22 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Build the embedded client
         working-directory: .devboard
-        run: |
-          bun run build
-          bun scripts/embed-client.mjs
+        # `bun run build` builds the client and refreshes the copy the binary
+        # embeds, so this one step leaves what the commit must carry.
+        run: bun run build
       - name: Check the embedded client is current
         working-directory: .devboard
         # The binary serves `crates/devboard/assets`, never `dist`, and the
         # release workflow builds the tagged commit without running the embed
         # step: a client change committed without re-embedding would ship the
-        # previous bundle. The rebuild above must leave the committed copy
+        # previous bundle. The build above must leave the committed copy
         # byte-identical, and it must add no file the commit does not carry.
         run: |
           git diff --stat -- crates/devboard/assets
           changed="$(git status --porcelain --untracked-files=all -- crates/devboard/assets)"
           if [ -n "$changed" ]; then
             printf '%s\n' "$changed"
-            echo "run 'bun scripts/embed-client.mjs' and commit crates/devboard/assets" >&2
+            echo "commit the refreshed crates/devboard/assets" >&2
             exit 1
           fi
       - name: Lint the decision corpus

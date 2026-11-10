@@ -297,9 +297,10 @@ no browser step into a workflow.
   the complete output, and `exitCode` is still the verdict. A result ending
   `[timed out after 900000 ms]` is a failed verification.
 - Run the gates the change can break: `rust:fmt` and `rust:clippy` for Rust edits, `rust:test` for
-  behavior changes, and `build`, `check`, and `test` for client edits. When one fails, quote its
-  first error line and the failing command in the session transcript; a bare exit code or an empty
-  `(no output)` is never a report.
+  behavior changes, and `build`, `check`, and `test` for client edits. A client edit lands with
+  the `crates/devboard/assets` copy `bun run build` refreshes, so commit that rewritten tree with
+  the change. When one fails, quote its first error line and the failing command in the session
+  transcript; a bare exit code or an empty `(no output)` is never a report.
 - Reproduce a failure once before you touch code, name the failing check, and fix the cause. Never
   rerun an identical failing check more than twice: once for the changed revision and once for the
   base revision when one is needed to classify a pre-existing failure.
