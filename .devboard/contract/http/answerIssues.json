@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/issues/runs/{run_id}/answers",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "An answer needs its question id and value."
+      }
+    ]
+  }
 }

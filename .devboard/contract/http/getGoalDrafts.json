@@ -3,8 +3,13 @@
   "method": "GET",
   "path": "/goal-drafts",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "issuesDrafts",
+        "drafts": [],
+        "runs": []
+      }
+    ]
+  }
 }

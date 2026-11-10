@@ -3,8 +3,12 @@
   "method": "PUT",
   "path": "/discoveries/glossary-terms/{id}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "discoverError",
+        "message": "Confirming a term needs its bounded context and id."
+      }
+    ]
+  }
 }

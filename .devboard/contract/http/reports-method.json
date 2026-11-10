@@ -3,8 +3,10 @@
   "method": "GET",
   "path": "/reports",
   "status": 405,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Method Not Allowed",
+    "status": 405,
+    "detail": "This endpoint accepts POST only."
+  }
 }

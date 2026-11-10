@@ -3,8 +3,5 @@
   "method": "HEAD",
   "path": "/flows",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
   "body": ""
 }

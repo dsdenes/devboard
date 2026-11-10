@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/agents/{id}/refreshes",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "Unknown background agent: missing."
+      }
+    ]
+  }
 }

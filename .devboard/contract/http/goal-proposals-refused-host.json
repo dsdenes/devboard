@@ -3,8 +3,10 @@
   "method": "POST",
   "path": "/goal-proposals",
   "status": 403,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Forbidden",
+    "status": 403,
+    "detail": "The request host is not served by this dashboard."
+  }
 }

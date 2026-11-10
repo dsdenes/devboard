@@ -3,8 +3,10 @@
   "method": "GET",
   "path": "/goal-proposals/missing.md",
   "status": 404,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Not Found",
+    "status": 404,
+    "detail": "The requested draft was not found."
+  }
 }

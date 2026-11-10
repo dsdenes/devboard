@@ -3,8 +3,13 @@
   "method": "DELETE",
   "path": "/goal-drafts/{path}/runs",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "issuesDraftError",
+        "path": "",
+        "message": "That draft is not being elaborated."
+      }
+    ]
+  }
 }

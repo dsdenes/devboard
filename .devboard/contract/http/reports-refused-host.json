@@ -3,8 +3,10 @@
   "method": "POST",
   "path": "/reports",
   "status": 421,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Misdirected Request",
+    "status": 421,
+    "detail": "The request host is not served by this dashboard."
+  }
 }

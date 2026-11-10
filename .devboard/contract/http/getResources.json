@@ -3,8 +3,16 @@
   "method": "GET",
   "path": "/resources",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "resourcesState",
+        "state": {
+          "saved": null,
+          "effective": {},
+          "live": {}
+        }
+      }
+    ]
+  }
 }

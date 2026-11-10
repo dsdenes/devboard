@@ -3,8 +3,10 @@
   "method": "GET",
   "path": "/agent-runs/missing/output",
   "status": 404,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Not Found",
+    "status": 404,
+    "detail": "The requested run was not found."
+  }
 }

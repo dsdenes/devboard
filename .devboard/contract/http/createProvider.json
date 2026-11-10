@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/providers",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "providerError",
+        "message": "A provider change needs its request id."
+      }
+    ]
+  }
 }

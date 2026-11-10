@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/flows/steering",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "No Flow session exists."
+      }
+    ]
+  }
 }

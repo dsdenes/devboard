@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/discoveries/remote-selections",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "discoverError",
+        "message": "Discover from a repository URL is available only when the dashboard serves a harness source checkout."
+      }
+    ]
+  }
 }

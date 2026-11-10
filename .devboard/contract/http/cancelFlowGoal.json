@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/flows/goals",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "No Flow goal interview is active."
+      }
+    ]
+  }
 }

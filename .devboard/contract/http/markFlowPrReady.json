@@ -3,8 +3,12 @@
   "method": "PATCH",
   "path": "/flows/pull-requests",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "No Flow pull request exists."
+      }
+    ]
+  }
 }

@@ -3,8 +3,8 @@
   "method": "GET",
   "path": "/agent-runs",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "runs": [],
+    "self": ""
+  }
 }

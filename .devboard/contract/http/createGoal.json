@@ -3,8 +3,146 @@
   "method": "POST",
   "path": "/goal-creations",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "goalCreationStarted"
+      },
+      {
+        "type": "discoverState",
+        "state": {
+          "active": false,
+          "runId": null,
+          "startedAt": null,
+          "activeAgent": null,
+          "runningAll": false,
+          "allFailed": null,
+          "agents": [
+            {
+              "id": "sheet",
+              "label": "Data Sheet",
+              "command": "/discover-sheet",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "sheet",
+                "text": null,
+                "error": ""
+              }
+            },
+            {
+              "id": "discover-contribution",
+              "label": "Contribution Agent",
+              "command": "/discover-contribution",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "discover-contribution",
+                "text": null,
+                "error": ""
+              }
+            },
+            {
+              "id": "discover-testing-strategy",
+              "label": "Testing Strategy",
+              "command": "/discover-testing-strategy",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "discover-testing-strategy",
+                "text": null,
+                "error": ""
+              }
+            },
+            {
+              "id": "discover-naming-conventions",
+              "label": "Naming Conventions",
+              "command": "/discover-naming-conventions",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "discover-naming-conventions",
+                "text": null,
+                "error": ""
+              }
+            },
+            {
+              "id": "discover-coding-conventions",
+              "label": "Coding Conventions",
+              "command": "/discover-coding-conventions",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "discover-coding-conventions",
+                "text": null,
+                "error": ""
+              }
+            },
+            {
+              "id": "discover-architecture-boundaries",
+              "label": "Architecture & Boundaries",
+              "command": "/discover-architecture-boundaries",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "discover-architecture-boundaries",
+                "text": null,
+                "error": ""
+              }
+            },
+            {
+              "id": "discover-glossary",
+              "label": "Glossary Agent",
+              "command": "/discover-glossary",
+              "state": "idle",
+              "startedAt": null,
+              "endedAt": null,
+              "error": null,
+              "prompt": {
+                "agent": "discover-glossary",
+                "text": null,
+                "error": ""
+              }
+            }
+          ],
+          "interrupted": false,
+          "stale": false,
+          "warnings": [],
+          "busy": "A goal creation is active.",
+          "error": null,
+          "remoteAvailable": false,
+          "retained": [],
+          "repository": "dsdenes/devboard",
+          "target": {
+            "kind": "host"
+          },
+          "cloning": null,
+          "manifest": null,
+          "freshness": null,
+          "sheet": null,
+          "commandAliases": [],
+          "dependencyRepositories": {},
+          "overviewLinks": {},
+          "glossaries": [],
+          "contribution": null,
+          "glossaryUsage": {},
+          "glossarySignificance": {},
+          "decisions": [],
+          "skills": []
+        }
+      }
+    ]
+  }
 }

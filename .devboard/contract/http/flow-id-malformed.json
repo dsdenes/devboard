@@ -3,8 +3,10 @@
   "method": "GET",
   "path": "/ready",
   "status": 400,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "X-Flow-ID must be a printable token."
+  }
 }

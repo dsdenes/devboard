@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/issues/checks",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No issues worker is running for this checkout."
+      }
+    ]
+  }
 }

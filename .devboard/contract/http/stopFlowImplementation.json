@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/flows/implementations",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "The Flow implementation is not running."
+      }
+    ]
+  }
 }

@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/discoveries/answers",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "discoverError",
+        "message": "No Discover run is active."
+      }
+    ]
+  }
 }

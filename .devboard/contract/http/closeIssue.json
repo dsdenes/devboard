@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/issues/{number}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "Closing an issue needs its number."
+      }
+    ]
+  }
 }

@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/flows/implementations",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "Create a Flow goal before starting the implementation."
+      }
+    ]
+  }
 }

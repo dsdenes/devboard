@@ -3,8 +3,10 @@
   "method": "GET",
   "path": "/%00index.html",
   "status": 400,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "The request path \"/%00index.html\" carries a control character."
+  }
 }

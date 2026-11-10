@@ -1,57 +1,112 @@
-//! The HTTP table and its recorded cases stay in lockstep.
+//! The HTTP table, its recorded answers, and the replay that proves them.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::BTreeSet;
 
+use devboard_contract::fixture::{allowlist_path, contract_dir};
+use devboard_contract::http_table::{self, Allowlist, Corpus, Recording};
 use serde_json::Value;
 
-fn corpus() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../contract")
+fn corpus() -> Corpus {
+    Corpus::load(&contract_dir().join("http")).expect("the HTTP recordings")
+}
+
+fn allowlist() -> Allowlist {
+    Allowlist::load(&allowlist_path()).expect("the nondeterminism allowlist")
+}
+
+/// The recorded answer of a served operation: the frames envelope of a
+/// success, or the Problem document of a refusal.
+fn assert_operation_answer(name: &str, recording: &Recording) {
+    let object = recording
+        .body
+        .as_object()
+        .unwrap_or_else(|| panic!("{name} records a JSON answer, got {}", recording.body));
+    if (200..300).contains(&recording.status) {
+        assert!(
+            object.get("frames").and_then(Value::as_array).is_some(),
+            "{name} records the frames envelope, got {}",
+            recording.body
+        );
+        return;
+    }
+    assert_eq!(
+        object.get("status").and_then(Value::as_u64),
+        Some(u64::from(recording.status)),
+        "{name} records its refusal status"
+    );
 }
 
 #[test]
 fn every_http_table_row_has_a_recording() {
-    let directory = corpus().join("http");
-    let mut recorded: BTreeMap<String, Value> = BTreeMap::new();
-    for entry in std::fs::read_dir(&directory)
-        .expect("the HTTP recordings")
-        .flatten()
-    {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let value: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("a recording"))
-                .expect("valid JSON");
-        let name = value
-            .get("name")
-            .and_then(Value::as_str)
-            .expect("a case name")
-            .to_string();
-        assert_eq!(
-            path.file_stem().and_then(|value| value.to_str()),
-            Some(name.as_str()),
-            "the file name names the case"
-        );
-        assert!(
-            recorded.insert(name.clone(), value).is_none(),
-            "one recording per name: {name}"
-        );
-    }
-    let cases = devboard_contract::http_table::all_cases();
-    let mut names = std::collections::BTreeSet::new();
+    let corpus = corpus();
+    let cases = http_table::all_cases();
+    let routes: BTreeSet<&str> = http_table::route_cases()
+        .iter()
+        .map(|case| case.name)
+        .collect();
+    let mut names = BTreeSet::new();
     for case in &cases {
         assert!(names.insert(case.name), "one row per name: {}", case.name);
-        let recording = recorded
+        let recording = corpus
             .get(case.name)
             .unwrap_or_else(|| panic!("{} has a recording", case.name));
-        assert_eq!(recording["method"], case.method.as_str());
-        assert_eq!(recording["path"], case.path);
+        assert_eq!(recording.method, case.method.as_str());
+        assert_eq!(recording.path, case.path);
         assert_eq!(
-            recording["status"].as_u64(),
-            Some(u64::from(case.expect_status))
+            case.request_path == case.path,
+            !case.path.contains('{'),
+            "{} resolves every placeholder to a fixture identity",
+            case.name
         );
+        if routes.contains(case.name) {
+            assert_operation_answer(case.name, recording);
+            assert!(
+                recording.status == case.expect_status || (400..500).contains(&recording.status),
+                "{} records the route's {} or a refusal, got {}",
+                case.name,
+                case.expect_status,
+                recording.status
+            );
+        } else {
+            assert_eq!(
+                recording.status, case.expect_status,
+                "{} records the row's status",
+                case.name
+            );
+        }
     }
-    assert_eq!(recorded.len(), cases.len(), "no extra recording");
+    assert_eq!(corpus.len(), cases.len(), "no extra recording");
+    for name in corpus.names() {
+        assert!(names.contains(name), "{name} has a table row");
+    }
+}
+
+#[test]
+fn the_allowlist_names_every_field_it_excludes() {
+    let allowlist = allowlist();
+    assert!(!allowlist.is_empty(), "the allowlist is read");
+}
+
+#[tokio::test]
+async fn every_http_row_replays_against_the_fixture() {
+    let corpus = corpus();
+    let allowlist = allowlist();
+    let results = devboard_contract::fixture::replay(&corpus, &allowlist)
+        .await
+        .expect("a fixture replay");
+    let failures: Vec<String> = results
+        .iter()
+        .filter_map(|(name, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{name}: {error}"))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} HTTP rows diverged:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

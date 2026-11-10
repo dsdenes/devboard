@@ -3,8 +3,12 @@
   "method": "GET",
   "path": "/goal",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "goal",
+        "text": "# Contract goal\n\nOne deterministic goal document for the contract corpus.\n"
+      }
+    ]
+  }
 }

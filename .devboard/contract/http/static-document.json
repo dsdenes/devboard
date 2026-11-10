@@ -3,8 +3,5 @@
   "method": "GET",
   "path": "/",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": "<!doctype html><title>Contract</title>\n"
 }

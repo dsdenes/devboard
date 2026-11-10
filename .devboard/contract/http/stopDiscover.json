@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/discoveries/scans",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "discoverError",
+        "message": "No Discover run is active."
+      }
+    ]
+  }
 }

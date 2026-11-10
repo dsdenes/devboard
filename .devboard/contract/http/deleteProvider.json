@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/providers/{id}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "providerError",
+        "message": "A provider change needs its request id."
+      }
+    ]
+  }
 }

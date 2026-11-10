@@ -3,8 +3,13 @@
   "method": "POST",
   "path": "/goal-drafts/{path}/answers",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "issuesDraftError",
+        "path": "",
+        "message": "An answer needs its draft path, question id, and value."
+      }
+    ]
+  }
 }

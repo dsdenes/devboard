@@ -3,8 +3,16 @@
   "method": "DELETE",
   "path": "/skills/{name}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No prepared skill named \"missing\" is installed."
+      },
+      {
+        "type": "installedSkills",
+        "skills": []
+      }
+    ]
+  }
 }

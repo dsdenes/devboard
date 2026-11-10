@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/answers",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No run is active."
+      }
+    ]
+  }
 }

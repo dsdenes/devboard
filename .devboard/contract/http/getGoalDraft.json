@@ -3,8 +3,13 @@
   "method": "GET",
   "path": "/goal-drafts/{path}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "issuesDraftError",
+        "path": "",
+        "message": "A draft path must name a file directly under .devboard/goal-proposals/."
+      }
+    ]
+  }
 }

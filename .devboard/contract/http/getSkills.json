@@ -3,8 +3,13 @@
   "method": "GET",
   "path": "/skills",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "skillsState",
+        "skills": [],
+        "contradictions": []
+      }
+    ]
+  }
 }

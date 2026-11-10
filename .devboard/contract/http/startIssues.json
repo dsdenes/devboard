@@ -3,8 +3,38 @@
   "method": "POST",
   "path": "/issues/workers",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "issuesState",
+        "present": false,
+        "repo": "",
+        "root": "",
+        "lifecycle": "stopped",
+        "enabled": false,
+        "paused": false,
+        "attached": false,
+        "worker": null,
+        "poll": null,
+        "queue": [],
+        "runs": [],
+        "agents": [],
+        "cooldowns": {},
+        "lastError": null,
+        "lastExitCode": null,
+        "finishedAt": null,
+        "notice": null,
+        "deferral": null,
+        "starting": true,
+        "startError": null,
+        "updatedAt": null,
+        "workers": [],
+        "sync": {
+          "intervalMs": 30000,
+          "lastSyncAt": null,
+          "error": null
+        }
+      }
+    ]
+  }
 }

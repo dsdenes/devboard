@@ -3,8 +3,12 @@
   "method": "PATCH",
   "path": "/installed-skills/{name}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "A skill change needs its name and enabled value."
+      }
+    ]
+  }
 }

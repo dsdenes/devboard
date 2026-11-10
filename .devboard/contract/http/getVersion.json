@@ -3,8 +3,17 @@
   "method": "GET",
   "path": "/version",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "versionState",
+        "running": "",
+        "installed": "",
+        "latest": null,
+        "stale": false,
+        "source": false,
+        "feedbackEnabled": false
+      }
+    ]
+  }
 }

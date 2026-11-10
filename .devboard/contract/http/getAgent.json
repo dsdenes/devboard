@@ -3,8 +3,12 @@
   "method": "GET",
   "path": "/agents/{id}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "Unknown background agent: missing."
+      }
+    ]
+  }
 }

@@ -3,8 +3,12 @@
   "method": "GET",
   "path": "/inquiries/conversations/{conversation_id}",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "inquiryMissing",
+        "conversationId": "missing"
+      }
+    ]
+  }
 }

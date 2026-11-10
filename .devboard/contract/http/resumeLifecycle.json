@@ -3,8 +3,12 @@
   "method": "DELETE",
   "path": "/lifecycle-pauses",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No lifecycle run is active."
+      }
+    ]
+  }
 }

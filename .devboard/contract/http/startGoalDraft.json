@@ -3,8 +3,13 @@
   "method": "POST",
   "path": "/goal-drafts/{path}/runs",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "issuesDraftError",
+        "path": "",
+        "message": "A draft path must name a file directly under .devboard/goal-proposals/."
+      }
+    ]
+  }
 }

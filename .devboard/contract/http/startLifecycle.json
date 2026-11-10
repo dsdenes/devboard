@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/lifecycles",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No skills are prepared. Prepare skills before starting the lifecycle."
+      }
+    ]
+  }
 }

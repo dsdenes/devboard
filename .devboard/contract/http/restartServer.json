@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/server-restarts",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "Restarting the server is not available."
+      }
+    ]
+  }
 }

@@ -3,8 +3,21 @@
   "method": "PUT",
   "path": "/resources",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "resourcesState",
+        "state": {
+          "saved": {
+            "maxAgentPeers": 8,
+            "memoryHighMb": 57880,
+            "memoryMaxMb": 72351,
+            "memoryReserveMb": 24117
+          },
+          "effective": {},
+          "live": {}
+        }
+      }
+    ]
+  }
 }

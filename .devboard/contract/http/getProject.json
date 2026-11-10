@@ -3,8 +3,12 @@
   "method": "GET",
   "path": "/project",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "project",
+        "path": ""
+      }
+    ]
+  }
 }

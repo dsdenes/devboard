@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/flows/pull-request-merges",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "No Flow pull request exists."
+      }
+    ]
+  }
 }

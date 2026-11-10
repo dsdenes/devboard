@@ -3,8 +3,12 @@
   "method": "PUT",
   "path": "/issues/workers",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No issues worker is running for this checkout."
+      }
+    ]
+  }
 }

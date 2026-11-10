@@ -3,8 +3,13 @@
   "method": "POST",
   "path": "/inquiries/conversations",
   "status": 201,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "askError",
+        "conversationId": "",
+        "message": "The ask has no conversation id."
+      }
+    ]
+  }
 }

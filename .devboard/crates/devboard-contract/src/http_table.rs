@@ -2,7 +2,8 @@
 //! names, plus one row for every served REST operation. The table runs against
 //! the Rust dashboard, so it proves the transport before anything relies on it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING, HOST, ORIGIN, UPGRADE};
 use reqwest::{Method, StatusCode};
@@ -12,20 +13,29 @@ use serde_json::Value;
 pub struct Case {
     pub name: &'static str,
     pub method: Method,
+    /// The route template the corpus names; it keeps its `{field}` placeholders.
     pub path: &'static str,
+    /// The concrete path the corpus sends, with every placeholder resolved to
+    /// the fixture identity that names no real resource.
+    pub request_path: String,
     pub headers: HeaderSpec,
     pub expect_status: u16,
     pub expect_allow: Option<&'static str>,
     pub expect_gzip: bool,
-    pub expect_json: BodyExpectation,
+    /// How the row's answer is compared with its recording.
+    pub answer: Answer,
 }
 
-/// What one row's body must carry.
+/// How one row's answer is compared with its recording.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BodyExpectation {
-    None,
-    Problem(u16),
-    ReadyPid,
+pub enum Answer {
+    /// The whole body, field by field, apart from the allowlist.
+    Exact,
+    /// The frames envelope only, for a row whose frames the request cannot
+    /// pin: a spawned handler answers after the request may already have
+    /// returned, and a measurement frame names a live host fact. The
+    /// recording still names the envelope the server answered.
+    Envelope,
 }
 
 /// How a row's request carries its headers.
@@ -55,7 +65,6 @@ impl Observed {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn row(
     name: &'static str,
     method: Method,
@@ -64,18 +73,42 @@ fn row(
     expect_status: u16,
     expect_allow: Option<&'static str>,
     expect_gzip: bool,
-    expect_json: BodyExpectation,
 ) -> Case {
     Case {
         name,
         method,
         path,
+        request_path: request_path(path),
         headers,
         expect_status,
         expect_allow,
         expect_gzip,
-        expect_json,
+        answer: Answer::Exact,
     }
+}
+
+/// The fixture identity a route placeholder resolves to. Every one names no
+/// real resource, so a replayed request reaches the handler's own refusal or
+/// empty state instead of starting work against a named run or draft.
+fn request_path(template: &str) -> String {
+    let mut path = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        path.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('}') else {
+            path.push_str(&rest[open..]);
+            return path;
+        };
+        let name = &rest[open + 1..open + close];
+        path.push_str(match name {
+            "url" => "https%3A%2F%2Fexample.test%2Frepo.git",
+            "path" => "missing.md",
+            _ => "missing",
+        });
+        rest = &rest[open + close + 1..];
+    }
+    path.push_str(rest);
+    path
 }
 
 /// The hand-written surface rows.
@@ -89,7 +122,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::ReadyPid,
         ),
         row(
             "ready-head",
@@ -99,7 +131,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::None,
         ),
         row(
             "ready-post",
@@ -109,7 +140,6 @@ pub fn cases() -> Vec<Case> {
             405,
             Some("GET, HEAD"),
             false,
-            BodyExpectation::Problem(405),
         ),
         row(
             "missing-host",
@@ -119,7 +149,6 @@ pub fn cases() -> Vec<Case> {
             400,
             None,
             false,
-            BodyExpectation::Problem(400),
         ),
         row(
             "ws-get-refused",
@@ -129,7 +158,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "ws-upgrade-refused",
@@ -139,7 +167,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "ws-post-refused",
@@ -149,7 +176,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "ws-refused-host",
@@ -159,7 +185,6 @@ pub fn cases() -> Vec<Case> {
             421,
             None,
             false,
-            BodyExpectation::Problem(421),
         ),
         row(
             "reports-disabled",
@@ -169,7 +194,6 @@ pub fn cases() -> Vec<Case> {
             503,
             None,
             false,
-            BodyExpectation::Problem(503),
         ),
         row(
             "reports-method",
@@ -179,7 +203,6 @@ pub fn cases() -> Vec<Case> {
             405,
             Some("POST"),
             false,
-            BodyExpectation::Problem(405),
         ),
         row(
             "reports-refused-host",
@@ -189,7 +212,6 @@ pub fn cases() -> Vec<Case> {
             421,
             None,
             false,
-            BodyExpectation::Problem(421),
         ),
         row(
             "reports-refused-origin",
@@ -199,7 +221,6 @@ pub fn cases() -> Vec<Case> {
             403,
             None,
             false,
-            BodyExpectation::Problem(403),
         ),
         row(
             "feedback-gone",
@@ -209,7 +230,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "goal-proposals-method",
@@ -219,7 +239,6 @@ pub fn cases() -> Vec<Case> {
             405,
             Some("POST"),
             false,
-            BodyExpectation::Problem(405),
         ),
         row(
             "goal-proposals-refused-host",
@@ -229,7 +248,6 @@ pub fn cases() -> Vec<Case> {
             403,
             None,
             false,
-            BodyExpectation::Problem(403),
         ),
         row(
             "goal-proposals-empty",
@@ -239,7 +257,6 @@ pub fn cases() -> Vec<Case> {
             400,
             None,
             false,
-            BodyExpectation::Problem(400),
         ),
         row(
             "flow-id-malformed",
@@ -249,7 +266,6 @@ pub fn cases() -> Vec<Case> {
             400,
             None,
             false,
-            BodyExpectation::Problem(400),
         ),
         row(
             "ready-gzip",
@@ -259,7 +275,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             true,
-            BodyExpectation::ReadyPid,
         ),
         row(
             "records-get",
@@ -269,7 +284,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::None,
         ),
         row(
             "records-method",
@@ -279,7 +293,6 @@ pub fn cases() -> Vec<Case> {
             405,
             Some("GET, HEAD"),
             false,
-            BodyExpectation::Problem(405),
         ),
         row(
             "records-refused-host",
@@ -289,7 +302,6 @@ pub fn cases() -> Vec<Case> {
             421,
             None,
             false,
-            BodyExpectation::Problem(421),
         ),
         row(
             "records-refused-origin",
@@ -299,7 +311,6 @@ pub fn cases() -> Vec<Case> {
             403,
             None,
             false,
-            BodyExpectation::Problem(403),
         ),
         row(
             "static-control-character",
@@ -309,7 +320,6 @@ pub fn cases() -> Vec<Case> {
             400,
             None,
             false,
-            BodyExpectation::Problem(400),
         ),
         row(
             "static-document",
@@ -319,7 +329,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::None,
         ),
         row(
             "static-unknown",
@@ -329,7 +338,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "flows-get",
@@ -339,7 +347,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::None,
         ),
         row(
             "flows-head",
@@ -349,7 +356,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::None,
         ),
         row(
             "agent-run-get",
@@ -359,7 +365,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "agent-run-output-get",
@@ -369,7 +374,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "goal-proposal-get",
@@ -379,7 +383,6 @@ pub fn cases() -> Vec<Case> {
             404,
             None,
             false,
-            BodyExpectation::Problem(404),
         ),
         row(
             "agent-runs-get",
@@ -389,7 +392,6 @@ pub fn cases() -> Vec<Case> {
             200,
             None,
             false,
-            BodyExpectation::None,
         ),
         row(
             "agent-runs-method",
@@ -399,19 +401,19 @@ pub fn cases() -> Vec<Case> {
             405,
             Some("GET, HEAD"),
             false,
-            BodyExpectation::Problem(405),
         ),
     ]
 }
 
 /// One row for every served REST operation. A parameterized path keeps its
-/// template in the row; `--compare-http` skips it because it names no real
-/// identity in a fixture dashboard.
+/// template in the row and carries the fixture identity its replay sends;
+/// `--compare-http` skips those rows because a live dashboard names no such
+/// resource, and the fixture replay sends them.
 pub fn route_cases() -> Vec<Case> {
     devboard::rest::ROUTES
         .iter()
         .map(|route| {
-            row(
+            let mut case = row(
                 route.command,
                 route.method.clone(),
                 route.path,
@@ -419,8 +421,14 @@ pub fn route_cases() -> Vec<Case> {
                 route.status,
                 None,
                 false,
-                BodyExpectation::None,
-            )
+            );
+            if matches!(
+                route.command,
+                "discoverAgent" | "discoverProject" | "startRun" | "getComplexity"
+            ) {
+                case.answer = Answer::Envelope;
+            }
+            case
         })
         .collect()
 }
@@ -432,9 +440,10 @@ pub fn all_cases() -> Vec<Case> {
     rows
 }
 
-/// The rows `--compare-http` actually sends: every read and the hand-written
-/// refusals. A mutating operation has a row and a recording but is not replayed
-/// against a fixture dashboard, where it would start real work.
+/// The rows `--compare-http` sends: every read and the hand-written refusals.
+/// A mutating operation has a row and a recording, but the compared dashboard
+/// may be a live one, where replaying it would start real work; the fixture
+/// replay sends it.
 pub fn runnable_cases() -> Vec<Case> {
     let mut rows = cases();
     rows.extend(
@@ -446,21 +455,216 @@ pub fn runnable_cases() -> Vec<Case> {
     rows
 }
 
-/// Runs the runnable table against one dashboard base URL.
-pub async fn run(base: &str) -> Vec<Result<Observed, String>> {
-    let client = reqwest::Client::builder()
+/// One recorded answer: what the fixture dashboard answered for one row.
+#[derive(Debug, Clone)]
+pub struct Recording {
+    pub name: String,
+    pub method: String,
+    pub path: String,
+    pub status: u16,
+    /// The answer's body: a JSON document when the answer was JSON, the text
+    /// itself otherwise.
+    pub body: Value,
+}
+
+impl Recording {
+    fn from_json(value: &Value, source: &Path) -> Result<Self, String> {
+        let text = |field: &str| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("{}: no {field}", source.display()))
+        };
+        let status = value
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok())
+            .ok_or_else(|| format!("{}: no status", source.display()))?;
+        let body = value
+            .get("body")
+            .cloned()
+            .ok_or_else(|| format!("{}: no body", source.display()))?;
+        Ok(Self {
+            name: text("name")?,
+            method: text("method")?,
+            path: text("path")?,
+            status,
+            body,
+        })
+    }
+
+    fn to_json(&self) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert("name".to_string(), Value::String(self.name.clone()));
+        object.insert("method".to_string(), Value::String(self.method.clone()));
+        object.insert("path".to_string(), Value::String(self.path.clone()));
+        object.insert("status".to_string(), Value::from(self.status));
+        object.insert("body".to_string(), self.body.clone());
+        Value::Object(object)
+    }
+}
+
+/// The recorded corpus, one entry per table row.
+#[derive(Default)]
+pub struct Corpus {
+    recordings: BTreeMap<String, Recording>,
+}
+
+impl Corpus {
+    /// Reads every recording under one directory.
+    pub fn load(directory: &Path) -> Result<Self, String> {
+        let mut recordings = BTreeMap::new();
+        let entries = std::fs::read_dir(directory)
+            .map_err(|error| format!("{}: {error}", directory.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let value: Value = serde_json::from_str(&text)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let recording = Recording::from_json(&value, &path)?;
+            if path.file_stem().and_then(|value| value.to_str()) != Some(recording.name.as_str()) {
+                return Err(format!(
+                    "{}: the file name does not name {}",
+                    path.display(),
+                    recording.name
+                ));
+            }
+            if recordings
+                .insert(recording.name.clone(), recording)
+                .is_some()
+            {
+                return Err(format!(
+                    "{}: a second recording for one row",
+                    path.display()
+                ));
+            }
+        }
+        Ok(Self { recordings })
+    }
+
+    /// Writes every recording, one file per row.
+    pub fn write(&self, directory: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(directory)
+            .map_err(|error| format!("{}: {error}", directory.display()))?;
+        for recording in self.recordings.values() {
+            let path = directory.join(format!("{}.json", recording.name));
+            let mut text = serde_json::to_string_pretty(&recording.to_json())
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            text.push('\n');
+            std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Adds one recording, replacing the row of the same name.
+    pub fn insert(&mut self, recording: Recording) {
+        self.recordings.insert(recording.name.clone(), recording);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Recording> {
+        self.recordings.get(name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.recordings.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.recordings.is_empty()
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.recordings.keys().map(String::as_str)
+    }
+}
+
+/// Every field a comparison ignores, and its reason.
+pub struct Allowlist {
+    fields: BTreeSet<String>,
+}
+
+impl Allowlist {
+    /// Reads the allowlist a comparison applies.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+        let entries = value
+            .get("fields")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{}: no fields", path.display()))?;
+        let mut fields = BTreeSet::new();
+        for entry in entries {
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{}: a field with no name", path.display()))?;
+            let reason = entry
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if reason.trim().is_empty() {
+                return Err(format!("{}: {name} has no reason", path.display()));
+            }
+            if !fields.insert(name.to_string()) {
+                return Err(format!("{}: {name} is listed twice", path.display()));
+            }
+        }
+        Ok(Self { fields })
+    }
+
+    /// True when a comparison ignores this field's value.
+    pub fn contains(&self, name: &str) -> bool {
+        self.fields.contains(name)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
+/// One HTTP client for the replay.
+pub fn client() -> reqwest::Client {
+    reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_gzip()
         .build()
-        .expect("an HTTP client");
+        .expect("an HTTP client")
+}
+
+/// Runs the runnable table against one dashboard base URL and compares every
+/// answer with its recording.
+pub async fn run(
+    base: &str,
+    corpus: &Corpus,
+    allowlist: &Allowlist,
+) -> Vec<Result<Observed, String>> {
+    replay(base, corpus, allowlist, &runnable_cases()).await
+}
+
+/// Replays one set of rows against one dashboard base URL.
+pub async fn replay(
+    base: &str,
+    corpus: &Corpus,
+    allowlist: &Allowlist,
+    cases: &[Case],
+) -> Vec<Result<Observed, String>> {
+    let client = client();
     let mut results = Vec::new();
-    for case in runnable_cases() {
-        results.push(run_case(&client, base, &case).await);
+    for case in cases {
+        results.push(run_case(&client, base, corpus, allowlist, case).await);
     }
     results
 }
 
-async fn run_case(client: &reqwest::Client, base: &str, case: &Case) -> Result<Observed, String> {
+/// Sends one row's request and returns the answer, without comparing it.
+pub async fn send(client: &reqwest::Client, base: &str, case: &Case) -> Result<Observed, String> {
     let mut headers = HeaderMap::new();
     match case.headers {
         HeaderSpec::None => {}
@@ -493,7 +697,7 @@ async fn run_case(client: &reqwest::Client, base: &str, case: &Case) -> Result<O
         }
     }
     let request = client
-        .request(case.method.clone(), format!("{base}{}", case.path))
+        .request(case.method.clone(), format!("{base}{}", case.request_path))
         .headers(headers);
     let response = request.send().await.map_err(|error| format!("{error}"))?;
     let status = response.status().as_u16();
@@ -524,16 +728,35 @@ async fn run_case(client: &reqwest::Client, base: &str, case: &Case) -> Result<O
         headers: observed,
         body: text,
     };
-    check(case, &observed)?;
     Ok(observed)
 }
 
-/// Asserts one row against its expected status and contract headers.
-pub fn check(case: &Case, observed: &Observed) -> Result<(), String> {
-    if observed.status != case.expect_status {
+async fn run_case(
+    client: &reqwest::Client,
+    base: &str,
+    corpus: &Corpus,
+    allowlist: &Allowlist,
+    case: &Case,
+) -> Result<Observed, String> {
+    let recording = corpus
+        .get(case.name)
+        .ok_or_else(|| format!("{}: no recording", case.name))?;
+    let observed = send(client, base, case).await?;
+    check(case, recording, allowlist, &observed)?;
+    Ok(observed)
+}
+
+/// Asserts one answer against its recording and the row's contract headers.
+pub fn check(
+    case: &Case,
+    recording: &Recording,
+    allowlist: &Allowlist,
+    observed: &Observed,
+) -> Result<(), String> {
+    if observed.status != recording.status {
         return Err(format!(
-            "{}: expected status {}, got {}",
-            case.name, case.expect_status, observed.status
+            "{}: recorded status {}, got {}",
+            case.name, recording.status, observed.status
         ));
     }
     if let Some(allow) = case.expect_allow {
@@ -552,28 +775,9 @@ pub fn check(case: &Case, observed: &Observed) -> Result<(), String> {
             observed.header("content-encoding")
         ));
     }
-    let parsed_problem = || -> Result<Value, String> {
-        serde_json::from_str(&observed.body)
-            .map_err(|error| format!("{}: the body is not JSON: {error}", case.name))
-    };
-    match case.expect_json {
-        BodyExpectation::None => {}
-        BodyExpectation::Problem(status) => {
-            let parsed = parsed_problem()?;
-            let actual = parsed.get("status").and_then(Value::as_u64);
-            if actual != Some(u64::from(status)) {
-                return Err(format!(
-                    "{}: expected problem status {status}, got {actual:?}",
-                    case.name
-                ));
-            }
-        }
-        BodyExpectation::ReadyPid => {
-            let parsed = parsed_problem()?;
-            if parsed.get("pid").and_then(Value::as_u64).is_none() {
-                return Err(format!("{}: the readiness answer carries a pid", case.name));
-            }
-        }
+    match case.answer {
+        Answer::Exact => compare_body(case, &recording.body, &observed.body, allowlist)?,
+        Answer::Envelope => assert_envelope(case, &observed.body)?,
     }
     if observed.status == StatusCode::OK.as_u16()
         && observed.body != "[]"
@@ -582,6 +786,113 @@ pub fn check(case: &Case, observed: &Observed) -> Result<(), String> {
         return Err(format!("{}: expected Vary: Accept-Encoding", case.name));
     }
     Ok(())
+}
+
+/// Asserts that an answer is the one frames envelope and carries nothing else.
+fn assert_envelope(case: &Case, served: &str) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(served)
+        .map_err(|error| format!("{}: the body is not JSON: {error}", case.name))?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| format!("{}: the body is not the frames envelope", case.name))?;
+    if object.len() != 1 || !matches!(object.get("frames"), Some(Value::Array(_))) {
+        return Err(format!(
+            "{}: the body is not the frames envelope: {served}",
+            case.name
+        ));
+    }
+    Ok(())
+}
+
+/// Compares one answer's body with its recording. A recorded JSON document is
+/// compared field by field, apart from the allowlisted fields; a recorded text
+/// body is compared as text.
+fn compare_body(
+    case: &Case,
+    recorded: &Value,
+    served: &str,
+    allowlist: &Allowlist,
+) -> Result<(), String> {
+    if let Value::String(text) = recorded {
+        if served == text {
+            return Ok(());
+        }
+        return Err(format!(
+            "{}: recorded body {text:?}, served {served:?}",
+            case.name
+        ));
+    }
+    let parsed: Value = serde_json::from_str(served)
+        .map_err(|error| format!("{}: the body is not JSON: {error}", case.name))?;
+    compare_value(case.name, "", recorded, &parsed, allowlist)
+}
+
+fn compare_value(
+    name: &str,
+    at: &str,
+    recorded: &Value,
+    served: &Value,
+    allowlist: &Allowlist,
+) -> Result<(), String> {
+    match (recorded, served) {
+        (Value::Object(recorded), Value::Object(served)) => {
+            for (key, value) in recorded {
+                let Some(other) = served.get(key) else {
+                    return Err(format!("{name}: the answer has no {at}{key}"));
+                };
+                if allowlist.contains(key) {
+                    // A recorded null names no type to compare: the field is
+                    // asserted present, and its value is ignored.
+                    if !value.is_null() && json_type(value) != json_type(other) {
+                        return Err(format!(
+                            "{name}: {at}{key} is recorded as {}, served as {}",
+                            json_type(value),
+                            json_type(other)
+                        ));
+                    }
+                } else {
+                    compare_value(name, &format!("{at}{key}."), value, other, allowlist)?;
+                }
+            }
+            if let Some(extra) = served.keys().find(|key| !recorded.contains_key(*key)) {
+                return Err(format!(
+                    "{name}: the answer carries {at}{extra}, which the recording does not name"
+                ));
+            }
+            Ok(())
+        }
+        (Value::Array(recorded), Value::Array(served)) => {
+            if recorded.len() != served.len() {
+                return Err(format!(
+                    "{name}: {at} is recorded with {} entries, served with {}",
+                    recorded.len(),
+                    served.len()
+                ));
+            }
+            for (index, (recorded, served)) in recorded.iter().zip(served).enumerate() {
+                compare_value(name, &format!("{at}{index}."), recorded, served, allowlist)?;
+            }
+            Ok(())
+        }
+        _ => {
+            if recorded == served {
+                Ok(())
+            } else {
+                Err(format!("{name}: {at} recorded {recorded}, served {served}"))
+            }
+        }
+    }
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 #[cfg(test)]
@@ -597,5 +908,141 @@ mod tests {
         }
         assert!(names.contains("ws-get-refused"));
         assert!(names.contains("feedback-gone"));
+    }
+
+    fn case(answer: Answer) -> Case {
+        let mut case = row(
+            "synthetic",
+            Method::GET,
+            "/synthetic",
+            HeaderSpec::None,
+            200,
+            None,
+            false,
+        );
+        case.answer = answer;
+        case
+    }
+
+    fn recording(body: Value) -> Recording {
+        Recording {
+            name: "synthetic".to_string(),
+            method: "GET".to_string(),
+            path: "/synthetic".to_string(),
+            status: 200,
+            body,
+        }
+    }
+
+    fn observed(body: &str) -> Observed {
+        let mut headers = BTreeMap::new();
+        headers.insert("vary".to_string(), "Accept-Encoding".to_string());
+        Observed {
+            name: "synthetic",
+            status: 200,
+            headers,
+            body: body.to_string(),
+        }
+    }
+
+    fn allowlist(names: &[&str]) -> Allowlist {
+        Allowlist {
+            fields: names.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_changed_answer_fails_the_comparison() {
+        let recorded = recording(serde_json::json!({"frames": [{"type": "goal", "text": "a"}]}));
+        let error = check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowlist(&[]),
+            &observed(r#"{"frames":[{"type":"goal","text":"b"}]}"#),
+        )
+        .expect_err("a changed text diverges");
+        assert!(error.contains("frames.0.text"), "{error}");
+    }
+
+    #[test]
+    fn an_allowlisted_field_keeps_its_presence_and_type() {
+        let recorded = recording(serde_json::json!({"pid": 0, "live": true}));
+        let allowed = allowlist(&["pid", "live"]);
+        check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowed,
+            &observed(r#"{"pid":123,"live":false}"#),
+        )
+        .expect("a per-run value is ignored");
+        let error = check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowed,
+            &observed(r#"{"pid":"123","live":false}"#),
+        )
+        .expect_err("a changed type diverges");
+        assert!(error.contains("pid"), "{error}");
+        let error = check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowed,
+            &observed(r#"{"live":false}"#),
+        )
+        .expect_err("a missing field diverges");
+        assert!(error.contains("pid"), "{error}");
+    }
+
+    #[test]
+    fn a_recorded_null_allowlisted_field_keeps_its_presence() {
+        let recorded = recording(serde_json::json!({"latest": null}));
+        let allowed = allowlist(&["latest"]);
+        check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowed,
+            &observed(r#"{"latest":"1.2.3"}"#),
+        )
+        .expect("a null recording names no type");
+        check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowed,
+            &observed(r#"{}"#),
+        )
+        .expect_err("a missing field diverges");
+    }
+
+    #[test]
+    fn an_answer_field_the_recording_does_not_name_fails() {
+        let recorded = recording(serde_json::json!({"frames": []}));
+        let error = check(
+            &case(Answer::Exact),
+            &recorded,
+            &allowlist(&[]),
+            &observed(r#"{"frames":[],"extra":1}"#),
+        )
+        .expect_err("an extra field diverges");
+        assert!(error.contains("extra"), "{error}");
+    }
+
+    #[test]
+    fn an_envelope_row_compares_the_envelope_only() {
+        let recorded = recording(serde_json::json!({"frames": []}));
+        check(
+            &case(Answer::Envelope),
+            &recorded,
+            &allowlist(&[]),
+            &observed(r#"{"frames":[{"type":"discoverError"}]}"#),
+        )
+        .expect("the frames of an envelope row are not pinned");
+        let error = check(
+            &case(Answer::Envelope),
+            &recorded,
+            &allowlist(&[]),
+            &observed(r#"{"status":400,"title":"Bad Request"}"#),
+        )
+        .expect_err("a non-envelope body diverges");
+        assert!(error.contains("frames envelope"), "{error}");
     }
 }

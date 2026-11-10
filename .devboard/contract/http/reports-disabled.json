@@ -3,8 +3,10 @@
   "method": "POST",
   "path": "/reports",
   "status": 503,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "type": "about:blank",
+    "title": "Service Unavailable",
+    "status": 503,
+    "detail": "Harness reporting is disabled. Set DEVBOARD_GITEA_URL and GITEA_TOKEN to file issues."
+  }
 }

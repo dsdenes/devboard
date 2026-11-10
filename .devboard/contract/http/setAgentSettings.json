@@ -3,8 +3,12 @@
   "method": "PUT",
   "path": "/agents/{id}/settings",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "Unknown background agent: missing."
+      }
+    ]
+  }
 }

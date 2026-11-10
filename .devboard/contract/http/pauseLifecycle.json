@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/lifecycle-pauses",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "No lifecycle run is active."
+      }
+    ]
+  }
 }

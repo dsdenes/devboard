@@ -2,9 +2,11 @@
   "name": "acceptFlowWidget",
   "method": "PATCH",
   "path": "/flows/widgets/{id}",
-  "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "status": 400,
+  "body": {
+    "type": "about:blank",
+    "title": "Bad Request",
+    "status": 400,
+    "detail": "The request body has no accepted."
+  }
 }

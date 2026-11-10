@@ -3,8 +3,31 @@
   "method": "GET",
   "path": "/records",
   "status": 200,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "records",
+        "records": [
+          {
+            "file": "0001-contract-accepted.md",
+            "title": "Contract accepted record",
+            "status": "Accepted",
+            "pending": false,
+            "summary": "Use the recorded behavior."
+          },
+          {
+            "file": "0002-contract-proposed.md",
+            "title": "Contract proposed record",
+            "status": "Proposed",
+            "pending": true,
+            "summary": "Wait for a decision."
+          }
+        ],
+        "next": "0002-contract-proposed.md"
+      }
+    ],
+    "self": "",
+    "next": null,
+    "prev": null
+  }
 }

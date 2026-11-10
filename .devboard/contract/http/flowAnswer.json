@@ -3,8 +3,12 @@
   "method": "POST",
   "path": "/flows/answers",
   "status": 202,
-  "headers": {},
-  "requestHeaders": {},
-  "requestBody": "",
-  "body": ""
+  "body": {
+    "frames": [
+      {
+        "type": "flowError",
+        "message": "An answer needs the question id and a non-empty value."
+      }
+    ]
+  }
 }
