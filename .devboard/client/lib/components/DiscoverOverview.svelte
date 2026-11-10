@@ -26,7 +26,6 @@
   import CommandNotice from "./CommandNotice.svelte";
   import Input from "./ui/input.svelte";
 
-  const COMMAND_TOTAL = Object.keys(COMMAND_LABELS).length;
   const COMMAND_COLUMNS = [
     { id: "label", header: "Task", accessorKey: "label" },
     { id: "value", header: "Command", accessorKey: "value" },
@@ -92,12 +91,11 @@
     const active = discover.remoteTarget?.url ?? "";
     select.selectedIndex = discover.retained.findIndex((project) => project.url === active);
   });
-  const foundCommandRows = $derived(
-    commandRowsOf(commandsSection, discover.testCommand, { includeMissing: false }),
+  const allCommandRows = $derived(
+    commandRowsOf(commandsSection, discover.testCommand),
   );
-  const commandRows = $derived(commandsOpen
-    ? commandRowsOf(commandsSection, discover.testCommand, { includeMissing: true })
-    : foundCommandRows);
+  const foundCommandRows = $derived(allCommandRows.filter((row) => row.missing === false));
+  const commandRows = $derived(commandsOpen ? allCommandRows : foundCommandRows);
   const testingSection = $derived(
     typeof sheet?.testing === "object" && sheet.testing !== null ? sheet.testing : null,
   );
@@ -218,7 +216,6 @@
   function commandRowsOf(
     section: Record<string, unknown> | null,
     testCommand: string,
-    options: { includeMissing: boolean },
   ): Array<Record<string, unknown>> {
     if (section === null) return [];
     const rows: Array<Record<string, unknown>> = [];
@@ -232,7 +229,6 @@
         rows.push({ key, label, value: command, missing: false });
         continue;
       }
-      if (!options.includeMissing) continue;
       rows.push({
         key,
         label,
@@ -735,7 +731,7 @@
                 onclick={() => (commandsOpen = !commandsOpen)}
               >
                 {foundCommandRows.length}
-                of {COMMAND_TOTAL} found
+                of {allCommandRows.length} found
               </Button>
             </div>
             <div class="panel__body">

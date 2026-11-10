@@ -6,7 +6,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the testing library load after registration.
-const { cleanup, render } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { default: DiscoverOverview } = await import("./DiscoverOverview.svelte");
 const { discover } = await import("../discover.svelte");
 
@@ -200,4 +200,45 @@ test("a named context without a path still renders its row", () => {
   const row = view.container.querySelector("li.discover-context");
   expect(row?.getAttribute("data-context")).toBe("Orders");
   expect(row?.textContent).toContain("Owns records.");
+});
+
+function commandsValue(value: Record<string, unknown>): void {
+  (discover.state!.sheet as Record<string, unknown>).commands = value;
+}
+
+function coverageText(container: HTMLElement): string {
+  return (
+    container
+      .querySelector('[data-testid="discover-command-coverage"]')
+      ?.textContent?.trim()
+      .replace(/\s+/g, " ") ?? ""
+  );
+}
+
+test("a try-out that aliases the suite counts one slot and lists one row", async () => {
+  discover.state = state({});
+  commandsValue({
+    test: leaf("bun test"),
+    tryOut: leaf("bun test"),
+    build: leaf("bun run build"),
+  });
+  const view = render(DiscoverOverview);
+  const rows = (): number =>
+    view.container.querySelectorAll('[data-testid="discover-command-list"] tbody tr').length;
+
+  expect(coverageText(view.container)).toBe("2 of 7 found");
+  expect(rows()).toBe(2);
+
+  await fireEvent.click(view.container.querySelector('[data-testid="discover-command-coverage"]')!);
+
+  expect(coverageText(view.container)).toBe("2 of 7 found");
+  expect(rows()).toBe(7);
+});
+
+test("a sheet that records no command reads zero of every slot", () => {
+  discover.state = state({});
+  commandsValue({});
+  const view = render(DiscoverOverview);
+
+  expect(coverageText(view.container)).toBe("0 of 8 found");
 });
