@@ -502,21 +502,67 @@ async fn ask_streams_turns_and_keeps_one_transcript() {
         })
         .expect("the log names the spawned peer");
     wait_for_process_exit(spawned).await;
+    wait_for_run_removal(&scratch).await;
 
     assert!(
         ask_directory_empty(&scratch),
-        "the ask directory holds no conversation file"
+        "the close leaves neither the conversation file nor its run directory"
+    );
+    let runs = devboard::runs::discover(&app);
+    assert!(
+        runs.iter().all(|run| !run.id.starts_with("ask-")),
+        "the runs collection holds no closed conversation: {:?}",
+        runs.iter().map(|run| run.id.clone()).collect::<Vec<_>>()
     );
 }
 
-/// True when the ask directory exists and holds no `.json` file.
+/// The `ask-` run directories under this scratch state's runs root.
+fn ask_run_directories(scratch: &Scratch) -> Vec<PathBuf> {
+    let repo = std::path::absolute(scratch.repo()).expect("an absolute repository");
+    let root = scratch
+        .state()
+        .join("runs")
+        .join(devboard::journal::repo_key(&repo));
+    std::fs::read_dir(&root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("ask-"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Waits until the closed conversation's run directory is gone; the owner
+/// publishes its final state as it stops, so the close reaps it after that.
+async fn wait_for_run_removal(scratch: &Scratch) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let directories = ask_run_directories(scratch);
+        if directories.is_empty() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the closed conversation's run directory is still on disk: {directories:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// True when the ask directory exists and holds no `.json` file, and the runs
+/// root holds no `ask-` directory.
 fn ask_directory_empty(scratch: &Scratch) -> bool {
     let repo = std::path::absolute(scratch.repo()).expect("an absolute repository");
     let directory = scratch
         .state()
         .join("ask")
         .join(devboard::journal::repo_key(&repo));
-    std::fs::read_dir(&directory)
+    let conversations_clear = std::fs::read_dir(&directory)
         .map(|entries| {
             !entries.flatten().any(|entry| {
                 entry
@@ -525,7 +571,8 @@ fn ask_directory_empty(scratch: &Scratch) -> bool {
                     .is_some_and(|extension| extension == "json")
             })
         })
-        .unwrap_or(true)
+        .unwrap_or(true);
+    conversations_clear && ask_run_directories(scratch).is_empty()
 }
 
 /// Every turn is its own REST request. A follow-up asked by a new handle after

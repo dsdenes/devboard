@@ -940,7 +940,8 @@ impl AskMode {
         self.persist(id);
     }
 
-    /// Closes one conversation and stops its run; a stale id is ignored.
+    /// Closes one conversation, stops its run, and drops that run's
+    /// directory; a stale id is ignored.
     fn close(&self, conversation_id: Option<&Value>) {
         let Some(id) = conversation_id.and_then(Value::as_str) else {
             return;
@@ -949,7 +950,7 @@ impl AskMode {
     }
 
     fn discard(&self, id: &str) {
-        {
+        let peer = {
             let mut state = lock(&self.inner);
             let Some(mut conversation) = state.conversations.remove(id) else {
                 return;
@@ -960,9 +961,22 @@ impl AskMode {
             conversation.transcript.clear();
             conversation.last_prompt = None;
             conversation.error = None;
-            if let Some(peer) = conversation.peer.take() {
-                peer.close();
-            }
+            conversation.peer.take()
+        };
+        let directory =
+            crate::detached_run::detached_run_directory(&self.state_dir, &self.repo_dir, "ask", id);
+        let owner = peer.as_ref().and_then(|peer| peer.owner_pid());
+        if let Some(peer) = peer {
+            peer.close();
+        }
+        // A stopped run goes with its closed conversation: its journals are
+        // that conversation's answers, and its record would otherwise stay in
+        // the runs collection for the life of the state directory. It goes
+        // once the owner's final write is done, never before.
+        if crate::detached_run::detached_run_closed_path(&directory).exists() {
+            tokio::spawn(async move {
+                crate::detached_run::reap_closed_run(&directory, owner).await;
+            });
         }
         let _ = std::fs::remove_file(self.conversation_path(id));
     }

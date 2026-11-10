@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -481,6 +481,40 @@ pub fn write_detached_run_state(directory: &Path, state: &DetachedRunState) -> s
 /// Removes a finished run so a fresh start never reads its predecessor.
 pub fn reset_detached_run(directory: &Path) {
     let _ = std::fs::remove_dir_all(directory);
+}
+
+/// How long a closed run's directory waits for its owner to exit.
+const CLOSED_RUN_EXIT_WAIT_MS: u64 = 30_000;
+/// How often that wait samples the owner.
+const CLOSED_RUN_EXIT_POLL_MS: u64 = 25;
+
+/// Removes a closed run's directory once the owner that writes it has exited,
+/// so stopping a run drops its record and its journals with it. The owner
+/// publishes its final state while it stops, so a directory removed earlier
+/// would be re-created without the journal it held; `owner` is the process
+/// this dashboard spawned, used while the owner has not recorded itself yet.
+pub async fn reap_closed_run(directory: &Path, owner: Option<u32>) {
+    let Some(state) = read_detached_run_state(directory) else {
+        return;
+    };
+    let generation = state.generation;
+    let Some(owner) = state.owner.map(|record| record.pid).or(owner) else {
+        return;
+    };
+    let deadline = Instant::now() + Duration::from_millis(CLOSED_RUN_EXIT_WAIT_MS);
+    while crate::supervision::live_process(owner) {
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(CLOSED_RUN_EXIT_POLL_MS)).await;
+    }
+    // A start that reset the directory while this owner exited owns it now.
+    if let Some(current) = read_detached_run_state(directory) {
+        if current.generation != generation {
+            return;
+        }
+    }
+    reset_detached_run(directory);
 }
 
 // ---------------------------------------------------------------------------
