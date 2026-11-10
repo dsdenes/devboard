@@ -105,23 +105,37 @@ function fileRow(value: unknown): ComplexityFileRow | undefined {
 }
 
 /**
- * The complexity frame the server pushes: one point per recorded date, oldest
- * first, and the newest snapshot's per-file detail. A malformed point or file
- * row is dropped rather than charted with a value the server never measured.
+ * What the page knows about the history: `loading` before the first reply,
+ * `recorded` once a readable frame carried at least one date, `empty` for a
+ * readable frame that recorded none, and `unreadable` for a frame whose shape,
+ * or every snapshot in it, failed validation.
  */
-export function complexityView(value: unknown): ComplexityView {
-  if (typeof value !== "object" || value === null) return EMPTY_COMPLEXITY_VIEW;
+export type ComplexityStatus = "loading" | "recorded" | "empty" | "unreadable";
+
+/**
+ * One `complexityState` frame read into the view the page renders. A malformed
+ * point or file row is dropped rather than charted with a value the server
+ * never measured; a frame that keeps no point at all is `unreadable`, so a
+ * producer-side schema change is never reported as an empty history.
+ */
+export type ComplexityFrame =
+  | { status: "recorded"; view: ComplexityView }
+  | { status: "empty" }
+  | { status: "unreadable" };
+
+/** One readable frame as the page's view, or the state that frame left. */
+export function complexityView(value: unknown): ComplexityFrame {
+  if (typeof value !== "object" || value === null) return { status: "unreadable" };
   const frame = value as Record<string, unknown>;
+  if (!Array.isArray(frame.snapshots)) return { status: "unreadable" };
   const points: ComplexityPoint[] = [];
-  if (Array.isArray(frame.snapshots)) {
-    for (const entry of frame.snapshots) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const point = entry as Record<string, unknown>;
-      if (typeof point.date !== "string" || typeof point.recordedAt !== "string") continue;
-      const project = projectRow(point.project);
-      if (project === undefined) continue;
-      points.push({ date: point.date, recordedAt: point.recordedAt, project });
-    }
+  for (const entry of frame.snapshots) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const point = entry as Record<string, unknown>;
+    if (typeof point.date !== "string" || typeof point.recordedAt !== "string") continue;
+    const project = projectRow(point.project);
+    if (project === undefined) continue;
+    points.push({ date: point.date, recordedAt: point.recordedAt, project });
   }
   const latestEntry = frame.latest;
   let latest: ComplexityLatest | null = null;
@@ -143,17 +157,21 @@ export function complexityView(value: unknown): ComplexityView {
       latest = { date: record.date, recordedAt: record.recordedAt, project, files };
     }
   }
-  return { points, latest };
+  if (points.length > 0) return { status: "recorded", view: { points, latest } };
+  if (frame.snapshots.length === 0 && latest === null) return { status: "empty" };
+  return { status: "unreadable" };
 }
 
 /**
  * Holds the project complexity history the dashboard server computes daily.
  * The page asks once per connection and renders the reply whenever a new
- * snapshot frame arrives.
+ * snapshot frame arrives. A frame that cannot be read leaves the last known
+ * view in place and reports `unreadable`, so the page never claims a recorded
+ * history is empty because its shape changed.
  */
 export class ComplexityStore {
   complexity = $state<ComplexityView>(EMPTY_COMPLEXITY_VIEW);
-  complexityLoaded = $state(false);
+  complexityStatus = $state<ComplexityStatus>("loading");
 
   requestComplexity(): void {
     connection.send({ type: "getComplexity" });
@@ -161,8 +179,20 @@ export class ComplexityStore {
 
   handleEvent(message: Record<string, unknown>): void {
     if (message.type !== "complexityState") return;
-    this.complexity = complexityView(message.state);
-    this.complexityLoaded = true;
+    const frame = complexityView(message.state);
+    switch (frame.status) {
+      case "recorded":
+        this.complexity = frame.view;
+        this.complexityStatus = "recorded";
+        return;
+      case "empty":
+        this.complexity = EMPTY_COMPLEXITY_VIEW;
+        this.complexityStatus = "empty";
+        return;
+      case "unreadable":
+        this.complexityStatus = "unreadable";
+        return;
+    }
   }
 }
 

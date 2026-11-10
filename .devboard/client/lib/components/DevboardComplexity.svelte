@@ -106,6 +106,22 @@
     return value.toFixed(digits);
   }
 
+  /**
+   * The line an empty history or file table shows for the state the last frame
+   * left: a frame that could not be read never claims the history is empty.
+   */
+  function emptyMessage(): string {
+    switch (complexity.complexityStatus) {
+      case "unreadable":
+        return "The last complexity update could not be read.";
+      case "loading":
+        return "Loading the complexity history…";
+      case "recorded":
+      case "empty":
+        return "No snapshot has been recorded yet.";
+    }
+  }
+
   function seriesBounds(values: readonly number[]): { min: number; max: number } {
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
@@ -198,6 +214,8 @@
         {#if latest !== null}
           Latest {latest.date} · recorded {latest.recordedAt} · {points.length}
           {points.length === 1 ? "recorded date" : "recorded dates"}
+        {:else if complexity.complexityStatus === "unreadable"}
+          Complexity history unreadable
         {:else}
           No snapshot recorded yet
         {/if}
@@ -227,11 +245,14 @@
       <h2 class="panel__title">Metric history</h2>
     </div>
     <div class="panel__body complexity-history__body">
+      {#if complexity.complexityStatus === "unreadable" && points.length > 0}
+        <p class="complexity-history__notice" data-testid="complexity-history-unreadable">
+          The last complexity update could not be read; showing the last recorded history.
+        </p>
+      {/if}
       {#if points.length === 0}
         <p class="complexity-history__empty" data-testid="complexity-history-empty">
-          {complexity.complexityLoaded
-            ? "No snapshot has been recorded yet."
-            : "Loading the complexity history…"}
+          {emptyMessage()}
         </p>
       {:else}
         {#each PROJECT_METRICS as metric (metric.key)}
@@ -372,9 +393,7 @@
           {:else}
             <tr>
               <td colspan={FILE_METRICS.length + 1} class="empty">
-                {complexity.complexityLoaded
-                  ? "No snapshot has been recorded yet."
-                  : "Loading the complexity history…"}
+                {emptyMessage()}
               </td>
             </tr>
           {/each}
@@ -449,6 +468,12 @@
     color: var(--muted-foreground);
     font-size: 12px;
     margin: 0;
+  }
+
+  .complexity-history__notice {
+    color: var(--warning);
+    font-size: 12px;
+    margin: 0 0 6px;
   }
 
   .complexity-series {

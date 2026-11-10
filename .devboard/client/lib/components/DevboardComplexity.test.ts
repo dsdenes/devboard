@@ -51,7 +51,7 @@ function seed(): void {
       files: FILES,
     },
   };
-  complexity.complexityLoaded = true;
+  complexity.complexityStatus = "recorded";
 }
 
 /** Seeds `count` consecutive recorded dates, each carrying the latest project. */
@@ -65,13 +65,13 @@ function seedDates(count: number): void {
     points,
     latest: newest === undefined ? null : { ...newest, files: FILES },
   };
-  complexity.complexityLoaded = true;
+  complexity.complexityStatus = "recorded";
 }
 
 afterEach(() => {
   cleanup();
   complexity.complexity = EMPTY_COMPLEXITY_VIEW;
-  complexity.complexityLoaded = false;
+  complexity.complexityStatus = "loading";
 });
 
 test("renders one card per project metric with the latest value and its unit", () => {
@@ -319,4 +319,74 @@ test("an empty history renders the loading state without inventing a value", () 
     container.querySelector('[data-testid="complexity-history-empty"]')?.textContent?.trim(),
   ).toBe("Loading the complexity history…");
   expect(container.textContent ?? "").toContain("Loading the complexity history…");
+});
+
+test("a loaded frame with no snapshot says the history recorded none", () => {
+  complexity.handleEvent({ type: "complexityState", state: { snapshots: [], latest: null } });
+
+  const { container } = render(DevboardComplexity);
+
+  expect(container.querySelectorAll('[data-testid="complexity-series"]')).toHaveLength(0);
+  expect(
+    container.querySelector('[data-testid="complexity-history-empty"]')?.textContent?.trim(),
+  ).toBe("No snapshot has been recorded yet.");
+});
+
+test("a frame whose snapshots are all rejected reports it cannot be read", () => {
+  complexity.handleEvent({
+    type: "complexityState",
+    state: {
+      snapshots: [
+        {
+          date: "2026-11-03",
+          recordedAt: "2026-11-03T00:00:00.000Z",
+          project: { ...LATEST, loc: "140" },
+        },
+      ],
+      latest: null,
+    },
+  });
+
+  const { container } = render(DevboardComplexity);
+
+  expect(
+    container.querySelector('[data-testid="complexity-history-empty"]')?.textContent?.trim(),
+  ).toBe("The last complexity update could not be read.");
+  expect(container.textContent ?? "").not.toContain("No snapshot has been recorded yet.");
+  expect(
+    container.querySelector('[data-testid="complexity-summary"]')?.textContent?.trim(),
+  ).toBe("Complexity history unreadable");
+});
+
+test("an unreadable frame keeps the history already shown", async () => {
+  seed();
+
+  const { container } = render(DevboardComplexity);
+  complexity.handleEvent({
+    type: "complexityState",
+    state: {
+      snapshots: [
+        {
+          date: "2026-11-03",
+          recordedAt: "2026-11-03T00:00:00.000Z",
+          project: { ...LATEST, maxCyclomatic: null },
+        },
+      ],
+      latest: null,
+    },
+  });
+  await tick();
+
+  expect(container.querySelectorAll('[data-testid="complexity-series"]')).toHaveLength(8);
+  expect(container.querySelectorAll('[data-testid="complexity-file-row"]')).toHaveLength(3);
+  expect(
+    container.querySelector('[data-testid="complexity-summary"]')?.textContent?.replace(
+      /\s+/g,
+      " ",
+    ),
+  ).toContain("2026-11-02");
+  expect(
+    container.querySelector('[data-testid="complexity-history-unreadable"]')?.textContent?.trim(),
+  ).toBe("The last complexity update could not be read; showing the last recorded history.");
+  expect(container.textContent ?? "").not.toContain("No snapshot has been recorded yet.");
 });
