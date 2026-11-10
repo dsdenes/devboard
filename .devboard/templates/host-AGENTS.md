@@ -186,9 +186,10 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   `main` has moved past the failed version's tag, that retry releases the range at the current tip
   and verifies the release publish actually proved, so a superseded version is never re-reported
   as a failure after a successful release. A failed run is never recorded as released.
-- **Agent.** `.devboard/prompts/release-train.md` instructs one run to fetch canonical `main`,
-  release it through `devboard publish` from the integration checkout, verify the GitHub assets
-  and the Gitea manifest, and report the version and release URL. `devboard publish` dispatches
+- **Agent.** `.devboard/prompts/release-train.md` instructs one run to release the collected range
+  through `devboard publish` from the integration checkout, which fetches canonical `main` itself,
+  verify the GitHub assets and the Gitea manifest, and report the version and release URL.
+  `devboard publish` dispatches
   `.github/workflows/release.yml` for the released tag when that tag has no usable run, then
   performs the existing verification; it never requires a push.
 - **Agent.** The worker starts exactly one `omp acp` peer with `/release-train <run-dir>`; the run

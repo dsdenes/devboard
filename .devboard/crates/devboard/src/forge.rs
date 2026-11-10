@@ -327,6 +327,84 @@ pub fn gitea_git_credential(
     })
 }
 
+/// The config entries one `git` invocation needs to reach the canonical
+/// remote: `origin` is rewritten to the configured Gitea HTTP address, so a
+/// detached process reads and writes the repository without an SSH agent. The
+/// token header is added only for the attempt that presents the credential.
+pub fn gitea_git_config(
+    credential: &GiteaGitCredential,
+    with_credential: bool,
+) -> Vec<(String, String)> {
+    let mut entries = vec![(
+        format!("url.{}.insteadOf", credential.url),
+        credential.remote_url.clone(),
+    )];
+    if with_credential {
+        entries.push((
+            format!("http.{}.extraHeader", credential.base_url),
+            credential.header.clone(),
+        ));
+    }
+    entries
+}
+
+fn gitea_git_environment_with(
+    credential: Option<&GiteaGitCredential>,
+    with_credential: bool,
+) -> Vec<(String, String)> {
+    // A detached process holds no terminal: a prompt only hangs or fails it.
+    let mut environment = vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())];
+    let Some(credential) = credential else {
+        return environment;
+    };
+    let entries = gitea_git_config(credential, with_credential);
+    environment.push(("GIT_CONFIG_COUNT".to_string(), entries.len().to_string()));
+    for (index, (key, value)) in entries.into_iter().enumerate() {
+        environment.push((format!("GIT_CONFIG_KEY_{index}"), key));
+        environment.push((format!("GIT_CONFIG_VALUE_{index}"), value));
+    }
+    environment
+}
+
+/// The environment overrides one `git` invocation needs to read the canonical
+/// remote with the configured credential: the origin rewrite plus the token's
+/// `Authorization` header scoped to the Gitea address.
+pub fn gitea_git_environment(credential: Option<&GiteaGitCredential>) -> Vec<(String, String)> {
+    gitea_git_environment_with(credential, true)
+}
+
+/// The same overrides without the token.
+///
+/// A public repository reads through the rewrite alone, and git has no
+/// anonymous fallback of its own once a presented `extraHeader` is refused: it
+/// asks for a username and dies on the disabled prompt. The credential-free
+/// attempt goes first for exactly that reason.
+pub fn gitea_git_anonymous_environment(
+    credential: Option<&GiteaGitCredential>,
+) -> Vec<(String, String)> {
+    gitea_git_environment_with(credential, false)
+}
+
+/// The environment whose `git` invocations reach an SSH Gitea `origin` over
+/// the configured HTTP address, or `None` when the checkout has no such origin
+/// or the environment carries no address and token.
+///
+/// A long-lived process such as a release falls back to this transport when
+/// the checkout's own remote cannot be reached: the credential reads and
+/// writes the same repository, so the tag and the pushes that follow a fetch
+/// keep working over it.
+pub fn gitea_git_process_environment(
+    repo_dir: &Path,
+    environment: &Environment,
+) -> Option<Environment> {
+    let credential = gitea_git_credential(repo_dir, environment)?;
+    let mut environment = environment.clone();
+    for (key, value) in gitea_git_environment(Some(&credential)) {
+        environment.insert(key, value);
+    }
+    Some(environment)
+}
+
 // ---------------------------------------------------------------------------
 // Git checkout facts
 

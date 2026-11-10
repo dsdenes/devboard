@@ -2034,7 +2034,11 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         github_repo,
         github_token,
     };
-    let git = Git::new(runner.as_ref(), &args.repo_dir, &args.environment);
+    // The environment every git command of this release runs with. A fetch
+    // that had to reach the checkout's `origin` through the configured Gitea
+    // HTTP address switches this for the rest of the run, because the tag and
+    // the pushes go to the same remote.
+    let mut git_environment = args.environment.clone();
 
     // One attempt refreshes the checkout, proves the bundle, derives the
     // version, tests it, and pushes it. A landing that publishes into `main`
@@ -2044,8 +2048,16 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     let mut attempt: u32 = 0;
     let (version, tag, commit, existing_at_head) = loop {
         attempt += 1;
-        preflight.published =
-            refresh_main(&args, runner.as_ref(), &preflight.remote, &log, &sleeper).await?;
+        preflight.published = refresh_main(
+            &args,
+            runner.as_ref(),
+            &preflight.remote,
+            &mut git_environment,
+            &log,
+            &sleeper,
+        )
+        .await?;
+        let git = Git::new(runner.as_ref(), &args.repo_dir, &git_environment);
         // A client bundle older than the checkout is rebuilt from the released
         // sources before anything is proven or tagged.
         if dist_is_stale(&args.harness_root)? {
@@ -2408,6 +2420,9 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         }
         break (version, tag, commit, existing_at_head);
     };
+    // The release tail runs in the transport the attempt settled on: a build
+    // ref and a withdrawn tag go to the same remotes the fetch reached.
+    let git = Git::new(runner.as_ref(), &args.repo_dir, &git_environment);
 
     // A release that fails before its GitHub release exists must not leave its
     // tag behind: the gate derives the next version from the newest release
@@ -2651,26 +2666,49 @@ const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(5);
 const RACE_INTEGRATION_ATTEMPTS: u32 = 3;
 
 /// Fetches the canonical `main` and fast-forwards without discarding work.
+///
+/// `environment` is what every git command of this release runs with. The
+/// checkout's own remote answers unless it cannot be reached: a detached
+/// release holds no SSH agent, and its Gitea SSH server may be down, while the
+/// configured Gitea HTTP address and token read and write the same repository.
+/// That fallback is adopted on success and kept for the rest of the run,
+/// because the tag and the pushes go to that remote too.
 async fn refresh_main(
     args: &PublishArgs,
     runner: &dyn CommandRunner,
     remote: &str,
+    environment: &mut Environment,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
     sleeper: &Arc<dyn Sleeper>,
 ) -> Result<String> {
-    let git = Git::new(runner, &args.repo_dir, &args.environment);
     (log)(&format!("fetching {remote}/main"));
+    let refspec = format!("+refs/heads/main:refs/remotes/{remote}/main");
+    let fetch = ["fetch", "--prune", remote, refspec.as_str()];
+    // No fallback once the run has adopted one: the environment it is handed
+    // already reaches the remote through the configured address.
+    let fallback = (environment == &args.environment)
+        .then(|| forge::gitea_git_process_environment(&args.repo_dir, &args.environment))
+        .flatten();
     let mut remaining = MAIN_SETTLE_ATTEMPTS;
     let mut waited = false;
     loop {
-        let fetched = git
-            .run(&[
-                "fetch",
-                "--prune",
-                remote,
-                &format!("+refs/heads/main:refs/remotes/{remote}/main"),
-            ])
+        let fetched = Git::new(runner, &args.repo_dir, environment)
+            .run(&fetch)
             .await;
+        let fetched = match fallback.as_ref() {
+            Some(fallback) if fetched.code != 0 => {
+                (log)(&format!(
+                    "{remote}/main could not be fetched through its own URL; reading it through \
+                     the configured Gitea HTTP address"
+                ));
+                let retried = Git::new(runner, &args.repo_dir, fallback).run(&fetch).await;
+                if retried.code == 0 {
+                    *environment = fallback.clone();
+                }
+                retried
+            }
+            _ => fetched,
+        };
         if fetched.code != 0 {
             bail!(
                 "could not fetch {remote}/main: {}",
@@ -2682,6 +2720,7 @@ async fn refresh_main(
             );
         }
 
+        let git = Git::new(runner, &args.repo_dir, environment);
         let head = git
             .must(&["rev-parse", "HEAD"], "could not read HEAD")
             .await?;
@@ -2756,11 +2795,12 @@ async fn refresh_main(
         break;
     }
 
-    git.must(
-        &["rev-parse", "HEAD"],
-        "could not read HEAD after the update",
-    )
-    .await
+    Git::new(runner, &args.repo_dir, environment)
+        .must(
+            &["rev-parse", "HEAD"],
+            "could not read HEAD after the update",
+        )
+        .await
 }
 
 async fn resolve_gitea_target(
@@ -4824,6 +4864,180 @@ const MANIFEST_ASSET_NAME: &str = "devboard-manifest.json";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::Mutex;
+
+    /// A runner whose plain `origin` fetch is refused and whose rewritten
+    /// fetch lands: the checkout's SSH remote is down while the configured
+    /// Gitea HTTP address answers.
+    struct RefusedSshRunner {
+        head: String,
+        attempts: Mutex<Vec<(Vec<String>, bool)>>,
+    }
+
+    impl CommandRunner for RefusedSshRunner {
+        fn run<'a>(&'a self, invocation: CommandInvocation) -> BoxFuture<'a, CommandOutcome> {
+            Box::pin(async move {
+                let rewritten = invocation.env.contains_key("GIT_CONFIG_COUNT");
+                self.attempts
+                    .lock()
+                    .expect("attempts")
+                    .push((invocation.args.clone(), rewritten));
+                let git = |name: &str| invocation.args.iter().any(|arg| arg == name);
+                if git("fetch") {
+                    if rewritten {
+                        return CommandOutcome::default();
+                    }
+                    return CommandOutcome {
+                        code: 1,
+                        stdout: String::new(),
+                        stderr: "ssh: connect to host localhost port 2223: Connection refused"
+                            .to_string(),
+                    };
+                }
+                if git("rev-parse") {
+                    return CommandOutcome {
+                        code: 0,
+                        stdout: self.head.clone(),
+                        stderr: String::new(),
+                    };
+                }
+                CommandOutcome::default()
+            })
+        }
+    }
+
+    struct NeverSleep;
+
+    impl Sleeper for NeverSleep {
+        fn sleep<'a>(&'a self, _duration: Duration) -> BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    /// A checkout whose `origin` is the Gitea SSH remote this host refused,
+    /// with the configured HTTP address and token in its environment.
+    fn ssh_origin_checkout(label: &str, token: bool) -> (PathBuf, PublishArgs) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.tmp")
+            .join(format!("publish-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a fixture root");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .expect("git")
+        };
+        assert!(git(&["init", "-q"]).success());
+        assert!(git(&[
+            "remote",
+            "add",
+            "origin",
+            "ssh://ds@localhost:2223/dsdenes/devboard.git",
+        ])
+        .success());
+        let mut args = PublishArgs::new(&root);
+        args.environment = HashMap::from([(
+            "DEVBOARD_GITEA_URL".to_string(),
+            "http://localhost:3001".to_string(),
+        )]);
+        if token {
+            args.environment
+                .insert("GITEA_TOKEN".to_string(), "secret-token".to_string());
+        }
+        (root, args)
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_origin_adopts_the_configured_gitea_address() {
+        let (root, args) = ssh_origin_checkout("gitea-fallback", true);
+        let head = "a".repeat(40);
+        let runner = RefusedSshRunner {
+            head: head.clone(),
+            attempts: Mutex::new(Vec::new()),
+        };
+        let mut environment = args.environment.clone();
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = lines.clone();
+        let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |line: &str| {
+            recorded.lock().expect("log").push(line.to_string());
+        });
+        let sleeper: Arc<dyn Sleeper> = Arc::new(NeverSleep);
+
+        let published = refresh_main(&args, &runner, "origin", &mut environment, &log, &sleeper)
+            .await
+            .expect("the rewritten fetch lands");
+        assert_eq!(published, head);
+
+        // The rewrite is kept, so the tag and the pushes that follow go to the
+        // same address rather than failing on the refused SSH remote again.
+        assert_eq!(
+            environment.get("GIT_CONFIG_COUNT").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_KEY_0").map(String::as_str),
+            Some("url.http://localhost:3001/dsdenes/devboard.git.insteadOf")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_VALUE_0").map(String::as_str),
+            Some("ssh://ds@localhost:2223/dsdenes/devboard.git")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_VALUE_1").map(String::as_str),
+            Some("Authorization: token secret-token")
+        );
+        let lines = lines.lock().expect("log").clone();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("the configured Gitea HTTP address")),
+            "{lines:?}"
+        );
+
+        // A second attempt of the same release does not re-ask the refused
+        // remote: the adopted transport is the one it was handed.
+        let again = refresh_main(&args, &runner, "origin", &mut environment, &log, &sleeper)
+            .await
+            .expect("the adopted transport answers");
+        assert_eq!(again, head);
+        let attempts = runner.attempts.lock().expect("attempts").clone();
+        let plain_fetches = attempts
+            .iter()
+            .filter(|(args, rewritten)| args.iter().any(|arg| arg == "fetch") && !rewritten)
+            .count();
+        assert_eq!(plain_fetches, 1, "{attempts:?}");
+        assert!(
+            attempts.iter().skip(1).all(|(_, rewritten)| *rewritten),
+            "{attempts:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_origin_without_a_configured_credential_reports_its_own_failure() {
+        let (root, args) = ssh_origin_checkout("gitea-no-credential", false);
+        let runner = RefusedSshRunner {
+            head: "a".repeat(40),
+            attempts: Mutex::new(Vec::new()),
+        };
+        let mut environment = args.environment.clone();
+        let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_line: &str| {});
+        let sleeper: Arc<dyn Sleeper> = Arc::new(NeverSleep);
+
+        let error = refresh_main(&args, &runner, "origin", &mut environment, &log, &sleeper)
+            .await
+            .expect_err("no configured address reads no remote");
+        let message = format!("{error:#}");
+        assert!(message.contains("could not fetch origin/main"), "{message}");
+        assert!(message.contains("Connection refused"), "{message}");
+        assert_eq!(environment, args.environment, "nothing was adopted");
+        assert_eq!(runner.attempts.lock().expect("attempts").len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn record(subject: &str) -> CommitRecord {
         CommitRecord {

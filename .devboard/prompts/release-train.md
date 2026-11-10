@@ -19,9 +19,8 @@ request is the whole unresolved range; never recompute a different one and never
 
 - Run one release. There is no batching choice to make and no version to choose: the range is
   already collected, and `devboard publish` derives the same Conventional Commit version.
-- Fetch canonical `main` once before publishing:
-  `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`. The publish path itself
-  fast-forwards a clean integration checkout to that tip.
+- `devboard publish` fetches canonical `main` itself and fast-forwards a clean integration
+  checkout to that tip before it derives the range; never fetch it by hand first.
 - The run directory carries `env.sh`, the forge coordinates this worker was started with. Source
   it in the same shell as the release command and never print it:
   `set -a; . <run-dir>/env.sh; set +a`.

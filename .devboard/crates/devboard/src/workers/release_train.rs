@@ -22,7 +22,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::forge::{gitea_git_credential, GiteaGitCredential};
+use crate::forge::{
+    gitea_git_anonymous_environment, gitea_git_credential, gitea_git_environment,
+    GiteaGitCredential,
+};
 use crate::publish::{MANIFEST_CHECKSUM_ASSET, RELEASE_INSTALLERS, RELEASE_TARGETS};
 use crate::release::MANIFEST_ASSET;
 
@@ -1536,64 +1539,6 @@ impl Default for ReleaseTrainGateOptions {
     }
 }
 
-/// The config entries one git invocation needs to reach the canonical remote:
-/// `origin` is rewritten to the configured Gitea HTTP address, so a detached
-/// worker reads the repository without an SSH agent. The token header is added
-/// only for the attempt that presents the credential.
-fn gate_git_entries(
-    credential: &GiteaGitCredential,
-    with_credential: bool,
-) -> Vec<(String, String)> {
-    let mut entries = vec![(
-        format!("url.{}.insteadOf", credential.url),
-        credential.remote_url.clone(),
-    )];
-    if with_credential {
-        entries.push((
-            format!("http.{}.extraHeader", credential.base_url),
-            credential.header.clone(),
-        ));
-    }
-    entries
-}
-
-fn gate_git_environment_with(
-    credential: Option<&GiteaGitCredential>,
-    with_credential: bool,
-) -> Vec<(String, String)> {
-    // A worker holds no terminal: a prompt only hangs or fails the read.
-    let mut environment = vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())];
-    let Some(credential) = credential else {
-        return environment;
-    };
-    let entries = gate_git_entries(credential, with_credential);
-    environment.push(("GIT_CONFIG_COUNT".to_string(), entries.len().to_string()));
-    for (index, (key, value)) in entries.into_iter().enumerate() {
-        environment.push((format!("GIT_CONFIG_KEY_{index}"), key));
-        environment.push((format!("GIT_CONFIG_VALUE_{index}"), value));
-    }
-    environment
-}
-
-/// The environment overrides one git invocation needs to read the canonical
-/// remote with the configured credential: the origin rewrite plus the token's
-/// `Authorization` header scoped to the Gitea address.
-pub fn gate_git_environment(credential: Option<&GiteaGitCredential>) -> Vec<(String, String)> {
-    gate_git_environment_with(credential, true)
-}
-
-/// The same overrides without the token.
-///
-/// A public repository reads through the rewrite alone, and git has no
-/// anonymous fallback of its own once a presented `extraHeader` is refused: it
-/// asks for a username and dies on the disabled prompt. The credential-free
-/// attempt goes first for exactly that reason.
-pub fn gate_git_anonymous_environment(
-    credential: Option<&GiteaGitCredential>,
-) -> Vec<(String, String)> {
-    gate_git_environment_with(credential, false)
-}
-
 /// One `git -C <repoDir>` command run with the given environment overrides.
 fn gate_git_runner(repo_dir: &Path, environment: Vec<(String, String)>) -> GateGit {
     let repo_dir = repo_dir.to_path_buf();
@@ -1622,7 +1567,7 @@ fn gate_git_runner(repo_dir: &Path, environment: Vec<(String, String)>) -> GateG
 /// The default runner: one `git -C <repoDir>` invocation that presents the
 /// configured credential.
 pub fn release_train_git(repo_dir: &Path, credential: Option<&GiteaGitCredential>) -> GateGit {
-    gate_git_runner(repo_dir, gate_git_environment(credential))
+    gate_git_runner(repo_dir, gitea_git_environment(credential))
 }
 
 /// The default anonymous runner: the same invocation without the token.
@@ -1630,7 +1575,7 @@ pub fn release_train_git_anonymous(
     repo_dir: &Path,
     credential: Option<&GiteaGitCredential>,
 ) -> GateGit {
-    gate_git_runner(repo_dir, gate_git_anonymous_environment(credential))
+    gate_git_runner(repo_dir, gitea_git_anonymous_environment(credential))
 }
 
 /// The fetch outcome: the anonymous attempt, retried once with the credential
@@ -2205,7 +2150,7 @@ pub async fn verify_shipped(options: ReleaseVerificationOptions) -> ReleaseVerif
         let environment = options.environment.clone();
         Arc::new(move |repo_dir: &Path| {
             let credential = gitea_git_credential(repo_dir, &environment);
-            let overrides = gate_git_environment(credential.as_ref());
+            let overrides = gitea_git_environment(credential.as_ref());
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(repo_dir)

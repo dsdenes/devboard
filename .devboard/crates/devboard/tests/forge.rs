@@ -324,6 +324,106 @@ fn origin_forge_reads_the_checkout_origin_and_refuses_a_subdirectory() {
     assert_eq!(origin_repository(&nested).as_deref(), Some("owner/name"));
 }
 
+fn ssh_gitea_credential() -> GiteaGitCredential {
+    GiteaGitCredential {
+        url: "http://localhost:3001/dsdenes/devboard.git".to_string(),
+        remote_url: "ssh://ds@localhost:2223/dsdenes/devboard.git".to_string(),
+        base_url: "http://localhost:3001".to_string(),
+        header: "Authorization: token secret-token".to_string(),
+    }
+}
+
+#[test]
+fn the_anonymous_git_environment_carries_the_rewrite_but_not_the_token() {
+    let credential = ssh_gitea_credential();
+    let entry = |environment: &[(String, String)], key: &str| {
+        environment
+            .iter()
+            .find(|(entry, _)| entry == key)
+            .map(|(_, value)| value.clone())
+    };
+    let anonymous = gitea_git_anonymous_environment(Some(&credential));
+    assert_eq!(
+        entry(&anonymous, "GIT_TERMINAL_PROMPT").as_deref(),
+        Some("0")
+    );
+    assert_eq!(entry(&anonymous, "GIT_CONFIG_COUNT").as_deref(), Some("1"));
+    assert_eq!(
+        entry(&anonymous, "GIT_CONFIG_KEY_0").as_deref(),
+        Some("url.http://localhost:3001/dsdenes/devboard.git.insteadOf")
+    );
+    assert_eq!(
+        entry(&anonymous, "GIT_CONFIG_VALUE_0").as_deref(),
+        Some("ssh://ds@localhost:2223/dsdenes/devboard.git")
+    );
+    assert!(entry(&anonymous, "GIT_CONFIG_KEY_1").is_none());
+    assert!(!anonymous
+        .iter()
+        .any(|(_, value)| value.contains("secret-token")));
+    let credentialed = gitea_git_environment(Some(&credential));
+    assert_eq!(
+        entry(&credentialed, "GIT_CONFIG_COUNT").as_deref(),
+        Some("2")
+    );
+    assert_eq!(
+        entry(&credentialed, "GIT_CONFIG_KEY_1").as_deref(),
+        Some("http.http://localhost:3001.extraHeader")
+    );
+    assert_eq!(
+        entry(&credentialed, "GIT_CONFIG_VALUE_1").as_deref(),
+        Some("Authorization: token secret-token")
+    );
+    assert_eq!(
+        gitea_git_anonymous_environment(None),
+        vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())]
+    );
+}
+
+#[test]
+fn a_release_falls_back_to_the_configured_gitea_address_only_for_an_ssh_origin() {
+    let configured = environment(&[
+        ("DEVBOARD_GITEA_URL", "http://localhost:3001"),
+        ("GITEA_TOKEN", "secret-token"),
+    ]);
+    let ssh = git_repo(
+        "fallback-ssh",
+        "ssh://ds@localhost:2223/dsdenes/devboard.git",
+    );
+    let fallback =
+        gitea_git_process_environment(&ssh, &configured).expect("an ssh origin has a fallback");
+    assert_eq!(
+        fallback.get("GIT_CONFIG_VALUE_0").map(String::as_str),
+        Some("ssh://ds@localhost:2223/dsdenes/devboard.git")
+    );
+    assert_eq!(
+        fallback.get("GIT_CONFIG_KEY_0").map(String::as_str),
+        Some("url.http://localhost:3001/dsdenes/devboard.git.insteadOf")
+    );
+    assert_eq!(
+        fallback.get("GIT_CONFIG_VALUE_1").map(String::as_str),
+        Some("Authorization: token secret-token")
+    );
+    // The configured coordinates stay readable to the caller that adopted it.
+    assert_eq!(
+        fallback.get("DEVBOARD_GITEA_URL").map(String::as_str),
+        Some("http://localhost:3001")
+    );
+
+    let http = git_repo(
+        "fallback-http",
+        "http://localhost:3001/dsdenes/devboard.git",
+    );
+    assert!(
+        gitea_git_process_environment(&http, &configured).is_none(),
+        "an HTTP origin already reaches the repository"
+    );
+    let no_token = environment(&[("DEVBOARD_GITEA_URL", "http://localhost:3001")]);
+    assert!(
+        gitea_git_process_environment(&ssh, &no_token).is_none(),
+        "no token can read no private repository over HTTP"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Gitea REST
 

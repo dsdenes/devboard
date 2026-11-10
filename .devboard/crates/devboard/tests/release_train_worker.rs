@@ -21,17 +21,16 @@ use devboard::publish::{
 };
 use devboard::release::MANIFEST_ASSET;
 use devboard::workers::release_train::{
-    activity_path, check_release_train, empty_state, gate_git_anonymous_environment,
-    gate_git_environment, merge_state, parse_iso_millis, read_result, read_settings, read_state,
-    read_worker_state, release_history, release_train_directory, release_train_git,
-    release_train_owners, release_train_worker_states, request_path, run_directory, runs_directory,
-    state_path, verify_shipped, versioned_control_directory, versioned_lock_path,
-    versioned_worker_state_path, write_command, write_state, AgentLifecycle, Clock, ForgeRelease,
-    GateGit, GitOutcome, PublishFuture, ReadRetry, ReleaseRunInput, ReleaseRunResult,
-    ReleaseRunTimeouts, ReleaseTrainCommand, ReleaseTrainCommit, ReleaseTrainFailure,
-    ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRelease, ReleaseTrainRequest,
-    ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag, ReleaseTrainWorker,
-    ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
+    activity_path, check_release_train, empty_state, merge_state, parse_iso_millis, read_result,
+    read_settings, read_state, read_worker_state, release_history, release_train_directory,
+    release_train_git, release_train_owners, release_train_worker_states, request_path,
+    run_directory, runs_directory, state_path, verify_shipped, versioned_control_directory,
+    versioned_lock_path, versioned_worker_state_path, write_command, write_state, AgentLifecycle,
+    Clock, ForgeRelease, GateGit, GitOutcome, PublishFuture, ReadRetry, ReleaseRunInput,
+    ReleaseRunResult, ReleaseRunTimeouts, ReleaseTrainCommand, ReleaseTrainCommit,
+    ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRelease,
+    ReleaseTrainRequest, ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag,
+    ReleaseTrainWorker, ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
     ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
 };
 
@@ -556,57 +555,6 @@ fn a_fetch_refused_both_ways_reports_the_credential_attempt() {
         }
         other => panic!("expected an error, got {other:?}"),
     }
-}
-
-#[test]
-fn the_anonymous_gate_environment_carries_the_rewrite_but_not_the_token() {
-    let credential = GiteaGitCredential {
-        url: "http://localhost:3001/dsdenes/devboard.git".to_string(),
-        remote_url: "ssh://ds@localhost:2223/dsdenes/devboard.git".to_string(),
-        base_url: "http://localhost:3001".to_string(),
-        header: "Authorization: token secret-token".to_string(),
-    };
-    let entry = |environment: &[(String, String)], key: &str| {
-        environment
-            .iter()
-            .find(|(entry, _)| entry == key)
-            .map(|(_, value)| value.clone())
-    };
-    let anonymous = gate_git_anonymous_environment(Some(&credential));
-    assert_eq!(
-        entry(&anonymous, "GIT_TERMINAL_PROMPT").as_deref(),
-        Some("0")
-    );
-    assert_eq!(entry(&anonymous, "GIT_CONFIG_COUNT").as_deref(), Some("1"));
-    assert_eq!(
-        entry(&anonymous, "GIT_CONFIG_KEY_0").as_deref(),
-        Some("url.http://localhost:3001/dsdenes/devboard.git.insteadOf")
-    );
-    assert_eq!(
-        entry(&anonymous, "GIT_CONFIG_VALUE_0").as_deref(),
-        Some("ssh://ds@localhost:2223/dsdenes/devboard.git")
-    );
-    assert!(entry(&anonymous, "GIT_CONFIG_KEY_1").is_none());
-    assert!(!anonymous
-        .iter()
-        .any(|(_, value)| value.contains("secret-token")));
-    let credentialed = gate_git_environment(Some(&credential));
-    assert_eq!(
-        entry(&credentialed, "GIT_CONFIG_COUNT").as_deref(),
-        Some("2")
-    );
-    assert_eq!(
-        entry(&credentialed, "GIT_CONFIG_KEY_1").as_deref(),
-        Some("http.http://localhost:3001.extraHeader")
-    );
-    assert_eq!(
-        entry(&credentialed, "GIT_CONFIG_VALUE_1").as_deref(),
-        Some("Authorization: token secret-token")
-    );
-    assert_eq!(
-        gate_git_anonymous_environment(None),
-        vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())]
-    );
 }
 
 /* ------------------------------------------------------------------------ */
