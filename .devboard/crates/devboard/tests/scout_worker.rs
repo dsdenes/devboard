@@ -526,6 +526,105 @@ async fn a_short_batch_is_incomplete_and_names_its_shortfall() {
 }
 
 #[tokio::test]
+async fn an_unlimited_scan_succeeds_without_a_shortfall() {
+    let repo = scratch("unlimited-scan");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = devboard::workers::scout::now_millis();
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &unlimited_state(&repo, &anchor),
+    );
+    let forge = FixtureForge::default();
+    let worker = worker(&repo, forge.clone(), filing_agent(forge));
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 1);
+    let directory = scan_directory(&repo, &ids[0]);
+    let scan = read_scan_file(&directory).expect("the scan record");
+    assert_eq!(scan.filed, 1);
+    assert_eq!(
+        scan.status, "succeeded",
+        "an unlimited scan that filed what it found is complete"
+    );
+    assert_eq!(
+        scan.shortfall, None,
+        "an unlimited scan invents no missing count"
+    );
+    let activity: Vec<String> = serde_json::from_str(
+        &std::fs::read_to_string(activity_path(&directory)).expect("the activity"),
+    )
+    .expect("activity JSON");
+    assert!(
+        activity.iter().all(|line| !line.starts_with("shortfall:")),
+        "the activity records no shortfall line"
+    );
+    assert!(
+        activity
+            .iter()
+            .all(|line| !line.contains("of the 100 requested")),
+        "the activity invents no 100-issue quota"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn an_unlimited_scan_keeps_a_refused_create_error() {
+    let repo = scratch("unlimited-refused");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = devboard::workers::scout::now_millis();
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &unlimited_state(&repo, &anchor),
+    );
+    let agent: devboard::workers::scout::ScanAgent =
+        Arc::new(|context: devboard::workers::scout::ScanAgentContext| {
+            Box::pin(async move {
+                let record = json!({
+                    "tool": "issue_create",
+                    "at": "2026-11-03T12:00:00.000Z",
+                    "ok": false,
+                    "error": "the forge refused the filing"
+                });
+                let _ = std::fs::write(
+                    context.directory.join("tool-log.jsonl"),
+                    format!("{record}\n"),
+                );
+                Ok(())
+            })
+        });
+    let worker = worker(&repo, FixtureForge::default(), agent);
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 1);
+    let scan = read_scan_file(&scan_directory(&repo, &ids[0])).expect("the scan record");
+    assert_eq!(scan.filed, 0);
+    assert_eq!(
+        scan.error.as_deref(),
+        Some("the forge refused the filing"),
+        "the record keeps the refused create's error"
+    );
+    assert_eq!(
+        scan.shortfall, None,
+        "an unlimited scan invents no shortfall for a refusal"
+    );
+    assert_eq!(
+        scan.status, "succeeded",
+        "a refusal is an error on the record, not a missing quota"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
 async fn the_open_issue_cap_blocks_a_scan_and_names_when_it_clears() {
     let repo = scratch("cap");
     let now = devboard::workers::scout::now_millis();
@@ -1367,6 +1466,16 @@ fn published_state(
     };
     state.newest_scan_id = Some(newest_scan_id.to_string());
     state.updated_at = updated_at.to_string();
+    state
+}
+
+/// The supported unlimited setting: both caps cleared, so no finite quota.
+fn unlimited_state(repo: &Path, anchor: &str) -> devboard::workers::scout::ScoutState {
+    let mut state = published_state(repo, anchor, "scan-previous", (2, 2), "v1", anchor);
+    state.limits = devboard::workers::scout::ScoutLimits {
+        max_per_hour: None,
+        max_pending: None,
+    };
     state
 }
 

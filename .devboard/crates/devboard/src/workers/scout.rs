@@ -43,8 +43,8 @@ pub const SCOUT_DIRECTORY: &str = "scout";
 pub const SCOUT_LABEL: &str = "scout";
 pub const STATE_VERSION: i64 = 2;
 pub const SCAN_VERSION: i64 = 2;
-/// A scan that filed fewer issues than it requested; `succeeded` means the
-/// requested count was reached.
+/// A scan that filed fewer issues than its finite quota; `succeeded` means the
+/// quota was reached, or that an unlimited scan has no quota to miss.
 pub const SCAN_STATUS_INCOMPLETE: &str = "incomplete";
 /// A scan's agent phase ends after this long without a session update, and its
 /// separately timed settle-and-file phase ends after this long in total.
@@ -3619,6 +3619,10 @@ impl ScoutWorker {
                 runtime.state.release_signature.clone(),
             )
         };
+        // Completeness is measured against the smallest remaining finite
+        // limit: with both limits null the scan has no quota to miss.
+        let quota = (limits.max_per_hour.is_some() || limits.max_pending.is_some())
+            .then_some(batch.min(requested));
         let request = build_request(
             &scan,
             &repository,
@@ -3681,6 +3685,7 @@ impl ScoutWorker {
             prompt: prompt.clone(),
             started_at: scan.started_at.clone(),
             requested,
+            quota,
             repo: repository.clone(),
             repo_dir: self.repo_dir.clone(),
             command: self.agent_command.clone(),
@@ -4075,6 +4080,9 @@ struct ScanTaskOptions {
     prompt: String,
     started_at: String,
     requested: i64,
+    /// The smallest remaining finite limit, or `None` when both limits are
+    /// null. Completeness is measured against this, never the agent cap.
+    quota: Option<i64>,
     repo: String,
     repo_dir: PathBuf,
     command: String,
@@ -4594,10 +4602,12 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
         }
     }
 
-    let shortfall = (filed < task.requested).then(|| {
+    // Only a finite limit makes a short batch incomplete; an unlimited scan has
+    // no quota to miss, so it succeeds without a fabricated shortfall.
+    let shortfall = task.quota.filter(|quota| filed < *quota).map(|quota| {
         filing_error
             .clone()
-            .unwrap_or_else(|| format!("filed {filed} of the {} requested", task.requested))
+            .unwrap_or_else(|| format!("filed {filed} of the {quota} requested"))
     });
     if let Some(shortfall) = &shortfall {
         record_scan_line(task, &format!("shortfall: {shortfall}"));
@@ -4605,10 +4615,9 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
     // The status follows the count the scan reached, never the presence of a
     // refused `issue_create`: a complete batch stays succeeded even with an
     // extra refusal after it, and a short batch is its own incomplete state.
-    let status = if filed >= task.requested {
-        "succeeded"
-    } else {
-        SCAN_STATUS_INCOMPLETE
+    let status = match task.quota {
+        Some(quota) if filed < quota => SCAN_STATUS_INCOMPLETE,
+        _ => "succeeded",
     };
     write_scan_record(
         &task.directory,
