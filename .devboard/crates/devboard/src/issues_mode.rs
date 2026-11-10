@@ -34,6 +34,16 @@ fn is_goal_issue(issue: &Issue) -> bool {
     issue.labels.iter().any(|label| label == GOAL_LABEL)
 }
 
+/// True when the worker's last read listed this issue with the goal label.
+fn state_issue_is_goal(state: &IssuesState, number: u64) -> bool {
+    state
+        .queue
+        .iter()
+        .find(|issue| issue.number == number)
+        .map(|issue| issue.labels.iter().any(|label| label == GOAL_LABEL))
+        .unwrap_or(false)
+}
+
 /// The command's grace, after which a worker the table proves is signalled.
 const STOP_PROOF_MS: u64 = 3_000;
 /// How long a proven worker gets to exit after SIGTERM before SIGKILL.
@@ -266,6 +276,10 @@ fn claims_directory(repo_dir: &Path) -> PathBuf {
 
 fn closed_by_run_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     repo_state_directory(state_dir, repo_dir).join("closed-by-run")
+}
+
+fn operator_closed_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
+    repo_state_directory(state_dir, repo_dir).join("operator-closed")
 }
 
 /// The repository-anchored lock a checkout cannot duplicate.
@@ -1979,6 +1993,146 @@ fn clear_closed_by_run(state_dir: &Path, repo_dir: &Path, number: u64, run_id: &
     let _ = std::fs::remove_file(
         closed_by_run_directory(state_dir, repo_dir).join(format!("{number}.json")),
     );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Operator-close records                                                    */
+/* ------------------------------------------------------------------------ */
+
+/// One issue an operator closed from the dashboard, with the runs the close
+/// must leave working.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OperatorClose {
+    run_ids: Vec<String>,
+    /// When the close was recorded, so a tracker read that began before it
+    /// cannot be mistaken for proof that the issue reopened.
+    closed_at: Option<String>,
+}
+
+/// Records a close an operator dispatched from the dashboard and the runs it
+/// leaves working.
+///
+/// Kept apart from the self-close records: those prove a run closed its own
+/// issue and feed its success verification, while this only says the close came
+/// from the row, so the worker's next read does not stop the runs it names.
+pub fn record_operator_closed(state_dir: &Path, repo_dir: &Path, number: u64, run_ids: &[String]) {
+    if run_ids.is_empty() {
+        return;
+    }
+    write_operator_close(state_dir, repo_dir, number, run_ids, &iso_now());
+}
+
+fn write_operator_close(
+    state_dir: &Path,
+    repo_dir: &Path,
+    number: u64,
+    run_ids: &[String],
+    closed_at: &str,
+) {
+    let directory = operator_closed_directory(state_dir, repo_dir);
+    let _ = std::fs::create_dir_all(&directory);
+    let path = directory.join(format!("{number}.json"));
+    let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
+    let body = json!({"runIds": run_ids, "closedAt": closed_at}).to_string();
+    if std::fs::write(&temporary, format!("{body}\n")).is_ok() {
+        let _ = std::fs::rename(&temporary, &path);
+    }
+}
+
+fn operator_close(state_dir: &Path, repo_dir: &Path, number: u64) -> Option<OperatorClose> {
+    let text = std::fs::read_to_string(
+        operator_closed_directory(state_dir, repo_dir).join(format!("{number}.json")),
+    )
+    .ok()?;
+    let parsed: Value = serde_json::from_str(&text).ok()?;
+    let run_ids: Vec<String> = parsed
+        .get("runIds")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|run_id| !run_id.is_empty())
+        .map(str::to_string)
+        .collect();
+    if run_ids.is_empty() {
+        return None;
+    }
+    Some(OperatorClose {
+        run_ids,
+        closed_at: parsed
+            .get("closedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// True when an operator closed this issue while this run was working it.
+fn operator_closed_run(state_dir: &Path, repo_dir: &Path, number: u64, run_id: &str) -> bool {
+    operator_close(state_dir, repo_dir, number)
+        .map(|close| close.run_ids.iter().any(|recorded| recorded == run_id))
+        .unwrap_or(false)
+}
+
+/// Forgets one settled run's operator close, keeping the issue's other runs.
+fn clear_operator_closed_run(state_dir: &Path, repo_dir: &Path, number: u64, run_id: &str) {
+    let Some(close) = operator_close(state_dir, repo_dir, number) else {
+        return;
+    };
+    if !close.run_ids.iter().any(|recorded| recorded == run_id) {
+        return;
+    }
+    let mut run_ids = close.run_ids;
+    run_ids.retain(|recorded| recorded != run_id);
+    if run_ids.is_empty() {
+        let _ = std::fs::remove_file(
+            operator_closed_directory(state_dir, repo_dir).join(format!("{number}.json")),
+        );
+        return;
+    }
+    let closed_at = close.closed_at.unwrap_or_else(iso_now);
+    write_operator_close(state_dir, repo_dir, number, &run_ids, &closed_at);
+}
+
+/// Forgets every operator close the tracker lists as open again.
+///
+/// A read that began before the close answered from the tracker state that still
+/// listed the issue open, so it is not proof of a reopen and the record stays
+/// for a read that began after it.
+fn clear_reopened_operator_closes(
+    state_dir: &Path,
+    repo_dir: &Path,
+    open: &HashSet<u64>,
+    read_started_at: i64,
+) {
+    let Ok(entries) = std::fs::read_dir(operator_closed_directory(state_dir, repo_dir)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(stem) = name.strip_suffix(".json") else {
+            continue;
+        };
+        let Ok(number) = stem.parse::<u64>() else {
+            continue;
+        };
+        if !open.contains(&number) {
+            continue;
+        }
+        let Some(close) = operator_close(state_dir, repo_dir, number) else {
+            let _ = std::fs::remove_file(entry.path());
+            continue;
+        };
+        let closed_at = close
+            .closed_at
+            .as_deref()
+            .and_then(parse_iso)
+            .map(epoch_millis)
+            .unwrap_or(i64::MIN);
+        if closed_at > read_started_at {
+            continue;
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3899,13 +4053,30 @@ impl IssuesBridge {
         let Some(repository) = repository else {
             return Err("This checkout has no GitHub origin.".to_string());
         };
-        (self.hooks.close_issue)(CloseIssueRequest {
+        let outcome = (self.hooks.close_issue)(CloseIssueRequest {
             repo_dir: self.repo_dir.clone(),
             repository,
             number: number_value,
             environment: self.environment.clone(),
         })
-        .await
+        .await;
+        if outcome.is_ok() {
+            self.record_operator_close(number_value);
+        }
+        outcome
+    }
+
+    /// Records an operator's close of one issue and the runs working it, so the
+    /// worker's next read leaves them running.
+    fn record_operator_close(&self, number: u64) {
+        let run_ids: Vec<String> = self
+            .all_states()
+            .iter()
+            .flat_map(|state| state.agents.iter())
+            .filter(|agent| agent.issue_number == number)
+            .map(|agent| agent.run_id.clone())
+            .collect();
+        record_operator_closed(&self.state_dir, &self.repo_dir, number, &run_ids);
     }
 
     fn schedule_stop_proof(self: &Arc<Self>, pid: u32) {
@@ -4124,6 +4295,17 @@ impl IssuesBridge {
                 .filter(|agent| {
                     closed_by_run(&self.state_dir, &self.repo_dir, agent.issue_number).as_deref()
                         != Some(agent.run_id.as_str())
+                })
+                .filter(|agent| {
+                    // A goal issue's close stays that goal's cancellation, so
+                    // only a run an operator's row close left working is spared.
+                    state_issue_is_goal(&state, agent.issue_number)
+                        || !operator_closed_run(
+                            &self.state_dir,
+                            &self.repo_dir,
+                            agent.issue_number,
+                            &agent.run_id,
+                        )
                 })
                 .filter(|agent| {
                     parse_iso(&agent.started_at)
@@ -5303,7 +5485,7 @@ impl IssuesWorker {
                             self.polling = false;
                             return;
                         }
-                        self.apply_issues(issues).await;
+                        self.apply_issues(issues, epoch_millis(started_at)).await;
                     }
                     PollResult::RateLimited { until, detail } => {
                         self.state.poll.error = Some(detail);
@@ -5416,8 +5598,9 @@ impl IssuesWorker {
             .map_err(|error| format!("could not write the ledger: {error}"))
     }
 
-    async fn apply_issues(&mut self, issues: Vec<Issue>) {
+    async fn apply_issues(&mut self, issues: Vec<Issue>, read_started_at: i64) {
         let open: HashSet<u64> = issues.iter().map(|issue| issue.number).collect();
+        clear_reopened_operator_closes(&self.state_dir, &self.repo_dir, &open, read_started_at);
         let now = std::time::Instant::now();
         self.dismissed
             .retain(|number, until| open.contains(number) && *until > now);
@@ -5947,6 +6130,7 @@ impl IssuesWorker {
         self.active.remove(&number);
         self.state.agents.retain(|agent| agent.run_id != run_id);
         clear_closed_by_run(&self.state_dir, &self.repo_dir, number, run_id);
+        clear_operator_closed_run(&self.state_dir, &self.repo_dir, number, run_id);
         self.set_processing(number, false).await;
     }
 
@@ -6343,6 +6527,13 @@ impl IssuesWorker {
         }
         if closed_by_run(&self.state_dir, &self.repo_dir, number).as_deref()
             == Some(active.run_id.as_str())
+        {
+            return;
+        }
+        // An operator's row close leaves this run working; a goal issue's close
+        // is that goal's cancellation and still settles below.
+        if !is_goal_issue(&active.issue)
+            && operator_closed_run(&self.state_dir, &self.repo_dir, number, &active.run_id)
         {
             return;
         }
@@ -7157,7 +7348,12 @@ mod tests {
         worker.issue_state_override = Some(Arc::new(|_| {
             Box::pin(async { IssueStateResult::State { closed: false } })
         }));
-        worker.apply_issues(vec![issue(99, &[])]).await;
+        worker
+            .apply_issues(
+                vec![issue(99, &[])],
+                epoch_millis(OffsetDateTime::now_utc()),
+            )
+            .await;
         assert!(worker.active.is_empty());
         assert!(worker.state.cooldowns.contains_key("5"));
         assert!(worker
@@ -7178,7 +7374,9 @@ mod tests {
         worker.issue_state_override = Some(Arc::new(|_| {
             Box::pin(async { IssueStateResult::State { closed: true } })
         }));
-        worker.apply_issues(Vec::new()).await;
+        worker
+            .apply_issues(Vec::new(), epoch_millis(OffsetDateTime::now_utc()))
+            .await;
         assert!(worker.active.is_empty());
         assert!(!worker.state.cooldowns.contains_key("6"));
         assert_eq!(worker.state.last_exit_code, None);
@@ -7197,6 +7395,80 @@ mod tests {
         worker.apply(IssuesCommand::Abandon { number: 8 }).await;
         assert!(worker.active.contains_key(&8));
         assert!(!worker.dismissed.contains_key(&8));
+    }
+
+    #[tokio::test]
+    async fn an_operator_close_leaves_the_run_working() {
+        let (repo, state) = unit_root("operator-close-live");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(11, &[]));
+        let run_id = worker.active[&11].run_id.clone();
+        worker.state.agents.push(Agent {
+            run_id: run_id.clone(),
+            issue_number: 11,
+            started_at: worker.active[&11].started_at.clone(),
+            question: None,
+            acp: None,
+        });
+        record_operator_closed(&state, &repo, 11, std::slice::from_ref(&run_id));
+        worker
+            .apply_issues(Vec::new(), epoch_millis(OffsetDateTime::now_utc()))
+            .await;
+        assert!(worker.active.contains_key(&11));
+        assert!(worker
+            .state
+            .agents
+            .iter()
+            .any(|agent| agent.run_id == run_id));
+        assert!(!worker.dismissed.contains_key(&11));
+        assert!(
+            worker.state.notice.is_none(),
+            "no stopped notice: {:?}",
+            worker.state.notice
+        );
+        // The run settles through its own turn and verification, and that
+        // settlement forgets the operator's close.
+        worker.record_succeeded(11).await;
+        assert!(!operator_closed_run(&state, &repo, 11, &run_id));
+    }
+
+    #[tokio::test]
+    async fn a_tracker_close_without_an_operator_record_stops_the_run() {
+        let (repo, state) = unit_root("operator-close-absent");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(12, &[]));
+        worker
+            .apply_issues(Vec::new(), epoch_millis(OffsetDateTime::now_utc()))
+            .await;
+        assert!(worker.active.is_empty());
+        assert!(worker.dismissed.contains_key(&12));
+        assert_eq!(
+            worker.state.notice.as_deref(),
+            Some("Issue #12 was closed on the tracker; its run was stopped.")
+        );
+        let run = worker.runs.first().expect("the run");
+        assert_eq!(run.run.status, "stopped");
+    }
+
+    #[tokio::test]
+    async fn a_reopened_issue_clears_its_operator_close() {
+        let (repo, state) = unit_root("operator-close-reopened");
+        let mut worker = worker(&repo, &state);
+        attach(&mut worker, issue(13, &[]));
+        let run_id = worker.active[&13].run_id.clone();
+        record_operator_closed(&state, &repo, 13, std::slice::from_ref(&run_id));
+        // A read that began before the close answered from tracker state that
+        // still listed the issue open; that is no proof of a reopen.
+        worker.apply_issues(vec![issue(13, &[])], i64::MIN).await;
+        assert!(operator_closed_run(&state, &repo, 13, &run_id));
+        // A read that began after the close does prove it.
+        worker
+            .apply_issues(
+                vec![issue(13, &[])],
+                epoch_millis(OffsetDateTime::now_utc()),
+            )
+            .await;
+        assert!(!operator_closed_run(&state, &repo, 13, &run_id));
     }
 
     #[tokio::test]
