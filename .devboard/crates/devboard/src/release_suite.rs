@@ -34,7 +34,9 @@
 //!
 //! Every skipped test files one deduplicated issue in the origin forge.
 //! Filing is best effort: an unreachable forge prints one failure line and
-//! never changes the run's exit code.
+//! never changes the run's exit code. The dedupe key is the test's title, so a
+//! run whose open-issue read fails files nothing: the next run comments on or
+//! creates the single issue once its own read succeeds.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
@@ -965,6 +967,11 @@ pub fn quarantine_comment_body(report: &QuarantineReport, context: &QuarantineCo
 /// Files one issue per report, or appends one comment to the open issue whose
 /// title already names the test. Every failure is reported on its own line and
 /// swallowed: filing never changes the suite's exit code.
+///
+/// An unreadable open-issue list means dedupe is unavailable, so the run files
+/// nothing at all: with the open issues unseen every create could duplicate a
+/// test's existing issue. One line records the failure and the next
+/// release-suite run files or comments once its own read succeeds.
 pub async fn file_quarantine_reports(
     reports: &[QuarantineReport],
     forge: &dyn QuarantineForge,
@@ -974,12 +981,16 @@ pub async fn file_quarantine_reports(
     if reports.is_empty() {
         return;
     }
-    let mut open: Option<Vec<OpenIssue>> = None;
-    let mut list_failure: Option<String> = None;
-    match forge.list_open().await {
-        Ok(issues) => open = Some(issues),
-        Err(error) => list_failure = Some(error),
-    }
+    let mut open: Vec<OpenIssue> = match forge.list_open().await {
+        Ok(issues) => issues,
+        Err(error) => {
+            log(&format!(
+                "filing failed: open issue list: {}",
+                first_line(&error)
+            ));
+            return;
+        }
+    };
     for report in reports {
         let Some(title) = quarantine_issue_title(report) else {
             log(&format!(
@@ -989,43 +1000,32 @@ pub async fn file_quarantine_reports(
             continue;
         };
         let name_key = forge::normalize_issue_title(&one_line(&report.name));
-        if let Some(issues) = open.as_mut() {
-            if let Some(existing) = issues
-                .iter()
-                .find(|issue| forge::normalize_issue_title(&issue.title).contains(&name_key))
+        if let Some(existing) = open
+            .iter()
+            .find(|issue| forge::normalize_issue_title(&issue.title).contains(&name_key))
+        {
+            let number = existing.number;
+            match forge
+                .comment(number, &quarantine_comment_body(report, context))
+                .await
             {
-                let number = existing.number;
-                match forge
-                    .comment(number, &quarantine_comment_body(report, context))
-                    .await
-                {
-                    Ok(()) => log(&format!("commented on issue #{number}: {title}")),
-                    Err(error) => log(&format!(
-                        "filing failed: comment on issue #{number}: {}",
-                        first_line(&error)
-                    )),
-                }
-                continue;
+                Ok(()) => log(&format!("commented on issue #{number}: {title}")),
+                Err(error) => log(&format!(
+                    "filing failed: comment on issue #{number}: {}",
+                    first_line(&error)
+                )),
             }
-        } else {
-            let reason = first_line(
-                list_failure
-                    .as_deref()
-                    .unwrap_or("the open issues could not be read"),
-            );
-            log(&format!("filing failed: open issue list: {reason}"));
+            continue;
         }
         match forge
             .create(&title, &quarantine_issue_body(report, context))
             .await
         {
             Ok(number) => {
-                if let Some(issues) = open.as_mut() {
-                    issues.push(OpenIssue {
-                        number,
-                        title: title.clone(),
-                    });
-                }
+                open.push(OpenIssue {
+                    number,
+                    title: title.clone(),
+                });
                 log(&format!("filed issue #{number}: {title}"));
             }
             Err(error) => log(&format!(
@@ -2150,9 +2150,37 @@ could not execute process"
     }
 
     #[tokio::test]
-    async fn release_suite_swallows_filing_failures() {
+    async fn release_suite_files_nothing_when_the_open_issue_read_fails() {
         let mut forge = StubForge::new();
         forge.list_fails = true;
+        let lines = Mutex::new(Vec::new());
+        file_quarantine_reports(&[report("flaky")], &forge, &context(), &|line| {
+            lines.lock().expect("lines").push(line.to_string())
+        })
+        .await;
+        assert!(forge.created.lock().expect("created").is_empty());
+        let lines = lines.lock().expect("lines").clone();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("filing failed: open issue list:"));
+    }
+
+    #[tokio::test]
+    async fn release_suite_comments_on_the_open_issue_naming_the_test() {
+        let forge = StubForge::new();
+        forge.open.lock().expect("open").push(OpenIssue {
+            number: 7,
+            title: "quarantine(test): flaky".to_string(),
+        });
+        file_quarantine_reports(&[report("flaky")], &forge, &context(), &|_line| {}).await;
+        assert!(forge.created.lock().expect("created").is_empty());
+        let comments = forge.comments.lock().expect("comments").clone();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].0, 7);
+    }
+
+    #[tokio::test]
+    async fn release_suite_swallows_filing_failures() {
+        let mut forge = StubForge::new();
         forge.create_fails = true;
         let lines = Mutex::new(Vec::new());
         file_quarantine_reports(&[report("flaky")], &forge, &context(), &|line| {
