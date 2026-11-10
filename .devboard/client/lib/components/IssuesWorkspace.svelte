@@ -657,7 +657,11 @@
               worker pid {issues.run.workerPid} · harness {versionLabel(issues.run.harnessVersion)}
             </p>
             <p class="muted">{issues.run.issues.map((issue) => `#${issue.number}`).join(" ")}</p>
-            <pre class="issues-activity mono" data-testid="issues-run-activity">{issues.run.activityLines.join("\n") || "No activity."}</pre>
+            <IssuesAgentLog
+              lines={issues.run.activityLines}
+              testid="issues-run-activity"
+              runId={issues.run.runId}
+            />
           </div>
         {/if}
       </div>
