@@ -676,8 +676,14 @@ pub struct CommandAttempts<'a> {
 /// writes its assembly there. A path under `target/tmp` keeps those writes on
 /// the filesystem the build already uses and inside the workspace's own
 /// `target` tree, never in the host temporary directory.
+///
+/// The value is always absolute: `rustc` resolves a relative `TMPDIR` against
+/// the crate directory it compiles, which for a registry dependency is the
+/// extracted source tree, so a relative suite directory — `devboard publish
+/// --repo .` hands one in — would name a directory that does not exist there.
 fn attempt_temp_directory(dir: &Path) -> PathBuf {
-    dir.join("target")
+    let root = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    root.join("target")
         .join("tmp")
         .join(format!("release-suite-{}", std::process::id()))
 }
@@ -1534,6 +1540,47 @@ Caused by:
                     Some(temp.to_string_lossy().as_ref()),
                     "{key}"
                 );
+            }
+        }
+        assert!(!temp.exists(), "the run removes its temporary directory");
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn release_suite_hands_an_absolute_tmpdir_from_a_relative_directory() {
+        // `cargo test` runs with the package root as its working directory, so
+        // `../..` is the harness workspace a `--repo .` publish hands in
+        // relatively.
+        let workspace = Path::new("../..")
+            .join(".test-tmp")
+            .join(format!("release-suite-relative-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).expect("a scratch workspace");
+        let invocations: Arc<Mutex<Vec<CommandInvocation>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut options = ReleaseSuiteOptions::new(workspace.clone());
+        options.runner = Some(Arc::new(RecordingRunner {
+            outcome: CommandOutcome {
+                code: 0,
+                stdout: "running 1 test\ntest passes ... ok\n".to_string(),
+                stderr: "     Running unittests src/lib.rs (target/debug/deps/fixture-abc)\n"
+                    .to_string(),
+            },
+            invocations: invocations.clone(),
+        }));
+        options.file_issues = false;
+        let report = run_suite(options).await.expect("a suite report");
+        assert_eq!(report.code, 0);
+        let expected = std::path::absolute(&workspace).expect("an absolute workspace");
+        let temp = attempt_temp_directory(&workspace);
+        assert!(temp.is_absolute(), "{}", temp.display());
+        assert!(temp.starts_with(&expected), "{}", temp.display());
+        let recorded = invocations.lock().expect("recorded invocations").clone();
+        assert!(!recorded.is_empty());
+        for invocation in &recorded {
+            for key in ["TMPDIR", "TMP", "TEMP"] {
+                let value = invocation.env.get(key).expect(key);
+                assert!(Path::new(value).is_absolute(), "{key}={value}");
+                assert_eq!(value, temp.to_string_lossy().as_ref(), "{key}");
             }
         }
         assert!(!temp.exists(), "the run removes its temporary directory");
