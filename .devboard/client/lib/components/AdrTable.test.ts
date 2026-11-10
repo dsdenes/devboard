@@ -46,12 +46,28 @@ const record = {
   summary: "Summary",
 };
 
-function renderTable() {
+const otherPending = {
+  file: "0002-other.md",
+  title: "Other pending record",
+  status: "Proposed",
+  pending: true,
+  summary: "Summary",
+};
+
+const resolved = {
+  file: "0003-resolved.md",
+  title: "Resolved record",
+  status: "Accepted",
+  pending: false,
+  summary: "Summary",
+};
+
+function renderTable(records: Array<typeof record> = [record]) {
   const opened: string[] = [];
   const started: string[] = [];
   const view = render(AdrTable, {
     props: {
-      records: [record],
+      records,
       onopen: (row: typeof record) => opened.push(row.file),
       onstart: (row: typeof record) => started.push(row.file),
     },
@@ -106,4 +122,62 @@ test("a pending row's Start is disabled and names the active manual run", () => 
 
   expect(button.hasAttribute("disabled")).toBe(true);
   expect(button.getAttribute("title")).toContain("A run is active");
+});
+
+test("exactly the Next row's Start is the default variant", () => {
+  goal.next = record.file;
+  const { view } = renderTable([record, otherPending, resolved]);
+
+  const starts = view.getAllByTestId("start");
+  expect(starts).toHaveLength(2);
+  const filled = starts.filter((button) => button.dataset.variant === "default");
+  expect(filled).toHaveLength(1);
+  expect(filled[0]?.dataset.file).toBe(record.file);
+
+  const nextRow = view.getByTestId("next-marker").closest("tr");
+  expect(nextRow?.getAttribute("data-file")).toBe(record.file);
+  expect(nextRow?.querySelector('[data-testid="start"]')).toBe(filled[0]);
+
+  const outlined = starts.filter((button) => button.dataset.variant === "outline");
+  expect(outlined.map((button) => button.dataset.file)).toEqual([otherPending.file]);
+  expect(starts.every((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
+});
+
+test("a resolved row renders no Start control", () => {
+  goal.next = otherPending.file;
+  const { view } = renderTable([record, otherPending, resolved]);
+
+  const resolvedRow = view
+    .getAllByTestId("record")
+    .find((row) => row.dataset.file === resolved.file);
+  expect(resolvedRow).toBeDefined();
+  expect(resolvedRow?.querySelector('[data-testid="start"]')).toBeNull();
+  expect(resolvedRow?.querySelector("button")).toBeNull();
+  expect(view.getAllByTestId("start")).toHaveLength(2);
+});
+
+test("each Start names its record in the accessible name", () => {
+  goal.next = record.file;
+  const { view } = renderTable([record, otherPending, resolved]);
+
+  const starts = view.getAllByTestId("start");
+  const names = starts.map((button) => button.getAttribute("aria-label"));
+  expect(names).toEqual([
+    `Start the implementation of ${record.title}`,
+    `Start the implementation of ${otherPending.title}`,
+  ]);
+  expect(new Set(names).size).toBe(starts.length);
+});
+
+test("an active manual run disables every Start", () => {
+  goal.next = record.file;
+  goal.runFile = otherPending.file;
+  goal.runTitle = otherPending.title;
+  goal.runState = "active";
+  goal.manualRunActive = true;
+  const { view } = renderTable([record, otherPending, resolved]);
+
+  const starts = view.getAllByTestId("start");
+  expect(starts).toHaveLength(2);
+  for (const button of starts) expect((button as HTMLButtonElement).disabled).toBe(true);
 });

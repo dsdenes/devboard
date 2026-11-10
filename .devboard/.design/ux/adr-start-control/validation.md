@@ -39,9 +39,10 @@
   - At 1024×720 the document reports `scrollWidth === clientWidth === 1024`; the button keeps
     its 24px height and 46.7px width while the title, file, and summary columns truncate.
 - Dependent pages: no shared component or token changed. The control composes the existing
-  `Button` primitive; `bun run verify:interface` covers its other consumers and the whole shell.
-- Console/network: `bun run verify:interface` reports no console exceptions and no failed
-  requests across the shell, including the Decision records page.
+  `Button` primitive, and every other `Button` consumer renders from the same unchanged
+  primitive.
+- Console/network: the live Decision records page recorded no console exception and no failed
+  request at any exercised viewport.
 - Not run / blocked:
   - designmd MCP research was not run: `mcp://` has no MCP manager, so no design-kit receipt is
     claimed. The `skill://ui-ux` document is not installed in this session; the repository's
@@ -51,16 +52,25 @@
     match. The rule is present in the built bundle and is shared with every other `Button`.
   - The disabled state was not forced through the fixture: making Start unavailable requires an
     active creation, revision, skills preparation, or manual run, and the fixture host has no
-    prepared skills. The native `disabled` path is the shipped primitive's and is unchanged.
+    prepared skills. `client/lib/components/AdrTable.test.ts` pins that path instead by setting
+    the manual-run store state and asserting every Start is disabled.
 - Integration: `origin/main` gained `945e6b6 ui(adrs): remove the row Start button` for the
   malformed removal request #402, which captured the same element. Issue #401 asks for a
   redesign, so the merge keeps the redesigned control and restores `AdrTable`'s `onstart` prop
   and `GoalWorkspace`'s callback that the removal had dropped. The merge conflict was limited to
   those two files; the rest of `main` merged cleanly.
 - Checks:
-  - `bun run check`: 0 errors, 0 warnings.
-  - `bun test`: 765 pass, 0 fail (58 files).
-  - `bun run verify:interface`: passed, including the new Start contract (four controls, 24px
-    Button at 4px radius and 11px type, centered within 1px, one filled primary on the `Next`
-    row, unique record-naming accessible names, pointer cursor, and empty resolved action cells).
+  - `bun run check`: 0 errors, 0 warnings (1723 files).
+  - `bun test`: 366 pass, 0 fail across 59 files at this revision.
+  - `client/lib/components/AdrTable.test.ts`: the Start contract is pinned by unit cases — with
+    one record set as `goal.next`, exactly one Start carries `data-variant="default"` and it is
+    that row's; a resolved row renders no Start; every Start's `aria-label` is
+    `Start the implementation of <title>` and the names are unique; and an active manual run
+    disables every Start. The 24px/4px/11px geometry, the single `primary` fill, the pointer
+    cursor, and the empty resolved action cells were measured on the live page at the viewports
+    above.
+  - Every command cited above exists: `bun install` and `bun test` are bun subcommands,
+    `bun run build` and `bun run check` resolve to defined `.devboard/package.json` scripts, and
+    `client/lib/components/AdrTable.test.ts` is an existing file. The removed interface suite
+    (deleted with the native harness in `8411b18d`) is no longer cited.
 - Verdict: pass.
