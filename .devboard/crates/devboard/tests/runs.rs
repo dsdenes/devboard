@@ -666,7 +666,7 @@ fn state_path(scratch: &Scratch) -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ask_runs_survive_a_replacement_with_one_ask_done() {
+async fn ask_runs_survive_a_replacement_with_one_answer() {
     let scratch = Scratch::new("ask");
     let repo = fixture_repo(&scratch);
     let state = scratch.state();
@@ -1067,9 +1067,11 @@ async fn an_ask_answers_before_its_agent_turn_finishes() {
     );
 
     // The turn itself still settles, and its answer reaches the conversation
-    // the page polls.
+    // the page polls: the text streamed so far while it runs, the whole answer
+    // in the transcript once it ends.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let client = reqwest::Client::new();
+    let mut streamed_so_far: Option<String> = None;
     let inquiry = loop {
         let answer: Value = client
             .get(format!(
@@ -1083,6 +1085,14 @@ async fn an_ask_answers_before_its_agent_turn_finishes() {
             .await
             .expect("JSON");
         let frames = answer["frames"].as_array().cloned().unwrap_or_default();
+        if let Some(text) = frames
+            .iter()
+            .find(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true))
+            .and_then(|frame| frame["answer"].as_str())
+            .filter(|text| !text.is_empty())
+        {
+            streamed_so_far.get_or_insert_with(|| text.to_string());
+        }
         let settled = frames
             .into_iter()
             .find(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(false));
@@ -1095,6 +1105,11 @@ async fn an_ask_answers_before_its_agent_turn_finishes() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
+    let partial = streamed_so_far.expect("the turn streams while it runs");
+    assert!(
+        streamed(ANSWER_ONE).starts_with(&partial),
+        "the busy conversation carries the text streamed so far: {partial}"
+    );
     let transcript = inquiry["transcript"].as_array().expect("a transcript");
     assert_eq!(transcript.len(), 2, "{inquiry}");
     assert_eq!(transcript[0]["role"], "developer");

@@ -528,8 +528,9 @@ fn ask_directory_empty(scratch: &Scratch) -> bool {
         .unwrap_or(true)
 }
 
-/// Every turn is its own REST request. A follow-up continues the conversation
-/// on a new handle, and that handle receives the streamed answer.
+/// Every turn is its own REST request. A follow-up asked by a new handle after
+/// the first turn settled continues the conversation and answers its
+/// conversation, and the handle that asked the first turn sees none of it.
 // The environment guard serializes process-wide env across concurrently
 // running tests, so it is deliberately held for the whole test.
 #[allow(clippy::await_holding_lock)]
@@ -569,6 +570,7 @@ async fn ask_answers_a_follow_up_requested_by_a_new_handle() {
         frames.iter().all(|frame| frame["type"] != "askError"),
         "the first request answers: {frames:?}"
     );
+    settled(&app, &first, &mut first_inbox, "conversation-1").await;
 
     let (follow_up, mut follow_up_inbox) = request_connection();
     app.command(
@@ -585,32 +587,65 @@ async fn ask_answers_a_follow_up_requested_by_a_new_handle() {
         frames.iter().all(|frame| frame["type"] != "askError"),
         "a new request handle continues the conversation: {frames:?}"
     );
-    let chunks: String = frames
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
+        "the follow-up answers its accepted conversation: {frames:?}"
+    );
+    let frames = settled(&app, &follow_up, &mut follow_up_inbox, "conversation-1").await;
+    let inquiry = frames
         .iter()
-        .filter(|frame| frame["type"] == "askChunk")
-        .map(|frame| frame["text"].as_str().expect("chunk text").to_string())
-        .collect();
-    assert_eq!(chunks, streamed(ANSWER_TWO));
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
     assert_eq!(
-        frames.last(),
-        Some(&json!({"type": "askDone", "conversationId": "conversation-1"}))
+        inquiry["transcript"],
+        json!([
+            {"role": "developer", "text": "What does the issues indicator show?"},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+            {"role": "developer", "text": "Which component renders it?"},
+            {"role": "agent", "text": streamed(ANSWER_TWO)},
+        ])
     );
     assert!(
         drain(&mut first_inbox).is_empty(),
         "the request that asked the first turn receives nothing of the follow-up"
     );
+
+    app.command(
+        &follow_up,
+        Command::CloseAsk {
+            conversation_id: Some(json!("conversation-1")),
+        },
+    )
+    .await;
 }
 
-/// Two live sockets still refuse each other's conversation; the request
-/// exemption never hands one page's panel to another.
+/// A conversation answers one turn at a time: a second ask while the first is
+/// still running is refused, whichever client asks it.
 // The environment guard serializes process-wide env across concurrently
 // running tests, so it is deliberately held for the whole test.
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
-async fn ask_refuses_a_second_live_client() {
+async fn ask_refuses_a_second_turn_while_one_runs() {
     let _env = env_guard();
     let scratch = Scratch::new("live-owner");
     let log = scratch.path.join("agent.log");
+    save_subscriptions(
+        &scratch.state(),
+        &[StoredSubscription {
+            id: "subscription-1".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "Test".to_string(),
+            key: "test-key".to_string(),
+            enabled: true,
+            created_at: "2026-11-03T00:00:00.000Z".to_string(),
+            updated_at: "2026-11-03T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("the credentials file is written");
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
     let app = app_for(&scratch, stub_command(&log));
 
     let (owner, mut owner_inbox) = connection();
@@ -623,7 +658,13 @@ async fn ask_refuses_a_second_live_client() {
         },
     )
     .await;
-    drain(&mut owner_inbox);
+    let frames = drain(&mut owner_inbox);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
+        "the first ask is admitted while its turn runs: {frames:?}"
+    );
 
     let (other, mut other_inbox) = connection();
     app.command(
@@ -640,10 +681,19 @@ async fn ask_refuses_a_second_live_client() {
         vec![json!({
             "type": "askError",
             "conversationId": "conversation-1",
-            "message": "This conversation belongs to another client.",
+            "message": "The agent is still answering the previous question.",
         })],
-        "a live socket owns its conversation"
+        "one turn in flight refuses a second question"
     );
+
+    settled(&app, &owner, &mut owner_inbox, "conversation-1").await;
+    app.command(
+        &owner,
+        Command::CloseAsk {
+            conversation_id: Some(json!("conversation-1")),
+        },
+    )
+    .await;
 }
 
 // The environment guard serializes process-wide env across concurrently
