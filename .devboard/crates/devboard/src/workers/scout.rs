@@ -43,6 +43,9 @@ pub const SCOUT_DIRECTORY: &str = "scout";
 pub const SCOUT_LABEL: &str = "scout";
 pub const STATE_VERSION: i64 = 2;
 pub const SCAN_VERSION: i64 = 2;
+/// A scan that filed fewer issues than it requested; `succeeded` means the
+/// requested count was reached.
+pub const SCAN_STATUS_INCOMPLETE: &str = "incomplete";
 /// A scan's agent phase ends after this long without a session update, and its
 /// separately timed settle-and-file phase ends after this long in total.
 pub const SCAN_TIMEOUT_MS: i64 = 15 * 60_000;
@@ -940,7 +943,7 @@ pub fn parse_scan_file(text: &str) -> Option<ScoutScanFile> {
     let status = value_string(object.get("status"))?;
     if !matches!(
         status.as_str(),
-        "running" | "succeeded" | "failed" | "stopped"
+        "running" | "succeeded" | "failed" | "stopped" | SCAN_STATUS_INCOMPLETE
     ) {
         return None;
     }
@@ -2671,6 +2674,9 @@ struct ScanCompletion {
     sync_failure: Option<String>,
     notice: Option<String>,
     error: Option<String>,
+    /// The first refused `issue_create`: it stays on the record and in
+    /// `last_error`, and never fails a scan whose status the count decides.
+    filing_error: Option<String>,
     start_failure: bool,
 }
 
@@ -3841,15 +3847,14 @@ impl ScoutWorker {
             }
             runtime.state.scan = None;
             runtime.state.newest_scan_id = Some(completion.scan_id.clone());
-            let rate_limited = completion
+            // A refused create stays the last error whether or not it reduced
+            // the batch; only a failed scan drives the notice and lifecycle.
+            let failure = completion
                 .error
-                .as_deref()
-                .is_some_and(is_github_rate_limited);
-            runtime.state.last_error = if rate_limited {
-                None
-            } else {
-                completion.error.clone()
-            };
+                .clone()
+                .or_else(|| completion.filing_error.clone());
+            let rate_limited = failure.as_deref().is_some_and(is_github_rate_limited);
+            runtime.state.last_error = if rate_limited { None } else { failure };
             if let Some(notice) = &completion.notice {
                 runtime.state.notice = Some(notice.clone());
             }
@@ -4330,6 +4335,7 @@ async fn run_scan_task(task: ScanTaskOptions) -> ScanCompletion {
                 sync_failure: None,
                 notice: None,
                 error: Some(error),
+                filing_error: None,
                 start_failure: !started,
             }
         }
@@ -4369,6 +4375,7 @@ async fn run_scan_task(task: ScanTaskOptions) -> ScanCompletion {
                 sync_failure: None,
                 notice: None,
                 error: Some(error),
+                filing_error: None,
                 start_failure: !started,
             }
         }
@@ -4430,6 +4437,7 @@ async fn complete_scan(
                 sync_failure: None,
                 notice: None,
                 error: Some(detail.to_string()),
+                filing_error: None,
                 start_failure: false,
             }
         }
@@ -4444,6 +4452,7 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
             sync_failure,
             notice: None,
             error,
+            filing_error: None,
             start_failure: false,
         }
     };
@@ -4593,16 +4602,20 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
     if let Some(shortfall) = &shortfall {
         record_scan_line(task, &format!("shortfall: {shortfall}"));
     }
+    // The status follows the count the scan reached, never the presence of a
+    // refused `issue_create`: a complete batch stays succeeded even with an
+    // extra refusal after it, and a short batch is its own incomplete state.
+    let status = if filed >= task.requested {
+        "succeeded"
+    } else {
+        SCAN_STATUS_INCOMPLETE
+    };
     write_scan_record(
         &task.directory,
         &task.scan_id,
         &task.repo,
         &task.repo_dir,
-        if filing_error.is_none() {
-            "succeeded"
-        } else {
-            "failed"
-        },
+        status,
         &task.started_at,
         Some(iso_from_millis((task.clock)())),
         task.requested,
@@ -4628,7 +4641,8 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
         )),
         None => None,
     };
-    let mut completion = finish(Some(patch), None, filing_error);
+    let mut completion = finish(Some(patch), None, None);
+    completion.filing_error = filing_error;
     completion.notice = notice;
     completion
 }

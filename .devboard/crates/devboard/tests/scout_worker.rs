@@ -324,7 +324,15 @@ async fn one_cycle_files_the_recommendation_and_writes_every_record() {
     );
 
     let scan = read_scan_file(&directory).expect("the scan record");
-    assert_eq!(scan.status, "succeeded");
+    assert_eq!(
+        scan.status, "incomplete",
+        "one filed of five requested is not a succeeded scan"
+    );
+    assert_eq!(
+        scan.shortfall.as_deref(),
+        Some("filed 1 of the 5 requested"),
+        "the shortfall names the missing count"
+    );
     assert_eq!(scan.filed, 1);
     assert_eq!(scan.requested, 5);
     assert_eq!(scan.repo, "acme/fixture");
@@ -359,6 +367,162 @@ async fn one_cycle_files_the_recommendation_and_writes_every_record() {
     assert_eq!(stopped.lifecycle, "stopped");
     assert!(!stopped.enabled);
     assert!(!lock.exists(), "Stop releases the lock");
+}
+
+#[tokio::test]
+async fn a_refused_create_after_a_complete_batch_keeps_the_succeeded_status() {
+    let repo = scratch("batch-then-refusal");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = devboard::workers::scout::now_millis();
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &published_state(&repo, &anchor, "scan-previous", (2, 2), "v1", &anchor),
+    );
+    let forge = FixtureForge::default();
+    let agent: devboard::workers::scout::ScanAgent = {
+        let forge = forge.clone();
+        Arc::new(move |context: devboard::workers::scout::ScanAgentContext| {
+            let forge = forge.clone();
+            Box::pin(async move {
+                let log = [
+                    json!({
+                        "tool": "issue_create",
+                        "at": "2026-11-03T12:00:00.000Z",
+                        "ok": true,
+                        "value": {"number": 21, "title": "First finding"}
+                    }),
+                    json!({
+                        "tool": "issue_create",
+                        "at": "2026-11-03T12:00:00.500Z",
+                        "ok": true,
+                        "value": {"number": 22, "title": "Second finding"}
+                    }),
+                    json!({
+                        "tool": "issue_create",
+                        "at": "2026-11-03T12:00:01.000Z",
+                        "ok": false,
+                        "error": "the forge refused the extra filing"
+                    }),
+                ]
+                .map(|record| record.to_string())
+                .join("\n");
+                let _ =
+                    std::fs::write(context.directory.join("tool-log.jsonl"), format!("{log}\n"));
+                forge.append(pending_issue(
+                    21,
+                    "First finding",
+                    "2026-11-03T12:00:00.000Z",
+                ));
+                forge.append(pending_issue(
+                    22,
+                    "Second finding",
+                    "2026-11-03T12:00:00.500Z",
+                ));
+                Ok(())
+            })
+        })
+    };
+    let worker = worker(&repo, forge, agent);
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 1);
+    let scan = read_scan_file(&scan_directory(&repo, &ids[0])).expect("the scan record");
+    assert_eq!(scan.requested, 2);
+    assert_eq!(scan.filed, 2);
+    assert_eq!(
+        scan.status, "succeeded",
+        "a refused create after the complete batch does not fail the scan"
+    );
+    assert_eq!(
+        scan.error.as_deref(),
+        Some("the forge refused the extra filing"),
+        "the record keeps the refused create's error"
+    );
+    assert_eq!(scan.shortfall, None);
+    let state = worker.current_state();
+    assert_eq!(
+        state.lifecycle, "idle",
+        "a complete batch leaves the worker idle"
+    );
+    assert!(
+        !state
+            .notice
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("Scan failed"),
+        "the notice reports the filing, not a failed scan"
+    );
+    assert_eq!(
+        state.last_error.as_deref(),
+        Some("the forge refused the extra filing"),
+        "the refused create stays the last error"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_short_batch_is_incomplete_and_names_its_shortfall() {
+    let repo = scratch("short-batch");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = devboard::workers::scout::now_millis();
+    let anchor = devboard::workers::scout::iso_from_millis(now - 120_000);
+    write_published_state(
+        &state_dir,
+        &repo,
+        Some("test-version"),
+        &published_state(&repo, &anchor, "scan-previous", (2, 2), "v1", &anchor),
+    );
+    let forge = FixtureForge::default();
+    let agent: devboard::workers::scout::ScanAgent = {
+        let forge = forge.clone();
+        Arc::new(move |context: devboard::workers::scout::ScanAgentContext| {
+            let forge = forge.clone();
+            Box::pin(async move {
+                let record = json!({
+                    "tool": "issue_create",
+                    "at": "2026-11-03T12:00:00.000Z",
+                    "ok": true,
+                    "value": {"number": 21, "title": "Only finding"}
+                });
+                let _ = std::fs::write(
+                    context.directory.join("tool-log.jsonl"),
+                    format!("{record}\n"),
+                );
+                forge.append(pending_issue(
+                    21,
+                    "Only finding",
+                    "2026-11-03T12:00:00.000Z",
+                ));
+                Ok(())
+            })
+        })
+    };
+    let worker = worker(&repo, forge, agent);
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 1);
+    let scan = read_scan_file(&scan_directory(&repo, &ids[0])).expect("the scan record");
+    assert_eq!(scan.requested, 2);
+    assert_eq!(scan.filed, 1);
+    assert_eq!(
+        scan.status, "incomplete",
+        "a short batch is never written as succeeded"
+    );
+    assert_eq!(
+        scan.shortfall.as_deref(),
+        Some("filed 1 of the 2 requested"),
+        "the shortfall names the missing issue"
+    );
+    assert_eq!(scan.error, None);
+    assert_eq!(worker.current_state().lifecycle, "idle");
+    worker.stop().await;
 }
 
 #[tokio::test]
