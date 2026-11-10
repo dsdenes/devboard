@@ -5,7 +5,7 @@
 //! journal from a cursor and then follows it live. No frame carries another
 //! run's identity or any workspace state.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -33,6 +33,14 @@ const RUN_POLL_MS: u64 = 500;
 /// How often the run's activity journals are checked for an appended line.
 /// A check costs one `stat`; the file is read only when its stamp changed.
 const RUN_ACTIVITY_MS: u64 = 250;
+/// How often `RunHub` drops the journals of runs this dashboard no longer
+/// discovers, so a process that streamed many runs keeps one journal per run
+/// it can still serve rather than one per run it has ever served.
+pub const RUN_JOURNAL_SWEEP_MS: u64 = 30_000;
+/// How long a journal survives after its run was last seen live once that run
+/// leaves the discovered set, so a run whose record is being rewritten keeps
+/// its retained window and its cursors.
+const RUN_JOURNAL_GRACE_MS: u64 = 60_000;
 /// The family directories a worker run can live under.
 const FAMILIES: [&str; 9] = [
     "scout",
@@ -455,6 +463,9 @@ struct RunJournal {
     activity_stamp: Option<(SystemTime, u64)>,
     /// The detached text journal's last `(modified, len)`.
     text_stamp: Option<(SystemTime, u64)>,
+    /// When this run was last sampled as live, so a sweep keeps its journal
+    /// through a short grace after the run leaves the discovered set.
+    last_live: Option<Instant>,
 }
 
 impl RunJournal {
@@ -474,6 +485,7 @@ impl RunJournal {
             last_activity_sync: None,
             activity_stamp: None,
             text_stamp: None,
+            last_live: None,
         }
     }
 
@@ -797,7 +809,26 @@ impl RunHub {
             .entry(run.id.clone())
             .or_insert_with(RunJournal::new);
         journal.sync_if_due(run, now, force);
+        if run.live {
+            journal.last_live = Some(now);
+        }
         journal.read_after(after)
+    }
+
+    /// Drops the journal of every run `discover` no longer reports, so a
+    /// process that has streamed many runs holds one journal per run it can
+    /// still serve. A run still discovered keeps its window and cursors, and
+    /// a run seen live within the grace keeps them through a record rewrite.
+    pub fn sweep(&self, discovered: &[RunSource], now: Instant) {
+        let retained: HashSet<&str> = discovered.iter().map(|run| run.id.as_str()).collect();
+        let mut journals = self.journals.lock().expect("the run journal lock");
+        journals.retain(|id, journal| {
+            retained.contains(id.as_str())
+                || journal.last_live.is_some_and(|live| {
+                    now.saturating_duration_since(live)
+                        < Duration::from_millis(RUN_JOURNAL_GRACE_MS)
+                })
+        });
     }
 }
 
@@ -1037,6 +1068,24 @@ async fn send_frame(socket: &mut WebSocket, frame: &Value) -> Result<(), ()> {
 mod tests {
     use super::*;
 
+    /// A run whose source is absent, so a read creates its journal without
+    /// producing a frame.
+    fn run_source(id: &str, live: bool) -> RunSource {
+        RunSource {
+            id: id.to_string(),
+            kind: "worker".to_string(),
+            label: id.to_string(),
+            lifecycle: "running".to_string(),
+            live,
+            updated_at: None,
+            source: Source::Worker {
+                state_path: PathBuf::from("absent").join(format!("{id}.json")),
+                activity_path: None,
+                family: "worker".to_string(),
+            },
+        }
+    }
+
     #[test]
     fn a_reset_names_the_retained_window_start() {
         let mut journal = RunJournal::new();
@@ -1050,5 +1099,56 @@ mod tests {
         assert_eq!(reset, Some(3));
         assert_eq!(entries.len(), RUN_OUTPUT_WINDOW);
         assert_eq!(entries[0]["cursor"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn a_sweep_keeps_only_the_journals_of_discovered_runs() {
+        let hub = RunHub::new();
+        let kept = run_source("run-kept", false);
+        let dropped = run_source("run-dropped", false);
+        let now = Instant::now();
+        hub.read_at(&kept, None, now, true);
+        hub.read_at(&dropped, None, now, true);
+        {
+            let mut journals = hub.journals.lock().expect("the run journal lock");
+            let journal = journals.get_mut(&kept.id).expect("the kept journal");
+            for index in 0..(RUN_OUTPUT_WINDOW + 2) {
+                let mut frame = Map::new();
+                frame.insert("type".to_string(), Value::String("activity".to_string()));
+                frame.insert("text".to_string(), Value::String(format!("line {index}")));
+                journal.push(frame, &kept.id);
+            }
+        }
+        hub.sweep(std::slice::from_ref(&kept), now);
+        {
+            let journals = hub.journals.lock().expect("the run journal lock");
+            assert_eq!(journals.len(), 1);
+            assert!(journals.contains_key(&kept.id));
+        }
+        let (reset, entries) = hub.read_at(&kept, Some(1), now, true);
+        assert_eq!(reset, Some(3));
+        assert_eq!(entries.len(), RUN_OUTPUT_WINDOW);
+        hub.sweep(&[], now);
+        assert!(hub
+            .journals
+            .lock()
+            .expect("the run journal lock")
+            .is_empty());
+    }
+
+    #[test]
+    fn a_sweep_keeps_a_recently_live_journal_through_its_grace() {
+        let hub = RunHub::new();
+        let run = run_source("run-live", true);
+        let now = Instant::now();
+        hub.read_at(&run, None, now, true);
+        hub.sweep(&[], now + Duration::from_secs(1));
+        assert_eq!(hub.journals.lock().expect("the run journal lock").len(), 1);
+        hub.sweep(&[], now + Duration::from_millis(RUN_JOURNAL_GRACE_MS));
+        assert!(hub
+            .journals
+            .lock()
+            .expect("the run journal lock")
+            .is_empty());
     }
 }

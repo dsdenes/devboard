@@ -540,6 +540,7 @@ impl App {
         app.terminate_restored_children();
         app.start_lease_refresh();
         app.start_provider_refresh();
+        app.start_run_journal_sweep();
         app
     }
 
@@ -574,6 +575,30 @@ impl App {
                 }
                 app.providers.background_refresh().await;
                 app.shared.send_all(app.providers.state_frame(), None);
+            }
+        });
+    }
+
+    /// Drops the run-output journals of runs this dashboard no longer
+    /// discovers, so a process that has streamed many runs holds one journal
+    /// per run it can still serve rather than one per run it has ever served.
+    fn start_run_journal_sweep(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_millis(
+                crate::runs::RUN_JOURNAL_SWEEP_MS,
+            ));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // `interval` fires immediately; the first sweep belongs one
+            // period later, after the collection has been served once.
+            timer.tick().await;
+            loop {
+                timer.tick().await;
+                let Some(app) = weak.upgrade() else {
+                    break;
+                };
+                let discovered = crate::runs::discover(&app);
+                app.run_output.sweep(&discovered, std::time::Instant::now());
             }
         });
     }
