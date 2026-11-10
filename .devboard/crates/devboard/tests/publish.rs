@@ -221,6 +221,8 @@ struct GiteaData {
     rerun_count: usize,
     /// The CI reads answered since the last restart.
     reads_since_rerun: usize,
+    /// Whether the run's job read is refused.
+    jobs_refused: bool,
 }
 
 /// How the Gitea CI stub answers the gate's reads.
@@ -286,6 +288,7 @@ impl GiteaStub {
             ci_reads: 0,
             rerun_count: 0,
             reads_since_rerun: 0,
+            jobs_refused: false,
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
         let inner = state.clone();
@@ -307,6 +310,11 @@ impl GiteaStub {
     /// The CI answer the gate reads for the checkout's HEAD.
     fn set_ci(&self, ci: CiState) {
         self.state.lock().expect("gitea").ci = ci;
+    }
+
+    /// Refuses every read of a run's jobs, so the gate keeps the run verdict.
+    fn refuse_jobs(&self) {
+        self.state.lock().expect("gitea").jobs_refused = true;
     }
 
     /// How many restarts the gate asked the forge for.
@@ -427,6 +435,45 @@ fn gitea_route(
             .to_string()
             .into_bytes(),
         };
+    }
+    if request.method == "GET"
+        && (path == format!("{repo}/actions/runs/777/jobs")
+            || path == format!("{repo}/actions/runs/778/jobs"))
+    {
+        // The gate reads a run's jobs only for a run it refuses, so the stub
+        // reports the job and the step that failed.
+        let data = state.lock().expect("gitea");
+        if data.jobs_refused {
+            return StubResponse {
+                status: 404,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: br#"{"message":"the run's jobs cannot be read"}"#.to_vec(),
+            };
+        }
+        return json_response(json!({
+            "total_count": 1,
+            "jobs": [{
+                "id": 5,
+                "run_id": if path.contains("/778/") { 778 } else { 777 },
+                "name": "check",
+                "status": "completed",
+                "conclusion": "failure",
+                "steps": [
+                    {
+                        "number": 1,
+                        "name": "Check out the repository",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "number": 2,
+                        "name": "Test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                ],
+            }],
+        }));
     }
     if request.method == "GET" && path == repo {
         let data = state.lock().expect("gitea");
@@ -1945,7 +1992,8 @@ async fn ci_gate_refuses_every_non_success_conclusion() {
         assert!(
             message.contains("devboard-ci.yml run 778")
                 && message.contains(conclusion)
-                && message.contains("after one re-run"),
+                && message.contains("after one re-run")
+                && message.contains("check failed at Test"),
             "{conclusion}: {message}"
         );
         assert_eq!(
@@ -2016,6 +2064,7 @@ async fn ci_gate_refuses_a_restart_the_forge_will_not_run() {
     assert!(
         message.contains("devboard-ci.yml run 777")
             && message.contains("concluded failure")
+            && message.contains("check failed at Test")
             && message.contains("its re-run was refused")
             && message.contains("HTTP 403"),
         "{message}"
@@ -2032,6 +2081,25 @@ async fn ci_gate_refuses_a_restart_the_forge_will_not_run() {
     assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
         .trim()
         .is_empty());
+}
+
+#[tokio::test]
+async fn ci_gate_keeps_the_run_verdict_when_the_job_read_is_refused() {
+    let live = live("ci-jobs-refused", release_assets()).await;
+    live.gitea_stub.set_ci(CiState::RerunFails("failure"));
+    live.gitea_stub.refuse_jobs();
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(2);
+    let error = publish(args)
+        .await
+        .expect_err("a refused job read keeps the run's refusal");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("devboard-ci.yml run 778")
+            && message.contains("concluded failure after one re-run")
+            && !message.contains("failed at"),
+        "{message}"
+    );
 }
 
 #[tokio::test]

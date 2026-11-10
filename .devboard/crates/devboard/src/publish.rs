@@ -1323,6 +1323,34 @@ impl Api {
         Ok(runs)
     }
 
+    /// The jobs of one `devboard-ci.yml` run, each with its first failed step.
+    ///
+    /// The forge answers the same `jobs` document GitHub serves, so a gate
+    /// that refuses the tag names the job and the step that failed instead of
+    /// only the run's conclusion. A refused read keeps the run verdict.
+    async fn gitea_ci_jobs(&self, run_id: u64) -> Result<Vec<WorkflowJob>> {
+        let mut jobs = Vec::new();
+        for page in 1..=10u32 {
+            let path = format!(
+                "{}/actions/runs/{run_id}/jobs?per_page=100&page={page}",
+                gitea::repo_path(&self.gitea)
+            );
+            let document = self.gitea_json("GET", &path, None).await?;
+            let Some(entries) = document.get("jobs").and_then(Value::as_array) else {
+                break;
+            };
+            if entries.is_empty() {
+                break;
+            }
+            let full = entries.len() >= 100;
+            jobs.extend(workflow_jobs(&document));
+            if !full {
+                break;
+            }
+        }
+        Ok(jobs)
+    }
+
     /// Restarts one settled `devboard-ci.yml` run on the canonical forge.
     ///
     /// The run names a commit the branch already carries, so no later push
@@ -3383,18 +3411,24 @@ async fn wait_for_ci_success(
                                 deadline =
                                     clock.now_millis() + args.wait_timeout.as_millis() as i64;
                             }
-                            Err(error) => bail!(
-                                "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; its re-run was refused: {error:#}; no tag was pushed",
-                                settled.id,
-                                short_sha(commit)
-                            ),
+                            Err(error) => {
+                                let detail = ci_failed_jobs(api, settled.id).await;
+                                bail!(
+                                    "the {CI_WORKFLOW} run {} for {} concluded {conclusion}{detail}; its re-run was refused: {error:#}; no tag was pushed",
+                                    settled.id,
+                                    short_sha(commit)
+                                )
+                            }
                         },
                         Some(_) if !rerun_live => {}
-                        Some(_) => bail!(
-                            "the {CI_WORKFLOW} run {} for {} concluded {conclusion} after one re-run; no tag was pushed",
-                            settled.id,
-                            short_sha(commit)
-                        ),
+                        Some(_) => {
+                            let detail = ci_failed_jobs(api, settled.id).await;
+                            bail!(
+                                "the {CI_WORKFLOW} run {} for {} concluded {conclusion} after one re-run{detail}; no tag was pushed",
+                                settled.id,
+                                short_sha(commit)
+                            )
+                        }
                     }
                 }
             }
@@ -3421,8 +3455,9 @@ async fn wait_for_ci_success(
                 }
                 if let Some(settled) = runs.iter().find(|run| workflow_finished(run)) {
                     let conclusion = ci_conclusion(settled);
+                    let detail = ci_failed_jobs(api, settled.id).await;
                     bail!(
-                        "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; no tag was pushed",
+                        "the {CI_WORKFLOW} run {} for {} concluded {conclusion}{detail}; no tag was pushed",
                         settled.id,
                         short_sha(commit)
                     );
@@ -3434,6 +3469,17 @@ async fn wait_for_ci_success(
             );
         }
         sleeper.sleep(args.poll_interval).await;
+    }
+}
+
+/// What a settled non-success run adds to its refusal: `: <job and step>`
+/// when the forge answers the job read, and nothing when that read is
+/// refused. The run verdict stands in either case.
+async fn ci_failed_jobs(api: &Api, run_id: u64) -> String {
+    let jobs = api.gitea_ci_jobs(run_id).await.unwrap_or_default();
+    match failed_jobs_detail(&jobs) {
+        Some(detail) => format!(": {detail}"),
+        None => String::new(),
     }
 }
 
