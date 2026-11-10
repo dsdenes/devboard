@@ -4876,11 +4876,14 @@ impl IssuesWorker {
                 continue;
             }
             // A record another harness version left `running` is rewritten by
-            // no worker: once the pid it names no longer runs, nothing can own
-            // the run, so it is closed here instead of surviving every restart
-            // as a running history entry the Runs view reports stopped.
+            // no worker: once the process it names no longer runs, nothing can
+            // own the run, so it is closed here instead of surviving every
+            // restart as a running history entry the Runs view reports
+            // stopped. The recorded start tick, not the bare pid, proves that
+            // process: a pid the kernel recycled for an unrelated process
+            // belongs to nobody this record wrote.
             let orphaned = entry.run.worker_pid != std::process::id()
-                && !crate::supervision::live_process(entry.run.worker_pid);
+                && !crate::supervision::live_identity(entry.run.worker_pid, entry.run.start_ticks);
             if orphaned
                 || entry.run.worker_pid == std::process::id()
                 || entry.run.harness_version == self.harness_version
@@ -6872,6 +6875,109 @@ mod tests {
         assert!(
             written["finishedAt"].is_string(),
             "a closed record carries its finish time: {written}"
+        );
+    }
+
+    /// A stand-in process for the pid a seeded record names, killed by the
+    /// caller when its assertions are done.
+    fn stand_in() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("120")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker")
+    }
+
+    /// A `running` record of another version whose pid the kernel has already
+    /// handed to an unrelated process is closed on start: the recorded start
+    /// tick proves that process is not the worker, so this record has no owner
+    /// left and would otherwise stay a running history entry forever.
+    #[tokio::test]
+    async fn start_closes_a_run_whose_recycled_pid_names_an_unrelated_process() {
+        let (repo, state) = unit_root("recycled-pid");
+        let mut live = stand_in();
+        let pid = live.id();
+        let ticks = crate::supervision::start_ticks(pid).expect("the stand-in's start tick");
+        assert!(
+            crate::supervision::live_process(pid),
+            "the seeded pid names a live process"
+        );
+        let directory = run_directory(&state, &repo, "recycled");
+        std::fs::create_dir_all(&directory).expect("a run directory");
+        let record = json!({
+            "version": 1,
+            "runId": "recycled",
+            "repo": "acme/app",
+            "status": "running",
+            "argv": [],
+            "cwd": repo.display().to_string(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "finishedAt": null,
+            "exitCode": null,
+            "issues": [],
+            "firstStderrLine": null,
+            "workerPid": pid,
+            "startTicks": ticks + 1,
+            "harnessVersion": "0.9.0",
+        });
+        std::fs::write(run_file_path(&directory), format!("{record}\n")).expect("a run record");
+
+        let mut worker = worker(&repo, &state);
+        assert!(worker.start("acme/app"), "the worker starts");
+        let _ = live.kill();
+        let _ = live.wait();
+
+        let text = std::fs::read_to_string(run_file_path(&directory)).expect("the record");
+        let written: Value = serde_json::from_str(&text).expect("record JSON");
+        assert_eq!(written["status"], json!("stopped"), "{written}");
+        assert!(
+            written["finishedAt"].is_string(),
+            "a closed record carries its finish time: {written}"
+        );
+    }
+
+    /// The control for the recycled-pid case: a record whose pid and start tick
+    /// still name the same live process keeps its owner, so another version's
+    /// worker leaves it `running` rather than closing a run in flight.
+    #[tokio::test]
+    async fn start_leaves_a_run_running_while_its_recorded_identity_is_live() {
+        let (repo, state) = unit_root("live-identity");
+        let mut live = stand_in();
+        let pid = live.id();
+        let ticks = crate::supervision::start_ticks(pid).expect("the stand-in's start tick");
+        let directory = run_directory(&state, &repo, "owned");
+        std::fs::create_dir_all(&directory).expect("a run directory");
+        let record = json!({
+            "version": 1,
+            "runId": "owned",
+            "repo": "acme/app",
+            "status": "running",
+            "argv": [],
+            "cwd": repo.display().to_string(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "finishedAt": null,
+            "exitCode": null,
+            "issues": [],
+            "firstStderrLine": null,
+            "workerPid": pid,
+            "startTicks": ticks,
+            "harnessVersion": "0.9.0",
+        });
+        std::fs::write(run_file_path(&directory), format!("{record}\n")).expect("a run record");
+
+        let mut worker = worker(&repo, &state);
+        assert!(worker.start("acme/app"), "the worker starts");
+        let text = std::fs::read_to_string(run_file_path(&directory)).expect("the record");
+        let _ = live.kill();
+        let _ = live.wait();
+
+        let written: Value = serde_json::from_str(&text).expect("record JSON");
+        assert_eq!(written["status"], json!("running"), "{written}");
+        assert!(
+            written["finishedAt"].is_null(),
+            "a run still owned carries no finish time: {written}"
         );
     }
 
