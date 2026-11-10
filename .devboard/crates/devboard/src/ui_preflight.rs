@@ -6,6 +6,10 @@
 //! project answers the same JSON, and the skill prints it with
 //! `devboard preflight ui-ux [project-root]`.
 //!
+//! The glob walk prunes [`IGNORED_DIRS`] and every directory the scanned root's
+//! own `.gitignore` excludes, read from that root alone so an enclosing
+//! repository's rules never change the answer.
+//!
 //! The `design-md` lint runs through [`preflight_with`], so tests never spawn
 //! the package. [`preflight`] runs the local bin directly; a project without an
 //! install, or without a JavaScript runtime the bin's shebang can find, gets an
@@ -18,6 +22,7 @@ use regex::Regex;
 use serde_json::{json, Map, Number, Value};
 
 /// Directories the glob walk never enters, mirroring the script's ignore set.
+/// The scanned root's own `.gitignore` adds prune rules on top of these names.
 const IGNORED_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -884,6 +889,88 @@ fn rel(root: &Path, path: &Path) -> String {
     }
 }
 
+/// Directory prune rules resolved from the scanned root's own `.gitignore`.
+///
+/// Only `<root>/.gitignore` is read: rules of an enclosing repository never
+/// prune this project's tree. Rules apply to a directory's root-relative path
+/// in file order and the last match decides, so a later `!` rule re-includes
+/// what an earlier one excluded.
+struct IgnoreRules {
+    rules: Vec<IgnoreRule>,
+}
+
+struct IgnoreRule {
+    /// The pattern's path components, leading and trailing `/` removed.
+    parts: Vec<String>,
+    /// A pattern with an internal or leading `/` matches the whole root-relative
+    /// path; one without matches a directory name at any depth.
+    anchored: bool,
+    negated: bool,
+}
+
+impl IgnoreRules {
+    fn read(root: &Path) -> Self {
+        let text = std::fs::read_to_string(root.join(".gitignore")).unwrap_or_default();
+        Self {
+            rules: text.lines().filter_map(ignore_rule).collect(),
+        }
+    }
+
+    /// Whether the directory at the root-relative `parts` path is ignored.
+    fn ignores(&self, parts: &[String]) -> bool {
+        let mut ignored = false;
+        for rule in &self.rules {
+            if rule.matches(parts) {
+                ignored = !rule.negated;
+            }
+        }
+        ignored
+    }
+}
+
+impl IgnoreRule {
+    fn matches(&self, parts: &[String]) -> bool {
+        if !self.anchored {
+            return parts
+                .last()
+                .is_some_and(|name| component_match(&self.parts[0], name, true));
+        }
+        let pattern = self.parts.iter().map(String::as_str).collect::<Vec<_>>();
+        glob_match(&pattern, parts, true)
+    }
+}
+
+/// One `.gitignore` line as a directory rule: blank lines and comments drop, a
+/// `!` prefix negates, and a trailing `/` narrows the rule to a directory.
+fn ignore_rule(line: &str) -> Option<IgnoreRule> {
+    let line = line.trim_end();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (negated, pattern) = match line.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, line),
+    };
+    let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
+    // Git anchors a pattern that holds a `/` anywhere but the removed trailing
+    // one; the leading `/` is then redundant.
+    let anchored = pattern.contains('/');
+    let pattern = pattern.strip_prefix('/').unwrap_or(pattern);
+    let parts = pattern
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(IgnoreRule {
+        parts,
+        anchored,
+        negated,
+    })
+}
+
 /// Every file under one root, as relative component lists.
 struct Tree {
     files: Vec<Vec<String>>,
@@ -891,8 +978,9 @@ struct Tree {
 
 impl Tree {
     fn scan(root: &Path) -> Self {
+        let ignore = IgnoreRules::read(root);
         let mut files = Vec::new();
-        walk(root, &mut Vec::new(), &mut files);
+        walk(root, &mut Vec::new(), &mut files, &ignore);
         Self { files }
     }
 
@@ -909,7 +997,12 @@ impl Tree {
     }
 }
 
-fn walk(directory: &Path, prefix: &mut Vec<String>, files: &mut Vec<Vec<String>>) {
+fn walk(
+    directory: &Path,
+    prefix: &mut Vec<String>,
+    files: &mut Vec<Vec<String>>,
+    ignore: &IgnoreRules,
+) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
@@ -924,7 +1017,9 @@ fn walk(directory: &Path, prefix: &mut Vec<String>, files: &mut Vec<Vec<String>>
                 continue;
             }
             prefix.push(name);
-            walk(&path, prefix, files);
+            if !ignore.ignores(prefix) {
+                walk(&path, prefix, files, ignore);
+            }
             prefix.pop();
         } else if path.is_file() {
             let mut file = prefix.clone();

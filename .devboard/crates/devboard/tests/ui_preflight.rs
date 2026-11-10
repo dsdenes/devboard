@@ -489,6 +489,53 @@ fn ignored_directories_do_not_supply_tokens_or_stories() {
 }
 
 #[test]
+fn gitignored_directories_supply_no_tokens_or_stories() {
+    let fixture = Fixture::new("gitignored");
+    fixture.write(".gitignore", "scratch/\npackages/*/generated/\n");
+    fixture.write(
+        "scratch/theme.tokens.json",
+        r#"{"space":{"sm":{"$value":"4px"}}}"#,
+    );
+    fixture.write(
+        "packages/ui/generated/kit.tokens.json",
+        r#"{"a":{"$value":1}}"#,
+    );
+    fixture.write("scratch/.storybook/main.ts", "export default {};\n");
+    fixture.write("scratch/Thing.stories.tsx", "export default {};\n");
+    fixture.write(
+        "packages/ui/generated/Kit.stories.ts",
+        "export default {};\n",
+    );
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["dtcg"], json!({"status": "missing"}));
+    assert_eq!(
+        result["checks"]["storybook"],
+        json!({"status": "missing", "config": null, "storyCount": 0})
+    );
+    assert_eq!(result["applicable"], json!(false));
+}
+
+#[test]
+fn a_negated_gitignore_rule_keeps_its_directory() {
+    let fixture = Fixture::new("gitignore-negated");
+    fixture.write(".gitignore", "generated/*\n!generated/keep/\n");
+    fixture.write(
+        "generated/keep/theme.tokens.json",
+        r#"{"space":{"sm":{"$value":"4px"}}}"#,
+    );
+    fixture.write("generated/drop/other.tokens.json", r#"{"a":{"$value":1}}"#);
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["dtcg"],
+        json!({
+            "status": "pass",
+            "path": "generated/keep/theme.tokens.json",
+            "tokenCount": 1,
+        })
+    );
+}
+
+#[test]
 fn token_files_are_found_by_glob_and_by_the_token_directory() {
     let fixture = Fixture::new("tokens-glob");
     fixture.write(
