@@ -746,10 +746,23 @@ impl RunJournal {
     }
 
     /// The reset marker and entries after a cursor.
+    ///
+    /// A cursor names an entry this journal emitted, so the journal can only
+    /// continue from one it still holds: a cursor whose entries were dropped
+    /// (`cursor + 1 < start`) and a cursor above every cursor this journal has
+    /// emitted — one minted by another process, whose counter restarted —
+    /// both resynchronize from the retained window start. The cursor
+    /// immediately before the window names an entry the client already saw
+    /// and missed nothing, so it keeps its plain filter; that keeps `after=0`
+    /// on a fresh journal free of a reset marker.
     fn read_after(&self, after: Option<u64>) -> (Option<u64>, Vec<Value>) {
         let start = self.window_start();
-        let reset = after.filter(|cursor| *cursor < start).map(|_| start);
-        let after = after.unwrap_or(0);
+        let highest = self.next_cursor - 1;
+        let reset = after
+            .filter(|cursor| cursor.saturating_add(1) < start || *cursor > highest)
+            .map(|_| start);
+        // A reset replays the retained window, so nothing before it is owed.
+        let after = reset.map(|start| start - 1).or(after).unwrap_or(0);
         let entries = self
             .entries
             .iter()
@@ -1095,6 +1108,10 @@ async fn run_socket(
                     if send_frame(&mut socket, &json!({"type": "reset", "run": run.id, "cursor": cursor})).await.is_err() {
                         break;
                     }
+                    // The reset replays from the window start, so this socket
+                    // now owes nothing before it; a later push continues from
+                    // the cursor just before the window.
+                    sent = Some(cursor.saturating_sub(1));
                 }
                 let mut last = sent;
                 for frame in entries {
@@ -1164,6 +1181,64 @@ mod tests {
         assert_eq!(reset, Some(3));
         assert_eq!(entries.len(), RUN_OUTPUT_WINDOW);
         assert_eq!(entries[0]["cursor"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn a_cursor_above_the_highest_cursor_resynchronizes() {
+        let mut journal = RunJournal::new();
+        for index in 0..2 {
+            let mut frame = Map::new();
+            frame.insert("type".to_string(), Value::String("activity".to_string()));
+            frame.insert("text".to_string(), Value::String(format!("line {index}")));
+            journal.push(frame, "run-a");
+        }
+        // A cursor minted by another process lies above every cursor this
+        // journal will emit, so it names no gap-free continuation.
+        let (reset, entries) = journal.read_after(Some(9));
+        assert_eq!(reset, Some(1));
+        let cursors: Vec<Value> = entries
+            .iter()
+            .map(|entry| entry["cursor"].clone())
+            .collect();
+        assert_eq!(cursors, vec![serde_json::json!(1), serde_json::json!(2)]);
+    }
+
+    #[test]
+    fn a_cursor_above_the_highest_cursor_resynchronizes_an_empty_journal() {
+        let journal = RunJournal::new();
+        let (reset, entries) = journal.read_after(Some(4));
+        assert_eq!(reset, Some(1));
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn a_cursor_inside_the_window_answers_only_later_entries() {
+        let mut journal = RunJournal::new();
+        for index in 0..3 {
+            let mut frame = Map::new();
+            frame.insert("type".to_string(), Value::String("activity".to_string()));
+            frame.insert("text".to_string(), Value::String(format!("line {index}")));
+            journal.push(frame, "run-a");
+        }
+        let (reset, entries) = journal.read_after(Some(2));
+        assert_eq!(reset, None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["cursor"], serde_json::json!(3));
+    }
+
+    #[test]
+    fn a_fresh_journal_answers_no_reset_for_cursor_zero() {
+        let mut journal = RunJournal::new();
+        let (reset, entries) = journal.read_after(Some(0));
+        assert_eq!(reset, None);
+        assert!(entries.is_empty());
+        let mut frame = Map::new();
+        frame.insert("type".to_string(), Value::String("activity".to_string()));
+        journal.push(frame, "run-a");
+        let (reset, entries) = journal.read_after(Some(0));
+        assert_eq!(reset, None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["cursor"], serde_json::json!(1));
     }
 
     #[test]

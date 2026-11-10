@@ -964,6 +964,133 @@ async fn four_sockets_read_one_run_once_per_interval() {
     let _ = server.child.kill();
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cursor_from_the_previous_process_resynchronizes_after_a_replacement() {
+    let scratch = Scratch::new("stale-cursor");
+    let _repo = fixture_repo(&scratch);
+    let directory = seed_issue_run(&scratch, "fixture", "running", std::process::id());
+    let mut first = spawn_server(&scratch, "true");
+    let port = first.listening_port().await;
+    let base = first.base();
+    wait_ready(&base).await;
+    let id = run_id(&base, "fixture").await;
+
+    // The page's first socket reaches the seeded activity and records the
+    // cursor it has consumed.
+    let mut socket = run_socket(port, &id, None).await;
+    let frames = frames_until(
+        &mut socket,
+        |frame| frame["type"] == "activity" && frame["text"] == json!("two"),
+        Duration::from_secs(20),
+    )
+    .await;
+    let mut cursor = frames
+        .iter()
+        .filter_map(|frame| frame["cursor"].as_u64())
+        .max()
+        .expect("a cursor");
+
+    // A second state the replacement reads once, never as a second frame,
+    // leaves the recorded cursor above every cursor the fresh journal emits
+    // before the reconnect: a fresh `RunHub` starts its counter at 1.
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.join("run.json")).expect("the run record"),
+    )
+    .expect("JSON");
+    let mut changed = record.clone();
+    changed["finishedAt"] = json!("2026-11-10T00:00:05.000Z");
+    write(&directory.join("run.json"), &format!("{changed}\n"));
+    let frames = frames_until(
+        &mut socket,
+        |frame| {
+            frame["type"] == "state"
+                && frame["state"]["finishedAt"] == json!("2026-11-10T00:00:05.000Z")
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+    cursor = cursor.max(
+        frames
+            .iter()
+            .filter_map(|frame| frame["cursor"].as_u64())
+            .max()
+            .expect("a cursor"),
+    );
+
+    // Replace the dashboard and reconnect with the cursor the old process
+    // minted, as a page whose socket closed keeps it.
+    restart(&base).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if first.child.try_wait().expect("a status").is_some() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the replaced dashboard exited"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    wait_ready(&base).await;
+    let id = run_id(&base, "fixture").await;
+
+    let mut reconnected = run_socket(port, &id, Some(cursor)).await;
+    let replayed = frames_until(
+        &mut reconnected,
+        |frame| frame["type"] == "activity" && frame["text"] == json!("two"),
+        Duration::from_secs(20),
+    )
+    .await;
+    let reset = replayed.first().expect("a frame");
+    assert_eq!(reset["type"], json!("reset"), "{replayed:?}");
+    assert_eq!(reset["run"], json!(id));
+    let start = reset["cursor"].as_u64().expect("the window start");
+    assert!(start < cursor, "the reset names the retained window start");
+    let activity: Vec<&str> = by_type(&replayed, "activity")
+        .into_iter()
+        .filter_map(|frame| frame["text"].as_str())
+        .collect();
+    assert_eq!(
+        activity,
+        vec!["one", "two"],
+        "the retained activity replays once behind the reset: {replayed:?}"
+    );
+    let retained = by_type(&replayed, "activity")
+        .first()
+        .copied()
+        .expect("a retained entry");
+    assert_eq!(retained["cursor"].as_u64(), Some(start));
+
+    // The same socket keeps following: a later activity entry reaches it.
+    write(
+        &directory.join("activity.json"),
+        &format!("{}\n", json!(["one", "two", "three"])),
+    );
+    let later = frames_until(
+        &mut reconnected,
+        |frame| frame["type"] == "activity" && frame["text"] == json!("three"),
+        Duration::from_secs(20),
+    )
+    .await;
+    let frame = later.last().expect("a frame");
+    assert!(
+        frame["cursor"].as_u64().unwrap_or(0) > start,
+        "a push after the reset keeps rising: {later:?}"
+    );
+
+    drop(socket);
+    drop(reconnected);
+    if let Some(lease) =
+        devboard::detached_run::read_detached_lease(&scratch.state(), &scratch.repo())
+    {
+        unsafe {
+            libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    let _ = first.child.kill();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_orphaned_running_record_is_stopped_and_unrewritten() {
     let scratch = Scratch::new("orphan");
