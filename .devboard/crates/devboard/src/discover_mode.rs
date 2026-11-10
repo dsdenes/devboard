@@ -8937,6 +8937,13 @@ async fn clone_remote_project(
             ));
         }
     }
+    // The clone carries no harness for an arbitrary project, so the peer's slash
+    // command and the prompt it reads would not resolve. Ship both into the checkout.
+    if let Err(error) = crate::cli_install::install_discover_support(&staging) {
+        return clone_failed(format!(
+            "The Discover command wrappers could not be written into the checkout: {error}"
+        ));
+    }
     {
         let mut state = lock(&mode.state);
         state.cloning = None;

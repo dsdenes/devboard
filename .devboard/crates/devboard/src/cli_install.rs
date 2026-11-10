@@ -124,6 +124,48 @@ pub fn managed_skill_names() -> &'static [String] {
     &package().names
 }
 
+/// Writes the shipped `/discover-*` wrappers and the prompt documents they read into
+/// `root`, so a checkout that never received a host install — the throwaway clone a
+/// remote Discover target runs in — can expand the command itself. Returns the
+/// root-relative paths it wrote.
+pub fn install_discover_support(root: &Path) -> Result<Vec<String>> {
+    let mut written = Vec::new();
+    if let Some(commands) = OMP.get_dir("commands") {
+        write_discover_files(commands, ".omp/commands", root, &mut written)?;
+    }
+    write_discover_files(&PROMPTS, ".devboard/prompts", root, &mut written)?;
+    Ok(written)
+}
+
+/// Copies every shipped `discover-*.md` in `dir` into `<root>/<target>`, leaving a
+/// file that already holds the shipped bytes alone.
+fn write_discover_files(
+    dir: &Dir<'static>,
+    target: &str,
+    root: &Path,
+    written: &mut Vec<String>,
+) -> Result<()> {
+    for file in dir.files() {
+        let Some(name) = file.path().file_name().map(|name| name.to_string_lossy()) else {
+            continue;
+        };
+        if !name.starts_with("discover-") || !name.ends_with(".md") {
+            continue;
+        }
+        let label = format!("{target}/{name}");
+        let destination = root.join(&label);
+        if is_identical_file(&destination, file.contents())? {
+            continue;
+        }
+        let parent = destination.parent().unwrap_or(root);
+        ensure_real_dir(parent)?;
+        fs::write(&destination, file.contents())
+            .with_context(|| format!("discover: writing {}", destination.display()))?;
+        written.push(label);
+    }
+    Ok(())
+}
+
 fn build_package() -> Package {
     let mut all = Vec::new();
     collect_files(&OMP, &mut all);

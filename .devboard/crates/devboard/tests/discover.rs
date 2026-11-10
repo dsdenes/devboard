@@ -711,7 +711,11 @@ async fn a_remote_run_retains_its_published_snapshot() {
     std::fs::create_dir_all(&state).expect("a state directory");
     provider(&state);
     let log = scratch.path().join("agent.log");
-    let command = format!("{} --discover --log={}", stub_agent(), log.display());
+    let command = format!(
+        "{} --discover --discover-requires-wrappers --log={}",
+        stub_agent(),
+        log.display()
+    );
     std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
     let app = App::new(
         config(&repo, &state, command),
@@ -772,6 +776,28 @@ async fn a_remote_run_retains_its_published_snapshot() {
     assert!(retained
         .join(".omp/skills/discover-glossary/SKILL.md")
         .is_file());
+    assert!(
+        !retained.join(".omp/commands").exists(),
+        "the retained project keeps no checkout scaffolding"
+    );
+    // The stub refuses a turn whose checkout holds no wrapper or prompt, and logs
+    // the pair it found, so this proves both were in the clone when the first
+    // prompt of each agent arrived.
+    let agent_log = std::fs::read_to_string(&log).expect("the stub log");
+    for command in [
+        "discover-sheet",
+        "discover-glossary",
+        "discover-testing-strategy",
+        "discover-naming-conventions",
+        "discover-coding-conventions",
+        "discover-architecture-boundaries",
+        "discover-contribution",
+    ] {
+        assert!(
+            agent_log.contains(&format!("harness {command} wrapper,prompt")),
+            "the {command} turn found its wrapper and prompt in the checkout: {agent_log}"
+        );
+    }
     let record: Value =
         serde_json::from_str(&std::fs::read_to_string(retained.join("project.json")).unwrap())
             .unwrap();

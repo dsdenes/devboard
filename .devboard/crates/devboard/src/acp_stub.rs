@@ -484,6 +484,9 @@ impl Stub {
                     command.trim_start_matches('/').to_string()
                 };
                 let staging = first_line[command.len()..].trim();
+                if self.arguments.contains("discover-requires-wrappers") {
+                    self.require_discover_wrappers(&command[1..])?;
+                }
                 return self.run_discover_agent(&agent, staging);
             }
         }
@@ -1658,6 +1661,23 @@ impl Stub {
             &["worktree", "remove", "--force", worktree_text.as_str()],
         );
         git(&repo, &["branch", "-D", branch.as_str()]);
+    }
+
+    /// The wrapper and prompt a `/discover-*` turn must find in its own checkout:
+    /// the command provider discovers commands from `<cwd>/.omp/commands`, and the
+    /// wrapper reads its prompt from `.devboard/prompts` under that same root.
+    fn require_discover_wrappers(&self, command: &str) -> std::result::Result<(), String> {
+        for relative in [".omp/commands", ".devboard/prompts"] {
+            let path = self.cwd.join(relative).join(format!("{command}.md"));
+            if !path.is_file() {
+                return Err(format!(
+                    "stub: no {} for the /{command} turn",
+                    path.display()
+                ));
+            }
+        }
+        self.log(&format!("harness {command} wrapper,prompt"));
+        Ok(())
     }
 
     /// One Discover agent's slice: the skill, the sheet, or the glossary and
