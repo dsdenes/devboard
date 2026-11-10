@@ -999,3 +999,87 @@ async fn an_orphaned_running_record_is_stopped_and_unrewritten() {
     }
     let _ = server.child.kill();
 }
+
+/// The latency guard budgets an operator action at 1000 ms. An ask is an
+/// accepted creation: it answers its conversation at once and the turn streams
+/// into the polled resource, so the operator's request never waits for the
+/// agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ask_answers_before_its_agent_turn_finishes() {
+    let scratch = Scratch::new("ask-latency");
+    fixture_repo(&scratch);
+    provider(&scratch.state());
+    let log = scratch.path.join("ask-latency-agent.log");
+    let command = format!(
+        "{} acp-stub --ask --ask-delay-ms=2500 --log={}",
+        env!("CARGO_BIN_EXE_devboard"),
+        log.display()
+    );
+    let mut server = spawn_server(&scratch, &command);
+    server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+
+    let started = std::time::Instant::now();
+    let frames = rest(
+        &base,
+        json!({
+            "type": "ask",
+            "conversationId": "conversation-latency",
+            "question": "What does the issues indicator show?",
+            "context": context(),
+        }),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(1000),
+        "the ask answers before its agent turn ends; it took {elapsed:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| frame["type"] == "inquiry"
+            && frame["conversationId"] == json!("conversation-latency")
+            && frame["busy"] == json!(true)),
+        "the creation answers its busy conversation: {frames:?}"
+    );
+
+    // The turn itself still settles, and its answer reaches the conversation
+    // the page polls.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let client = reqwest::Client::new();
+    let inquiry = loop {
+        let answer: Value = client
+            .get(format!("{base}/inquiries/conversations/conversation-latency"))
+            .header("accept", "application/json")
+            .send()
+            .await
+            .expect("the conversation read")
+            .json()
+            .await
+            .expect("JSON");
+        let frames = answer["frames"].as_array().cloned().unwrap_or_default();
+        let settled = frames.into_iter().find(|frame| {
+            frame["type"] == "inquiry" && frame["busy"] == json!(false)
+        });
+        if let Some(frame) = settled {
+            break frame;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the ask turn settled: {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    let transcript = inquiry["transcript"].as_array().expect("a transcript");
+    assert_eq!(transcript.len(), 2, "{inquiry}");
+    assert_eq!(transcript[0]["role"], "developer");
+    assert_eq!(transcript[1]["role"], "agent");
+    assert_eq!(transcript[1]["text"], json!(streamed(ANSWER_ONE)));
+    assert_eq!(inquiry["answer"], "");
+
+    rest(
+        &base,
+        json!({"type": "closeAsk", "conversationId": "conversation-latency"}),
+    )
+    .await;
+}
