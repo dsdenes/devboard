@@ -4841,9 +4841,18 @@ impl IssuesWorker {
         }
         let mut interrupted: HashSet<String> = previous_runs.into_iter().collect();
         for entry in &self.runs {
-            if entry.run.status == "running"
-                && (entry.run.worker_pid == std::process::id()
-                    || entry.run.harness_version == self.harness_version)
+            if entry.run.status != "running" {
+                continue;
+            }
+            // A record another harness version left `running` is rewritten by
+            // no worker: once the pid it names no longer runs, nothing can own
+            // the run, so it is closed here instead of surviving every restart
+            // as a running history entry the Runs view reports stopped.
+            let orphaned = entry.run.worker_pid != std::process::id()
+                && !crate::supervision::live_process(entry.run.worker_pid);
+            if orphaned
+                || entry.run.worker_pid == std::process::id()
+                || entry.run.harness_version == self.harness_version
             {
                 interrupted.insert(entry.run.run_id.clone());
             }
@@ -6770,6 +6779,57 @@ mod tests {
         assert!(acquired.is_ok(), "the stale lock was not reclaimed");
         let owner = read_lock(&path).expect("the new lock");
         assert_eq!(owner.pid, std::process::id());
+    }
+
+    /// A `running` record whose worker pid is dead and whose `harnessVersion`
+    /// differs from the running one is closed on start: no worker of either
+    /// version rewrites it, so leaving it is a permanent running history entry
+    /// that the Runs view reports stopped.
+    #[tokio::test]
+    async fn start_closes_a_run_left_running_by_a_dead_worker_of_another_version() {
+        let (repo, state) = unit_root("stale-running");
+        let mut dead = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let pid = dead.id();
+        let _ = dead.wait();
+        assert!(
+            !crate::supervision::live_process(pid),
+            "the seeded pid names no live process"
+        );
+        let directory = run_directory(&state, &repo, "stale");
+        std::fs::create_dir_all(&directory).expect("a run directory");
+        let record = json!({
+            "version": 1,
+            "runId": "stale",
+            "repo": "acme/app",
+            "status": "running",
+            "argv": [],
+            "cwd": repo.display().to_string(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "finishedAt": null,
+            "exitCode": null,
+            "issues": [],
+            "firstStderrLine": null,
+            "workerPid": pid,
+            "harnessVersion": "0.9.0",
+        });
+        std::fs::write(run_file_path(&directory), format!("{record}\n")).expect("a run record");
+
+        let mut worker = worker(&repo, &state);
+        assert_eq!(worker.harness_version.as_deref(), Some("1.2.3"));
+        assert!(worker.start("acme/app"), "the worker starts");
+
+        let text = std::fs::read_to_string(run_file_path(&directory)).expect("the record");
+        let written: Value = serde_json::from_str(&text).expect("record JSON");
+        assert_eq!(written["status"], json!("stopped"), "{written}");
+        assert!(
+            written["finishedAt"].is_string(),
+            "a closed record carries its finish time: {written}"
+        );
     }
 
     #[test]
