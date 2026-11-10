@@ -31,6 +31,8 @@ pub enum Kind {
     Any,
     /// A JSON boolean.
     Boolean,
+    /// A JSON number: a path segment the dispatcher reads as one.
+    Number,
 }
 
 /// One field the request carries for an operation.
@@ -98,6 +100,18 @@ const fn required_boolean(name: &'static str, field: &'static str) -> Field {
 macro_rules! path_field {
     ($name:literal, $field:literal) => {
         field(From::Path, $name, $field)
+    };
+}
+
+macro_rules! number_path_field {
+    ($name:literal, $field:literal) => {
+        Field {
+            from: From::Path,
+            name: $name,
+            field: $field,
+            required: false,
+            kind: Kind::Number,
+        }
     };
 }
 
@@ -210,7 +224,7 @@ pub static ROUTES: &[Route] = &[
         "closeIssue",
         DELETE,
         "/issues/{number}",
-        [path_field!("number", "number")],
+        [number_path_field!("number", "number")],
         200,
         false
     ),
@@ -818,6 +832,27 @@ fn scalar(text: &str) -> Value {
     Value::String(text.to_string())
 }
 
+/// Reads one path field from the matched captures as the kind it declares.
+///
+/// A path segment is text on the wire, so only a field that declares
+/// `Kind::Number` is parsed into a JSON number; every other path field arrives
+/// as the string the URL carried.
+fn path_value(matched: &Matched<'static>, field: &Field) -> Result<Value, String> {
+    let text = matched
+        .captures
+        .iter()
+        .find(|(name, _)| *name == field.name)
+        .map(|(_, value)| value.as_str())
+        .ok_or_else(|| format!("The request path has no {}.", field.name))?;
+    if field.kind != Kind::Number {
+        return Ok(Value::String(text.to_string()));
+    }
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(Value::is_number)
+        .ok_or_else(|| format!("The request path {} must be a number.", field.name))
+}
+
 /// Builds one command object from the request pieces.
 fn build_command(
     matched: &Matched<'static>,
@@ -831,12 +866,7 @@ fn build_command(
     );
     for field in matched.route.fields {
         let value = match field.from {
-            From::Path => matched
-                .captures
-                .iter()
-                .find(|(name, _)| *name == field.name)
-                .map(|(_, value)| Value::String(value.clone()))
-                .ok_or_else(|| format!("The request path has no {}.", field.name))?,
+            From::Path => path_value(matched, field)?,
             From::Query => match query
                 .iter()
                 .find(|(name, _)| name == field.name)
@@ -1561,5 +1591,63 @@ mod tests {
         let matched = match_route(&Method::GET, "/goal-drafts/a%2Fb.md").expect("a route");
         assert_eq!(matched.route.command, "getGoalDraft");
         assert_eq!(matched.captures[0].1, "a/b.md");
+    }
+
+    #[test]
+    fn a_close_path_segment_arrives_as_its_number() {
+        let matched = match_route(&Method::DELETE, "/issues/1730").expect("a close route");
+        match build_command(&matched, &[], &Map::new()).expect("a close command") {
+            Command::CloseIssue {
+                number: Some(number),
+            } => assert_eq!(number, json!(1730)),
+            other => panic!("{other:?} is not a close"),
+        }
+    }
+
+    #[test]
+    fn a_non_numeric_close_segment_is_refused_by_name() {
+        let matched = match_route(&Method::DELETE, "/issues/not-a-number").expect("a close route");
+        let error = build_command(&matched, &[], &Map::new()).expect_err("a refusal");
+        assert!(
+            error.contains("number"),
+            "the refusal names the field: {error}"
+        );
+    }
+
+    /// Every path field arrives as the kind it declares: `closeIssue`'s number
+    /// is a JSON number and every other path segment is still a string.
+    #[test]
+    fn every_path_field_arrives_as_its_declared_kind() {
+        let mut numeric = 0;
+        for route in ROUTES {
+            for field in route.fields.iter().filter(|field| field.from == From::Path) {
+                let path = route
+                    .path
+                    .split('/')
+                    .map(|segment| {
+                        if segment.starts_with('{') {
+                            "7"
+                        } else {
+                            segment
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let matched =
+                    match_route(&route.method, &path).expect("the route's own template matches");
+                let value = path_value(&matched, field).expect("a path value");
+                assert_eq!(
+                    value.is_number(),
+                    field.kind == Kind::Number,
+                    "{} {} arrives as {value}",
+                    route.command,
+                    field.name
+                );
+                if field.kind == Kind::Number {
+                    numeric += 1;
+                }
+            }
+        }
+        assert_eq!(numeric, 1, "one path field carries a number");
     }
 }
