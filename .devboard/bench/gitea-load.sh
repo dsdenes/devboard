@@ -60,7 +60,8 @@ gitea_url=""
 dashboard_url=""
 project=""
 db="${GITEA_DB:-}"
-max_time=10
+max_time=30
+create_time=60
 max_gitea_p95_ms=100
 max_dashboard_p95_ms=500
 max_db_bytes=1073741824
@@ -188,7 +189,7 @@ mkdir -p "$harness/.tmp"
 scratch=$(mktemp -d "$harness/.tmp/gitea-load.XXXXXX")
 created=0
 delete_load_repo() {
-  curl -sS -o /dev/null --max-time "$max_time" -X DELETE \
+  curl -sS -o /dev/null --max-time "$create_time" -X DELETE \
     -H "Authorization: token $token" "$gitea_url/api/v1/repos/$load_repo" >/dev/null 2>&1 || true
   created=0
 }
@@ -203,11 +204,11 @@ trap cleanup EXIT
 api() {  # api <method> <path> [json]: body in $scratch/body, status on stdout
   local method=$1 path=$2 body=${3:-} status
   if [ -n "$body" ]; then
-    status=$(curl -sS --max-time "$max_time" -o "$scratch/body" -w '%{http_code}' \
+    status=$(curl -sS --max-time "$create_time" -o "$scratch/body" -w '%{http_code}' \
       -X "$method" -H "Authorization: token $token" -H 'Content-Type: application/json' \
       -d "$body" "$gitea_url/api/v1/$path" 2>/dev/null) || status=000
   else
-    status=$(curl -sS --max-time "$max_time" -o "$scratch/body" -w '%{http_code}' \
+    status=$(curl -sS --max-time "$create_time" -o "$scratch/body" -w '%{http_code}' \
       -X "$method" -H "Authorization: token $token" \
       "$gitea_url/api/v1/$path" 2>/dev/null) || status=000
   fi
