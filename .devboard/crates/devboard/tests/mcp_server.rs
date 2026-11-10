@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::State;
 use serde_json::{json, Value};
 
-use devboard::mcp_server::{run_stdio, McpContext};
+use devboard::mcp_server::{run_stdio, LiveDashboard, McpContext};
 
 fn private_root(label: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -799,5 +799,125 @@ async fn issues_list_reads_one_bounded_page_from_a_large_tracker() {
         2,
         "one newest-first page per issues_list read"
     );
+    server.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard refusals
+// ---------------------------------------------------------------------------
+
+/// Answers a refused Issues control with the dashboard's `error` frame, an
+/// accepted pause with the Issues snapshot, and a `getIssues` read with the
+/// unchanged snapshot.
+async fn stub_dashboard_issues_control(
+    State(calls): State<StubCalls>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    calls
+        .lock()
+        .expect("calls")
+        .push(format!("{method} {path}"));
+    let (status, frames): (u16, Value) = match (method.as_str(), path.as_str()) {
+        ("POST", "/issues/workers") => (
+            201,
+            json!([{"type": "error", "message": "No issues worker is running for this checkout."}]),
+        ),
+        ("PUT", "/issues/workers") => (
+            200,
+            json!([{"type": "error", "message": "No issues worker is running for this checkout."}]),
+        ),
+        ("PATCH", "/issues/workers") => (200, json!([{"type": "issuesState", "issues": []}])),
+        ("GET", "/issues") => (
+            200,
+            json!([{"type": "issuesState", "issues": [], "worker": null}]),
+        ),
+        _ => (500, json!([{"type": "error", "message": "unexpected"}])),
+    };
+    let body = json!({"frames": frames}).to_string();
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+/// A control command the dashboard refuses with its `error` frame answers that
+/// refusal, and a refused control sends no follow-up read.
+#[tokio::test]
+async fn a_refused_issues_control_answers_the_dashboards_error_frame() {
+    let calls: StubCalls = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new()
+        .fallback(stub_dashboard_issues_control)
+        .with_state(calls.clone());
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut context = fixture("issues-refused-control");
+    let repo_dir = context.repo_dir.to_string_lossy().into_owned();
+    let harness = context.harness_dir.to_string_lossy().into_owned();
+    let state_dir = context.state_dir.to_string_lossy().into_owned();
+    context.dashboards = Some(vec![LiveDashboard {
+        pid: std::process::id(),
+        port,
+        repo_dir,
+        harness,
+        state_dir,
+    }]);
+
+    let frames = drive(
+        &context,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 70,
+                "method": "tools/call",
+                "params": {"name": "issues_control", "arguments": {"action": "resume"}}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 71,
+                "method": "tools/call",
+                "params": {"name": "issues_control", "arguments": {"action": "start"}}
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 72,
+                "method": "tools/call",
+                "params": {"name": "issues_control", "arguments": {"action": "pause"}}
+            }),
+        ],
+    )
+    .await;
+
+    for id in [70, 71] {
+        let refused = reply(&frames, id);
+        assert_eq!(refused["result"]["isError"], true, "call {id} is refused");
+        let text = refused["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text");
+        assert!(
+            text.contains("No issues worker is running for this checkout."),
+            "call {id} carries the dashboard's message: {text}"
+        );
+    }
+
+    let accepted = tool_result(&frames, 72);
+    assert_eq!(accepted["action"], "pause");
+    assert_eq!(accepted["issues"]["issues"], json!([]));
+
+    let reads = calls
+        .lock()
+        .expect("calls")
+        .iter()
+        .filter(|call| call.as_str() == "GET /issues")
+        .count();
+    assert_eq!(reads, 0, "a refused control sends no follow-up read");
     server.abort();
 }

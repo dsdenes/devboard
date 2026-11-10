@@ -220,8 +220,22 @@ fn select_dashboard(context: &McpContext) -> Result<LiveDashboard, String> {
     Ok(found[0].clone())
 }
 
+/// The message a dashboard refusal frame carries, if `frame` is one.
+fn dashboard_refusal(frame: &Value) -> Option<&str> {
+    if frame.get("type").and_then(Value::as_str) != Some("error") {
+        return None;
+    }
+    Some(
+        frame
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the dashboard refused the command"),
+    )
+}
+
 /// Reaches the dashboard over its REST API only and resolves the first reply
-/// frame that `accept` names. No command socket is opened.
+/// frame that `accept` names, or the refusal frame that answers the command.
+/// No command socket is opened.
 async fn dashboard_command(
     dashboard: &LiveDashboard,
     command: Value,
@@ -276,10 +290,16 @@ async fn dashboard_command(
         }
         if let Some(frames) = value.get("frames").and_then(Value::as_array) {
             for frame in frames {
+                if let Some(message) = dashboard_refusal(frame) {
+                    return Err(message.to_string());
+                }
                 if accept(frame) {
                     return Ok(frame.clone());
                 }
             }
+        }
+        if let Some(message) = dashboard_refusal(&value) {
+            return Err(message.to_string());
         }
         if accept(&value) {
             return Ok(value);
