@@ -138,11 +138,15 @@ sqlite() {
   sqlite3 -batch -cmd '.timeout 60000' "$db" "$1"
 }
 
+warnings=()
 attempt() {
-  # attempt <label> <sql>: run maintenance SQL, warn instead of aborting.
+  # attempt <label> <sql>: run maintenance SQL and keep a failed step's reason.
+  # A step the bound does not depend on may fail against a busy server without
+  # turning a healthy database into a noisy unit, so the reasons are reported
+  # only when the run ends outside the bound.
   local err
   if ! err=$(sqlite "$2" 2>&1); then
-    printf 'gitea-db-maintenance: %s failed: %s\n' "$1" "$(printf '%s' "$err" | tail -n 1)" >&2
+    warnings+=("$1 failed: $(printf '%s' "$err" | tail -n 1)")
   fi
 }
 
@@ -184,5 +188,10 @@ fi
 if [ "$auto_vacuum" != 2 ]; then
   printf 'gitea-db-maintenance: auto_vacuum is %s, not incremental\n' "$auto_vacuum" >&2
   status=1
+fi
+if [ "$status" -ne 0 ]; then
+  for warning in "${warnings[@]}"; do
+    printf 'gitea-db-maintenance: %s\n' "$warning" >&2
+  done
 fi
 exit "$status"
