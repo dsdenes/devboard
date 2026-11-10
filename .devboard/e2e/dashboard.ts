@@ -10,10 +10,10 @@ import { expect, type Page } from "@playwright/test";
 
 import {
   clearFamilyRuntime,
-  FAMILIES,
   FAMILY_LABELS,
   readState,
   sleep,
+  SUITE_FAMILIES,
   type Family,
 } from "./support.ts";
 
@@ -105,5 +105,5 @@ export async function stopFamily(page: Page, family: Family): Promise<number[]> 
   return pids;
 }
 
-/** Every family's page starts and stops through its own control. */
-export const ALL_FAMILIES = FAMILIES;
+/** Every family the suite drives starts and stops through its own control. */
+export const ALL_FAMILIES = SUITE_FAMILIES;

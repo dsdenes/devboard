@@ -58,6 +58,17 @@ export const FAMILY_LABELS: Record<Family, string> = {
   "release-train": "Release Train",
 };
 
+/**
+ * The families the suite starts.
+ *
+ * The Release Train is left out: each tick fetches the fixture's `origin` —
+ * the live Gitea repository — and starts a release agent for its unreleased
+ * commits, so a warm-up or a Start would run a real release from a test
+ * fixture (and its stub peer's failure would reach the page and the board).
+ * Its Start and Stop controls are covered by the Rust adapter tests.
+ */
+export const SUITE_FAMILIES: Family[] = FAMILIES.filter((family) => family !== "release-train");
+
 export interface SuiteState {
   baseUrl: string;
   port: number;

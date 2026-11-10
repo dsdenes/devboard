@@ -26,7 +26,6 @@ import path from "node:path";
 
 import {
   binary,
-  FAMILIES,
   clearFamilyRuntime,
   escapePattern,
   familyRuntimeRoot,
@@ -40,6 +39,7 @@ import {
   scratchRoot,
   sleep,
   staticDir,
+  SUITE_FAMILIES,
   tmpDir,
   waitFor,
   writeState,
@@ -380,7 +380,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   mkdirSync(tmpDir, { recursive: true });
   const prepared = await prepareFixture();
   seedProvider(prepared.stateDir);
-  for (const family of FAMILIES) {
+  for (const family of SUITE_FAMILIES) {
     await warmUp(family, prepared);
     seedCadence(family, prepared);
     clearFamilyRuntime(family, {

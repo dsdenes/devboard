@@ -1,10 +1,13 @@
 /**
- * Every background agent family, through the two controls an operator uses.
+ * Every background agent family the suite drives, through the two controls an
+ * operator uses.
  *
  * Start must move the family to `running` within 60 s; Stop must move it to
  * `stopped` within 30 s; the worker process the page recorded must be gone
  * and no `devboard worker <family>` process for the fixture repository may
- * survive. The page, the server, and the worker are the real artifacts.
+ * survive. The page, the server, and the worker are the real artifacts. The
+ * Release Train is not driven here: its gate reads the fixture's live origin,
+ * so starting it would run a real release.
  */
 
 import { expect, test } from "@playwright/test";
