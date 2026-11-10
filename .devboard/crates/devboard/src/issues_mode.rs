@@ -4860,6 +4860,7 @@ impl IssuesWorker {
         for run_id in interrupted {
             self.close_interrupted_run(&run_id);
         }
+        self.prune_history();
         self.active.clear();
         let now = iso_now();
         let mut state = empty_state(
@@ -6290,24 +6291,35 @@ impl IssuesWorker {
         }
     }
 
+    /// Keeps every running run and the newest `RUN_HISTORY_LIMIT` finished run
+    /// directories, and removes the rest.
+    ///
+    /// The walk is the run directory listing, not `self.runs`: `load_runs`
+    /// stops after `RUN_HISTORY_LIMIT` finished records, so a directory it
+    /// skipped would otherwise stay invisible to this pruner forever.
     fn prune_history(&mut self) {
+        let runs_root = runs_directory(&self.state_dir, &self.repo_dir);
+        let running: HashSet<String> = self
+            .runs
+            .iter()
+            .filter(|entry| entry.run.status == "running")
+            .map(|entry| entry.directory.display().to_string())
+            .collect();
         let mut kept: HashSet<String> = HashSet::new();
         let mut finished = 0;
-        for entry in &self.runs {
-            if entry.run.status == "running" {
-                kept.insert(entry.directory.display().to_string());
+        for name in list_run_directories(&self.state_dir, &self.repo_dir) {
+            let directory = runs_root.join(&name);
+            let display = directory.display().to_string();
+            if running.contains(&display) {
+                kept.insert(display);
                 continue;
             }
             if finished < RUN_HISTORY_LIMIT {
-                kept.insert(entry.directory.display().to_string());
                 finished += 1;
-            }
-        }
-        for entry in &self.runs {
-            if kept.contains(&entry.directory.display().to_string()) {
+                kept.insert(display);
                 continue;
             }
-            let _ = std::fs::remove_dir_all(&entry.directory);
+            let _ = std::fs::remove_dir_all(&directory);
         }
         self.runs
             .retain(|entry| kept.contains(&entry.directory.display().to_string()));

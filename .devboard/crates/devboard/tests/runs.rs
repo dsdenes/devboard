@@ -193,6 +193,28 @@ fn spawn_server(scratch: &Scratch, command: &str) -> ServerProcess {
     }
 }
 
+/// One spawned Issues worker the test owns: a failure ends it too.
+struct WorkerProcess {
+    child: Option<Child>,
+}
+
+impl WorkerProcess {
+    fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            unsafe {
+                libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for WorkerProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 async fn ready(base: &str) -> bool {
     reqwest::Client::new()
         .get(format!("{base}/ready"))
@@ -921,6 +943,124 @@ fn file_identity(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
         .and_then(|metadata| metadata.modified())
         .expect("a modification time");
     (text, modified)
+}
+
+/// `load_runs` reads at most 50 finished records, so a directory it skipped
+/// stays on disk until a worker start prunes the listing itself. A restart
+/// keeps the newest 50 finished directories and removes the rest, and the
+/// collection then serves exactly that window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_issues_start_prunes_finished_runs_beyond_the_history_limit() {
+    let scratch = Scratch::new("history-bound");
+    let repo = fixture_repo(&scratch);
+    let git = |arguments: &[&str]| {
+        let status = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(arguments)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {arguments:?}");
+    };
+    git(&["init", "--quiet"]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "http://127.0.0.1:1/fixture/history",
+    ]);
+    for index in 0..60 {
+        seed_issue_run(&scratch, &format!("run-{index:02}"), "succeeded", 0, None);
+    }
+    let runs = scratch
+        .state()
+        .join("issues")
+        .join(devboard::journal::repo_key(&repo))
+        .join("runs");
+
+    let binary = env!("CARGO_BIN_EXE_devboard");
+    let log = scratch.path.join("worker.log");
+    let output = std::fs::File::create(&log).expect("a worker log");
+    let mut worker = WorkerProcess {
+        child: Some(
+            ProcessCommand::new(binary)
+                .args(["worker", "issues", "--repo"])
+                .arg(&repo)
+                .arg("--state-dir")
+                .arg(scratch.state())
+                .arg("--interval")
+                .arg("60000")
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", std::env::var("HOME").unwrap_or_default())
+                .stdin(Stdio::null())
+                .stdout(Stdio::from(output.try_clone().expect("a log handle")))
+                .stderr(Stdio::from(output))
+                .spawn()
+                .expect("the issues worker starts"),
+        ),
+    };
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let remaining = std::fs::read_dir(&runs)
+            .map(|entries| entries.flatten().count())
+            .unwrap_or(0);
+        if remaining == 50 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the worker pruned the backlog: {remaining} directories remained"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    worker.stop();
+
+    for index in 0..10 {
+        assert!(
+            !runs.join(format!("run-{index:02}")).exists(),
+            "run-{index:02} is beyond the newest 50 and was pruned"
+        );
+    }
+    for index in 10..60 {
+        assert!(
+            runs.join(format!("run-{index:02}")).is_dir(),
+            "run-{index:02} is among the newest 50 and was kept"
+        );
+    }
+
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+    let _ = port;
+    let body: Value = reqwest::Client::new()
+        .get(format!("{base}/agent-runs"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a collection")
+        .json()
+        .await
+        .expect("JSON");
+    let listed = body["runs"]
+        .as_array()
+        .expect("runs")
+        .iter()
+        .filter(|run| {
+            run["label"]
+                .as_str()
+                .map(|label| label.starts_with("Issues run "))
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(
+        listed, 50,
+        "the collection serves the retained window: {body}"
+    );
 }
 
 #[cfg(target_os = "linux")]
