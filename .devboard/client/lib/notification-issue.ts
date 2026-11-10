@@ -1,5 +1,5 @@
 import { SvelteMap } from "svelte/reactivity";
-import { REPORTS_ENDPOINT } from "../../lib/endpoints.ts";
+import { deliverReport } from "./report-resource.ts";
 import type { AppNotification, Severity } from "./notifications.svelte";
 
 /** The server's `report` bound; the title line and metadata must fit inside it. */
@@ -135,7 +135,7 @@ export function notificationIssueRequest(
 /**
  * Files one slow UI action through the existing `/reports` endpoint. The
  * report is already bounded and its first line becomes the issue title. The
- * keyed request lets the server's 24-hour replay cache guarantee one issue per
+ * keyed request lets the server's 24-hour record guarantee one issue per
  * action identity across page sessions.
  */
 export async function fileSlowUiAction(
@@ -143,33 +143,7 @@ export async function fileSlowUiAction(
   idempotencyKey: string,
   fetchImpl: FetchLike = fetch,
 ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
-  try {
-    const response = await fetchImpl(REPORTS_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": idempotencyKey,
-      },
-      body: JSON.stringify({ action: "REPORT", report }),
-    });
-    const body = (await response.json().catch(() => null)) as {
-      links?: { issue?: { href?: unknown } };
-      detail?: unknown;
-    } | null;
-    const href = body?.links?.issue?.href;
-    if (!response.ok || typeof href !== "string") {
-      return {
-        ok: false,
-        error:
-          typeof body?.detail === "string"
-            ? body.detail
-            : `The server refused the report (${response.status}).`,
-      };
-    }
-    return { ok: true, url: href };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
+  return deliverReport({ action: "REPORT", report }, idempotencyKey, fetchImpl);
 }
 
 type FetchLike = typeof fetch;
@@ -274,28 +248,10 @@ export class NotificationFiler {
     fetchImpl: FetchLike,
   ): Promise<NotificationFiling> {
     const payload = notificationIssueRequest(item, context());
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (item.severity === "error") {
-      headers["idempotency-key"] = notificationIdempotencyKey(item);
-    }
-    const response = await fetchImpl(REPORTS_ENDPOINT, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    });
-    const body = (await response.json().catch(() => null)) as {
-      links?: { issue?: { href?: unknown } };
-      detail?: unknown;
-    } | null;
-    const href = body?.links?.issue?.href;
-    if (!response.ok || typeof href !== "string") {
-      throw new Error(
-        typeof body?.detail === "string"
-          ? body.detail
-          : `The server refused the report (${response.status}).`,
-      );
-    }
-    return { status: "filed", href };
+    const key = item.severity === "error" ? notificationIdempotencyKey(item) : undefined;
+    const outcome = await deliverReport(payload, key, fetchImpl);
+    if (!outcome.ok) throw new Error(outcome.error);
+    return { status: "filed", href: outcome.url };
   }
 }
 

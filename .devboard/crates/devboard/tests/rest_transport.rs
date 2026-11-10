@@ -732,6 +732,7 @@ async fn rest_route_inventory_matches_openapi() {
     }
     for (path, method) in [
         ("/reports", "POST"),
+        ("/reports/{id}", "GET"),
         ("/ready", "GET"),
         ("/ready", "HEAD"),
         ("/goal-proposals", "POST"),

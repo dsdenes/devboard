@@ -2488,11 +2488,38 @@ paths:
           application/json:
             schema: {type: object}
       responses:
-        "201":
-          description: "The operation result."
+        "202":
+          description: "The accepted report record the dashboard files."
           content:
             application/json:
-              schema: {$ref: "#/components/schemas/Frames"}
+              schema: {$ref: "#/components/schemas/Report"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
+  /reports/{id}:
+    get:
+      operationId: "get /reports/{id}"
+      tags: ["Operations"]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "200":
+          description: "The report record."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Report"}
         "400":
           $ref: "#/components/responses/Problem"
         "403":
@@ -2796,6 +2823,26 @@ components:
       required: [pid]
       properties:
         pid: {type: integer}
+    Report:
+      type: object
+      required: [id, title, status, delivery_timeout_ms, links]
+      properties:
+        id: {type: integer}
+        title: {type: string}
+        status: {type: string, enum: [FILING, FILED, FAILED]}
+        detail: {type: string}
+        delivery_timeout_ms: {type: integer}
+        links:
+          type: object
+          properties:
+            report:
+              type: object
+              properties:
+                href: {type: string, format: uri}
+            issue:
+              type: object
+              properties:
+                href: {type: string, format: uri}
     GoalProposal:
       type: object
       additionalProperties: true

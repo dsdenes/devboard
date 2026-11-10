@@ -10,7 +10,7 @@
   import CommandNotice from "./lib/components/CommandNotice.svelte";
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
-  import { fileFeedback, writeGoalDraft } from "./lib/feedback-transport.ts";
+  import { fileReport, writeGoalDraft } from "./lib/feedback-transport.ts";
   import {
     MARGIN,
     PANEL_ESTIMATED_HEIGHT,
@@ -530,12 +530,19 @@
     marker = null;
     dismissToast();
     phase = "sending";
-    const response = await fileFeedback({ action: kind, report: "", ...captured(element) });
+    const filing = await fileReport({ action: kind, report: "", ...captured(element) });
     const noun = kind === "REMOVE" ? "Removal" : "Redesign";
-    if (response.ok) {
-      showToast({ ok: true, text: `${noun} issue filed.`, url: response.url });
+    if (filing.ok) {
+      // The dashboard accepted the request; the issue exists once the record
+      // settles, so the accepted toast never claims a filing that has not
+      // happened yet.
+      showToast({ ok: true, text: `${noun} accepted.` });
+      void filing.delivery.then((outcome) => {
+        if (outcome.ok) showToast({ ok: true, text: `${noun} issue filed.`, url: outcome.url });
+        else showToast({ ok: false, text: `${noun} issue failed: ${outcome.error}` });
+      });
     } else {
-      showToast({ ok: false, text: `${noun} issue failed: ${response.error}` });
+      showToast({ ok: false, text: `${noun} issue failed: ${filing.error}` });
     }
     // The shortcut stays armed so the next element is one click away.
     phase = "picking";
@@ -586,7 +593,7 @@
     dismissToast();
     phase = "sending";
     errorMessage = null;
-    const response = await fileFeedback({
+    const filing = await fileReport({
       action: "REPORT",
       report,
       turns: turnsPayload(),
@@ -594,14 +601,20 @@
     });
     if (attempt !== generation) return;
     filingSeq += 1;
-    if (!response.ok) {
-      errorMessage = response.error;
+    if (!filing.ok) {
+      errorMessage = filing.error;
       phase = "failed";
       return;
     }
-    // Stay in selection mode so the next report starts with one click.
+    // Stay in selection mode so the next report starts with one click. The
+    // action is answered; the issue's link replaces the toast once the forge
+    // created it, so the delivery never holds the panel open.
     arm("REPORT");
-    showToast({ ok: true, text: "Report filed.", url: response.url });
+    showToast({ ok: true, text: "Report accepted." });
+    void filing.delivery.then((outcome) => {
+      if (outcome.ok) showToast({ ok: true, text: "Report filed.", url: outcome.url });
+      else showToast({ ok: false, text: `Report failed: ${outcome.error}` });
+    });
   }
 
   // A dropped socket owns no conversation; the server kills its peer.

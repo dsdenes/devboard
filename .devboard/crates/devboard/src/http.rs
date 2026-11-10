@@ -544,6 +544,12 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         _ => {}
     }
 
+    if let Some(id) = uri.path().strip_prefix("/reports/") {
+        if !id.is_empty() && !id.contains('/') {
+            return reply(server.app.report_record(&method, &headers, &url, id));
+        }
+    }
+
     if uri.path() == "/flows" {
         if method != Method::GET && method != Method::HEAD {
             return reply(Replies::problem(

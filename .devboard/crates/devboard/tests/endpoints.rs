@@ -18,7 +18,12 @@ use devboard::journal::Journal;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde_json::{json, Value};
 
-type StubState = (Arc<Mutex<Vec<Value>>>, Arc<AtomicUsize>, Option<StatusCode>);
+type StubState = (
+    Arc<Mutex<Vec<Value>>>,
+    Arc<AtomicUsize>,
+    Option<StatusCode>,
+    u64,
+);
 
 const TOKEN: &str = "contract-token";
 
@@ -60,24 +65,31 @@ async fn start_rejecting(label: &str) -> Fixture {
 }
 
 async fn start_with(label: &str, failure: Option<StatusCode>) -> Fixture {
-    start_against(label, failure, None, 5000, "true").await
+    start_against(label, failure, None, 5000, "true", 0).await
+}
+
+/// One fixture whose stub Gitea spends `delay_ms` before filing an issue, so
+/// the delivery outlasts the operator action's own budget.
+async fn start_slow(label: &str, delay_ms: u64) -> Fixture {
+    start_against(label, None, None, 5000, "true", delay_ms).await
 }
 
 /// One fixture whose dashboard sends reports to `forge` instead of the stub,
-/// with `timeout_ms` as the delivery deadline and `agent_command` as the
-/// configured agent command.
+/// with `timeout_ms` as the delivery deadline, `agent_command` as the
+/// configured agent command, and `delay_ms` as the stub forge's own latency.
 async fn start_against(
     label: &str,
     failure: Option<StatusCode>,
     forge: Option<&str>,
     timeout_ms: u64,
     agent_command: &str,
+    delay_ms: u64,
 ) -> Fixture {
     let root = fixture_root(label);
     let repo = root.join("repo");
     let calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let count = Arc::new(AtomicUsize::new(0));
-    let stub_state = (calls.clone(), count.clone(), failure);
+    let stub_state = (calls.clone(), count.clone(), failure, delay_ms);
     let stub_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("a stub listener");
@@ -87,10 +99,13 @@ async fn start_against(
             .route(
                 "/api/v1/repos/dsdenes/devboard/issues",
                 post(
-                    |State((calls, count, failure)): State<StubState>,
+                    |State((calls, count, failure, delay_ms)): State<StubState>,
                      Json(body): Json<Value>| async move {
                         count.fetch_add(1, Ordering::SeqCst);
                         calls.lock().expect("calls").push(body.clone());
+                        if delay_ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        }
                         if let Some(status) = failure {
                             let message = if status == StatusCode::UNAUTHORIZED {
                                 "invalid username, password or token"
@@ -306,6 +321,7 @@ async fn a_goal_proposal_never_waits_for_a_naming_agent() {
         None,
         5000,
         script.to_str().expect("a slow agent path"),
+        0,
     )
     .await;
     let started = Instant::now();
@@ -375,12 +391,32 @@ async fn a_report_files_one_issue_through_the_configured_gitea() {
         .send()
         .await
         .expect("an answer");
-    assert_eq!(response.status(), 201);
-    let body: Value = response.json().await.expect("JSON");
-    assert!(body
-        .pointer("/links/issue/href")
-        .and_then(Value::as_str)
-        .is_some());
+    assert_eq!(
+        response.status(),
+        202,
+        "the endpoint answers the record it owns, not the forge write"
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let accepted: Value = response.json().await.expect("JSON");
+    assert_eq!(accepted["status"], "FILING");
+    assert_eq!(accepted["title"], "[ui] Fix the header");
+    assert_eq!(
+        accepted["links"]["report"]["href"].as_str(),
+        Some(location.as_str()),
+        "the body links the resource its Location names"
+    );
+
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FILED");
+    assert_eq!(
+        record["links"]["issue"]["href"].as_str(),
+        Some("https://gitea.test/dsdenes/devboard/issues/1")
+    );
     assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
     let calls = fixture.calls.lock().expect("calls").clone();
     assert_eq!(calls.len(), 1);
@@ -389,6 +425,58 @@ async fn a_report_files_one_issue_through_the_configured_gitea() {
         .as_str()
         .expect("a body")
         .contains("## Operator report"));
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+/// Reads one accepted report until its delivery settles.
+async fn settled_report(location: &str) -> Value {
+    for _ in 0..500 {
+        let response = client().get(location).send().await.expect("an answer");
+        assert_eq!(response.status(), 200, "{location}");
+        let record: Value = response.json().await.expect("JSON");
+        if record["status"] != "FILING" {
+            return record;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the report at {location} never settled");
+}
+
+/// The regression this operator report describes: a forge that spends seconds
+/// on one issue creation must not hold the operator's action open, so the
+/// endpoint answers its own record inside the action's own budget and the
+/// delivery settles afterwards.
+#[tokio::test]
+async fn an_accepted_report_answers_before_the_forge_finishes_filing_it() {
+    let fixture = start_slow("feedback-slow-forge", 2_000).await;
+    let started = Instant::now();
+    let response = client()
+        .post(format!("{}/reports", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header"}))
+        .send()
+        .await
+        .expect("an answer");
+    let elapsed = started.elapsed();
+    assert_eq!(response.status(), 202);
+    assert!(
+        elapsed < Duration::from_millis(1_000),
+        "the action answered in {elapsed:?}, inside its own 1000 ms budget"
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FILED");
+    assert_eq!(
+        record["links"]["issue"]["href"].as_str(),
+        Some("https://gitea.test/dsdenes/devboard/issues/1")
+    );
+    assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
     fixture.handle.abort();
     fixture.stub.abort();
 }
@@ -403,9 +491,16 @@ async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
         .send()
         .await
         .expect("an answer");
-    assert_eq!(response.status(), 502);
-    let body: Value = response.json().await.expect("JSON");
-    assert_eq!(body["detail"], "The issue could not be filed.");
+    assert_eq!(response.status(), 202);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FAILED");
+    assert_eq!(record["detail"], "The issue could not be filed.");
     assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
 
     let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
@@ -436,10 +531,17 @@ async fn a_rejected_credential_is_a_configuration_failure_not_a_server_error() {
         .send()
         .await
         .expect("an answer");
-    assert_eq!(response.status(), 503);
-    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(response.status(), 202);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FAILED");
     assert_eq!(
-        body["detail"],
+        record["detail"],
         "Harness reporting is unavailable: the forge rejected the reporting credential. Refresh \
          GITEA_TOKEN (or DEVBOARD_GITEA_TOKEN) and restart the dashboard."
     );
@@ -470,7 +572,7 @@ async fn a_rejected_credential_is_a_configuration_failure_not_a_server_error() {
 #[tokio::test]
 async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error() {
     let forge = format!("http://127.0.0.1:{}", closed_port().await);
-    let fixture = start_against("feedback-unreachable", None, Some(&forge), 500, "true").await;
+    let fixture = start_against("feedback-unreachable", None, Some(&forge), 500, "true", 0).await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())
@@ -478,9 +580,16 @@ async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error()
         .send()
         .await
         .expect("an answer");
-    assert_eq!(response.status(), 502);
-    let body: Value = response.json().await.expect("JSON");
-    assert_eq!(body["detail"], "The issue could not be filed.");
+    assert_eq!(response.status(), 202);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FAILED");
+    assert_eq!(record["detail"], "The issue could not be filed.");
 
     let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
     let text = std::fs::read_to_string(&journal).expect("the journal");
@@ -515,7 +624,7 @@ async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
         "http://127.0.0.1:{}",
         silent.local_addr().expect("an address").port()
     );
-    let fixture = start_against("feedback-silent", None, Some(&forge), 250, "true").await;
+    let fixture = start_against("feedback-silent", None, Some(&forge), 250, "true", 0).await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())
@@ -523,9 +632,16 @@ async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
         .send()
         .await
         .expect("an answer");
-    assert_eq!(response.status(), 504);
-    let body: Value = response.json().await.expect("JSON");
-    assert_eq!(body["detail"], "Issue creation timed out after 250 ms.");
+    assert_eq!(response.status(), 202);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FAILED");
+    assert_eq!(record["detail"], "Issue creation timed out after 250 ms.");
 
     let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
     let text = std::fs::read_to_string(&journal).expect("the journal");
@@ -654,6 +770,15 @@ async fn a_repeated_idempotency_key_files_one_issue() {
         .send()
         .await
         .expect("an answer");
+    assert_eq!(first.status(), 202);
+    let location = first
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let filed = settled_report(&location).await;
+    assert_eq!(filed["status"], "FILED");
     let second = client()
         .post(format!("{}/reports", fixture.base))
         .headers(headers)
@@ -670,12 +795,18 @@ async fn a_repeated_idempotency_key_files_one_issue() {
         .send()
         .await
         .expect("an answer");
-    assert_eq!(first.status(), 201);
-    assert_eq!(second.status(), 201);
+    assert_eq!(
+        second.status(),
+        200,
+        "a filed report replays as its settled record, never a second creation"
+    );
+    let replay: Value = second.json().await.expect("JSON");
+    assert_eq!(replay["id"], filed["id"]);
+    assert_eq!(
+        replay["links"]["issue"]["href"],
+        "https://gitea.test/dsdenes/devboard/issues/1"
+    );
     assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
-    let first: Value = first.json().await.expect("JSON");
-    let second: Value = second.json().await.expect("JSON");
-    assert_eq!(first, second);
     fixture.handle.abort();
     fixture.stub.abort();
 }

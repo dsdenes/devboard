@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { ConnectionStore } from "./connection.svelte";
-import { fileFeedback, writeGoalDraft } from "./feedback-transport";
+import { fileReport, writeGoalDraft } from "./feedback-transport";
 import { GoalDraftsStore } from "./goal-drafts.svelte";
 import { notifications } from "./notifications.svelte";
 import { slowUiActionIdempotencyKey } from "./notification-issue";
@@ -563,7 +563,7 @@ test("the two operator POST helpers register their endpoint actions", () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (() => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
   try {
-    void fileFeedback({ action: "REPORT", report: "Slow report" });
+    void fileReport({ action: "REPORT", report: "Slow report" });
     void writeGoalDraft({ report: "Slow draft" });
     void new GoalDraftsStore().createDraft("Slow draft");
     jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);

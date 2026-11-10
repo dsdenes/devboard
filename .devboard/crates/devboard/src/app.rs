@@ -377,6 +377,8 @@ pub struct CachedRest {
 pub struct App {
     pub shared: Arc<Shared>,
     pub idempotency: crate::idempotency::IdempotencyStore,
+    /// Every report this dashboard accepted, and the ones it is filing.
+    pub reports: Arc<crate::reports::ReportStore>,
     /// Identifies this dashboard instance to the detached-run owners.
     pub instance: String,
     /// The version this process loaded at startup.
@@ -424,6 +426,10 @@ impl App {
             crate::http::allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
         let idempotency =
             crate::idempotency::IdempotencyStore::open(&config.state_dir, &config.repo_dir);
+        let reports = Arc::new(crate::reports::ReportStore::open(
+            &config.state_dir,
+            &config.repo_dir,
+        ));
         let instance = uuid::Uuid::new_v4().to_string();
         let state_path = crate::state::state_file(&config.state_dir, &config.repo_dir);
         let _ = crate::detached_run::write_detached_lease(
@@ -486,6 +492,7 @@ impl App {
             weak_self: weak.clone(),
             shared,
             idempotency,
+            reports,
             instance,
             running_version,
             port: std::sync::atomic::AtomicU16::new(port),
@@ -1326,6 +1333,10 @@ impl App {
 
     /// `POST /reports`: refuses a method other than POST, then answers 503
     /// until harness reporting is configured.
+    ///
+    /// An accepted report answers `202` with the record this dashboard owns and
+    /// files the issue on its own runtime, so the forge's own latency never
+    /// holds the operator's action open.
     pub async fn reports(
         &self,
         method: &Method,
@@ -1381,55 +1392,119 @@ impl App {
             token: feedback.token.clone(),
         };
         let timeout_ms = feedback.timeout_ms;
-        let outcome = self
-            .idempotency
-            .run("feedback", key.as_deref(), || async {
-                crate::feedback::file_feedback_issue(
-                    &submission,
-                    &target,
-                    flow_id,
-                    timeout_ms,
-                    &crate::forge::real_sleep(),
-                )
-                .await
-                .map_err(crate::feedback::RequestError::delivery)
-            })
-            .await;
-        match outcome {
-            Ok(filed) => {
-                let href = filed
-                    .pointer("/links/issue/href")
-                    .and_then(Value::as_str)
+        let title = crate::feedback::feedback_title(&submission);
+        let origin = url.origin().ascii_serialization();
+        let id = match self.reports.claim(key.as_deref(), &title).await {
+            crate::reports::ReportClaim::Replay(view) => {
+                // Only a filed record answers as a settled resource; one still
+                // filing keeps the 202 its first request earned.
+                let status = if view["status"] == "FILED" { 200 } else { 202 };
+                let view = report_document(view, &origin, timeout_ms);
+                let href = view["links"]["report"]["href"]
+                    .as_str()
                     .unwrap_or("")
                     .to_string();
-                Replies::json(headers, filed, 201, &[("Location", href.as_str())])
+                return Replies::json(headers, view, status, &[("Location", href.as_str())]);
             }
-            Err(error) => {
-                let detail = format!("POST /reports: {}", error.journal_detail());
-                if error.transient {
-                    // The endpoint served and the forge answered nothing: an
-                    // unreachable or slow upstream delays a report, so it is
-                    // recorded as activity and never as a server error.
-                    self.shared.journal.write(
-                        "activity",
-                        &format!("feedback delivery delayed: {detail}"),
-                        flow_id,
-                    );
-                } else if error.rejected_credential {
-                    // The forge answered and refused the dashboard's own
-                    // credential: reporting is misconfigured until the operator
-                    // refreshes it, so this is a configuration failure the
-                    // client names and never a server error the watchdog files.
-                    self.shared.journal.write(
-                        "activity",
-                        &format!("feedback delivery rejected: {detail}"),
-                        flow_id,
-                    );
-                } else if error.status == 502 || error.status == 504 {
-                    self.shared.journal.write("server-error", &detail, flow_id);
+            crate::reports::ReportClaim::Start(id) => id,
+        };
+        // The delivery is the dashboard's own background work: the forge is not
+        // bound by this endpoint's budget, so the operator's action answers from
+        // the record and `GET /reports/<id>` carries the issue once it exists.
+        let app = self.arc_self();
+        let owned_flow = flow_id.map(str::to_string);
+        tokio::spawn(async move {
+            let outcome = crate::feedback::file_feedback_issue(
+                &submission,
+                &target,
+                owned_flow.as_deref(),
+                timeout_ms,
+                &crate::forge::real_sleep(),
+            )
+            .await;
+            match outcome {
+                Ok(filed) => {
+                    let href = filed
+                        .pointer("/links/issue/href")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    app.reports.settle(id, Ok(href)).await;
                 }
-                Replies::problem(headers, error.status, &error.message, &[])
+                Err(error) => {
+                    let refusal = crate::feedback::RequestError::delivery(error);
+                    let detail = format!("POST /reports: {}", refusal.journal_detail());
+                    if refusal.transient {
+                        // The forge answered nothing: an unreachable or slow
+                        // upstream delays a report, so it is recorded as
+                        // activity and never as a server error.
+                        app.shared.journal.write(
+                            "activity",
+                            &format!("feedback delivery delayed: {detail}"),
+                            owned_flow.as_deref(),
+                        );
+                    } else if refusal.rejected_credential {
+                        // The forge answered and refused the dashboard's own
+                        // credential: reporting is misconfigured until the
+                        // operator refreshes it, so this is a configuration
+                        // failure the client names and never a server error the
+                        // watchdog files.
+                        app.shared.journal.write(
+                            "activity",
+                            &format!("feedback delivery rejected: {detail}"),
+                            owned_flow.as_deref(),
+                        );
+                    } else if refusal.status == 502 || refusal.status == 504 {
+                        app.shared
+                            .journal
+                            .write("server-error", &detail, owned_flow.as_deref());
+                    }
+                    app.reports.settle(id, Err(refusal.message)).await;
+                }
             }
+        });
+        let view = self
+            .reports
+            .view(id)
+            .unwrap_or_else(|| serde_json::json!({"id": id, "status": "FILING"}));
+        let view = report_document(view, &origin, timeout_ms);
+        let href = view["links"]["report"]["href"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        Replies::json(headers, view, 202, &[("Location", href.as_str())])
+    }
+
+    /// `GET /reports/<id>`: one report this dashboard accepted.
+    pub fn report_record(
+        &self,
+        method: &Method,
+        headers: &HeaderMap,
+        url: &Url,
+        id: &str,
+    ) -> axum::response::Response {
+        if *method != Method::GET {
+            return Replies::problem(
+                headers,
+                405,
+                "This endpoint accepts GET only.",
+                &[("Allow", "GET")],
+            );
+        }
+        let timeout_ms = self
+            .config()
+            .feedback
+            .as_ref()
+            .map(|feedback| feedback.timeout_ms)
+            .unwrap_or(60_000);
+        let record = id.parse::<u64>().ok().and_then(|id| self.reports.view(id));
+        match record {
+            Some(view) => {
+                let origin = url.origin().ascii_serialization();
+                let view = report_document(view, &origin, timeout_ms);
+                Replies::json(headers, view, 200, &[])
+            }
+            None => Replies::problem(headers, 404, "The requested report was not found.", &[]),
         }
     }
 
@@ -1559,6 +1634,19 @@ async fn read_report(headers: &HeaderMap, body: axum::body::Body) -> Result<Stri
         return Err(ReportRefusal::TooLarge);
     }
     Ok(raw)
+}
+
+/// One report record as the HTTP surface serves it: the record links itself with
+/// the absolute URL its `Location` names, and states the delivery bound the
+/// dashboard honors.
+fn report_document(mut view: Value, origin: &str, timeout_ms: u64) -> Value {
+    let id = view.get("id").and_then(Value::as_u64).unwrap_or(0);
+    view["delivery_timeout_ms"] = serde_json::json!(timeout_ms);
+    if !view["links"].is_object() {
+        view["links"] = serde_json::json!({});
+    }
+    view["links"]["report"] = serde_json::json!({"href": format!("{origin}/reports/{id}")});
+    view
 }
 
 /// The 413 for a report larger than the bound.

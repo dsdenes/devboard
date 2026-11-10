@@ -447,6 +447,13 @@ notifications keep the `File issue` button and file one issue per click. When au
 fails, or reporting is disabled because `DEVBOARD_GITEA_URL` is absent, the card reads
 `Issue not filed:` with the reason and reveals the `File issue` button again, so a retry files
 the issue and replaces the message with the issue link.
+A filing is one forge write, and a forge answers an issue creation in seconds when it is busy, so
+`POST /reports` never waits for it: the server records the report, answers `202` with the record's
+own `Location` and `links.report.href`, and files the issue on its own runtime. The record is
+`FILING` until the delivery settles, then `FILED` with `links.issue.href`, or `FAILED` with the
+reason the card shows. `GET /reports/{id}` serves that record, and a page re-reads it at its own
+refresh cadence until it settles. A record a stopped dashboard left `FILING` is answered `FAILED`,
+and a `FAILED` key is filed again under the same record.
 Notifications never replace mode content or steal focus, and several arrivals are all retained.
 Flow blockers and verification results also remain in their mode context. A Discover failure stays
 on the Discover surface and is not repeated as a notification card: a run failure on its agent's
@@ -469,7 +476,9 @@ that never answers keeps its budget and still files, so a lost or refused connec
 document, and a 304 file nothing while an unanswered read is still reported. The guard is
 observational: it never changes the 10-second command ceiling, a server timeout, a retry
 schedule, a polling interval, the busy control, or the request lifecycle. It does not dismiss a
-busy state, clear a control's timer, or abort a request.
+busy state, clear a control's timer, or abort a request. An operator `POST /reports` is complete
+at the accepted record: the wait for the issue is the background delivery the server owns, and
+the page reads that record again until it settles.
 
 A page refreshes every registered resource once a second, and every read the page issues for
 itself — a poll tick's refresh and an open's replay alike — keeps at most three of the
@@ -2640,7 +2649,8 @@ rule id, its level, its chapter, the skill's directive verbatim, and both skill 
 chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
-the 80 `METHOD /path` operations in `contract/command-map.json`, `POST /reports`, `/ready` for
+the 80 `METHOD /path` operations in `contract/command-map.json`, `POST /reports` and
+`GET /reports/{id}`, `/ready` for
 `GET` and `HEAD` with a `405` and `Allow: GET, HEAD` for every other method,
 `POST /goal-proposals`, `GET /agent-runs/{id}/output`, and the static-file fallback, together with
 any route added later. The audit input carries every Rust module under
@@ -4219,13 +4229,14 @@ click or one double-click files at most one issue.
 click opens a report panel anchored beside it, without filing anything yet. The panel shows the
 selected element's selector path; the report text is free-form. `File issue`, or `Enter` in the
 composer (`Shift+Enter` inserts a newline), posts the report and the captured context to
-`POST /reports`, the server files the issue through the configured Gitea API, and the panel
-closes back into report selection mode so another element can be picked without leaving and
-re-entering the mode. A successful filing shows a `Report filed.` toast with an `Open issue` link
-to the created issue. `Esc`, the control again, or `Cancel` leaves the mode, a failed report stays
-in the panel with its error, and a click in selection mode never activates the element. The toast
-survives leaving the mode: a success dismisses itself after eight seconds, a failure stays until
-dismissed or replaced.
+`POST /reports`, the server records the report and files the issue through the configured Gitea
+API as its own background work, and the panel closes back into report selection mode so another
+element can be picked without leaving and re-entering the mode. A successful filing shows a
+`Report filed.` toast with an `Open issue` link to the created issue, which appears when the
+record settles even though the action answered at once. `Esc`, the control again, or `Cancel`
+leaves the mode, a failed report stays in the panel with its error, and a click in selection mode
+never activates the element. The toast survives leaving the mode: a success dismisses itself after
+eight seconds, a failure stays until dismissed or replaced.
 
 The panel also answers questions. `Ask` sends the typed question and the captured element
 context — route, URL, selector, viewport, visible text, DOM excerpt, and capture time — over the
@@ -4280,11 +4291,12 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
 the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
-Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. The
-server retains each key's result under `<STATE_DIR>/idempotency/` for 24 hours, so a retry with the
-same key answers with the first issue or draft instead of creating a second resource, while a
-failed attempt is never retained. A key is 1–255 characters with no control characters; an empty
-or oversized key is refused with `400`.
+Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. A goal
+proposal's result is retained under `<STATE_DIR>/idempotency/` for 24 hours, so a retry answers
+the first draft instead of creating a second, while a failed proposal is never retained. A
+report's key owns one record under `<STATE_DIR>/reports/` for 24 hours: a `FILING` or `FILED`
+record replays, and a `FAILED` record is filed again under the same record. A key is 1–255
+characters with no control characters; an empty or oversized key is refused with `400`.
 
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
@@ -4348,10 +4360,13 @@ endpoint accepts only same-origin `POST` requests, bounds the body to 64 KB, and
 disabled-reporting `503`, which therefore answers a `POST` only.
 
 Every 4xx and 5xx response these routes answer is `application/problem+json` carrying `type`,
-`title`, `status`, and `detail`, so a client reads one media type and one body shape. A successful
-`POST /reports` answers `201` with `title` and the `links.issue.href` hypertext control carrying
-the filed issue's absolute URL, plus a `Location` header naming that same URL; no top-level `url`
-property remains. An idempotent replay answers the same `201` body and the same `Location`.
+`title`, `status`, and `detail`, so a client reads one media type and one body shape. An accepted
+`POST /reports` answers `202` with the report record: `id`, `title`, `status` (`FILING`, `FILED`,
+or `FAILED`), `delivery_timeout_ms`, the `links.report.href` control naming the record, a
+`Location` header naming that same URL, and, once the forge created the issue,
+`links.issue.href` with the issue's absolute URL. `GET /reports/{id}` serves the same record and
+answers `404` for an id this dashboard never issued. A keyed replay answers the record's current
+state: `200` once it is `FILED`, `202` while it is `FILING`. No top-level `url` property remains.
 
 `POST /reports`, `POST /goal-proposals`, `/agent-runs/{id}/output`, `/ready`, and the goal-draft
 documents require no credential. The dashboard requires no credential on any bind address or Host
@@ -4418,9 +4433,10 @@ to the `METHOD /path` that replaced it.
   `application/problem+json` carrying `type`, `title`, `status`, and `detail`.
 - A collection that can exceed 200 entries (`GET /records`) accepts `cursor` and `limit` and
   answers a page object with `self`, `next`, and `prev`.
-- `POST /reports` replaces the retired `POST /reports` and keeps its submission fields, its
-  `201` plus `Location` to the filed issue, its `Idempotency-Key` behavior, and its `503` without
-  `DEVBOARD_GITEA_URL`. `/reports` answers `404 Problem JSON`.
+- `POST /reports` records the report, answers `202` with its `Location` and `links.report.href`,
+  files the issue as its own background work, and serves the record at `GET /reports/{id}`; it
+  keeps the submission fields, the `Idempotency-Key` behavior, and the `503` without
+  `DEVBOARD_GITEA_URL`. `/feedback` answers `404 Problem JSON`.
 - `POST /goal-proposals` and `/ready` keep their request, response, and header contracts.
 - The API is loopback-only and presents no credential. A Host this listener does not serve
   answers `421` (or `403` on the mutating reporting endpoints), and a cross-origin request

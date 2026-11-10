@@ -140,8 +140,9 @@ failure and doctor reports it.
 
 Harness-owned issue reporting uses only the configured Gitea API. Without `DEVBOARD_GITEA_URL` the
 report controls are not rendered and `POST /reports` answers HTTP 503 naming that variable; no
-GitHub request is made. A report the forge rejects for its credential answers HTTP 503 naming the
-credential and is journaled as activity, never as a server error, because the operator owns that
+GitHub request is made. An accepted report answers HTTP 202 with the record the dashboard files,
+and a forge that rejects the reporting credential settles that record as failed with the
+credential named, journaled as activity, never as a server error, because the operator owns that
 fix. Host-forge behavior for GitHub and GitLab origins is unchanged.
 
 Every tracker read and credential selection resolves the forge from the checkout's `origin`:
