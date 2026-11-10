@@ -230,26 +230,31 @@ impl StaticCache {
 
 impl Server {
     /// Builds one dashboard server from its configuration and journal.
+    ///
+    /// The app keeps the static root the operator configured, because a
+    /// replacement inherits it through `RelaunchSettings`; only the served
+    /// configuration moves to this process's own snapshot, which prunes with
+    /// this pid and is useless to a child.
     pub fn new(config: Config, journal: crate::journal::Journal) -> Arc<Self> {
-        let mut config = config;
-        if let Some(source) = config.static_dir.clone() {
+        let mut served = config.clone();
+        if let Some(source) = served.static_dir.clone() {
             let version =
                 crate::version::read_harness_version(&crate::version::running_harness_dir())
                     .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-            match crate::assets::snapshot_static(&source, &config.state_dir, &version) {
-                Ok(snapshot) => config.static_dir = Some(snapshot),
+            match crate::assets::snapshot_static(&source, &served.state_dir, &version) {
+                Ok(snapshot) => served.static_dir = Some(snapshot),
                 Err(error) => {
                     journal.write("server-error", &format!("static snapshot: {error}"), None)
                 }
             }
         }
-        let allowed_hostnames = allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
-        let app = App::new(config.clone(), journal);
+        let allowed_hostnames = allowed_request_hostnames(&served.hostname, &served.allowed_hosts);
+        let app = App::new(config, journal);
         Arc::new(Self {
             app,
             allowed_hostnames,
             static_cache: StaticCache::new(),
-            config,
+            config: served,
         })
     }
 }

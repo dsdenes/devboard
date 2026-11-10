@@ -45,6 +45,7 @@ fn settings(root: &Path, port: u16) -> RelaunchSettings {
         adrs_dir: repo.join("adrs"),
         repo_dir: repo.clone(),
         goal_file: repo.join("GOAL.md"),
+        static_dir: None,
         state_dir: root.join("state"),
     }
 }
@@ -219,5 +220,70 @@ async fn a_replacement_does_not_inherit_the_version_its_caller_ran() {
             .map(String::as_str),
         Some("9.9.9"),
         "a restart never hands its own version to the replacement"
+    );
+}
+
+/// A replacement inherits the static root the operator configured, never the
+/// caller's pid-named snapshot, so a dashboard started with `STATIC_DIR` keeps
+/// serving that bundle after an update or restart instead of the embedded
+/// client.
+#[tokio::test]
+async fn a_replacement_serves_the_static_root_its_caller_configured() {
+    let scratch = scratch("static-root");
+    let state = scratch.root.join("state");
+    let static_root = scratch.root.join("client");
+    std::fs::create_dir_all(&static_root).expect("a static root");
+    std::fs::write(
+        static_root.join("issue-1671-marker.txt"),
+        "served from the configured static root\n",
+    )
+    .expect("a marker file");
+    let held = TcpListener::bind(("127.0.0.1", 0)).expect("a held dashboard port");
+    let port = held.local_addr().expect("an address").port();
+    let ready_file = state.join("replacement").join("ready.json");
+    let mut settings = settings(&scratch.root, port);
+    settings.static_dir = Some(static_root.clone());
+    let result = relaunch_confirmed(&settings, &ready_file, 15_000, None).await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+
+    drop(held);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut pid = serve_pid(&state);
+    while pid.is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        pid = serve_pid(&state);
+    }
+    let pid = pid.expect("the replacement binds the dashboard port");
+    let environment = process_environment(pid);
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .build()
+        .expect("a client");
+    let url = format!("http://127.0.0.1:{port}/issue-1671-marker.txt");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut answer = None;
+    while answer.is_none() && Instant::now() < deadline {
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                answer = response.text().await.ok();
+            }
+        }
+        if answer.is_none() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    stop(pid);
+
+    assert_eq!(
+        environment.get("STATIC_DIR").map(String::as_str),
+        static_root.to_str(),
+        "the replacement names the configured static root"
+    );
+    assert_eq!(
+        answer.as_deref(),
+        Some("served from the configured static root\n"),
+        "the replacement serves the configured static root, not the embedded client"
     );
 }

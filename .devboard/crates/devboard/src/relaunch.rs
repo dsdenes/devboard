@@ -21,6 +21,10 @@ pub struct RelaunchSettings {
     pub adrs_dir: PathBuf,
     pub repo_dir: PathBuf,
     pub goal_file: PathBuf,
+    /// The static root the operator configured. The app keeps this source
+    /// rather than the snapshot this process serves, because a snapshot is
+    /// named for this pid and pruned once it is gone.
+    pub static_dir: Option<PathBuf>,
     pub state_dir: PathBuf,
 }
 
@@ -36,6 +40,13 @@ impl RelaunchSettings {
             adrs_dir: config.adrs_dir.clone(),
             repo_dir: config.repo_dir.clone(),
             goal_file: config.goal_file.clone(),
+            // A replacement starts in `repo_dir`, so a relative static root
+            // would name another directory there. Resolve it against this
+            // process's working directory, the one it served from.
+            static_dir: config
+                .static_dir
+                .as_ref()
+                .map(|source| std::path::absolute(source).unwrap_or_else(|_| source.clone())),
             state_dir: config.state_dir.clone(),
         }
     }
@@ -161,9 +172,9 @@ pub fn spawn_replacement(
     let mut command = Command::new(&program);
     command.arg("serve");
     drop_obsolete_credential_variables(&mut command);
-    // A replacement resolves its port, its static root, and its loaded version
-    // for itself. Inheriting the caller's `DEVBOARD_RUNNING_VERSION` kept a
-    // source dashboard reporting the last version a publish had refreshed to.
+    // A replacement resolves its port and its loaded version for itself.
+    // Inheriting the caller's `DEVBOARD_RUNNING_VERSION` kept a source
+    // dashboard reporting the last version a publish had refreshed to.
     drop_instance_variables(&mut command);
     // Never start from a replaceable install directory: an update can rename
     // and delete it, and a child cannot start from a missing cwd.
@@ -178,6 +189,12 @@ pub fn spawn_replacement(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // The static root is the operator's configured source, never this
+    // process's snapshot: the snapshot is named for this pid and pruned once
+    // it is gone. Without it the child would serve the embedded client.
+    if let Some(static_dir) = &settings.static_dir {
+        command.env("STATIC_DIR", static_dir);
+    }
     for (name, value) in extra_env {
         command.env(name, value);
     }

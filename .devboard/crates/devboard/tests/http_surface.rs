@@ -659,6 +659,33 @@ async fn a_static_directory_is_served_from_an_immutable_snapshot() {
     assert_eq!(first, second, "a rebuild never changes the served bytes");
 }
 
+/// The app keeps the static root the operator configured while this process
+/// serves its own immutable snapshot, so a replacement inherits a root that
+/// still exists after this process is gone. Handing the snapshot over would
+/// name a directory this pid's death prunes, and the child would fall back to
+/// the embedded client.
+#[tokio::test]
+async fn a_replacement_inherits_the_configured_static_root_not_the_snapshot() {
+    let instance = start("static-handoff").await;
+    let configured = instance.root.join("static");
+    let snapshot = instance
+        .server
+        .config
+        .static_dir
+        .clone()
+        .expect("a serving snapshot");
+    assert_ne!(
+        snapshot, configured,
+        "this process serves a snapshot, not the source"
+    );
+    let settings = devboard::relaunch::RelaunchSettings::from_app(&instance.server.app);
+    assert_eq!(
+        settings.static_dir,
+        Some(configured),
+        "the replacement inherits the configured static root"
+    );
+}
+
 #[tokio::test]
 async fn the_readiness_probe_answers_without_a_credential_and_checks_the_pid() {
     let instance = start("ready-probe").await;
