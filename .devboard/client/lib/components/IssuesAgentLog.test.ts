@@ -97,3 +97,15 @@ test("scrolling up inside one run keeps the operator's offset", async () => {
 
   expect(log.scrollTop).toBe(40);
 });
+
+test("renders one span per entry with its kind, prompt, and literal newlines", async () => {
+  const lines = ["$ cargo test", "", "2 passed"];
+  const { log } = await mount(lines, "run-1");
+
+  expect(log.textContent).toBe(lines.join("\n"));
+
+  const rows = [...log.querySelectorAll(".issues-activity__line")];
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["command", "blank", "text"]);
+  expect(rows[0]?.querySelector(".issues-activity__prompt")?.textContent).toBe("$");
+  expect(rows[0]?.textContent).toBe("$ cargo test");
+});
