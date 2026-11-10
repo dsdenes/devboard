@@ -169,6 +169,14 @@ pub fn process_stat(pid: u32) -> Option<ProcessStat> {
     value
 }
 
+/// Drops one pid's memoized stat, so a just-signalled process is read again
+/// the moment anyone asks whether it is still alive.
+pub fn forget_process(pid: u32) {
+    if let Ok(mut cache) = PROCESS_STATS.lock() {
+        cache.remove(&pid);
+    }
+}
+
 /// The kernel's uptime in seconds, reused for one liveness window.
 fn uptime_seconds() -> Option<f64> {
     if let Ok(cache) = UPTIME.lock() {
@@ -485,12 +493,20 @@ impl SupervisedChild {
 
     /// Sends SIGKILL to the child without waiting for it.
     pub fn start_kill(&mut self) -> io::Result<()> {
-        self.child.start_kill()
+        let result = self.child.start_kill();
+        if let Some(pid) = self.child.id() {
+            forget_process(pid);
+        }
+        result
     }
 
     /// Sends SIGKILL and waits for the exit.
     pub async fn kill(&mut self) -> io::Result<()> {
-        self.child.kill().await
+        let result = self.child.kill().await;
+        if let Some(pid) = self.child.id() {
+            forget_process(pid);
+        }
+        result
     }
 
     /// Checks the child without blocking; a noticed exit removes its record.
@@ -1002,11 +1018,13 @@ pub fn signal_process_group(pid: u32, signal: i32) {
             _ => pid as i32,
         };
         if unsafe { libc::kill(group, signal) } == 0 {
+            forget_process(pid);
             return;
         }
         unsafe {
             libc::kill(pid as i32, signal);
         }
+        forget_process(pid);
     }
     #[cfg(not(unix))]
     {
