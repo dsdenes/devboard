@@ -347,6 +347,22 @@ export class ConnectionStore {
   }
 
   /**
+   * Stops polling one registered read. A surface that followed a resource only
+   * while it had a subject — an Ask conversation while its turn runs — drops
+   * the registration the moment the subject settles, and a queued read of it
+   * never starts afterwards.
+   */
+  forget(command: Envelope): void {
+    const operation = REST_OPERATIONS[command.type];
+    if (operation === undefined) return;
+    const key = `${command.type}:${resourcePath(command, operation)}`;
+    this.polled.delete(key);
+    this.queue = this.queue.filter((queued) => queued.key !== key);
+    this.inFlight.delete(key);
+    this.etags.delete(key);
+  }
+
+  /**
    * Reads one resource once. A refresh or a reconnect revalidates state the
    * page still holds, conditional on the ETag last seen and deduped against a
    * read already in flight. An operator or first-paint read asks for the

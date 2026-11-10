@@ -116,6 +116,37 @@ fn drain(inbox: &mut UnboundedReceiver<String>) -> Vec<Value> {
     frames
 }
 
+/// Reads one conversation until its turn settles, returning the last frames.
+async fn settled(
+    app: &App,
+    conn: &Conn,
+    inbox: &mut UnboundedReceiver<String>,
+    id: &str,
+) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        app.command(
+            conn,
+            Command::GetInquiry {
+                conversation_id: Some(json!(id)),
+            },
+        )
+        .await;
+        let frames = drain(inbox);
+        if frames
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(false))
+        {
+            return frames;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the turn settled: {frames:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// The stub streams its answer in two chunks, trimming each; the client joins
 /// them verbatim, which loses the space the split consumed.
 fn streamed(answer: &str) -> String {
@@ -318,42 +349,55 @@ async fn ask_streams_turns_and_keeps_one_transcript() {
     )
     .await;
     let frames = drain(&mut inbox);
-    let chunk_frames: Vec<&Value> = frames
-        .iter()
-        .filter(|frame| frame["type"] == "askChunk")
-        .collect();
-    assert_eq!(chunk_frames.len(), 2, "the fixture streams two chunks");
-    for frame in &chunk_frames {
-        let object = frame.as_object().expect("a chunk object");
-        assert_eq!(
-            object.keys().map(String::as_str).collect::<Vec<&str>>(),
-            vec!["type", "conversationId", "text"],
-            "a chunk carries exactly the three fields"
-        );
-    }
-    let chunks: String = frames
-        .iter()
-        .filter(|frame| frame["type"] == "askChunk")
-        .map(|frame| {
-            assert_eq!(frame["conversationId"], "conversation-1");
-            frame["text"].as_str().expect("chunk text").to_string()
-        })
-        .collect();
-    assert_eq!(chunks, streamed(ANSWER_ONE));
     assert_eq!(
-        frames.last(),
-        Some(&json!({"type": "askDone", "conversationId": "conversation-1"})),
-        "the turn ends with askDone: {frames:?}"
+        frames.len(),
+        1,
+        "the creation answers one frame: {frames:?}"
     );
-    assert!(
-        frames.iter().all(|frame| frame["type"] != "askError"),
-        "a complete turn carries no error: {frames:?}"
+    let inquiry = frames[0].as_object().expect("an inquiry object");
+    assert_eq!(
+        inquiry.keys().map(String::as_str).collect::<Vec<&str>>(),
+        vec![
+            "type",
+            "conversationId",
+            "busy",
+            "answer",
+            "error",
+            "transcript"
+        ],
+        "an inquiry carries exactly the six fields"
+    );
+    assert_eq!(frames[0]["type"], "inquiry");
+    assert_eq!(frames[0]["conversationId"], "conversation-1");
+    assert_eq!(frames[0]["busy"], json!(true));
+    assert_eq!(frames[0]["answer"], "");
+    assert_eq!(frames[0]["error"], Value::Null);
+    assert_eq!(
+        frames[0]["transcript"],
+        json!([{"role": "developer", "text": question_one}])
+    );
+
+    let frames = settled(&app, &conn, &mut inbox, "conversation-1").await;
+    let inquiry = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
+    assert_eq!(inquiry["busy"], json!(false));
+    assert_eq!(inquiry["answer"], "");
+    assert_eq!(inquiry["error"], Value::Null);
+    assert_eq!(
+        inquiry["transcript"],
+        json!([
+            {"role": "developer", "text": question_one},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+        ])
     );
 
     let path = transcript_path(&scratch, "conversation-1");
     let persisted = std::fs::read_to_string(&path).expect("the transcript exists");
     let expected = format!(
-        "{{\"id\":\"conversation-1\",\"transcript\":[{{\"role\":\"developer\",\"text\":{}}},{{\"role\":\"agent\",\"text\":{}}}],\"turn\":1,\"busy\":false,\"lastPrompt\":{}}}\n",
+        "{{\"id\":\"conversation-1\",\"transcript\":[{{\"role\":\"developer\",\"text\":{}}},{{\"role\":\"agent\",\"text\":{}}}],\"turn\":1,\"busy\":false,\"lastPrompt\":{},\"textStart\":0,\"error\":null}}\n",
         serde_json::to_string(question_one).expect("a JSON question"),
         serde_json::to_string(&streamed(ANSWER_ONE)).expect("a JSON answer"),
         serde_json::to_string(&first_prompt(question_one)).expect("a JSON prompt"),
@@ -381,20 +425,41 @@ async fn ask_streams_turns_and_keeps_one_transcript() {
     )
     .await;
     let frames = drain(&mut inbox);
-    let chunks: String = frames
-        .iter()
-        .filter(|frame| frame["type"] == "askChunk")
-        .map(|frame| frame["text"].as_str().expect("chunk text").to_string())
-        .collect();
-    assert_eq!(chunks, streamed(ANSWER_TWO));
     assert_eq!(
-        frames.last(),
-        Some(&json!({"type": "askDone", "conversationId": "conversation-1"}))
+        frames.len(),
+        1,
+        "the follow-up answers one frame: {frames:?}"
+    );
+    assert_eq!(frames[0]["type"], "inquiry");
+    assert_eq!(frames[0]["busy"], json!(true));
+    assert_eq!(
+        frames[0]["transcript"],
+        json!([
+            {"role": "developer", "text": question_one},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+            {"role": "developer", "text": question_two},
+        ])
+    );
+
+    let frames = settled(&app, &conn, &mut inbox, "conversation-1").await;
+    let inquiry = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
+    assert_eq!(
+        inquiry["transcript"],
+        json!([
+            {"role": "developer", "text": question_one},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+            {"role": "developer", "text": question_two},
+            {"role": "agent", "text": streamed(ANSWER_TWO)},
+        ])
     );
 
     let persisted = std::fs::read_to_string(&path).expect("the transcript exists");
     let expected = format!(
-        "{{\"id\":\"conversation-1\",\"transcript\":[{{\"role\":\"developer\",\"text\":{}}},{{\"role\":\"agent\",\"text\":{}}},{{\"role\":\"developer\",\"text\":{}}},{{\"role\":\"agent\",\"text\":{}}}],\"turn\":2,\"busy\":false,\"lastPrompt\":{}}}\n",
+        "{{\"id\":\"conversation-1\",\"transcript\":[{{\"role\":\"developer\",\"text\":{}}},{{\"role\":\"agent\",\"text\":{}}},{{\"role\":\"developer\",\"text\":{}}},{{\"role\":\"agent\",\"text\":{}}}],\"turn\":2,\"busy\":false,\"lastPrompt\":{},\"textStart\":2,\"error\":null}}\n",
         serde_json::to_string(question_one).expect("a JSON question"),
         serde_json::to_string(&streamed(ANSWER_ONE)).expect("a JSON answer"),
         serde_json::to_string(question_two).expect("a JSON question"),

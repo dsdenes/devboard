@@ -86,6 +86,7 @@ export const REST_OPERATIONS: Record<string, RestOperation> = {
   "confirmGlossaryTerm": { method: "PUT", path: "/discoveries/glossary-terms/{id}", pathParams: [["id", "id"]] },
   "rejectGlossaryTerm": { method: "DELETE", path: "/discoveries/glossary-terms/{id}", pathParams: [["id", "id"]] },
   "ask": { method: "POST", path: "/inquiries/conversations", pathParams: [] },
+  "getInquiry": { method: "GET", path: "/inquiries/conversations/{conversation_id}", pathParams: [["conversation_id", "conversationId"]] },
   "closeAsk": { method: "DELETE", path: "/inquiries/conversations/{conversation_id}", pathParams: [["conversation_id", "conversationId"]] },
   "getProviders": { method: "GET", path: "/providers", pathParams: [] },
   "createProvider": { method: "POST", path: "/providers", pathParams: [] },

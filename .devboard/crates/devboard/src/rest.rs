@@ -520,6 +520,14 @@ pub static ROUTES: &[Route] = &[
         true
     ),
     route!(
+        "getInquiry",
+        GET,
+        "/inquiries/conversations/{conversation_id}",
+        [path_field!("conversation_id", "conversationId")],
+        200,
+        false
+    ),
+    route!(
         "closeAsk",
         DELETE,
         "/inquiries/conversations/{conversation_id}",
@@ -1175,13 +1183,25 @@ mod tests {
 
     #[test]
     fn the_table_lists_every_served_operation_and_no_socket() {
-        assert_eq!(ROUTES.len(), 81);
+        assert_eq!(ROUTES.len(), 82);
         for route in ROUTES {
             assert!(route.path.starts_with('/'));
             assert!(!route.path.starts_with("/api"));
             assert!(!route.path.ends_with('/'));
             assert!(!route.path.contains("/ws"));
         }
+    }
+
+    #[test]
+    fn the_inquiry_read_maps_to_the_conversation_resource() {
+        let (method, path, body) = request_for_command(&json!({
+            "type": "getInquiry",
+            "conversationId": "conversation-1",
+        }))
+        .expect("an inquiry request");
+        assert_eq!(method, Method::GET);
+        assert_eq!(path, "/inquiries/conversations/conversation-1");
+        assert!(body.as_object().map(|object| object.is_empty()) == Some(true));
     }
 
     #[test]

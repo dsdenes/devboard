@@ -688,11 +688,14 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         "question": "What does the issues indicator show?",
         "context": context(),
     });
-    // The ask keeps its request open for the turn; the restart below runs on
-    // its own connection, exactly like the updater's control path.
-    let base_for_ask = base.clone();
-    let ask_request = request.clone();
-    let ask = tokio::spawn(async move { rest(&base_for_ask, ask_request).await });
+    // The creation answers at once; the turn keeps running in its own owner.
+    let frames = rest(&base, request).await;
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
+        "the creation answers its busy conversation: {frames:?}"
+    );
     wait_until(
         || {
             current_run_state(&scratch)
@@ -716,10 +719,30 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let _ = ask.await;
     wait_ready(&base).await;
-    // The page asks again after reconnecting; the owner already has the turn.
-    let _ = rest(&base, request.clone()).await;
+    // The replacement re-attaches the inherited owner by itself: no page has
+    // to ask again, and the conversation settles with one answer.
+    let frames = poll_frames(
+        &base,
+        json!({"type": "getInquiry", "conversationId": "conversation-1"}),
+        |frame| frame["type"] == "inquiry" && frame["busy"] == json!(false),
+        Duration::from_secs(60),
+        "the replacement settled the inherited turn",
+    )
+    .await;
+    let settled = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
+    assert_eq!(
+        settled["transcript"],
+        json!([
+            {"role": "developer", "text": "What does the issues indicator show?"},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+        ]),
+        "one question and one answer: {settled}"
+    );
 
     // The replacement attaches to the same run and the run's socket replays
     // its retained assistant text and terminal turn state.
@@ -1049,7 +1072,9 @@ async fn an_ask_answers_before_its_agent_turn_finishes() {
     let client = reqwest::Client::new();
     let inquiry = loop {
         let answer: Value = client
-            .get(format!("{base}/inquiries/conversations/conversation-latency"))
+            .get(format!(
+                "{base}/inquiries/conversations/conversation-latency"
+            ))
             .header("accept", "application/json")
             .send()
             .await
@@ -1058,9 +1083,9 @@ async fn an_ask_answers_before_its_agent_turn_finishes() {
             .await
             .expect("JSON");
         let frames = answer["frames"].as_array().cloned().unwrap_or_default();
-        let settled = frames.into_iter().find(|frame| {
-            frame["type"] == "inquiry" && frame["busy"] == json!(false)
-        });
+        let settled = frames
+            .into_iter()
+            .find(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(false));
         if let Some(frame) = settled {
             break frame;
         }

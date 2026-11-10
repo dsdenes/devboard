@@ -100,6 +100,8 @@ const COMPLETION_SUBJECT: Record<string, string> = {
   getIssuesRun: "runId",
   closeIssue: "number",
   answerIssues: "runId",
+  ask: "conversationId",
+  getInquiry: "conversationId",
 };
 
 /** The first inbound frame type that answers each command. */
@@ -174,7 +176,8 @@ const RESPONSE_TYPES: Record<string, string[]> = {
   getDiscover: ["discoverState"],
   confirmGlossaryTerm: ["discoverState", "discoverError"],
   rejectGlossaryTerm: ["discoverState", "discoverError"],
-  ask: ["askError"],
+  ask: ["inquiry", "askError"],
+  getInquiry: ["inquiry", "inquiryMissing"],
   closeAsk: ["error"],
   getProviders: ["providersState"],
   createProvider: ["providersState", "providerError"],

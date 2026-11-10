@@ -1,18 +1,19 @@
 //! Ask conversations: the element-scoped question panel.
 //!
 //! One conversation belongs to each open report panel. Every turn runs the ACP
-//! peer with the provider's environment and a read-only permission policy,
-//! streams assistant text as `askChunk` frames, and ends the turn with
-//! `askDone`; a refused request, an agent failure, or the turn deadline
-//! answers `askError`. The visible turns are retained under
-//! `<state>/ask/<repository key>` so a replacement dashboard answers the next
-//! question from the same transcript.
+//! peer with the provider's environment and a read-only permission policy in
+//! its own detached owner, whose streamed answer is the run's text journal.
+//! The creation answers at once with the conversation — busy, the turns so
+//! far, and the text streamed so far — and the page reads that conversation
+//! while the turn runs; a refused request answers `askError`, and a failed
+//! turn or an ended bound is the conversation's `error`. The visible turns are
+//! retained under `<state>/ask/<repository key>` so a replacement dashboard
+//! answers the next question from the same transcript.
 //!
 //! Each turn runs in a detached owner process, so a dashboard replacement
 //! re-attaches to the peer that is still answering. The owner owns the ACP
-//! peer and its text journal; this module validates requests, streams the
-//! replayed answer through `askChunk`, and emits `askDone` exactly once when
-//! the turn settles.
+//! peer and its text journal; this module validates requests and answers the
+//! polled conversation from the journal.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -252,21 +253,39 @@ fn ask_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
         )))
 }
 
+/// The run journal's text entries a conversation holds now; a reused owner
+/// appends its next turn after them.
+fn turn_text_count(state_dir: &Path, repo_dir: &Path, id: &str) -> usize {
+    let directory = crate::detached_run::detached_run_directory(state_dir, repo_dir, "ask", id);
+    crate::detached_run::read_detached_run_text(&directory).len()
+}
+
+/// The text one turn streamed, from the entries that follow its start.
+fn turn_answer(state_dir: &Path, repo_dir: &Path, id: &str, text_start: usize) -> String {
+    let directory = crate::detached_run::detached_run_directory(state_dir, repo_dir, "ask", id);
+    crate::detached_run::read_detached_run_text(&directory)
+        .into_iter()
+        .skip(text_start)
+        .collect()
+}
+
 /// One live conversation.
 struct Conversation {
     id: String,
-    socket: Option<Conn>,
     /// The detached owner of this conversation's peer.
     peer: Option<Arc<DetachedPeer>>,
     /// Visible turns, replayed to a replacement peer.
     transcript: Vec<TranscriptEntry>,
     busy: bool,
-    /// The answer being streamed; a closed or replaced turn discards it.
-    answer: String,
     closed: bool,
     turn: u64,
     /// The prompt of the turn in flight, so a replacement can re-attach.
     last_prompt: Option<String>,
+    /// The run journal's text entries written before this turn began, so a
+    /// replayed journal contributes only this turn's answer.
+    text_start: usize,
+    /// The turn's refusal, when it failed or expired.
+    error: Option<String>,
     /// When the live turn last streamed text or activity.
     last_progress: Instant,
 }
@@ -275,26 +294,21 @@ impl Conversation {
     fn new(id: String) -> Self {
         Self {
             id,
-            socket: None,
             peer: None,
             transcript: Vec::new(),
             busy: false,
-            answer: String::new(),
             closed: false,
             turn: 0,
             last_prompt: None,
+            text_start: 0,
+            error: None,
             last_progress: Instant::now(),
         }
     }
 
-    /// True while this conversation is on the given turn for this socket.
-    fn live(&self, turn: u64, socket_id: u64) -> bool {
-        !self.closed
-            && self.turn == turn
-            && self
-                .socket
-                .as_ref()
-                .is_some_and(|owner| owner.id() == socket_id)
+    /// True while this conversation is still on the given turn.
+    fn live(&self, turn: u64) -> bool {
+        !self.closed && self.turn == turn
     }
 
     /// The persisted shape, in the TypeScript key order.
@@ -326,6 +340,11 @@ impl Conversation {
                 .clone()
                 .map(Value::String)
                 .unwrap_or(Value::Null),
+        );
+        stored.insert("textStart".to_string(), json!(self.text_start));
+        stored.insert(
+            "error".to_string(),
+            self.error.clone().map(Value::String).unwrap_or(Value::Null),
         );
         Value::Object(stored)
     }
@@ -404,18 +423,32 @@ fn restore_conversations(state_dir: &Path, repo_dir: &Path) -> HashMap<String, C
             .get("lastPrompt")
             .and_then(Value::as_str)
             .map(str::to_string);
+        conversation.text_start = value
+            .get("textStart")
+            .and_then(Value::as_u64)
+            .map(|count| count as usize)
+            .unwrap_or(0);
+        conversation.error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         conversations.insert(conversation.id.clone(), conversation);
     }
     conversations
 }
 
 impl AskMode {
-    fn new(app: &Arc<App>) -> Self {
+    fn new(app: &Arc<App>) -> Arc<Self> {
         let config = app.config();
         let state_dir = config.state_dir.clone();
         let repo_dir = config.repo_dir.clone();
         let conversations = restore_conversations(&state_dir, &repo_dir);
-        Self {
+        let interrupted: Vec<String> = conversations
+            .values()
+            .filter(|conversation| conversation.busy && conversation.last_prompt.is_some())
+            .map(|conversation| conversation.id.clone())
+            .collect();
+        let mode = Arc::new(Self {
             state_dir,
             repo_dir,
             command: config.agent_command.clone(),
@@ -424,7 +457,18 @@ impl AskMode {
             turn_silence: Duration::from_millis(ASK_TURN_SILENCE_MS.max(1)),
             turn_max: Duration::from_millis(ASK_TURN_MAX_MS.max(ASK_TURN_SILENCE_MS)),
             inner: Mutex::new(Inner { conversations }),
+        });
+        // A replacement inherits the owners that were answering when the
+        // previous dashboard went away, so their turns still settle. A
+        // construction outside a runtime serves nothing, so it recovers
+        // nothing.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            for id in interrupted {
+                let recovered = Arc::clone(&mode);
+                handle.spawn(async move { recovered.recover(id).await });
+            }
         }
+        mode
     }
 
     fn conversation_path(&self, id: &str) -> PathBuf {
@@ -447,43 +491,26 @@ impl AskMode {
         let _ = crate::state::write_file_atomically_sync(&self.conversation_path(id), &text);
     }
 
-    fn live(&self, id: &str, turn: u64, socket_id: u64) -> bool {
+    fn live(&self, id: &str, turn: u64) -> bool {
         let state = lock(&self.inner);
         state
             .conversations
             .get(id)
-            .is_some_and(|conversation| conversation.live(turn, socket_id))
+            .is_some_and(|conversation| conversation.live(turn))
     }
 
-    /// Relays one assistant chunk to the conversation's current owner and
-    /// records it as turn progress.
-    ///
-    /// The owner is read per chunk rather than captured when the peer starts:
-    /// a REST turn arrives on its own ephemeral connection, so the request
-    /// that asked a follow-up must receive that turn's text even though the
-    /// peer process was created for an earlier one.
+    /// Records one assistant chunk as turn progress. The answer itself is read
+    /// from the run journal, so a replacement dashboard replays it unchanged
+    /// and the polled conversation answers with the text streamed so far.
     fn text_callback(self: &Arc<Self>, id: &str) -> TextCallback {
         let mode = Arc::clone(self);
         let text_id = id.to_string();
-        Arc::new(move |text: String| {
-            let relayed = {
-                let mut state = lock(&mode.inner);
-                match state.conversations.get_mut(&text_id) {
-                    Some(conversation) if conversation.busy && !conversation.closed => {
-                        conversation.last_progress = Instant::now();
-                        conversation.answer.push_str(&text);
-                        let frame = json!({
-                            "type": "askChunk",
-                            "conversationId": conversation.id,
-                            "text": text,
-                        });
-                        conversation.socket.clone().map(|socket| (socket, frame))
-                    }
-                    _ => None,
+        Arc::new(move |_text: String| {
+            let mut state = lock(&mode.inner);
+            if let Some(conversation) = state.conversations.get_mut(&text_id) {
+                if conversation.busy && !conversation.closed {
+                    conversation.last_progress = Instant::now();
                 }
-            };
-            if let Some((socket, frame)) = relayed {
-                socket.send(frame);
             }
         })
     }
@@ -555,8 +582,40 @@ impl AskMode {
         DetachedPeer::new(options)
     }
 
-    /// Opens one conversation turn: validates the request, admits it, and
-    /// starts or attaches to its detached owner.
+    /// The polled representation of one conversation.
+    fn inquiry_frame(&self, id: &str) -> Value {
+        let state = lock(&self.inner);
+        let Some(conversation) = state.conversations.get(id) else {
+            return json!({"type": "inquiryMissing", "conversationId": id});
+        };
+        let answer = if conversation.busy {
+            turn_answer(
+                &self.state_dir,
+                &self.repo_dir,
+                &conversation.id,
+                conversation.text_start,
+            )
+        } else {
+            String::new()
+        };
+        let transcript: Vec<Value> = conversation
+            .transcript
+            .iter()
+            .map(|entry| json!({"role": entry.role.as_str(), "text": entry.text}))
+            .collect();
+        json!({
+            "type": "inquiry",
+            "conversationId": conversation.id,
+            "busy": conversation.busy,
+            "answer": answer,
+            "error": conversation.error,
+            "transcript": transcript,
+        })
+    }
+
+    /// Opens one conversation turn: validates the request, admits it, answers
+    /// its conversation, and runs the agent afterwards. The request never
+    /// waits for the answer, so the operator's action settles at once.
     async fn ask(
         self: &Arc<Self>,
         app: &Arc<App>,
@@ -575,120 +634,181 @@ impl AskMode {
         };
         let id = request.conversation_id.clone();
 
-        // A REST request is one ephemeral handle, not a durable client: every
-        // turn of one open panel arrives on a fresh connection, so a request
-        // never conflicts with the handle that asked the previous turn. Two
-        // live sockets still refuse each other's conversation.
-        let refusal = {
+        let busy = {
             let state = lock(&self.inner);
-            match state.conversations.get(&id) {
-                Some(existing)
-                    if existing.socket.as_ref().is_some_and(|owner| {
-                        !owner.is_request() && !socket.is_request() && owner.id() != socket.id()
-                    }) =>
-                {
-                    Some("This conversation belongs to another client.")
-                }
-                Some(existing) if existing.busy && existing.peer.is_some() => {
-                    Some("The agent is still answering the previous question.")
-                }
-                _ => None,
-            }
+            state
+                .conversations
+                .get(&id)
+                .is_some_and(|conversation| conversation.busy)
         };
-        if let Some(message) = refusal {
-            send_error(socket, &id, message);
+        if busy {
+            send_error(
+                socket,
+                &id,
+                "The agent is still answering the previous question.",
+            );
             return;
         }
 
-        // A replacement re-attaches to the turn that was already in flight.
-        let (attached_turn, attach) = {
+        let first_turn = {
+            let state = lock(&self.inner);
+            state.conversations.get(&id).is_none_or(|conversation| {
+                conversation.peer.as_ref().is_none_or(|peer| peer.closed())
+            })
+        };
+        // The provider is chosen before the turn is admitted: a refused
+        // selection answers at once and starts no process.
+        let environment = if first_turn {
+            match app.providers.select_environment().await {
+                Ok(environment) => Some(
+                    environment
+                        .into_iter()
+                        .filter_map(|(key, value)| value.map(|value| (key, value)))
+                        .collect::<HashMap<String, String>>(),
+                ),
+                Err(error) => {
+                    send_error(socket, &id, &error.message);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        // Provider selection awaited above, so the refusal is decided again
+        // under the same lock that admits the turn: two requests never start
+        // one conversation's second turn.
+        let admitted = {
             let mut state = lock(&self.inner);
             let conversation = state
                 .conversations
                 .entry(id.clone())
                 .or_insert_with(|| Conversation::new(id.clone()));
-            conversation.socket = Some(socket.clone());
-            conversation.closed = false;
-            let attach = conversation.busy
-                && conversation.last_prompt.is_some()
-                && conversation.peer.is_none();
-            (conversation.turn, attach)
-        };
-
-        if attach {
-            let peer = self.detached(&id, true);
-            {
-                let mut state = lock(&self.inner);
-                if let Some(conversation) = state.conversations.get_mut(&id) {
-                    conversation.peer = Some(Arc::clone(&peer));
-                }
+            if conversation.closed {
+                *conversation = Conversation::new(id.clone());
             }
-            self.persist(&id);
-            // Attachment begins polling only through `run`; the owner already
-            // has the turn, so this settles with the run's own outcome.
-            if let Err(message) = peer.run("").await {
-                self.fail(&id, attached_turn, socket, &message);
-                return;
-            }
-            match peer.wait_turn(attached_turn).await {
-                Ok(()) => self.complete_attached(&id, attached_turn, socket),
-                Err(message) => self.fail(&id, attached_turn, socket, &message),
-            }
-            return;
-        }
-
-        let (turn, first_turn, prompt) = {
-            let mut state = lock(&self.inner);
-            let conversation = state
-                .conversations
-                .entry(id.clone())
-                .or_insert_with(|| Conversation::new(id.clone()));
-            let first_turn = conversation.peer.as_ref().is_none_or(|peer| peer.closed());
-            conversation.turn += 1;
-            let turn = conversation.turn;
-            conversation.busy = true;
-            conversation.answer.clear();
-            conversation.last_progress = Instant::now();
-            conversation.transcript.push(TranscriptEntry {
-                role: Role::Developer,
-                text: request.question.clone(),
-            });
-            let earlier = &conversation.transcript[..conversation.transcript.len() - 1];
-            let prompt = if first_turn {
-                ask_prompt(&request, earlier)
+            if conversation.busy {
+                None
             } else {
-                follow_up_prompt(&request.question)
-            };
-            conversation.last_prompt = Some(prompt.clone());
-            (turn, first_turn, prompt)
+                conversation.turn += 1;
+                let turn = conversation.turn;
+                conversation.busy = true;
+                conversation.error = None;
+                conversation.last_progress = Instant::now();
+                // A fresh owner resets its run journal; a reused one keeps the
+                // earlier turns' text, so only this turn's entries count.
+                conversation.text_start = if first_turn {
+                    0
+                } else {
+                    turn_text_count(&self.state_dir, &self.repo_dir, &id)
+                };
+                conversation.transcript.push(TranscriptEntry {
+                    role: Role::Developer,
+                    text: request.question.clone(),
+                });
+                let earlier = &conversation.transcript[..conversation.transcript.len() - 1];
+                let prompt = if first_turn {
+                    ask_prompt(&request, earlier)
+                } else {
+                    follow_up_prompt(&request.question)
+                };
+                conversation.last_prompt = Some(prompt.clone());
+                Some((turn, prompt))
+            }
+        };
+        let Some((turn, prompt)) = admitted else {
+            send_error(
+                socket,
+                &id,
+                "The agent is still answering the previous question.",
+            );
+            return;
         };
         self.persist(&id);
+        socket.send(self.inquiry_frame(&id));
 
+        let mode = Arc::clone(self);
+        tokio::spawn(async move {
+            mode.run_admitted(id, turn, first_turn, prompt, environment)
+                .await;
+        });
+    }
+
+    /// Runs one admitted turn and settles its conversation when it ends.
+    async fn run_admitted(
+        self: Arc<Self>,
+        id: String,
+        turn: u64,
+        first_turn: bool,
+        prompt: String,
+        environment: Option<HashMap<String, String>>,
+    ) {
         let outcome = self
             .await_turn(
                 &id,
-                self.run_turn(app, socket, &id, turn, first_turn, &prompt),
+                self.run_turn(&id, turn, first_turn, &prompt, environment),
             )
             .await;
-
         match outcome {
-            TurnOutcome::Done => self.complete(&id, turn, socket),
-            TurnOutcome::Failed(message) => self.fail(&id, turn, socket, &message),
-            TurnOutcome::Expired(expiry) => self.expire(&id, turn, socket, expiry),
+            TurnOutcome::Done => self.complete(&id, turn),
+            TurnOutcome::Failed(message) => self.fail(&id, turn, &message),
+            TurnOutcome::Expired(expiry) => self.expire(&id, turn, expiry),
             TurnOutcome::Dropped => {}
         }
     }
 
-    /// Starts or reuses the detached peer and sends one prompt, relaying its
-    /// text while the prompt is in flight.
+    /// Re-attaches the turn a replacement dashboard inherited from its
+    /// predecessor, so the answer still reaches the conversation.
+    async fn recover(self: Arc<Self>, id: String) {
+        let turn = {
+            let state = lock(&self.inner);
+            match state.conversations.get(&id) {
+                Some(conversation) if conversation.busy => conversation.turn,
+                _ => return,
+            }
+        };
+        let peer = self.detached(&id, true);
+        {
+            let mut state = lock(&self.inner);
+            match state.conversations.get_mut(&id) {
+                Some(conversation) if conversation.live(turn) => {
+                    conversation.peer = Some(Arc::clone(&peer));
+                }
+                _ => {
+                    peer.close();
+                    return;
+                }
+            }
+        }
+        if let Err(message) = peer.run("").await {
+            self.fail(&id, turn, &message);
+            return;
+        }
+        let outcome = self
+            .await_turn(&id, async {
+                match peer.wait_turn(turn).await {
+                    Ok(()) => TurnOutcome::Done,
+                    Err(message) => TurnOutcome::Failed(message),
+                }
+            })
+            .await;
+        match outcome {
+            TurnOutcome::Done => self.complete(&id, turn),
+            TurnOutcome::Failed(message) => self.fail(&id, turn, &message),
+            TurnOutcome::Expired(expiry) => self.expire(&id, turn, expiry),
+            TurnOutcome::Dropped => {}
+        }
+    }
+
+    /// Starts or reuses the detached peer and sends one prompt. Its text lands
+    /// in the run journal the conversation polls.
     async fn run_turn(
         self: &Arc<Self>,
-        app: &Arc<App>,
-        socket: &Conn,
         id: &str,
         turn: u64,
         first_turn: bool,
         prompt: &str,
+        environment: Option<HashMap<String, String>>,
     ) -> TurnOutcome {
         if !first_turn {
             let peer = {
@@ -707,19 +827,10 @@ impl AskMode {
             };
         }
 
-        let environment = match app.providers.select_environment().await {
-            Ok(environment) => environment,
-            Err(error) => return TurnOutcome::Failed(error.message),
-        };
-        // A close, disconnect, or deadline during provider selection ends the
-        // turn without a process.
-        if !self.live(id, turn, socket.id()) {
+        // A close during provider selection ends the turn without a process.
+        if !self.live(id, turn) {
             return TurnOutcome::Dropped;
         }
-        let environment: HashMap<String, String> = environment
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|value| (key, value)))
-            .collect();
         let mut options = DetachedPeerOptions::new(
             self.repo_dir.clone(),
             self.state_dir.clone(),
@@ -731,7 +842,7 @@ impl AskMode {
         )
         .permission(PermissionPolicy::Deny)
         .multi(true)
-        .env(environment)
+        .env(environment.unwrap_or_default())
         .activity(self.activity_callback(id))
         .text(self.text_callback(id));
         options.harness_version = self.harness_version.clone();
@@ -739,7 +850,7 @@ impl AskMode {
         {
             let mut state = lock(&self.inner);
             match state.conversations.get_mut(id) {
-                Some(conversation) if conversation.live(turn, socket.id()) => {
+                Some(conversation) if conversation.live(turn) => {
                     if let Some(previous) = conversation.peer.take() {
                         previous.close();
                     }
@@ -758,50 +869,46 @@ impl AskMode {
     }
 
     /// Settles a finished turn and appends the answer it streamed.
-    fn complete(&self, id: &str, turn: u64, socket: &Conn) {
-        self.complete_turn(id, turn, socket, None)
-    }
-
-    /// Settles a turn a replacement dashboard re-attached to.
-    fn complete_attached(&self, id: &str, turn: u64, socket: &Conn) {
-        self.complete_turn(id, turn, socket, Some(turn))
-    }
-
-    fn complete_turn(&self, id: &str, turn: u64, socket: &Conn, _attached: Option<u64>) {
-        let frame = {
+    fn complete(&self, id: &str, turn: u64) {
+        {
             let mut state = lock(&self.inner);
             let Some(conversation) = state.conversations.get_mut(id) else {
                 return;
             };
-            if !conversation.live(turn, socket.id()) {
+            if !conversation.live(turn) {
                 return;
             }
+            let answer = turn_answer(
+                &self.state_dir,
+                &self.repo_dir,
+                &conversation.id,
+                conversation.text_start,
+            );
             conversation.busy = false;
-            if !js_trim(&conversation.answer).is_empty() {
+            conversation.error = None;
+            if !js_trim(&answer).is_empty() {
                 conversation.transcript.push(TranscriptEntry {
                     role: Role::Agent,
-                    text: conversation.answer.clone(),
+                    text: answer,
                 });
             }
-            conversation.answer.clear();
-            json!({"type": "askDone", "conversationId": conversation.id})
-        };
+        }
         self.persist(id);
-        socket.send(frame);
     }
 
-    /// Reports one failed turn; a peer that is gone needs a fresh owner, a
+    /// Settles one failed turn; a peer that is gone needs a fresh owner, a
     /// live peer that refused one turn keeps its session.
-    fn fail(&self, id: &str, turn: u64, socket: &Conn, message: &str) {
-        let frame = {
+    fn fail(&self, id: &str, turn: u64, message: &str) {
+        {
             let mut state = lock(&self.inner);
             let Some(conversation) = state.conversations.get_mut(id) else {
                 return;
             };
-            if !conversation.live(turn, socket.id()) {
+            if !conversation.live(turn) {
                 return;
             }
             conversation.busy = false;
+            conversation.error = Some(message.to_string());
             let stale = conversation
                 .peer
                 .as_ref()
@@ -811,94 +918,36 @@ impl AskMode {
                     peer.close();
                 }
             }
-            json!({
-                "type": "askError",
-                "conversationId": conversation.id,
-                "message": message,
-            })
-        };
+        }
         self.persist(id);
-        socket.send(frame);
     }
 
     /// Ends a turn the deadline invalidated, dropping its peer.
-    fn expire(&self, id: &str, turn: u64, socket: &Conn, expiry: Expiry) {
-        let frame = {
+    fn expire(&self, id: &str, turn: u64, expiry: Expiry) {
+        {
             let mut state = lock(&self.inner);
             let Some(conversation) = state.conversations.get_mut(id) else {
                 return;
             };
-            if !conversation.live(turn, socket.id()) {
+            if !conversation.live(turn) {
                 return;
             }
             conversation.turn += 1;
             conversation.busy = false;
-            conversation.answer.clear();
+            conversation.error = Some(expiry_message(expiry));
             if let Some(peer) = conversation.peer.take() {
                 peer.close();
             }
-            json!({
-                "type": "askError",
-                "conversationId": conversation.id,
-                "message": expiry_message(expiry),
-            })
-        };
+        }
         self.persist(id);
-        socket.send(frame);
     }
 
     /// Closes one conversation and stops its run; a stale id is ignored.
-    fn close(&self, socket: &Conn, conversation_id: Option<&Value>) {
+    fn close(&self, conversation_id: Option<&Value>) {
         let Some(id) = conversation_id.and_then(Value::as_str) else {
             return;
         };
-        {
-            let state = lock(&self.inner);
-            let Some(conversation) = state.conversations.get(id) else {
-                return;
-            };
-            if !socket.is_request()
-                && conversation
-                    .socket
-                    .as_ref()
-                    .is_some_and(|owner| owner.id() != socket.id())
-            {
-                return;
-            }
-        }
         self.discard(id);
-    }
-
-    /// Drops every conversation this connection owned. A replacement keeps
-    /// them, so the reconnected page re-attaches to the turn in flight.
-    fn discard_owned_by(&self, socket: &Conn) {
-        let owned: Vec<String> = {
-            let state = lock(&self.inner);
-            state
-                .conversations
-                .values()
-                .filter(|conversation| {
-                    conversation
-                        .socket
-                        .as_ref()
-                        .is_some_and(|owner| owner.id() == socket.id())
-                })
-                .map(|conversation| conversation.id.clone())
-                .collect()
-        };
-        let restarting = crate::detached_run::in_detached_handoff(&self.repo_dir, &self.instance);
-        for id in owned {
-            if restarting {
-                let mut state = lock(&self.inner);
-                if let Some(conversation) = state.conversations.get_mut(&id) {
-                    conversation.socket = None;
-                }
-                drop(state);
-                self.persist(&id);
-            } else {
-                self.discard(&id);
-            }
-        }
     }
 
     fn discard(&self, id: &str) {
@@ -910,9 +959,9 @@ impl AskMode {
             conversation.closed = true;
             conversation.busy = false;
             conversation.turn += 1;
-            conversation.answer.clear();
             conversation.transcript.clear();
             conversation.last_prompt = None;
+            conversation.error = None;
             if let Some(peer) = conversation.peer.take() {
                 peer.close();
             }
@@ -965,7 +1014,7 @@ fn send_error(socket: &Conn, conversation_id: &str, message: &str) {
 
 /// Registers this mode's durable state with the dashboard.
 pub fn init(app: &Arc<App>) {
-    let mode = Arc::new(AskMode::new(app));
+    let mode = AskMode::new(app);
     let mut modes = lock(&MODES);
     modes.retain(|(weak, _)| weak.strong_count() > 0);
     modes.push((Arc::downgrade(app), mode));
@@ -982,21 +1031,16 @@ fn mode_for(app: &Arc<App>) -> Arc<AskMode> {
     {
         return Arc::clone(mode);
     }
-    let mode = Arc::new(AskMode::new(app));
+    let mode = AskMode::new(app);
     modes.push((Arc::downgrade(app), Arc::clone(&mode)));
     mode
 }
 
 /// Replays the frames a connecting client owes before its own replies.
 ///
-/// An Ask conversation answers only the client that asked, so a new connection
-/// owes no frame.
+/// A conversation is read through its own resource, so a new connection owes
+/// no frame.
 pub fn replay(_app: &Arc<App>, _conn: &Conn) {}
-
-/// Drops the conversations one closed socket owned.
-pub fn disconnect(app: &Arc<App>, conn: &Conn) {
-    mode_for(app).discard_owned_by(conn);
-}
 
 /// Applies one command; `false` when it belongs to another mode.
 pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
@@ -1017,8 +1061,16 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
             .await;
             true
         }
+        Command::GetInquiry { conversation_id } => {
+            let id = conversation_id
+                .as_ref()
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            conn.send(mode_for(app).inquiry_frame(id));
+            true
+        }
         Command::CloseAsk { conversation_id } => {
-            mode_for(app).close(conn, conversation_id.as_ref());
+            mode_for(app).close(conversation_id.as_ref());
             true
         }
         _ => false,
@@ -1136,41 +1188,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn streamed_text_follows_the_conversation_owner() {
+    async fn streamed_text_and_activity_mark_turn_progress() {
         let mode = mode_with_timeouts(Duration::from_secs(5), Duration::from_secs(10));
-        let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
-        let socket = Conn::new(outbox);
-        lock(&mode.inner)
-            .conversations
-            .get_mut("conversation")
-            .expect("the fixture conversation")
-            .socket = Some(socket);
 
         let before = last_progress(&mode);
         tokio::time::sleep(Duration::from_millis(5)).await;
         mode.text_callback("conversation")("An answer.".to_string());
         assert!(last_progress(&mode) > before);
-        let frame = inbox.try_recv().expect("one askChunk frame");
-        let frame: Value = serde_json::from_str(&frame).expect("a JSON frame");
-        assert_eq!(frame["type"], "askChunk");
-        assert_eq!(frame["text"], "An answer.");
-
-        // A follow-up arrives on a new connection while the peer created for
-        // the previous one keeps relaying: its text reaches the new owner.
-        let (next_outbox, mut next_inbox) = tokio::sync::mpsc::unbounded_channel();
-        lock(&mode.inner)
-            .conversations
-            .get_mut("conversation")
-            .expect("the fixture conversation")
-            .socket = Some(Conn::new(next_outbox));
-        mode.text_callback("conversation")("A second answer.".to_string());
-        assert!(
-            inbox.try_recv().is_err(),
-            "the previous owner receives nothing"
-        );
-        let frame = next_inbox.try_recv().expect("the new owner's one frame");
-        let frame: Value = serde_json::from_str(&frame).expect("a JSON frame");
-        assert_eq!(frame["text"], "A second answer.");
 
         let before = last_progress(&mode);
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1179,10 +1203,6 @@ mod tests {
             append: false,
         });
         assert!(last_progress(&mode) > before);
-        assert!(
-            next_inbox.try_recv().is_err(),
-            "activity stays off the wire"
-        );
     }
 
     #[test]

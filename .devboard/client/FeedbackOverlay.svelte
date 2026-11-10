@@ -312,6 +312,9 @@
     askedQuestion = question;
     transcript = [...transcript, { role: "DEVELOPER", text: question }];
     report = "";
+    // The creation answers at once; the turn streams into the conversation the
+    // page polls, so the ask never holds a request open for the agent.
+    connection.send({ type: "getInquiry", conversationId: id }, "refresh");
     focusComposer();
   }
 
@@ -328,28 +331,63 @@
     void send();
   }
 
+  /** The server's stored turns as the panel renders them. */
+  function inquiryTurns(value: unknown): AskTurn[] {
+    if (!Array.isArray(value)) return [];
+    const turns: AskTurn[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      const role =
+        record.role === "agent" ? "AGENT" : record.role === "developer" ? "DEVELOPER" : null;
+      if (role === null || typeof record.text !== "string") continue;
+      turns.push({ role, text: record.text });
+    }
+    return turns;
+  }
+
+  /** Stops following a conversation whose turn settled or is gone. */
+  function forgetInquiry(): void {
+    if (conversationId !== null) {
+      connection.forget({ type: "getInquiry", conversationId });
+    }
+  }
+
   /** Events for a closed or replaced conversation never reach the transcript. */
   function onConnectionMessage(message: Record<string, unknown>): void {
     if (typeof message.conversationId !== "string") return;
     if (message.conversationId !== conversationId) return;
 
-    if (message.type === "askChunk") {
-      const text = typeof message.text === "string" ? message.text : "";
-      if (text.length === 0 || !askPending) return;
-      const last = transcript[transcript.length - 1];
-      if (last !== undefined && last.role === "AGENT") {
-        last.text += text;
-      } else {
-        transcript = [...transcript, { role: "AGENT", text }];
-      }
+    if (message.type === "inquiryMissing") {
+      forgetInquiry();
+      if (!askPending) return;
+      askPending = false;
+      askError = "The conversation is gone.";
+      askedQuestion = "";
+      answerSeq += 1;
+      focusComposer();
       return;
     }
 
-    if (message.type === "askDone") {
+    if (message.type === "inquiry") {
+      const answer = typeof message.answer === "string" ? message.answer : "";
+      const turns = inquiryTurns(message.transcript);
+      transcript = answer.length === 0 ? turns : [...turns, { role: "AGENT", text: answer }];
+      if (message.busy === true) {
+        askPending = true;
+        askError = null;
+        return;
+      }
+      const error =
+        typeof message.error === "string" && message.error.length > 0 ? message.error : null;
       askPending = false;
-      askError = null;
+      askError = error;
+      // A failed turn returns its question to the composer, so one Enter
+      // re-asks it and File issue and Goal keep working on the same text.
+      if (error !== null && report.trim().length === 0) report = askedQuestion;
       askedQuestion = "";
       answerSeq += 1;
+      forgetInquiry();
       focusComposer();
       return;
     }
@@ -360,8 +398,8 @@
         typeof message.message === "string" && message.message.length > 0
           ? message.message
           : "The agent could not answer.";
-      // A failed turn returns its question to the composer, so one Enter
-      // re-asks it and File issue and Goal keep working on the same text.
+      // A refused ask never created its conversation, so nothing is polled.
+      forgetInquiry();
       if (report.trim().length === 0) report = askedQuestion;
       askedQuestion = "";
       answerSeq += 1;
@@ -394,7 +432,9 @@
     askPending = false;
     askError = null;
     askedQuestion = "";
-    if (id !== null && connection.open) {
+    if (id === null) return;
+    connection.forget({ type: "getInquiry", conversationId: id });
+    if (connection.open) {
       connection.send({ type: "closeAsk", conversationId: id });
     }
   }

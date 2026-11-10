@@ -432,6 +432,31 @@ test("restart exclusion: a reconnect clears every pending action without filing"
   expect(sink.posts).toHaveLength(0);
 });
 
+test("an ask is answered only by its own conversation's frame", () => {
+  const sink = new FakeSink();
+  const guard = guarded(sink);
+  const action = guard.dispatch({ type: "ask", conversationId: "conversation-1" }, "operator");
+  expect(action).not.toBeNull();
+  guard.observe({ type: "inquiry", conversationId: "conversation-2", busy: true });
+  jest.advanceTimersByTime(999);
+  expect(sink.notices).toHaveLength(0);
+  guard.observe({ type: "inquiry", conversationId: "conversation-1", busy: true });
+  jest.advanceTimersByTime(2_000);
+  expect(sink.notices).toHaveLength(0);
+  expect(sink.posts).toHaveLength(0);
+
+  // A frame for another conversation answers nothing.
+  const other = new FakeSink();
+  const unattributed = guarded(other);
+  unattributed.dispatch({ type: "ask", conversationId: "conversation-1" }, "operator");
+  unattributed.observe({ type: "inquiry", conversationId: "conversation-2", busy: true });
+  jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
+  expect(other.notices).toHaveLength(1);
+  expect(other.notices[0]?.text).toBe(
+    "Slow UI action: ask conversation-1 exceeded the 1000 ms budget.",
+  );
+});
+
 test("the subject reads the identifying field and leaves elapsed time out", () => {
   expect(actionSubject({ type: "startAgent", id: "scout" })).toBe("scout");
   expect(actionSubject({ type: "getIssuesRun", runId: "run-1" })).toBe("run-1");

@@ -690,7 +690,6 @@ impl App {
 
     pub async fn close(&self, conn: &Conn) {
         self.complexity.unsubscribe(conn.id());
-        crate::ask_mode::disconnect(&self.arc_self(), conn);
     }
 
     /// Applies one client command.

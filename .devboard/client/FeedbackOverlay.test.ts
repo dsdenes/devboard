@@ -8,9 +8,13 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: FeedbackOverlay } = await import("./FeedbackOverlay.svelte");
+// The connection store reads `document` as it constructs, so it loads here for
+// the same reason as the component.
+const { connection } = await import("./lib/connection.svelte");
 
 const originalFetch = globalThis.fetch;
 const originalElementFromPoint = document.elementFromPoint;
+const originalWebSocket = (globalThis as Record<string, unknown>).WebSocket;
 
 interface Posted {
   url: string;
@@ -30,8 +34,56 @@ function stubFetch(): Posted[] {
   return posted;
 }
 
+/** The page's only socket, so a test can deliver the frames the server sends. */
+class FakeSocket {
+  static instances: FakeSocket[] = [];
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
+  readyState = FakeSocket.CONNECTING;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  sent: string[] = [];
+
+  constructor(readonly url: string) {
+    FakeSocket.instances.push(this);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(): void {
+    this.readyState = FakeSocket.CLOSED;
+    this.onclose?.();
+  }
+
+  open(): void {
+    this.readyState = FakeSocket.OPEN;
+    this.onopen?.();
+  }
+
+  deliver(frame: Record<string, unknown>): void {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+}
+
+/** Installs and opens one transport socket for the page under test. */
+function openTransport(): FakeSocket {
+  (globalThis as Record<string, unknown>).WebSocket = FakeSocket;
+  connection.connect();
+  const socket = FakeSocket.instances.at(-1);
+  if (socket === undefined) throw new Error("the page opened no socket");
+  socket.open();
+  return socket;
+}
+
 /** Arms report mode and picks one element, which opens the composer. */
-async function openComposer(): Promise<HTMLTextAreaElement> {
+async function openComposerView() {
   const target = document.createElement("div");
   target.textContent = "the picked element";
   document.body.append(target);
@@ -44,7 +96,7 @@ async function openComposer(): Promise<HTMLTextAreaElement> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await tick();
     const composer = view.container.querySelector("textarea");
-    if (composer !== null) return composer;
+    if (composer !== null) return { view, composer };
   }
   throw new Error("the report panel opened no composer");
 }
@@ -53,11 +105,13 @@ afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   document.elementFromPoint = originalElementFromPoint;
+  (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
+  FakeSocket.instances = [];
 });
 
 test("Enter in the composer files the report instead of asking", async () => {
   const posted = stubFetch();
-  const composer = await openComposer();
+  const { composer } = await openComposerView();
   composer.value = "The status bar overlaps the toolbar.";
   await fireEvent.input(composer);
 
@@ -73,7 +127,7 @@ test("Enter in the composer files the report instead of asking", async () => {
 
 test("Shift+Enter keeps the composer's newline and posts nothing", async () => {
   const posted = stubFetch();
-  const composer = await openComposer();
+  const { composer } = await openComposerView();
   composer.value = "A first line";
   await fireEvent.input(composer);
 
@@ -81,4 +135,54 @@ test("Shift+Enter keeps the composer's newline and posts nothing", async () => {
   await tick();
 
   expect(posted.length).toBe(0);
+});
+
+test("an Ask renders the answer the page's conversation reports", async () => {
+  const socket = openTransport();
+  const { view, composer } = await openComposerView();
+  composer.value = "What does this tab do?";
+  await fireEvent.input(composer);
+
+  const askButton = view.container.querySelector('[aria-label="Ask the agent about this element"]');
+  if (askButton === null) throw new Error("the panel has no Ask control");
+  await fireEvent.click(askButton);
+  await tick();
+
+  const ask = socket.sent
+    .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+    .find((frame) => frame.type === "ask");
+  if (ask === undefined) throw new Error("the page sent no ask");
+  const conversationId = ask.conversationId as string;
+  expect(socket.sent.some((frame) => JSON.parse(frame).type === "getInquiry")).toBe(true);
+
+  // The turn streams into the polled conversation: the partial answer renders
+  // while the control still shows the busy word.
+  socket.deliver({
+    type: "inquiry",
+    conversationId,
+    busy: true,
+    answer: "The tab opens the issues ",
+    error: null,
+    transcript: [{ role: "developer", text: "What does this tab do?" }],
+  });
+  await tick();
+  expect(view.container.textContent).toContain("The tab opens the issues");
+  expect(view.container.textContent).toContain("Asking…");
+
+  // The settled conversation carries the final turns and releases the control.
+  socket.deliver({
+    type: "inquiry",
+    conversationId,
+    busy: false,
+    answer: "",
+    error: null,
+    transcript: [
+      { role: "developer", text: "What does this tab do?" },
+      { role: "agent", text: "The tab opens the issues mode." },
+    ],
+  });
+  await tick();
+  expect(view.container.textContent).toContain("The tab opens the issues mode.");
+  expect(view.container.textContent).not.toContain("Asking…");
+  expect(view.container.querySelector('[role="alert"]')).toBeNull();
 });

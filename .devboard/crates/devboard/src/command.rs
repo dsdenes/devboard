@@ -184,6 +184,9 @@ pub enum Command {
         question: Option<Value>,
         context: Option<Value>,
     },
+    GetInquiry {
+        conversation_id: Option<Value>,
+    },
     CloseAsk {
         conversation_id: Option<Value>,
     },
@@ -292,6 +295,7 @@ impl Command {
             Self::ConfirmGlossaryTerm { .. } => "confirmGlossaryTerm",
             Self::RejectGlossaryTerm { .. } => "rejectGlossaryTerm",
             Self::Ask { .. } => "ask",
+            Self::GetInquiry { .. } => "getInquiry",
             Self::CloseAsk { .. } => "closeAsk",
             Self::GetProviders => "getProviders",
             Self::CreateProvider { .. } => "createProvider",
@@ -325,6 +329,7 @@ impl Command {
                 | Self::GetAgentPrompt { .. }
                 | Self::GetSkills
                 | Self::GetDiscover
+                | Self::GetInquiry { .. }
                 | Self::GetProviders
         )
     }
@@ -497,6 +502,9 @@ pub fn command_from_json(text: &str) -> Option<Command> {
             conversation_id: field("conversationId"),
             question: field("question"),
             context: field("context"),
+        },
+        "getInquiry" => Command::GetInquiry {
+            conversation_id: field("conversationId"),
         },
         "closeAsk" => Command::CloseAsk {
             conversation_id: field("conversationId"),
