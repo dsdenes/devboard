@@ -97,3 +97,79 @@ describe("discover pending questions", () => {
     expect(discover.agentQuestionOf("sheet")?.id).toBe(1);
   });
 });
+
+describe("replayed discover frames", () => {
+  const question = {
+    type: "discoverQuestion",
+    id: 1,
+    message: "Which name applies?",
+    agent: "sheet",
+    options: [{ label: "Alpha", recommended: true }],
+  };
+
+  /** A page that read the workspace once, with a run and its question live. */
+  function polling(): DiscoverStore {
+    const { discover } = connect();
+    discover.handleEvent({
+      type: "discoverState",
+      state: { active: true, activeAgent: "sheet", runId: "run-1" },
+    });
+    discover.handleEvent({ type: "discoverStarted", runId: "run-1", agent: "sheet" });
+    discover.handleEvent({ type: "discoverActivity", agent: "sheet", text: "Reading the sheet." });
+    discover.handleEvent(question);
+    discover.answerDraft = "Aurora";
+    return discover;
+  }
+
+  test("a poll repeating the run and its question keeps the typed answer", () => {
+    const discover = polling();
+
+    discover.handleEvent({ type: "discoverStarted", runId: "run-1", agent: "sheet" });
+    discover.handleEvent({ type: "discoverActivity", agent: "sheet", text: "Reading the sheet." });
+    discover.handleEvent(question);
+
+    expect(discover.active).toBe(true);
+    expect(discover.activeAgent).toBe("sheet");
+    expect(discover.question?.id).toBe(1);
+    expect(discover.agentQuestionOf("sheet")?.id).toBe(1);
+    expect(discover.answerDraft).toBe("Aurora");
+    expect(discover.activity).toEqual(["Reading the sheet."]);
+  });
+
+  test("a different run clears the typed answer and its question", () => {
+    const discover = polling();
+
+    discover.handleEvent({ type: "discoverStarted", runId: "run-2", agent: "sheet" });
+
+    expect(discover.runId).toBe("run-2");
+    expect(discover.question).toBeNull();
+    expect(discover.agentQuestionOf("sheet")).toBeNull();
+    expect(discover.answerDraft).toBe("");
+  });
+
+  test("a different question on the same run clears the typed answer", () => {
+    const discover = polling();
+
+    discover.handleEvent({ ...question, id: 2, message: "Which conventions apply?" });
+
+    expect(discover.question?.id).toBe(2);
+    expect(discover.answerDraft).toBe("");
+  });
+
+  test("a fresh page keeps the run, its activity, and its pending question", () => {
+    const { discover } = connect();
+
+    discover.handleEvent({
+      type: "discoverState",
+      state: { active: true, activeAgent: "sheet", runId: "run-1" },
+    });
+    discover.handleEvent({ type: "discoverStarted", runId: "run-1", agent: "sheet" });
+    discover.handleEvent({ type: "discoverActivity", agent: "sheet", text: "Reading the sheet." });
+    discover.handleEvent(question);
+
+    expect(discover.active).toBe(true);
+    expect(discover.activity).toEqual(["Reading the sheet."]);
+    expect(discover.question?.id).toBe(1);
+    expect(discover.answerDraft).toBe("");
+  });
+});

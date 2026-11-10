@@ -65,6 +65,7 @@ export class DiscoverStore {
     this.runningAll = false;
     this.allFailed = null;
     this.runId = null;
+    this.startedRunId = null;
     this.startedAt = null;
     this.question = null;
     this.answerDraft = "";
@@ -79,6 +80,12 @@ export class DiscoverStore {
   /** The step a Run all sequence halted on, or null while it runs or succeeds. */
   allFailed = $state<string | null>(null);
   runId = $state<string | null>(null);
+  /**
+   * The run the last `discoverStarted` frame announced. The workspace poll
+   * replays that frame once a second while a run exists, so a frame naming
+   * this run is a replay of a transition this page already applied.
+   */
+  private startedRunId: string | null = null;
   startedAt = $state<string | null>(null);
   /** The active agent's lines, shown by the shared run tag. */
   activity = $state<string[]>([]);
@@ -453,15 +460,21 @@ export class DiscoverStore {
       return;
     }
     if (type === "discoverStarted") {
-      this.active = true;
       const agent = typeof message.agent === "string" ? message.agent : null;
+      const runId = typeof message.runId === "string" ? message.runId : null;
+      const replayed = runId !== null && runId === this.startedRunId;
+      this.startedRunId = runId;
+      this.active = true;
       this.activeAgent = agent;
-      if (typeof message.runId === "string") this.runId = message.runId;
+      if (runId !== null) this.runId = runId;
       this.startedAt = typeof message.startedAt === "string" ? message.startedAt : null;
+      // The replay resends the run's complete activity log, so the log is
+      // rebuilt from it either way; only a transition clears the answer.
+      this.activity = [];
+      if (replayed) return;
       if (agent !== null) {
         this.agentQuestions[agent] = null;
       }
-      this.activity = [];
       this.question = null;
       this.answerDraft = "";
       this.error = null;
@@ -489,14 +502,18 @@ export class DiscoverStore {
       const agent = typeof message.agent === "string" ? message.agent : null;
       if (agent !== null) this.agentQuestions[agent] = question;
       if (agent === null || agent === this.activeAgent) {
+        // A replayed frame repeats the question this page already shows; only
+        // a different decision discards the answer typed for it.
+        const changed = this.question === null || this.question.id !== question.id;
         this.question = question;
-        this.answerDraft = "";
+        if (changed) this.answerDraft = "";
       }
       return;
     }
     if (type === "discoverStopped") {
       this.active = false;
       this.activeAgent = null;
+      this.startedRunId = null;
       this.question = null;
       this.agentQuestions = {};
       this.answerDraft = "";
