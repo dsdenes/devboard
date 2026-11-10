@@ -174,7 +174,7 @@ fn issues_root(state_dir: &Path) -> PathBuf {
 }
 
 fn repo_state_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
-    issues_root(state_dir).join(crate::journal::journal_key(repo_dir))
+    issues_root(state_dir).join(crate::journal::repo_key(repo_dir))
 }
 
 fn state_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {

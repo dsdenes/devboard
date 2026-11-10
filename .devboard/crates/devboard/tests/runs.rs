@@ -364,7 +364,7 @@ fn runs_root(scratch: &Scratch) -> PathBuf {
     scratch
         .state()
         .join("runs")
-        .join(devboard::journal::journal_key(&scratch.repo()))
+        .join(devboard::journal::repo_key(&scratch.repo()))
 }
 
 fn run_directory(scratch: &Scratch) -> PathBuf {
@@ -794,7 +794,7 @@ async fn ask_runs_survive_a_replacement_with_one_answer() {
 
     let transcript_path = state
         .join("ask")
-        .join(devboard::journal::journal_key(&repo))
+        .join(devboard::journal::repo_key(&repo))
         .join(format!(
             "{}.json",
             &hex::encode(sha2::Sha256::digest(b"conversation-1"))[..32]
@@ -833,7 +833,7 @@ async fn ask_runs_survive_a_replacement_with_one_answer() {
         let directory = scratch
             .state()
             .join("runs")
-            .join(devboard::journal::journal_key(&repo))
+            .join(devboard::journal::repo_key(&repo))
             .read_dir()
             .expect("the runs root")
             .flatten()
@@ -892,7 +892,7 @@ fn seed_issue_run(
     let directory = scratch
         .state()
         .join("issues")
-        .join(devboard::journal::journal_key(&repo))
+        .join(devboard::journal::repo_key(&repo))
         .join("runs")
         .join(id);
     let mut record = json!({

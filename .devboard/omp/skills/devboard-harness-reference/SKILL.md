@@ -615,7 +615,7 @@ every agent write and eventually exhausts the dev server's heap.
   adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
   a short summary.
 - State: the dashboard's server-owned state is written atomically to
-  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is
+  `<stateDir>/state/<24-hex hash of the resolved REPO_DIR>.json` (default `stateDir` is
   `<REPO_DIR>/.devboard/.tmp`, the host prefix rather than the replaceable package tree), so it
   survives a backend restart without leaking between repositories that share one harness install.
   See [Durable state](#durable-state).
@@ -964,7 +964,9 @@ server; see [Devboard MCP server](#devboard-mcp-server) for its tools, bounds, a
 The dashboard keeps the state that drives the page in one file per host repository and restores
 it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
 `<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
-`REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
+`REPO_DIR` (made absolute against the working directory and stripped of `.` and `..`
+lexically; the same key every project state directory and the journal use) and `stateDir` is
+the harness state directory,
 `<REPO_DIR>/.devboard/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside
 the repository survives an implementation reset unchanged, and the reset records its path in the
 checkout's
@@ -1210,7 +1212,7 @@ abandon that change and implement another solution.
 
 ### Session state
 
-A session lives at `<stateDir>/flow/<24-hex journalKey(REPO_DIR)>/<session-id>/`, keyed exactly
+A session lives at `<stateDir>/flow/<24-hex repoKey(REPO_DIR)>/<session-id>/`, keyed exactly
 like the dashboard state, so repositories sharing one harness never see each other's sessions.
 `stateDir` is the harness state directory (`<REPO_DIR>/.devboard/.tmp` by default, overridable with
 `STATE_DIR`); `<session-id>` is an 8-hex id chosen when the session is created. The directory is
@@ -2793,7 +2795,7 @@ documented color and description before Start proceeds; a failed creation refuse
 forge error. Start publishes `starting` before the spawn and `running` once the state is readable.
 At most one audit and release cycle runs at a time; Start, a cadence change, a page open, a tab
 restore, or a reload never starts a second cycle.
-State lives at `<STATE_DIR>/design/<journalKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
+State lives at `<STATE_DIR>/design/<repoKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
 inside the checkout, and the worker's audit input never leaves the repository root.
 
 ### Entry points for background-agent crawls
@@ -2880,7 +2882,7 @@ checkout, the origin is not a supported forge, the account cannot write, `omp` o
 missing, the `/dead-code-removal` command is not installed, or the `dead-code` label cannot be
 created. Start publishes `starting` before the spawn and `running` once the state is readable; at
 most one cycle runs at a time for a checkout. Stop ends the worker and leaves the settings and
-filed rows. State lives at `<STATE_DIR>/dead-code/<journalKey(REPO_DIR)>/`, the lock and cycles
+filed rows. State lives at `<STATE_DIR>/dead-code/<repoKey(REPO_DIR)>/`, the lock and cycles
 stay inside the checkout, and a dashboard restart, page open, or tab restore starts nothing.
 
 The periodic read records every resolution attempt, not just its empty version: a closed issue
@@ -2977,7 +2979,7 @@ outside the checkout, the origin is not a supported forge, the account cannot wr
 most one cycle runs at a time per checkout: Start during a cycle, a cadence change, a page open,
 a tab restore, or a reload starts no second cycle, and a replacement dashboard drains an older
 live worker of the family. Stop ends the worker and leaves the settings and filed rows. State
-lives at `<STATE_DIR>/single-responsibility/<journalKey(REPO_DIR)>/`, the lock and cycles stay
+lives at `<STATE_DIR>/single-responsibility/<repoKey(REPO_DIR)>/`, the lock and cycles stay
 inside `<REPO_DIR>/.devboard/.tmp/single-responsibility/`, and a cycle leaves
 `git status --porcelain` and `git rev-parse HEAD` unchanged. The worker tests
 proves the entry, the shared page, the seeded entry point, the excluded test and fixture files,
@@ -3784,7 +3786,7 @@ the ticker; no peer survives Stop. A fresh worker start terminates every ACP chi
 state recorded when `/proc` proves the process is that child, closes every interrupted run as
 `stopped`, clears `agents`, and starts no peer from stale state.
 
-State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
+State, ledger, runs, and activity live under `<STATE_DIR>/issues/<repoKey(REPO_DIR)>/`:
 `state.json` is atomic, `ledger.json` records handled numbers with the run id,
 `runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 finished runs plus
 every currently running run, and `control/` carries dashboard commands as atomically renamed
@@ -4137,7 +4139,7 @@ latency: it stays on the card as Auto Scout's notice, not its error, so the page
 notification and files no board issue against the forge already behind.
 
 Auto Scout's persisted settings live at
-`<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
+`<STATE_DIR>/scout/<repoKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
 and `intervalMinutes`. Empty limits remove that constraint. `maxPerHour` counts every Auto Scout
 issue whose creation time is inside a rolling 60-minute window, in any state; `maxPending` counts
 every open `scout` issue. One scan requests at most the smaller room, or 100 when both are

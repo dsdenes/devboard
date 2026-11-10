@@ -537,7 +537,7 @@ async fn an_agent_start_names_the_run_its_answer_reports() {
     let directory = instance
         .state
         .join("dead-code")
-        .join(devboard::journal::journal_key(&instance.repo))
+        .join(devboard::journal::repo_key(&instance.repo))
         .join("workers")
         .join(version);
     std::fs::create_dir_all(&directory).expect("a run directory");
@@ -1252,7 +1252,7 @@ fn seed_issue_run(instance: &Instance, id: &str, status: &str, worker_pid: u32) 
     let directory = instance
         .state
         .join("issues")
-        .join(devboard::journal::journal_key(&instance.repo))
+        .join(devboard::journal::repo_key(&instance.repo))
         .join("runs")
         .join(id);
     std::fs::create_dir_all(&directory).expect("a run directory");

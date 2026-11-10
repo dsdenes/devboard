@@ -223,7 +223,7 @@ fn transcript_path(scratch: &Scratch, id: &str) -> PathBuf {
     let directory = scratch
         .state()
         .join("ask")
-        .join(devboard::journal::journal_key(&repo));
+        .join(devboard::journal::repo_key(&repo));
     let names: Vec<PathBuf> = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("the ask directory {}: {error}", directory.display()))
         .flatten()
@@ -515,7 +515,7 @@ fn ask_directory_empty(scratch: &Scratch) -> bool {
     let directory = scratch
         .state()
         .join("ask")
-        .join(devboard::journal::journal_key(&repo));
+        .join(devboard::journal::repo_key(&repo));
     std::fs::read_dir(&directory)
         .map(|entries| {
             !entries.flatten().any(|entry| {

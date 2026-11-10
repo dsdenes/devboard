@@ -21,7 +21,7 @@ pub fn complexity_root(state_dir: &Path) -> PathBuf {
 
 /// This checkout's own snapshot directory, keyed like every other state file.
 pub fn complexity_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
-    complexity_root(state_dir).join(crate::journal::journal_key(repo_dir))
+    complexity_root(state_dir).join(crate::journal::repo_key(repo_dir))
 }
 
 /// The one file a UTC day owns.

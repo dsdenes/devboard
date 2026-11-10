@@ -3,7 +3,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -30,17 +30,46 @@ pub const JOURNAL_KINDS: &[&str] = &[
     "resource-kill",
 ];
 
-/// The 24-hex project key that names this project's journal.
-pub fn journal_key(repo_dir: &Path) -> String {
-    let digest = Sha256::digest(repo_dir.to_string_lossy().as_bytes());
+/// The 24-hex key that names this project's durable state.
+///
+/// The key derives from one normalized spelling of the repository path: the
+/// path made absolute against the process working directory, then lexically
+/// stripped of `.` and `..`. A writer and a reader that spell one checkout
+/// differently (`repo`, `./repo`, `/abs/a/../repo`) therefore hash the same
+/// key, so every family's state directory agrees with the Runs view.
+pub fn repo_key(repo_dir: &Path) -> String {
+    let digest = Sha256::digest(normalized(repo_dir).to_string_lossy().as_bytes());
     hex::encode(digest)[..24].to_string()
+}
+
+/// One path's canonical spelling: absolute, with `.` and `..` removed
+/// lexically and no filesystem access.
+fn normalized(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component);
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The live journal path under one state directory.
 pub fn journal_file(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     state_dir
         .join("journal")
-        .join(format!("{}.jsonl", journal_key(repo_dir)))
+        .join(format!("{}.jsonl", repo_key(repo_dir)))
 }
 
 /// A JSONL line for one record: the record's text is bounded to 2000 chars.
@@ -183,4 +212,28 @@ pub fn now_iso8601() -> String {
     let format = time::format_description::well_known::Rfc3339;
     now.format(&format)
         .unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_relative_repository_key_matches_its_absolute_spelling() {
+        let cwd = std::env::current_dir().expect("a working directory");
+        assert_eq!(repo_key(Path::new("repo")), repo_key(&cwd.join("repo")));
+    }
+
+    #[test]
+    fn a_dot_segment_and_a_parent_segment_never_split_the_key() {
+        assert_eq!(repo_key(Path::new("./repo/")), repo_key(Path::new("repo")));
+        assert_eq!(
+            repo_key(Path::new("a/../repo")),
+            repo_key(Path::new("repo"))
+        );
+        assert_eq!(
+            repo_key(Path::new("/checkout/./sub/../repo")),
+            repo_key(Path::new("/checkout/repo"))
+        );
+    }
 }

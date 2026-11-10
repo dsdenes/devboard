@@ -248,9 +248,7 @@ fn conversation_key(id: &str) -> String {
 fn ask_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     crate::detached_run::absolute(state_dir)
         .join("ask")
-        .join(crate::journal::journal_key(&crate::detached_run::absolute(
-            repo_dir,
-        )))
+        .join(crate::journal::repo_key(repo_dir))
 }
 
 /// The run journal's text entries a conversation holds now; a reused owner

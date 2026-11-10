@@ -282,7 +282,7 @@ fn repo_scoped_worker_states(
 ) -> Vec<(String, PathBuf)> {
     let root = state_dir
         .join(family)
-        .join(crate::journal::journal_key(repo_dir));
+        .join(crate::journal::repo_key(repo_dir));
     let mut states = Vec::new();
     let legacy = root.join("state.json");
     if legacy.is_file() {
@@ -430,7 +430,7 @@ pub fn discover(app: &App) -> Vec<RunSource> {
 
     let issues_root = state_dir
         .join("issues")
-        .join(crate::journal::journal_key(repo_dir))
+        .join(crate::journal::repo_key(repo_dir))
         .join("runs");
     if let Ok(entries) = std::fs::read_dir(&issues_root) {
         for entry in entries.flatten() {
@@ -1259,7 +1259,7 @@ mod tests {
         write_json(
             &state_dir
                 .join("scout")
-                .join(crate::journal::journal_key(&repo_dir))
+                .join(crate::journal::repo_key(&repo_dir))
                 .join("state.json"),
             &json!({
                 "version": 4,
@@ -1501,13 +1501,35 @@ mod tests {
         // The repository-scoped families keep their own `state.json` layout.
         let scout = state_dir
             .join("scout")
-            .join(crate::journal::journal_key(&repo));
+            .join(crate::journal::repo_key(&repo));
         std::fs::create_dir_all(scout.join("workers/1.45.0")).expect("a version directory");
         std::fs::write(scout.join("state.json"), "{}").expect("the repository state");
         std::fs::write(scout.join("workers/1.45.0/state.json"), "{}").expect("the versioned state");
         let states = family_worker_states(&state_dir, &repo, "scout");
         assert_eq!(states.len(), 2);
         assert_eq!(states[1].0, "1.45.0");
+
+        std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
+    }
+
+    #[test]
+    fn a_relative_repository_reaches_the_scout_state_the_runs_view_reads() {
+        let root = scratch("relative-repo");
+        let state_dir = root.join("state");
+        let repo_dir = Path::new("repo");
+        let published = crate::workers::scout::state_path(&state_dir, repo_dir);
+        write_json(
+            &published,
+            &json!({
+                "version": 4,
+                "lifecycle": "idle",
+                "updatedAt": "2026-11-10T12:00:01.000Z"
+            }),
+        );
+
+        let states = repo_scoped_worker_states(&state_dir, repo_dir, "scout");
+        assert_eq!(states.len(), 1, "{states:?}");
+        assert_eq!(states[0].1, published);
 
         std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
     }

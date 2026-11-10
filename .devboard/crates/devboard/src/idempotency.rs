@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::feedback::RequestError;
-use crate::journal::journal_key;
+use crate::journal::repo_key;
 use crate::state::write_file_atomically;
 
 /// The longest `Idempotency-Key` a client may send.
@@ -67,7 +67,7 @@ impl IdempotencyStore {
     pub fn open(state_dir: &Path, repo_dir: &Path) -> Self {
         let path = state_dir
             .join("idempotency")
-            .join(format!("{}.json", journal_key(repo_dir)));
+            .join(format!("{}.json", repo_key(repo_dir)));
         let store = Self {
             path,
             entries: Mutex::new(HashMap::new()),

@@ -27,7 +27,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::acp::{AcpActivity, AcpId, AcpQuestion};
-use crate::journal::journal_key;
+use crate::journal::repo_key;
 
 /// Envelope version of the owner state file.
 pub const DETACHED_RUN_VERSION: u64 = 1;
@@ -379,9 +379,7 @@ pub fn absolute(path: &Path) -> PathBuf {
 
 /// `<STATE_DIR>/runs/<repository key>`.
 pub fn detached_runs_root(state_dir: &Path, repo_dir: &Path) -> PathBuf {
-    absolute(state_dir)
-        .join("runs")
-        .join(journal_key(&absolute(repo_dir)))
+    absolute(state_dir).join("runs").join(repo_key(repo_dir))
 }
 
 /// One run's directory; a kind and key never become a path segment directly.
@@ -928,7 +926,7 @@ fn handoff_lock() -> MutexGuard<'static, Option<HashMap<String, String>>> {
 }
 
 pub fn detached_repo_key(repo_dir: &Path) -> String {
-    journal_key(&absolute(repo_dir))
+    repo_key(repo_dir)
 }
 
 /// Marks this instance's runs as belonging to the replacement.

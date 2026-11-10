@@ -27,7 +27,7 @@ use crate::forge::{
     ForgeReadFailureKind, ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState,
     RepositoryGitHub, RepositoryGitHubOptions, VersionResolution,
 };
-use crate::journal::journal_key;
+use crate::journal::repo_key;
 use crate::providers::{create_worker_provider_environment, ProviderOptions};
 use crate::state::{
     write_state_file, ACTIVITY_MAX_BYTES, ACTIVITY_MAX_ENTRIES, ACTIVITY_TRIMMED_MARKER,
@@ -202,9 +202,9 @@ pub fn scout_root(state_dir: &Path) -> PathBuf {
     state_dir.join(SCOUT_DIRECTORY)
 }
 
-/// `<STATE_DIR>/scout/<journalKey(REPO_DIR)>`.
+/// `<STATE_DIR>/scout/<repository key>`.
 pub fn repo_state_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
-    scout_root(state_dir).join(journal_key(&absolute(repo_dir)))
+    scout_root(state_dir).join(repo_key(repo_dir))
 }
 
 pub fn state_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {

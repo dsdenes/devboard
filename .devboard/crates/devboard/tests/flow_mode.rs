@@ -254,7 +254,7 @@ fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
     fixture
         .state
         .join("flow")
-        .join(devboard::journal::journal_key(&fixture.repo))
+        .join(devboard::journal::repo_key(&fixture.repo))
         .join(session_id)
 }
 

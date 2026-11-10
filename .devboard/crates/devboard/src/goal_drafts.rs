@@ -339,7 +339,7 @@ pub fn canonical_process_path(path: &Path) -> PathBuf {
 pub fn goal_draft_state_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     absolute(state_dir)
         .join("goal-drafts")
-        .join(crate::journal::journal_key(&absolute(repo_dir)))
+        .join(crate::journal::repo_key(repo_dir))
 }
 
 /// The directory holding one state directory per running or finished draft.

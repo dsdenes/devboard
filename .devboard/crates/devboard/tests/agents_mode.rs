@@ -108,7 +108,7 @@ fn agent<'a>(frames: &'a [Value], id: &str) -> Option<&'a Value> {
 }
 
 fn repo_key(repo: &Path) -> String {
-    devboard::journal::journal_key(repo)
+    devboard::journal::repo_key(repo)
 }
 
 fn write_json(path: &Path, value: Value) {

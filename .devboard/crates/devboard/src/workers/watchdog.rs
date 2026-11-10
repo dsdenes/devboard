@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::journal::{journal_file, journal_key};
+use crate::journal::{journal_file, repo_key};
 use crate::supervision::{
     ancestry, process_snapshot, process_table, start_orphan_supervisor, ProcessSnapshot,
 };
@@ -6164,7 +6164,7 @@ fn handoff_at(path: &Path) -> Option<i64> {
 fn goal_draft_state_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     absolute(state_dir)
         .join("goal-drafts")
-        .join(journal_key(&absolute(repo_dir)))
+        .join(repo_key(repo_dir))
 }
 
 fn goal_draft_lease_pid(state_dir: &Path, repo_dir: &Path) -> Option<u32> {

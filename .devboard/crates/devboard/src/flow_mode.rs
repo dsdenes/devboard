@@ -2171,7 +2171,7 @@ impl FlowMode {
         app.config()
             .state_dir
             .join("flow")
-            .join(crate::journal::journal_key(&app.config().repo_dir))
+            .join(crate::journal::repo_key(&app.config().repo_dir))
     }
 
     /// The flow root while the server that owns the state directory is still

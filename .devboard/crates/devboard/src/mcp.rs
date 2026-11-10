@@ -9,7 +9,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Map, Value};
 
-use crate::journal::journal_key;
+use crate::journal::repo_key;
 
 fn string_schema() -> Value {
     json!({ "type": "string" })
@@ -557,7 +557,7 @@ pub fn tool_invocation_file(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     resolve(state_dir)
         .join("mcp")
         .join("tool-invocations")
-        .join(format!("{}.db", journal_key(&resolve(repo_dir))))
+        .join(format!("{}.db", repo_key(repo_dir)))
 }
 
 /// The counts a dashboard renders. A missing file is an empty table; an

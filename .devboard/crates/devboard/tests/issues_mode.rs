@@ -47,7 +47,7 @@ fn scratch(label: &str) -> (PathBuf, PathBuf) {
 }
 
 fn repo_key(repo: &Path) -> String {
-    devboard::journal::journal_key(repo)
+    devboard::journal::repo_key(repo)
 }
 
 fn state_path(repo: &Path, state: &Path) -> PathBuf {

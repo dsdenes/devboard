@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-use crate::journal::journal_key;
+use crate::journal::repo_key;
 use crate::state::write_file_atomically;
 
 /// The newest records one store keeps.
@@ -112,7 +112,7 @@ impl ReportStore {
     pub fn open(state_dir: &Path, repo_dir: &Path) -> Self {
         let path = state_dir
             .join("reports")
-            .join(format!("{}.json", journal_key(repo_dir)));
+            .join(format!("{}.json", repo_key(repo_dir)));
         let store = Self {
             path,
             inner: Mutex::new(Inner {

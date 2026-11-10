@@ -4043,7 +4043,7 @@ fn current_state_of(states: &[RepoState]) -> Option<RepoState> {
 fn seed_forge_facts(family_id: RepoFamilyId, state_dir: &Path, repo_dir: &Path) -> Vec<ForgeFact> {
     let directory = state_dir
         .join(family_id.directory())
-        .join(crate::journal::journal_key(repo_dir));
+        .join(crate::journal::repo_key(repo_dir));
     let mut states = Vec::new();
     if let Some(text) = crate::sampling::text(&directory.join("state.json")) {
         if let Some(state) = parse_repo_state(family_id, &text) {
@@ -4253,7 +4253,7 @@ impl RepoFamily {
     fn repo_state_directory(&self) -> PathBuf {
         self.state_dir
             .join(self.family_id.directory())
-            .join(crate::journal::journal_key(&self.repo_dir))
+            .join(crate::journal::repo_key(&self.repo_dir))
     }
 
     fn legacy_state_path(&self) -> PathBuf {
@@ -9695,7 +9695,7 @@ mod state_tree_walks {
         let repo_dir = root.join("repo");
         let family_dir = state_dir
             .join("scout")
-            .join(crate::journal::journal_key(&repo_dir));
+            .join(crate::journal::repo_key(&repo_dir));
         for index in 0..versions {
             let directory = family_dir.join("workers").join(format!("1.{index}.0"));
             std::fs::create_dir_all(&directory).expect("a version directory");
@@ -9832,7 +9832,7 @@ mod state_tree_walks {
         let repo_dir = root.join("repo");
         let family_dir = state_dir
             .join("scout")
-            .join(crate::journal::journal_key(&repo_dir));
+            .join(crate::journal::repo_key(&repo_dir));
         std::fs::create_dir_all(&family_dir).expect("a family directory");
         std::fs::write(family_dir.join("state.json"), seeded_state_document())
             .expect("a state document");

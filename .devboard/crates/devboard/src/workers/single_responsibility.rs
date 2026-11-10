@@ -26,7 +26,7 @@ use crate::forge::{
     classify_forge_read_failure, is_forge_read_latency, Forge, ForgeReadFailureKind,
     ForgeReadRetry, ForgeRemote,
 };
-use crate::journal::journal_key;
+use crate::journal::repo_key;
 use crate::providers::{
     create_worker_provider_environment, Env, ProviderOptions, WorkerProviderEnvironment,
 };
@@ -112,7 +112,7 @@ pub fn single_responsibility_root(state_dir: &Path) -> PathBuf {
 }
 
 pub fn repo_state_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
-    single_responsibility_root(state_dir).join(journal_key(&absolute(repo_dir)))
+    single_responsibility_root(state_dir).join(repo_key(repo_dir))
 }
 
 pub fn state_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {

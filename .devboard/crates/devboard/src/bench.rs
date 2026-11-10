@@ -315,7 +315,7 @@ fn seed_run(
 fn seed_runs(repo: &Path, state: &Path) -> anyhow::Result<()> {
     let runs = state
         .join("issues")
-        .join(crate::journal::journal_key(repo))
+        .join(crate::journal::repo_key(repo))
         .join("runs");
     std::fs::create_dir_all(&runs)?;
     for index in 0..150 {

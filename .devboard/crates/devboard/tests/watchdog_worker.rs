@@ -794,7 +794,7 @@ fn reaper_decisions_protect_live_leases_and_report_scratch_orphans() {
 
     let run_root = state_dir
         .join("runs")
-        .join(devboard::journal::journal_key(&root))
+        .join(devboard::journal::repo_key(&root))
         .join("lane")
         .join("record");
     write(
@@ -809,7 +809,7 @@ fn reaper_decisions_protect_live_leases_and_report_scratch_orphans() {
     write(
         &state_dir
             .join("runs")
-            .join(devboard::journal::journal_key(&root))
+            .join(devboard::journal::repo_key(&root))
             .join("handoff.json"),
         &format!("{}\n", json!({"at": epoch_ms(), "pid": 999_999})),
     );

@@ -8,8 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sha2::{Digest, Sha256};
-
 /// Envelope version. A file with another version is preserved, never read.
 pub const STATE_VERSION: u32 = 1;
 
@@ -21,17 +19,12 @@ pub const ACTIVITY_TRIMMED_MARKER: &str = "Earlier activity was trimmed.";
 /// Total serialized state one repository may keep.
 pub const STATE_MAX_BYTES: usize = 32 * 1024 * 1024;
 
-/// The 24-hex repository key that names this repository's state file.
-pub fn state_key(repo_dir: &Path) -> String {
-    let digest = Sha256::digest(repo_dir.to_string_lossy().as_bytes());
-    hex::encode(digest)[..24].to_string()
-}
-
-/// The state file under one state directory.
+/// The state file under one state directory, keyed like every other project
+/// state directory.
 pub fn state_file(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     state_dir
         .join("state")
-        .join(format!("{}.json", state_key(repo_dir)))
+        .join(format!("{}.json", crate::journal::repo_key(repo_dir)))
 }
 
 /// The outcome of reading one state file.

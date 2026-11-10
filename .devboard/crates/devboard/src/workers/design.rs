@@ -79,9 +79,9 @@ pub fn design_root(state_dir: &Path) -> PathBuf {
     resolve(state_dir).join(DESIGN_DIRECTORY)
 }
 
-/// `<STATE_DIR>/design/<journal-key>`.
+/// `<STATE_DIR>/design/<repository key>`.
 pub fn repo_state_directory(state_dir: &Path, repo_dir: &Path) -> PathBuf {
-    design_root(state_dir).join(crate::journal::journal_key(&resolve(repo_dir)))
+    design_root(state_dir).join(crate::journal::repo_key(repo_dir))
 }
 
 pub fn state_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {
