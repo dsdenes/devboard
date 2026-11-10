@@ -48,3 +48,5 @@ serde_yaml = "0.9"
 sha2.workspace = true
 tar.workspace = true
 xz2.workspace = true
+# `start_paused` gives the reply-budget tests a deterministic clock.
+tokio = { workspace = true, features = ["test-util"] }

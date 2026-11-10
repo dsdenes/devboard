@@ -633,7 +633,7 @@ fn write_answered_state(repo: &Path, path: &str) {
 /// state visible as "no question", so the reply must follow the answer the
 /// owner recorded rather than wait out the deadline for a state it cannot
 /// catch.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(start_paused = true)]
 async fn an_answer_replies_from_the_acknowledgement_inside_its_budget() {
     let _serial = serial().await;
     let repo = repo_root("answer-ack");
@@ -677,11 +677,13 @@ async fn an_answer_replies_from_the_acknowledgement_inside_its_budget() {
         tick.await.expect("the owner tick"),
         "the answer reached its owner"
     );
-    // A dispatched reply keeps its 250 ms quiet window after the frame; the
-    // bound proves the handler followed the acknowledgement rather than
-    // waiting out the 700 ms deadline.
+    // The paused clock is the test's own: the owner tick, the handler's poll,
+    // and the 700 ms deadline only advance when every task is waiting on a
+    // timer. A loaded host delays the wall clock but not this budget, so half
+    // the deadline proves the handler followed the acknowledgement instead of
+    // waiting it out.
     assert!(
-        elapsed < Duration::from_millis(650),
+        elapsed < Duration::from_millis(350),
         "the reply follows the acknowledgement instead of the deadline: {elapsed:?}"
     );
     let answered = frames.iter().find(|frame| {
