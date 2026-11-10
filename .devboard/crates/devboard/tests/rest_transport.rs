@@ -314,7 +314,9 @@ fn run_state(
         finished_at: None,
         error: None,
         question: None,
-        owner: None,
+        // A running record is live only while its owner is: the test process
+        // is the owner, so the seeded run keeps its socket.
+        owner: Some(devboard::detached_run::self_child(repo)),
         peer: None,
         updated_at: now,
     }

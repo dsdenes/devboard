@@ -964,6 +964,46 @@ pub fn in_detached_handoff(repo_dir: &Path, instance: &str) -> bool {
         .is_some_and(|value| value == instance)
 }
 
+/// What one detached run's record reports about itself: the lifecycle word and
+/// whether the owner that runs it is still there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetachedRunLiveness {
+    pub lifecycle: String,
+    pub live: bool,
+}
+
+/// The lifecycle a detached run reports and whether it is live.
+///
+/// The recorded `status` alone proves nothing: an owner killed without writing
+/// a terminal status (SIGKILL, an OOM kill, power loss) leaves `running` in
+/// `state.json` forever, because nothing rewrites it. The owner process is the
+/// authority, so a terminal status keeps its own word, a live owner keeps the
+/// recorded word, and a running record whose owner is gone reports `stopped`
+/// and is not live.
+pub fn detached_run_liveness(state: &DetachedRunState) -> DetachedRunLiveness {
+    if state.status.terminal() {
+        return DetachedRunLiveness {
+            lifecycle: state.status.as_str().to_string(),
+            live: false,
+        };
+    }
+    let owner_live = state
+        .owner
+        .as_ref()
+        .is_some_and(|owner| crate::supervision::live_process(owner.pid));
+    if owner_live {
+        DetachedRunLiveness {
+            lifecycle: state.status.as_str().to_string(),
+            live: true,
+        }
+    } else {
+        DetachedRunLiveness {
+            lifecycle: "stopped".to_string(),
+            live: false,
+        }
+    }
+}
+
 /// True while a run key has a live owner.
 pub fn detached_run_live(
     state_dir: &Path,
@@ -976,10 +1016,7 @@ pub fn detached_run_live(
     let Some(state) = read_detached_run_state(&directory) else {
         return false;
     };
-    let Some(owner) = state.owner.as_ref() else {
-        return false;
-    };
-    if !crate::supervision::live_process(owner.pid) || state.status.terminal() {
+    if !detached_run_liveness(&state).live {
         return false;
     }
     if state.instance == instance {

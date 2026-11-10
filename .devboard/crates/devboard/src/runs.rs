@@ -19,8 +19,9 @@ use url::Url;
 
 use crate::app::App;
 use crate::detached_run::{
-    detached_run_state_path, detached_runs_root, read_detached_run_activity_since,
-    read_detached_run_state, read_detached_run_text_since, DetachedRunJournalCursor,
+    detached_run_liveness, detached_run_state_path, detached_runs_root,
+    read_detached_run_activity_since, read_detached_run_state, read_detached_run_text_since,
+    DetachedRunJournalCursor, DetachedRunLiveness, DetachedRunState,
 };
 use crate::http::{Replies, Server};
 use crate::workers::{mcp_optimizer, release_train, watchdog, FAMILIES};
@@ -97,11 +98,7 @@ impl RunSource {
             return "stopped".to_string();
         };
         match &self.source {
-            Source::Detached(_) => state
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("stopped")
-                .to_string(),
+            Source::Detached(_) => detached_liveness_of(state).lifecycle,
             Source::Worker { .. } => worker_lifecycle(state),
             Source::Issues { .. } => issue_run_lifecycle(state),
         }
@@ -118,15 +115,23 @@ impl RunSource {
             return false;
         };
         match &self.source {
+            Source::Detached(_) => detached_liveness_of(state).live,
             Source::Worker { .. } => worker_run_live(state),
             Source::Issues { .. } => live_lifecycle(&issue_run_lifecycle(state)),
-            Source::Detached(_) => live_lifecycle(
-                state
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("stopped"),
-            ),
         }
+    }
+}
+
+/// What one sampled detached state reports. The record is parsed through the
+/// same typed state `discover` reads, so the collection, the projection, and a
+/// socket that samples the file directly answer one question one way.
+fn detached_liveness_of(state: &Value) -> DetachedRunLiveness {
+    match DetachedRunState::parse(state) {
+        Some(record) => detached_run_liveness(&record),
+        None => DetachedRunLiveness {
+            lifecycle: "stopped".to_string(),
+            live: false,
+        },
     }
 }
 
@@ -384,13 +389,13 @@ pub fn discover(app: &App) -> Vec<RunSource> {
             if id.is_empty() {
                 continue;
             }
-            let lifecycle = state.status.as_str().to_string();
+            let liveness = detached_run_liveness(&state);
             runs.push(RunSource {
                 id,
                 kind: state.kind.clone(),
                 label: format!("{} {}", state.kind, state.key),
-                lifecycle: lifecycle.clone(),
-                live: live_lifecycle(&lifecycle),
+                lifecycle: liveness.lifecycle,
+                live: liveness.live,
                 updated_at: Some(state.updated_at.clone()),
                 source: Source::Detached(directory),
             });
@@ -801,7 +806,6 @@ fn project_state(run: &RunSource, state: &Value) -> Value {
             for key in [
                 "kind",
                 "key",
-                "status",
                 "turnStatus",
                 "turnError",
                 "startedAt",
@@ -815,6 +819,13 @@ fn project_state(run: &RunSource, state: &Value) -> Value {
                     projected.insert(key.to_string(), value.clone());
                 }
             }
+            // The recorded status still says `running` after its owner was
+            // killed; the state frame names the lifecycle that owner implies,
+            // so it never contradicts the terminal status frame beside it.
+            projected.insert(
+                "status".to_string(),
+                Value::String(detached_liveness_of(state).lifecycle),
+            );
         }
         Source::Worker { .. } => {
             // The recorded pid outranks the raw field here too, so the state
@@ -1239,6 +1250,54 @@ mod tests {
             .collect()
     }
 
+    /// A process this test started and reaped, so no live process holds its pid.
+    fn reaped_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("a short-lived process");
+        let pid = child.id();
+        child.wait().expect("the process is reaped");
+        pid
+    }
+
+    /// A detached run record that still says `running`, owned by `owner_pid`.
+    fn detached_record(owner_pid: u32) -> Value {
+        json!({
+            "version": crate::detached_run::DETACHED_RUN_VERSION,
+            "kind": "discover",
+            "key": "planning",
+            "repo": "/repo",
+            "stateDir": "/state",
+            "harnessVersion": null,
+            "instance": "test-instance",
+            "generation": "generation-1",
+            "multi": false,
+            "turnSeq": null,
+            "turnStatus": null,
+            "turnError": null,
+            "status": "running",
+            "startedAt": "2026-11-10T12:00:00.000Z",
+            "finishedAt": null,
+            "error": null,
+            "question": null,
+            "owner": {"pid": owner_pid, "argv": ["omp", "acp"], "cwd": "/repo"},
+            "peer": null,
+            "updatedAt": "2026-11-10T12:00:01.000Z"
+        })
+    }
+
+    /// Writes one detached record and returns the run directory holding it.
+    fn write_detached_run(state_dir: &Path, repo_dir: &Path, record: &Value) -> PathBuf {
+        let directory = crate::detached_run::detached_run_directory(
+            state_dir, repo_dir, "discover", "planning",
+        );
+        write_json(
+            &crate::detached_run::detached_run_state_path(&directory),
+            record,
+        );
+        directory
+    }
+
     #[tokio::test]
     async fn a_scout_run_streams_the_activity_of_the_scan_its_state_names() {
         let root = scratch("scout-activity");
@@ -1530,6 +1589,65 @@ mod tests {
         let states = repo_scoped_worker_states(&state_dir, repo_dir, "scout");
         assert_eq!(states.len(), 1, "{states:?}");
         assert_eq!(states[0].1, published);
+
+        std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
+    }
+
+    /// An owner killed without writing a terminal status leaves `running` in
+    /// the record; the collection and its socket answer the dead owner, not
+    /// the frozen word.
+    #[tokio::test]
+    async fn a_detached_run_whose_owner_is_reaped_reports_stopped_and_closes_its_socket() {
+        let root = scratch("detached-owner-gone");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        write_detached_run(&state_dir, &repo_dir, &detached_record(reaped_pid()));
+
+        let app = dashboard(&state_dir, &repo_dir);
+        let run = discover(&app)
+            .into_iter()
+            .find(|run| run.kind == "discover")
+            .expect("one Discover run");
+        assert_eq!(run.lifecycle, "stopped");
+        assert!(!run.live);
+
+        let hub = RunHub::new();
+        let (_, frames) = hub.read(&run, None);
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame["type"] == "status" && frame["status"] == "stopped"),
+            "the socket reports its one terminal status frame: {frames:?}"
+        );
+        let state = frames
+            .iter()
+            .find(|frame| frame["type"] == "state")
+            .expect("one state frame");
+        assert_eq!(
+            state["state"]["status"],
+            json!("stopped"),
+            "the state frame names the lifecycle the dead owner implies"
+        );
+
+        std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
+    }
+
+    #[tokio::test]
+    async fn a_detached_run_whose_owner_is_live_keeps_its_recorded_status() {
+        let root = scratch("detached-owner-live");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        write_detached_run(&state_dir, &repo_dir, &detached_record(std::process::id()));
+
+        let app = dashboard(&state_dir, &repo_dir);
+        let run = discover(&app)
+            .into_iter()
+            .find(|run| run.kind == "discover")
+            .expect("one Discover run");
+        assert_eq!(run.lifecycle, "running");
+        assert!(run.live);
+        assert_eq!(run.current_lifecycle(), "running");
+        assert!(run.current_live());
 
         std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
     }
