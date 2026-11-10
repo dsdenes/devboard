@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::future::Future;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7680,24 +7681,74 @@ struct DiscoverTarget {
 
 // ---------------------------------------------------------------- prompts
 
-fn prompt_snapshot(repo_dir: &Path, descriptor: &AgentDescriptor) -> Value {
-    let path = repo_dir
+/// The target whose clone is live: its checkout while it runs, the cloning
+/// target while it clones.
+fn in_flight_target(state: &ModeState) -> Option<&RemoteRepository> {
+    state
+        .cloning
+        .as_ref()
+        .map(|cloning| &cloning.target)
+        .or_else(|| state.checkout.as_ref().map(|checkout| &checkout.target))
+}
+
+/// The target the page shows: a live clone of another project wins over the
+/// selected target.
+fn shown_remote(state: &ModeState) -> Option<&RemoteRepository> {
+    let in_flight = in_flight_target(state);
+    if in_flight.is_some() && !same_remote_target(in_flight, state.target.as_ref()) {
+        in_flight
+    } else {
+        state.target.as_ref()
+    }
+}
+
+/// The root whose prompt files the shown target's agent reads: its live
+/// checkout, the retained project when no checkout is live, and the host
+/// checkout for the host target.
+fn prompt_root(state: &ModeState, repo_dir: &Path) -> PathBuf {
+    match shown_remote(state) {
+        None => repo_dir.to_path_buf(),
+        Some(remote) => state
+            .checkout
+            .as_ref()
+            .filter(|checkout| same_remote_target(Some(&checkout.target), Some(remote)))
+            .map(|checkout| checkout.dir.clone())
+            .unwrap_or_else(|| {
+                remote_project_directory(&state.remote_root, &remote.owner, &remote.repo)
+            }),
+    }
+}
+
+fn read_prompt(root: &Path, descriptor: &AgentDescriptor) -> Result<String, (PathBuf, io::Error)> {
+    let path = root
         .join(".devboard")
         .join("prompts")
         .join(descriptor.prompt_file);
-    match fs::read_to_string(&path) {
+    fs::read_to_string(&path).map_err(|error| (path, error))
+}
+
+fn prompt_snapshot(root: &Path, host_root: &Path, descriptor: &AgentDescriptor) -> Value {
+    let mut read = read_prompt(root, descriptor);
+    // A retained remote project keeps only the published artifacts, so the
+    // host's copy is the readable fallback when the target holds none.
+    if matches!(&read, Err((_, error)) if error.kind() == io::ErrorKind::NotFound)
+        && root != host_root
+    {
+        read = read_prompt(host_root, descriptor);
+    }
+    match read {
         Ok(text) => json!({
             "agent": descriptor.id,
             "text": text,
             "error": Value::Null,
         }),
-        Err(error) => {
-            let reason = if error.kind() == std::io::ErrorKind::NotFound {
+        Err((path, error)) => {
+            let reason = if error.kind() == io::ErrorKind::NotFound {
                 format!(
                     "ENOENT: no such file or directory, open '{}'",
                     path.display()
                 )
-            } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+            } else if error.kind() == io::ErrorKind::PermissionDenied {
                 format!("EACCES: permission denied, open '{}'", path.display())
             } else {
                 error.to_string()
@@ -7711,12 +7762,13 @@ fn prompt_snapshot(repo_dir: &Path, descriptor: &AgentDescriptor) -> Value {
     }
 }
 
-fn prompts_replay(repo_dir: &Path, conn: &Conn) {
+fn prompts_replay(repo_dir: &Path, state: &ModeState, conn: &Conn) {
+    let root = prompt_root(state, repo_dir);
     for descriptor in DISCOVER_AGENTS {
         conn.send(json!({
             "type": "discoverPromptState",
             "agent": descriptor.id,
-            "prompt": prompt_snapshot(repo_dir, descriptor),
+            "prompt": prompt_snapshot(&root, repo_dir, descriptor),
         }));
     }
 }
@@ -7740,24 +7792,16 @@ fn refresh_snapshot(app: &Arc<App>, state: &mut ModeState) {
 
 fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String>) -> Value {
     let repo_dir = app.config().repo_dir.clone();
-    let in_flight = state
-        .cloning
-        .as_ref()
-        .map(|cloning| &cloning.target)
-        .or_else(|| state.checkout.as_ref().map(|checkout| &checkout.target));
-    let showing_in_flight =
-        in_flight.is_some() && !same_remote_target(in_flight, state.target.as_ref());
-    let shown_remote = if showing_in_flight {
-        in_flight
-    } else {
-        state.target.as_ref()
-    };
+    let showing_in_flight = in_flight_target(state)
+        .is_some_and(|target| !same_remote_target(Some(target), state.target.as_ref()));
+    let shown_remote = shown_remote(state);
     let artifacts = if showing_in_flight {
         None
     } else {
         state.artifacts.as_ref()
     };
     let root = target_root(state, &repo_dir);
+    let prompt_root = prompt_root(state, &repo_dir);
 
     let agents: Vec<Value> = DISCOVER_AGENTS
         .iter()
@@ -7771,7 +7815,7 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
                 "startedAt": status.started_at,
                 "endedAt": status.ended_at,
                 "error": status.error,
-                "prompt": prompt_snapshot(&repo_dir, descriptor),
+                "prompt": prompt_snapshot(&prompt_root, &repo_dir, descriptor),
             })
         })
         .collect();
@@ -8294,7 +8338,9 @@ pub fn init(app: &Arc<App>) {
 pub fn replay(app: &Arc<App>, conn: &Conn) {
     replay_resource(app, conn);
     let repo_dir = app.config().repo_dir.clone();
-    prompts_replay(&repo_dir, conn);
+    let mode = mode_for(app);
+    let state = lock(&mode.state);
+    prompts_replay(&repo_dir, &state, conn);
 }
 
 /// The state and run frames a `GET /discoveries/workspace` answers, without
@@ -9838,5 +9884,76 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("discover-prompt-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root");
+        root
+    }
+
+    fn write_prompt(root: &Path, text: &str) {
+        let path = root.join(".devboard/prompts").join(sheet().prompt_file);
+        std::fs::create_dir_all(path.parent().expect("a prompt directory"))
+            .expect("the prompt directory");
+        std::fs::write(path, text).expect("a prompt file");
+    }
+
+    fn sheet() -> &'static AgentDescriptor {
+        DISCOVER_AGENTS
+            .iter()
+            .find(|descriptor| descriptor.prompt_file == "discover-sheet.md")
+            .expect("the sheet descriptor")
+    }
+
+    #[test]
+    fn a_target_prompt_wins_over_the_host_copy() {
+        let target = scratch("target");
+        let host = scratch("host");
+        write_prompt(&target, "# The shipped copy\n");
+        write_prompt(&host, "# The host's edit\n");
+        let snapshot = prompt_snapshot(&target, &host, sheet());
+        assert_eq!(snapshot["text"], json!("# The shipped copy\n"));
+        assert_eq!(snapshot["error"], Value::Null);
+    }
+
+    #[test]
+    fn a_target_without_a_prompt_reads_the_host_copy() {
+        let target = scratch("absent");
+        let host = scratch("fallback");
+        write_prompt(&host, "# The host's edit\n");
+        let snapshot = prompt_snapshot(&target, &host, sheet());
+        assert_eq!(snapshot["text"], json!("# The host's edit\n"));
+        assert_eq!(snapshot["error"], Value::Null);
+    }
+
+    #[test]
+    fn a_host_target_without_a_prompt_reports_the_read_error() {
+        let host = scratch("missing-host");
+        let snapshot = prompt_snapshot(&host, &host, sheet());
+        assert_eq!(snapshot["text"], Value::Null);
+        let error = snapshot["error"].as_str().expect("a read error");
+        assert!(
+            error.starts_with("Could not read the Data Sheet prompt: ENOENT"),
+            "{error}"
+        );
+        assert!(
+            error.contains(
+                &host
+                    .join(".devboard/prompts/discover-sheet.md")
+                    .display()
+                    .to_string()
+            ),
+            "{error}"
+        );
     }
 }

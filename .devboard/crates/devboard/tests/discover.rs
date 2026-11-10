@@ -415,6 +415,11 @@ async fn remote_targets_clone_switch_and_refuse() {
         "retained",
         "https://github.com/acme/retained",
     );
+    // The host's prompt is the readable fallback a retained target lacks.
+    write(
+        &repo.join(".devboard/prompts/discover-sheet.md"),
+        "# The host's copy\n",
+    );
     let log = scratch.path().join("agent.log");
     let command = format!("{} --discover --log={}", stub_agent(), log.display());
     let app = App::new(
@@ -464,6 +469,22 @@ async fn remote_targets_clone_switch_and_refuse() {
     assert_eq!(payload["target"]["owner"], json!("acme"));
     assert_eq!(payload["repository"], json!("acme/retained"));
     assert_eq!(payload["retained"].as_array().unwrap().len(), 1);
+    // A retained project keeps only the published artifacts, so its card falls
+    // back to the host's readable prompt instead of reporting a missing file.
+    let sheet = payload["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == json!("sheet"))
+        .expect("the sheet card");
+    assert_eq!(sheet["prompt"]["error"], Value::Null);
+    assert_eq!(
+        sheet["prompt"]["text"],
+        json!(
+            std::fs::read_to_string(repo.join(".devboard/prompts/discover-sheet.md"))
+                .expect("the host prompt")
+        )
+    );
 
     // A repository URL clones once, then the first agent fails without a
     // provider. The clone never becomes the active target on its own.
@@ -857,6 +878,104 @@ async fn a_remote_run_retains_its_published_snapshot() {
     );
     assert!(payload["sheet"].is_object());
     assert_eq!(payload["retained"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remote_run_shows_the_prompt_its_live_checkout_holds() {
+    let _clone_guard = CLONE_LOCK.lock().await;
+    let scratch = Scratch::new("prompt-source");
+    let repo = fixture_repo(&scratch, "repo", true);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    provider(&state);
+    // The host edit differs from the compiled copy the checkout receives.
+    write(
+        &repo.join(".devboard/prompts/discover-sheet.md"),
+        "# The host's edit\n",
+    );
+    let log = scratch.path().join("agent.log");
+    let command = format!(
+        "{} --discover --discover-delay-ms=20000 --log={}",
+        stub_agent(),
+        log.display()
+    );
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+    devboard::discover_mode::set_clone_runner(Some(Arc::new(
+        |request| -> devboard::discover_mode::CloneFuture {
+            let cwd = request.cwd.clone();
+            let name = request.argv.last().cloned().unwrap_or_default();
+            Box::pin(async move {
+                clone_checkout(&cwd.join(name));
+                devboard::discover_mode::CloneResult {
+                    code: 0,
+                    stderr: String::new(),
+                    timed_out: false,
+                }
+            })
+        },
+    )));
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(
+        &conn,
+        Command::DiscoverRemote {
+            url: "https://github.com/acme/fresh".to_string(),
+        },
+    )
+    .await;
+    // The clone becomes the live checkout before its first turn starts, and the
+    // stub's delay holds that checkout while the page reads its prompts.
+    frames_until(
+        &mut inbox,
+        |frame| {
+            frame.get("type").and_then(Value::as_str) == Some("discoverState")
+                && frame["state"]["target"]["checkout"] == json!(true)
+        },
+        Duration::from_secs(60),
+    )
+    .await;
+    app.command(&conn, Command::GetDiscover).await;
+    let states = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverState"),
+        Duration::from_secs(30),
+    )
+    .await;
+    let payload = state_of(states.last().expect("a discover state"));
+    let sheet = payload["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == json!("sheet"))
+        .expect("the sheet card");
+    let shipped = std::fs::read_to_string(devboard_root().join("prompts/discover-sheet.md"))
+        .expect("the shipped prompt");
+    assert_eq!(sheet["prompt"]["error"], Value::Null);
+    assert_eq!(
+        sheet["prompt"]["text"],
+        json!(shipped),
+        "the card shows the file the checkout's agent reads"
+    );
+
+    app.command(&conn, Command::StopDiscover).await;
+    let stopped = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(60),
+    )
+    .await;
+    assert_eq!(
+        by_type(&stopped, "discoverStopped")[0]["completed"],
+        json!(false)
+    );
 }
 
 fn write_state_file(state: &Path, repo: &Path, discover: Value) {
