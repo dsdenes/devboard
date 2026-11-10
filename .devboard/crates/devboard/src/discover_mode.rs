@@ -6935,7 +6935,42 @@ fn normalize_repository_url(raw: &str, directory: Option<&str>) -> Option<String
     Some(format!("{base}/tree/HEAD/{web}"))
 }
 
-fn package_repository(repo_dir: &Path, name: &str) -> Option<String> {
+/// Directories whose `node_modules` may hold an installed package: the
+/// repository root first, then the directory of every manifest the sheet
+/// records. A manifest path that is absolute or escapes the repository
+/// contributes nothing.
+fn install_roots(repo_dir: &Path, sheet: &Value) -> Vec<PathBuf> {
+    let mut roots = vec![repo_dir.to_path_buf()];
+    let manifests = sheet
+        .get("runtime")
+        .and_then(|runtime| runtime.get("manifests"))
+        .and_then(|leaf| leaf.get("value"))
+        .and_then(Value::as_array);
+    for manifest in manifests.into_iter().flatten() {
+        let Some(text) = manifest.as_str().map(str::trim) else {
+            continue;
+        };
+        if text.is_empty() || is_absolute_path(text) {
+            continue;
+        }
+        if text.split(['/', '\\']).any(|segment| segment == "..") {
+            continue;
+        }
+        let Some(parent) = Path::new(text).parent() else {
+            continue;
+        };
+        if parent.as_os_str().is_empty() {
+            continue;
+        }
+        let root = repo_dir.join(parent);
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+fn package_repository(roots: &[PathBuf], name: &str) -> Option<String> {
     static PACKAGE_NAME: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i)^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
             .expect("a package name")
@@ -6943,23 +6978,25 @@ fn package_repository(repo_dir: &Path, name: &str) -> Option<String> {
     if !PACKAGE_NAME.is_match(name) || name.contains("..") {
         return None;
     }
-    let mut path = repo_dir.join("node_modules");
-    for segment in name.split('/') {
-        path = path.join(segment);
-    }
-    let source = fs::read_to_string(path.join("package.json")).ok()?;
-    let manifest: Value = serde_json::from_str(&source).ok()?;
-    let repository = manifest.get("repository")?;
-    let (raw, directory) = if let Some(text) = repository.as_str() {
-        (text.to_string(), None)
-    } else {
-        let record = repository.as_object()?;
-        (
-            record.get("url").and_then(Value::as_str)?.to_string(),
-            record.get("directory").and_then(Value::as_str),
-        )
-    };
-    normalize_repository_url(&raw, directory)
+    roots.iter().find_map(|root| {
+        let mut path = root.join("node_modules");
+        for segment in name.split('/') {
+            path = path.join(segment);
+        }
+        let source = fs::read_to_string(path.join("package.json")).ok()?;
+        let manifest: Value = serde_json::from_str(&source).ok()?;
+        let repository = manifest.get("repository")?;
+        let (raw, directory) = if let Some(text) = repository.as_str() {
+            (text.to_string(), None)
+        } else {
+            let record = repository.as_object()?;
+            (
+                record.get("url").and_then(Value::as_str)?.to_string(),
+                record.get("directory").and_then(Value::as_str),
+            )
+        };
+        normalize_repository_url(&raw, directory)
+    })
 }
 
 pub fn dependency_repositories(repo_dir: &Path, sheet: Option<&Value>) -> Value {
@@ -6971,9 +7008,10 @@ pub fn dependency_repositories(repo_dir: &Path, sheet: Option<&Value>) -> Value 
         dependency_candidates(stack, &mut names);
     }
     let mut links = Map::new();
+    let roots = install_roots(repo_dir, sheet);
     for name in names {
-        let url = package_repository(repo_dir, &name)
-            .or_else(|| package_repository(repo_dir, &name.to_lowercase()));
+        let url = package_repository(&roots, &name)
+            .or_else(|| package_repository(&roots, &name.to_lowercase()));
         if let Some(url) = url {
             links.insert(name, Value::String(url));
         }

@@ -1153,3 +1153,53 @@ fn usage_examples_order_case_insensitively() {
         json!(["appleZebra", "Zebra"])
     );
 }
+
+#[test]
+fn dependency_repositories_resolve_a_workspace_install() {
+    let scratch = Scratch::new("workspace-deps");
+    let repo = scratch.path().join("repo");
+    write(
+        &repo.join("node_modules/root-pkg/package.json"),
+        r#"{"name":"root-pkg","repository":"https://github.com/acme/root-pkg.git"}"#,
+    );
+    write(
+        &repo.join("packages/app/package.json"),
+        r#"{"name":"app","dependencies":{"left-pad":"1.3.0"}}"#,
+    );
+    write(
+        &repo.join("packages/app/node_modules/left-pad/package.json"),
+        r#"{"name":"left-pad","repository":{"type":"git","url":"git+https://github.com/stevemao/left-pad.git"}}"#,
+    );
+    let sheet = json!({
+        "stack": {"dependencies": {"value": ["left-pad@1.3.0", "root-pkg@2.0.0"]}},
+        "runtime": {"manifests": {"value": ["package.json", "packages/app/package.json"]}},
+    });
+    let links = devboard::discover_mode::dependency_repositories(&repo, Some(&sheet));
+    assert_eq!(
+        links["left-pad"],
+        json!("https://github.com/stevemao/left-pad")
+    );
+    assert_eq!(links["root-pkg"], json!("https://github.com/acme/root-pkg"));
+}
+
+#[test]
+fn an_escaping_manifest_contributes_no_install_root() {
+    let scratch = Scratch::new("escaping-manifest");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("a repository");
+    write(
+        &scratch
+            .path()
+            .join("outside/node_modules/left-pad/package.json"),
+        r#"{"name":"left-pad","repository":"https://github.com/stevemao/left-pad.git"}"#,
+    );
+    let stack = json!({"dependencies": {"value": ["left-pad@1.3.0"]}});
+    for manifest in ["../outside/package.json", "/outside/package.json"] {
+        let sheet = json!({
+            "stack": stack,
+            "runtime": {"manifests": {"value": [manifest]}},
+        });
+        let links = devboard::discover_mode::dependency_repositories(&repo, Some(&sheet));
+        assert_eq!(links, json!({}), "{manifest} contributes no install root");
+    }
+}
