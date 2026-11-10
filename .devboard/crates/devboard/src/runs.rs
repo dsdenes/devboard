@@ -117,7 +117,7 @@ impl RunSource {
         match &self.source {
             Source::Detached(_) => detached_liveness_of(state).live,
             Source::Worker { .. } => worker_run_live(state),
-            Source::Issues { .. } => live_lifecycle(&issue_run_lifecycle(state)),
+            Source::Issues { .. } => issue_run_live(state),
         }
     }
 }
@@ -146,6 +146,8 @@ fn stamp_of(path: &Path) -> Option<(SystemTime, u64)> {
     crate::sampling::stamp(path)
 }
 
+/// True for a lifecycle that may still produce output. The socket emits its
+/// one terminal status frame only for the rest.
 fn live_lifecycle(lifecycle: &str) -> bool {
     !matches!(
         lifecycle,
@@ -156,26 +158,40 @@ fn live_lifecycle(lifecycle: &str) -> bool {
 /// The lifecycle one Issues run record represents. A record still says
 /// `running` after its worker died; the recorded pid and its kernel start tick
 /// are the authority, so a dead or recycled worker is reported stopped without
-/// rewriting the record.
+/// rewriting the record. A record the Issues reader rejects is no run at all,
+/// so it reports `stopped` rather than a lifecycle invented from an unknown
+/// status.
 fn issue_run_lifecycle(state: &Value) -> String {
-    let status = state
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("stopped");
-    if !live_lifecycle(status) {
-        return status.to_string();
+    match crate::issues_mode::parse_run_value(state) {
+        Some(run) => issue_run_lifecycle_of(&run),
+        None => "stopped".to_string(),
     }
-    match state.get("workerPid").and_then(Value::as_u64) {
-        Some(pid) if (1..=u32::MAX as u64).contains(&pid) => {
-            let start_ticks = state.get("startTicks").and_then(Value::as_i64);
-            if crate::supervision::live_identity(pid as u32, start_ticks) {
-                status.to_string()
-            } else {
-                "stopped".to_string()
-            }
-        }
-        _ => status.to_string(),
+}
+
+/// The lifecycle one parsed record represents: its status, with `running`
+/// demoted to `stopped` when the worker it names is gone.
+fn issue_run_lifecycle_of(run: &crate::issues_mode::RunFile) -> String {
+    if run.status != "running" {
+        return run.status.clone();
     }
+    if issue_run_live_of(run) {
+        "running".to_string()
+    } else {
+        "stopped".to_string()
+    }
+}
+
+/// True while the record may still produce output: `running`, and only while
+/// the worker it names still runs.
+fn issue_run_live_of(run: &crate::issues_mode::RunFile) -> bool {
+    run.status == "running" && crate::supervision::live_identity(run.worker_pid, run.start_ticks)
+}
+
+/// True while one sampled record is a valid, live Issues run.
+fn issue_run_live(state: &Value) -> bool {
+    crate::issues_mode::parse_run_value(state)
+        .map(|run| issue_run_live_of(&run))
+        .unwrap_or(false)
 }
 
 /// A family worker is live while the process its record names still runs;
@@ -444,34 +460,22 @@ pub fn discover(app: &App) -> Vec<RunSource> {
             let Some(state) = crate::sampling::json(&run_path) else {
                 continue;
             };
-            if state.get("status").and_then(Value::as_str).is_none() {
+            let Some(run) = crate::issues_mode::parse_run_value(&state) else {
                 continue;
-            }
-            let run_id = state
-                .get("runId")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| {
-                    directory
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                })
-                .unwrap_or_default();
+            };
+            let run_id = run.run_id.clone();
             if run_id.is_empty() {
                 continue;
             }
             let id = format!("issues--{run_id}");
-            let lifecycle = issue_run_lifecycle(&state);
+            let lifecycle = issue_run_lifecycle_of(&run);
             runs.push(RunSource {
                 id,
                 kind: "issues".to_string(),
                 label: format!("Issues run {run_id}"),
-                live: live_lifecycle(&lifecycle),
+                live: issue_run_live_of(&run),
                 lifecycle,
-                updated_at: state
-                    .get("startedAt")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                updated_at: Some(run.started_at.clone()),
                 source: Source::Issues {
                     run_path,
                     activity_path: directory.join("activity.json"),
@@ -1260,6 +1264,54 @@ mod tests {
         pid
     }
 
+    /// The Issues runs root the Runs view discovers.
+    fn issues_runs_root(state_dir: &Path, repo_dir: &Path) -> PathBuf {
+        state_dir
+            .join("issues")
+            .join(crate::journal::repo_key(repo_dir))
+            .join("runs")
+    }
+
+    /// One complete Issues run record, in the shape `write_run_file` persists.
+    fn issues_run_record(
+        id: &str,
+        status: &str,
+        worker_pid: u32,
+        start_ticks: Option<i64>,
+    ) -> crate::issues_mode::RunFile {
+        crate::issues_mode::RunFile {
+            version: 1,
+            run_id: id.to_string(),
+            repo: "fixture".to_string(),
+            status: status.to_string(),
+            argv: vec![
+                "omp".to_string(),
+                "worker".to_string(),
+                "issues".to_string(),
+            ],
+            cwd: "/repo".to_string(),
+            started_at: "2026-11-10T00:00:00.000Z".to_string(),
+            finished_at: if status == "running" {
+                None
+            } else {
+                Some("2026-11-10T00:05:00.000Z".to_string())
+            },
+            exit_code: None,
+            issues: vec![crate::issues_mode::Issue {
+                number: 7,
+                title: "A fixture issue".to_string(),
+                url: "http://127.0.0.1:1/fixture/issues/7".to_string(),
+                created_at: "2026-11-10T00:00:00.000Z".to_string(),
+                labels: Vec::new(),
+                body: None,
+            }],
+            first_stderr_line: None,
+            worker_pid,
+            start_ticks,
+            harness_version: Some("1.0.0".to_string()),
+        }
+    }
+
     /// A detached run record that still says `running`, owned by `owner_pid`.
     fn detached_record(owner_pid: u32) -> Value {
         json!({
@@ -1648,6 +1700,107 @@ mod tests {
         assert!(run.live);
         assert_eq!(run.current_lifecycle(), "running");
         assert!(run.current_live());
+
+        std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
+    }
+
+    /// The Issues reader's record rule is the Runs view's rule too: an
+    /// unknown status and a record missing `argv`, `cwd`, or `issues` are
+    /// both absent from the collection the Runs view lists.
+    #[tokio::test]
+    async fn an_issues_record_the_issues_reader_rejects_is_not_a_run() {
+        let root = scratch("issues-rejected-records");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let runs = issues_runs_root(&state_dir, &repo_dir);
+        write_json(
+            &runs.join("bare").join("run.json"),
+            &json!({"version": 1, "status": "crashed"}),
+        );
+        let crashed = serde_json::to_value(issues_run_record(
+            "crashed",
+            "crashed",
+            std::process::id(),
+            crate::supervision::start_ticks(std::process::id()),
+        ))
+        .expect("a record value");
+        write_json(&runs.join("crashed").join("run.json"), &crashed);
+        let mut incomplete = serde_json::to_value(issues_run_record(
+            "incomplete",
+            "running",
+            std::process::id(),
+            crate::supervision::start_ticks(std::process::id()),
+        ))
+        .expect("a record value");
+        let object = incomplete.as_object_mut().expect("a record object");
+        for field in ["argv", "cwd", "issues"] {
+            object.remove(field);
+        }
+        write_json(&runs.join("incomplete").join("run.json"), &incomplete);
+
+        let app = dashboard(&state_dir, &repo_dir);
+        let discovered = discover(&app);
+        assert!(
+            discovered.iter().all(|run| run.kind != "issues"),
+            "no rejected record is listed: {:?}",
+            discovered
+                .iter()
+                .map(|run| run.id.clone())
+                .collect::<Vec<_>>()
+        );
+
+        std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
+    }
+
+    /// A complete record from the Issues writer is listed with its status,
+    /// and `live` follows the worker its pid names, exactly as the record's
+    /// own lifecycle does.
+    #[tokio::test]
+    async fn a_written_issues_record_is_listed_with_the_lifecycle_its_worker_proves() {
+        let root = scratch("issues-written-records");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let runs = issues_runs_root(&state_dir, &repo_dir);
+        let pid = std::process::id();
+        crate::issues_mode::write_run_file(
+            &runs.join("live"),
+            &issues_run_record("live", "running", pid, crate::supervision::start_ticks(pid)),
+        )
+        .expect("a live run record");
+        crate::issues_mode::write_run_file(
+            &runs.join("orphan"),
+            &issues_run_record("orphan", "running", reaped_pid(), None),
+        )
+        .expect("an orphaned run record");
+        crate::issues_mode::write_run_file(
+            &runs.join("finished"),
+            &issues_run_record("finished", "succeeded", reaped_pid(), None),
+        )
+        .expect("a finished run record");
+
+        let app = dashboard(&state_dir, &repo_dir);
+        let discovered = discover(&app);
+        let live = discovered
+            .iter()
+            .find(|run| run.id == "issues--live")
+            .expect("the live run");
+        assert_eq!(live.lifecycle, "running");
+        assert!(live.live);
+        assert_eq!(live.updated_at.as_deref(), Some("2026-11-10T00:00:00.000Z"));
+        let orphan = discovered
+            .iter()
+            .find(|run| run.id == "issues--orphan")
+            .expect("the orphaned run");
+        assert_eq!(orphan.lifecycle, "stopped");
+        assert!(!orphan.live);
+        assert_eq!(orphan.current_lifecycle(), "stopped");
+        assert!(!orphan.current_live());
+        let finished = discovered
+            .iter()
+            .find(|run| run.id == "issues--finished")
+            .expect("the finished run");
+        assert_eq!(finished.lifecycle, "succeeded");
+        assert!(!finished.live);
 
         std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
     }

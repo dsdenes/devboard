@@ -279,6 +279,7 @@ fn fixture(repo: &Path) -> anyhow::Result<()> {
 
 /// One run record's status and recorded worker pid.
 fn seed_run(
+    repo: &Path,
     directory: &Path,
     id: &str,
     status: &str,
@@ -290,10 +291,19 @@ fn seed_run(
         "runId": id,
         "repo": "fixture",
         "status": status,
+        "argv": ["omp", "worker", "issues"],
+        "cwd": repo.display().to_string(),
         "workerPid": worker_pid,
         "startTicks": crate::supervision::start_ticks(worker_pid),
         "startedAt": "2026-11-10T00:00:00.000Z",
         "finishedAt": if status == "running" { Value::Null } else { json!("2026-11-10T00:05:00.000Z") },
+        "issues": [{
+            "number": 1,
+            "title": "Fixture issue",
+            "url": "http://127.0.0.1:1/devboard-fixture/fixture/issues/1",
+            "createdAt": "2026-11-10T00:00:00.000Z",
+            "labels": []
+        }],
         "harnessVersion": "1.0.0",
     });
     write(
@@ -325,6 +335,7 @@ fn seed_runs(repo: &Path, state: &Path) -> anyhow::Result<()> {
             _ => "failed",
         };
         seed_run(
+            repo,
             &runs.join(format!("2026-11-0{}T00-00-{index:02}Z", 1 + index % 9)),
             &format!("finished-{index}"),
             status,
@@ -334,6 +345,7 @@ fn seed_runs(repo: &Path, state: &Path) -> anyhow::Result<()> {
     }
     for index in 0..50 {
         seed_run(
+            repo,
             &runs.join(format!("2026-11-0{}T01-00-{index:02}Z", 1 + index % 9)),
             &format!("orphan-{index}"),
             "running",
@@ -342,6 +354,7 @@ fn seed_runs(repo: &Path, state: &Path) -> anyhow::Result<()> {
         )?;
     }
     seed_run(
+        repo,
         &runs.join("2026-11-10T02-00-00Z"),
         "live-run",
         "running",
@@ -945,6 +958,38 @@ mod tests {
             crate::supervision::live_identity(state.pid, state.start_ticks),
             "the seeded record names a live pid beside its kernel start tick"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Runs view measures a collection the product accepts: every seeded
+    /// record passes the Issues reader's rule, and exactly one of them names
+    /// the live worker.
+    #[test]
+    fn the_seeded_run_records_parse_and_one_names_the_live_worker() {
+        let root = fixture("run-records");
+        let repo = root.join("repo");
+        let state = root.join("state");
+        std::fs::create_dir_all(&state).expect("a state directory");
+        seed_runs(&repo, &state).expect("the seeded runs");
+
+        let runs = state
+            .join("issues")
+            .join(crate::journal::repo_key(&repo))
+            .join("runs");
+        let mut total = 0;
+        let mut live = Vec::new();
+        for entry in std::fs::read_dir(&runs).expect("the runs root").flatten() {
+            let record = crate::sampling::json(&entry.path().join("run.json"))
+                .and_then(|value| crate::issues_mode::parse_run_value(&value))
+                .expect("the Issues reader accepts the seeded record");
+            total += 1;
+            if record.status == "running" && record.worker_pid == std::process::id() {
+                live.push(record.run_id);
+            }
+        }
+        assert_eq!(total, 201, "150 finished, 50 orphaned, and one live run");
+        assert_eq!(live, vec!["live-run".to_string()], "one seeded live run");
 
         let _ = std::fs::remove_dir_all(&root);
     }

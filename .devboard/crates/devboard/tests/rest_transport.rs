@@ -1263,8 +1263,12 @@ fn seed_issue_run(instance: &Instance, id: &str, status: &str, worker_pid: u32) 
         "runId": id,
         "repo": "fixture",
         "status": status,
+        "argv": ["omp", "worker", "issues"],
+        "cwd": instance.repo.display().to_string(),
         "workerPid": worker_pid,
         "startedAt": "2026-11-10T00:00:00.000Z",
+        "finishedAt": if status == "running" { Value::Null } else { json!("2026-11-10T00:05:00.000Z") },
+        "issues": [],
         "harnessVersion": "1.0.0",
     });
     std::fs::write(directory.join("run.json"), format!("{record}\n")).expect("a run record");
@@ -1333,8 +1337,11 @@ async fn the_run_collection_answers_304_without_reading_records() {
         "runId": "first",
         "repo": "fixture",
         "status": "failed",
+        "argv": ["omp", "worker", "issues"],
+        "cwd": instance.repo.display().to_string(),
         "workerPid": 999_999,
         "startedAt": "2026-11-10T00:00:00.000Z",
+        "issues": [],
         "harnessVersion": "1.0.0",
     });
     std::fs::write(first.join("run.json"), format!("{record}\n")).expect("a changed record");

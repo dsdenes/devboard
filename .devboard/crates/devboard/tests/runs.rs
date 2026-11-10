@@ -922,8 +922,12 @@ fn seed_issue_run(
         "runId": id,
         "repo": "fixture",
         "status": status,
+        "argv": ["omp", "worker", "issues"],
+        "cwd": repo.display().to_string(),
         "workerPid": worker_pid,
         "startedAt": "2026-11-10T00:00:00.000Z",
+        "finishedAt": if status == "running" { Value::Null } else { json!("2026-11-10T00:05:00.000Z") },
+        "issues": [],
         "harnessVersion": "1.0.0",
     });
     if let Some(ticks) = start_ticks {
@@ -972,7 +976,13 @@ async fn an_issues_start_prunes_finished_runs_beyond_the_history_limit() {
         "http://127.0.0.1:1/fixture/history",
     ]);
     for index in 0..60 {
-        seed_issue_run(&scratch, &format!("run-{index:02}"), "succeeded", 0, None);
+        seed_issue_run(
+            &scratch,
+            &format!("run-{index:02}"),
+            "succeeded",
+            999_999,
+            None,
+        );
     }
     let runs = scratch
         .state()

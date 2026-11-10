@@ -1519,32 +1519,41 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
 /* Run records                                                               */
 /* ------------------------------------------------------------------------ */
 
+/// One run record under the Issues state directory. The Issues API and the
+/// Runs view read the same file through [`parse_run_value`], so a record one
+/// of them rejects is a record the other never lists either.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RunFile {
-    version: u64,
-    run_id: String,
-    repo: String,
-    status: String,
-    argv: Vec<String>,
-    cwd: String,
-    started_at: String,
-    finished_at: Option<String>,
-    exit_code: Option<i64>,
-    issues: Vec<Issue>,
-    first_stderr_line: Option<String>,
-    worker_pid: u32,
+pub(crate) struct RunFile {
+    pub(crate) version: u64,
+    pub(crate) run_id: String,
+    pub(crate) repo: String,
+    pub(crate) status: String,
+    pub(crate) argv: Vec<String>,
+    pub(crate) cwd: String,
+    pub(crate) started_at: String,
+    pub(crate) finished_at: Option<String>,
+    pub(crate) exit_code: Option<i64>,
+    pub(crate) issues: Vec<Issue>,
+    pub(crate) first_stderr_line: Option<String>,
+    pub(crate) worker_pid: u32,
     /// The worker's kernel start tick, the identity `worker_pid` alone cannot
     /// prove once the kernel reuses the pid. Absent on records written before
     /// it was kept.
     #[serde(default)]
-    start_ticks: Option<i64>,
-    harness_version: Option<String>,
+    pub(crate) start_ticks: Option<i64>,
+    pub(crate) harness_version: Option<String>,
 }
 
 fn parse_run_file(text: &str) -> Option<RunFile> {
-    let parsed: Value = serde_json::from_str(text).ok()?;
-    let object = parsed.as_object()?;
+    parse_run_value(&serde_json::from_str(text).ok()?)
+}
+
+/// The one record rule: `version: 1` with every field its writer emits and one
+/// of the four statuses a run lifecycle can name. An unknown status, or a
+/// record missing `argv`, `cwd`, or `issues`, is not a run.
+pub(crate) fn parse_run_value(value: &Value) -> Option<RunFile> {
+    let object = value.as_object()?;
     if object.get("version").and_then(Value::as_u64) != Some(1) {
         return None;
     }
@@ -1625,7 +1634,7 @@ fn activity_path(directory: &Path) -> PathBuf {
     directory.join("activity.json")
 }
 
-fn write_run_file(directory: &Path, run: &RunFile) -> std::io::Result<()> {
+pub(crate) fn write_run_file(directory: &Path, run: &RunFile) -> std::io::Result<()> {
     std::fs::create_dir_all(directory)?;
     let path = run_file_path(directory);
     let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
