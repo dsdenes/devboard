@@ -21,6 +21,14 @@ interface Posted {
   body: string;
 }
 
+/** The captured page fields a filing body carries. */
+interface CapturedBody {
+  route: string;
+  url: string;
+  selector: string;
+  viewport: string;
+}
+
 /** Records every mutation the panel posts and answers it with a filed issue. */
 function stubFetch(): Posted[] {
   const posted: Posted[] = [];
@@ -101,12 +109,80 @@ async function openComposerView() {
   throw new Error("the report panel opened no composer");
 }
 
+/** Replaces the document URL; `about:blank` refuses a relative history push. */
+function setPageURL(url: string): void {
+  const { happyDOM } = window as unknown as { happyDOM: { setURL(value: string): void } };
+  happyDOM.setURL(url);
+}
+
 afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   document.elementFromPoint = originalElementFromPoint;
   (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
   FakeSocket.instances = [];
+  setPageURL("about:blank");
+});
+
+/**
+ * A page whose route and URL exceed the server's 2000-unit bound and whose
+ * generated selector exceeds the client's 500-unit bound, composer open.
+ */
+async function openLongPageComposer() {
+  setPageURL(`http://localhost:3000/${"deep-".repeat(700)}`);
+  const target = document.createElement("div");
+  target.id = "e".repeat(3000);
+  target.textContent = "the picked element";
+  document.body.append(target);
+  document.elementFromPoint = () => target;
+
+  const view = render(FeedbackOverlay, { props: { phase: "idle", action: null } });
+  view.component.startPicking();
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await tick();
+    const composer = view.container.querySelector("textarea");
+    if (composer !== null) return { view, composer };
+  }
+  throw new Error("the report panel opened no composer");
+}
+
+test("a filing bounds a long route, URL, and selector", async () => {
+  const posted = stubFetch();
+  const { composer } = await openLongPageComposer();
+  composer.value = "This page cannot be reported.";
+  await fireEvent.input(composer);
+  await fireEvent.keyDown(composer, { key: "Enter" });
+  await tick();
+
+  expect(posted.length).toBe(1);
+  expect(posted[0]?.url).toContain("/reports");
+  const body = JSON.parse(posted[0]?.body ?? "{}") as CapturedBody;
+  expect(body.route.length).toBe(2000);
+  expect(body.url.length).toBe(2000);
+  expect(body.selector.length).toBe(500);
+  expect(body.viewport.length).toBeLessThanOrEqual(500);
+});
+
+test("a goal proposal carries the same bounded context", async () => {
+  const posted = stubFetch();
+  const { view, composer } = await openLongPageComposer();
+  composer.value = "A goal for this page.";
+  await fireEvent.input(composer);
+
+  const goal = view.container.querySelector('[data-testid="feedback-goal"]');
+  if (goal === null) throw new Error("the panel has no Goal control");
+  await fireEvent.click(goal);
+  await tick();
+
+  expect(posted.length).toBe(1);
+  expect(posted[0]?.url).toContain("/goal-proposals");
+  const body = JSON.parse(posted[0]?.body ?? "{}") as CapturedBody;
+  expect(body.route.length).toBe(2000);
+  expect(body.url.length).toBe(2000);
+  expect(body.selector.length).toBe(500);
+  expect(body.viewport.length).toBeLessThanOrEqual(500);
 });
 
 test("Enter in the composer files the report instead of asking", async () => {

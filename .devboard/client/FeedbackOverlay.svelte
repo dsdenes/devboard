@@ -10,6 +10,7 @@
   import CommandNotice from "./lib/components/CommandNotice.svelte";
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
+  import { pageContext, truncate, type PageSource } from "./lib/feedback-capture.ts";
   import { fileReport, writeGoalDraft } from "./lib/feedback-transport.ts";
   import {
     MARGIN,
@@ -46,10 +47,6 @@
 
   const MAX_DOM_EXCERPT = 4000;
   const MAX_VISIBLE_TEXT = 1500;
-  const MAX_SELECTOR = 500;
-  const MAX_ROUTE = 2000;
-  const MAX_URL = 2000;
-  const MAX_VIEWPORT = 500;
   const MAX_CAPTURED_AT = 100;
   /** Bounds shared with the server's Ask conversation capture. */
   const MAX_CONVERSATION_TURNS = 40;
@@ -220,24 +217,24 @@
     return parts.join(" > ");
   }
 
-  function truncate(value: string, limit: number): string {
-    const collapsed = value.replace(/[ \t]+/g, " ").trim();
-    if (collapsed.length <= limit) return collapsed;
-    return `${collapsed.slice(0, limit - 1)}…`;
+  /** This page as the bounded context reads it. */
+  function pageSource(): PageSource {
+    return {
+      pathname: window.location.pathname,
+      href: window.location.href,
+      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
+    };
   }
 
   /** The captured context every filing carries. */
   function captured(element: Element): Record<string, string> {
     return {
-      route: window.location.pathname,
-      url: window.location.href,
-      selector,
+      ...pageContext(pageSource(), selector),
       dom_excerpt: truncate(element.outerHTML ?? "", MAX_DOM_EXCERPT),
       visible_text: truncate(
         (element as HTMLElement).innerText ?? element.textContent ?? "",
         MAX_VISIBLE_TEXT,
       ),
-      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
       captured_at: new Date().toISOString(),
     };
   }
@@ -245,13 +242,7 @@
   /** What the ask agent receives; each value is bounded to the server's limit. */
   function captureContext(element: Element): AskContext {
     return {
-      route: truncate(window.location.pathname, MAX_ROUTE),
-      url: truncate(window.location.href, MAX_URL),
-      selector: truncate(selector, MAX_SELECTOR),
-      viewport: truncate(
-        `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
-        MAX_VIEWPORT,
-      ),
+      ...pageContext(pageSource(), selector),
       captured_at: truncate(new Date().toISOString(), MAX_CAPTURED_AT),
       visible_text: truncate(
         (element as HTMLElement).innerText ?? element.textContent ?? "",

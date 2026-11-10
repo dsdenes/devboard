@@ -557,6 +557,26 @@ mod tests {
             MAX_REPORT_BYTES
         );
     }
+
+    #[test]
+    fn captured_fields_accept_their_bounds_and_refuse_one_unit_past_them() {
+        let at_bound = json!({
+            "route": "r".repeat(MAX_CONTEXT_FIELD),
+            "url": "u".repeat(MAX_CONTEXT_FIELD),
+            "selector": "s".repeat(MAX_CONTEXT_FIELD),
+            "viewport": "v".repeat(MAX_VIEWPORT),
+        });
+        let accepted =
+            parse_captured_fields(at_bound.as_object().expect("object")).expect("accepted");
+        assert_eq!(accepted.route.len(), MAX_CONTEXT_FIELD);
+        assert_eq!(accepted.url.len(), MAX_CONTEXT_FIELD);
+        assert_eq!(accepted.selector.len(), MAX_CONTEXT_FIELD);
+        assert_eq!(accepted.viewport.len(), MAX_VIEWPORT);
+
+        let over = json!({ "selector": "s".repeat(MAX_CONTEXT_FIELD + 1) });
+        let error = parse_captured_fields(over.as_object().expect("object")).expect_err("refused");
+        assert_eq!(error.message, "selector is longer than 2000 characters.");
+    }
 }
 
 /// One validated issue report.
