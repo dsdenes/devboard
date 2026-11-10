@@ -4447,27 +4447,23 @@ fn pid_alive(pid: u32) -> bool {
 
 /// True when `dist` exists but is older than the newest source file.
 fn dist_is_stale(harness_root: &Path) -> Result<bool> {
-    // The committed embedded bundle is the build the release ships. A fresh
-    // checkout writes every file at once, so it is never stale; a client source
-    // edited after the checkout is newer than it and is rebuilt. `dist` is only
-    // the fallback when the embedded copy is missing.
-    let embedded = embedded_client_root(harness_root);
+    // `dist` is build output, so it can be older than the sources it must be
+    // built from: a fast-forward writes the committed client now and leaves a
+    // bundle from an earlier run behind. That alone decides a rebuild.
     let dist = harness_root.join("dist");
-    let reference = if embedded.is_dir() {
-        // A fast-forward writes the committed copy now while `dist` is build
-        // output from an earlier run, so its mtime proves nothing: a `dist`
-        // whose bytes differ from the embedded copy must be rebuilt, or the
-        // release tags sources its bundle predates.
-        if verify_embedded_client(harness_root, &dist).is_err() {
-            return Ok(true);
-        }
-        embedded
-    } else if dist.is_dir() {
-        dist
-    } else {
-        return Ok(false);
-    };
-    Ok(newest_source_mtime(harness_root)? > newest_mtime(&reference))
+    if !dist.is_dir() {
+        return Ok(true);
+    }
+    let newest_source = newest_source_mtime(harness_root)?;
+    if newest_source > newest_mtime(&dist) {
+        return Ok(true);
+    }
+    // The committed embedded copy is what the release ships; a source edited
+    // after that copy was embedded is rebuilt too. A `dist` that already
+    // matches the sources is never rebuilt to paper over an edited embed — the
+    // bundle proof refuses that instead, so the edit must be committed.
+    let embedded = embedded_client_root(harness_root);
+    Ok(embedded.is_dir() && newest_source > newest_mtime(&embedded))
 }
 
 /// Whether another landing advanced the checkout after this attempt proved its
@@ -5017,25 +5013,47 @@ mod tests {
     }
 
     #[test]
-    fn a_dist_that_differs_from_the_embedded_copy_is_rebuilt() {
+    fn a_dist_older_than_its_sources_is_rebuilt_even_beside_a_newer_embed() {
+        use std::time::{Duration, SystemTime};
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../.tmp")
             .join(format!("publish-stale-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let embedded = root.join("crates/devboard/assets");
         let dist = root.join("dist");
+        let client = root.join("client");
         std::fs::create_dir_all(&embedded).expect("an embedded copy");
         std::fs::create_dir_all(&dist).expect("a built bundle");
-        std::fs::write(embedded.join("index.html"), "new").expect("the embedded index");
-        std::fs::write(dist.join("index.html"), "old").expect("the older bundle");
+        std::fs::create_dir_all(&client).expect("a client tree");
+        std::fs::write(embedded.join("index.html"), "current").expect("the embedded index");
+        std::fs::write(dist.join("index.html"), "older").expect("the older bundle");
+        std::fs::write(client.join("Row.svelte"), "<p></p>\n").expect("a client source");
+        let age = |path: &Path, seconds: i64| {
+            let handle = std::fs::File::options()
+                .write(true)
+                .open(path)
+                .expect("an open file");
+            let now = SystemTime::now();
+            let time = if seconds < 0 {
+                now - Duration::from_secs(seconds.unsigned_abs())
+            } else {
+                now + Duration::from_secs(seconds as u64)
+            };
+            handle
+                .set_times(std::fs::FileTimes::new().set_modified(time))
+                .expect("a file time");
+        };
+        age(&client.join("Row.svelte"), -30);
+        age(&embedded.join("index.html"), 0);
+        age(&dist.join("index.html"), -60);
         assert!(
             dist_is_stale(&root).expect("a verdict"),
-            "a dist whose bytes differ from the embedded copy is rebuilt"
+            "a dist older than its sources is rebuilt even when the embed is newer"
         );
-        std::fs::write(dist.join("index.html"), "new").expect("the current bundle");
+        age(&dist.join("index.html"), 0);
         assert!(
             !dist_is_stale(&root).expect("a verdict"),
-            "an identical dist is not rebuilt"
+            "a dist newer than its sources is current"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
