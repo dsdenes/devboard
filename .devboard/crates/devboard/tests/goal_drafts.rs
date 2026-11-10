@@ -1452,7 +1452,11 @@ async fn a_dead_owner_is_restarted_once_and_a_second_death_is_truthful() {
 
     kill_pid(second_pid);
     let mut second_death = None;
-    let deadline = std::time::Instant::now() + Duration::from_millis(5000);
+    // The watcher's own tick decides a second death is terminal, on the same
+    // 250 ms cadence and through the same process start the first replacement
+    // waits on; a loaded host delays both by seconds. The contract is the
+    // recorded failure, not a five-second deadline.
+    let deadline = std::time::Instant::now() + Duration::from_millis(15_000);
     while std::time::Instant::now() < deadline {
         let state = owner_state(&repo, &path);
         if state
@@ -1464,7 +1468,7 @@ async fn a_dead_owner_is_restarted_once_and_a_second_death_is_truthful() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let second_death = second_death.expect("the second death is recorded within five seconds");
+    let second_death = second_death.expect("the second death is recorded within fifteen seconds");
     assert_eq!(
         second_death["run"]["error"],
         "The elaboration owner exited before it finished."
