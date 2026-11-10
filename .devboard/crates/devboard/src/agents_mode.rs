@@ -4030,7 +4030,6 @@ fn current_state_of(states: &[RepoState]) -> Option<RepoState> {
 fn seed_forge_facts(family_id: RepoFamilyId, state_dir: &Path, repo_dir: &Path) -> Vec<ForgeFact> {
     let directory = state_dir
         .join(family_id.directory())
-        .join(family_id.directory())
         .join(crate::journal::journal_key(repo_dir));
     let mut states = Vec::new();
     if let Some(text) = crate::sampling::text(&directory.join("state.json")) {
@@ -9669,14 +9668,20 @@ mod state_tree_walks {
             std::fs::write(directory.join("state.json"), state_document(index))
                 .expect("a state document");
         }
+        family_at(&repo_dir, &state_dir)
+    }
+
+    /// One family over an existing state tree, so a test decides what the
+    /// seed read sees.
+    fn family_at(repo_dir: &Path, state_dir: &Path) -> RepoFamily {
         let spawn: SpawnFn =
             Arc::new(|_argv: &[String], _environment: HashMap<String, String>| None);
         let environment: Arc<AgentEnvironment> =
             Arc::new(|| Box::pin(async { Ok(HashMap::new()) }));
         RepoFamily::new(
             RepoFamilyId::Scout,
-            &repo_dir,
-            &state_dir,
+            repo_dir,
+            state_dir,
             &HashMap::new(),
             "true",
             None,
@@ -9737,6 +9742,80 @@ mod state_tree_walks {
             "every worker version's issues belong to the projection"
         );
         assert_eq!(family.forge_urls().len(), 3);
+    }
+
+    /// One legacy family state document carrying an implemented issue and a
+    /// pending one, as a prior run leaves it at the family root.
+    fn seeded_state_document() -> String {
+        json!({
+            "version": 2,
+            "repo": "owner/repository",
+            "root": "/fixture",
+            "lifecycle": "stopped",
+            "enabled": false,
+            "worker": Value::Null,
+            "limits": {"maxPerHour": 50, "maxPending": 5},
+            "intervalMinutes": 15,
+            "issues": [
+                {
+                    "number": 1,
+                    "title": "An implemented issue",
+                    "url": "http://forge.invalid/issues/1",
+                    "createdAt": "2026-11-02T22:40:15+01:00",
+                    "state": "implemented",
+                    "category": "clarity",
+                    "version": "1.2.0",
+                    "versionAttemptAt": "2026-11-02T22:41:00+01:00",
+                    "versionError": Value::Null,
+                },
+                {
+                    "number": 2,
+                    "title": "A pending issue",
+                    "url": "http://forge.invalid/issues/2",
+                    "createdAt": "2026-11-02T22:40:15+01:00",
+                    "state": "pending",
+                    "category": "clarity",
+                    "version": Value::Null,
+                    "versionAttemptAt": Value::Null,
+                    "versionError": Value::Null,
+                },
+            ],
+            "openTitles": [],
+            "sync": {"state": "ok", "at": "2026-11-02T21:42:09.881Z", "error": Value::Null},
+            "newestScanId": Value::Null,
+            "nextAttemptAt": Value::Null,
+            "lastError": Value::Null,
+            "notice": Value::Null,
+            "updatedAt": "2026-11-02T22:40:12.000Z",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_restart_seeds_the_facts_a_prior_run_recorded() {
+        let root = fixture_root("legacy-seed");
+        let state_dir = root.join("state");
+        let repo_dir = root.join("repo");
+        let family_dir = state_dir
+            .join("scout")
+            .join(crate::journal::journal_key(&repo_dir));
+        std::fs::create_dir_all(&family_dir).expect("a family directory");
+        std::fs::write(family_dir.join("state.json"), seeded_state_document())
+            .expect("a state document");
+        let family = family_at(&repo_dir, &state_dir);
+        assert_eq!(
+            family.forge.fact("http://forge.invalid/issues/1"),
+            Some(ForgeAnswer {
+                state: "implemented".to_string(),
+                version: Some("1.2.0".to_string()),
+            }),
+            "the implemented URL the state file carries is seeded"
+        );
+        assert_eq!(
+            family.forge.fact("http://forge.invalid/issues/2"),
+            None,
+            "a pending URL is still read from the forge"
+        );
     }
 }
 
