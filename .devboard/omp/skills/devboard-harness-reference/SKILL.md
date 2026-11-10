@@ -4498,7 +4498,7 @@ The dashboard's only WebSocket belongs to one live ACP run:
   per interval. A socket's first tick samples its run, so a new subscriber starts current.
 - `GET /agent-runs` carries an `ETag`; a request whose `If-None-Match` names it answers `304`
   with an empty body and reads no run record, and only a record whose file changed is read
-  again. The bench's runs-view client sends that validator on its collection poll.
+  again.
 - A run record still says `running` after its worker died. The recorded worker pid and the kernel
   start tick recorded beside it are the authority: a record is live only while a process holds
   that pid with that start tick, so a recycled pid never revives it. A record whose pid is gone or
@@ -4510,8 +4510,9 @@ The dashboard's only WebSocket belongs to one live ACP run:
 - The MCP server, the desktop launcher, and `devboard bench` use the same REST API. The launcher
   restarts a dashboard with one `POST /server-restarts`; `devboard bench` measures a REST read
   and names the method and path, and `devboard bench cpu --scenario runs-view --json` (or
-  `--scenario all-workers`) builds a scratch host under `.test-tmp`, drives the scenario, and
-  prints the dashboard's and the workers' `cpuPercent` and `readBytesPerSecond`.
+  `--scenario all-workers`) builds a scratch host under `.test-tmp`, measures the scenario's
+  processes, and prints the dashboard's and the workers' `cpuPercent` and
+  `readBytesPerSecond`.
 
 ## Tests
 

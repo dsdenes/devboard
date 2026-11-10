@@ -25,12 +25,14 @@ cargo run -p devboard -- bench cpu --scenario all-workers --json
 ```
 
 Each run builds a scratch host under `.test-tmp`, starts a scratch `devboard serve --port 0`,
-drives the scenario (one Runs view, or every family worker live with an hour until its next
-due sync), and prints `cpuPercent` and `readBytesPerSecond` from `/proc/<pid>/io` and
-`/proc/<pid>/stat` over `--seconds` (30 by default). The top-level figures are the dashboard's
-for `runs-view` and the summed workers' for `all-workers`; `dashboard` and `workers` carry the
-per-process detail. Nothing is written to the operator's state directory and every process the
-run starts is ended before it returns.
+and prints `cpuPercent` and `readBytesPerSecond` from `/proc/<pid>/io` and `/proc/<pid>/stat`
+over `--seconds` (30 by default). `runs-view` measures one dashboard serving the shipped page:
+that page opens no `/agent-runs` request and no per-run output socket, so the scenario opens
+neither, and the 201 seeded run records are only the state the dashboard holds. `all-workers`
+starts every family worker live with an hour until its next due sync. The top-level figures are
+the dashboard's for `runs-view` and the summed workers' for `all-workers`; `dashboard` and
+`workers` carry the per-process detail. Nothing is written to the operator's state directory and
+every process the run starts is ended before it returns.
 
 ## Forge load test
 

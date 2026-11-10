@@ -488,9 +488,7 @@ on queued behind the page's own refreshes: the server answered `GET /providers` 
 page measured 842 ms. Three connections stay free for an operator action, a first-paint read,
 and the bundle's own requests, and the queue drains as each refresh answers, so a cycle still
 reads every registered resource. The replay itself starts once the six first-paint reads answer,
-or one cadence later when one of them never answers, so the modes are never left unread. The
-run's output poll keeps one `GET /agent-runs` read in flight, so a slow answer never stacks
-another background request beside the refreshes.
+or one cadence later when one of them never answers, so the modes are never left unread.
 
 The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
 refresh, poll, a polling surface's repeat request, and every send issued while the connection is
@@ -567,8 +565,9 @@ action group, not the status bar.
 
 ### Verifying the interface
 
-The client is built with `bun run build`, embedded into the binary by
-`bun scripts/embed-client.mjs`, and served from memory. Start a private dashboard with
+The client is built with `bun run build`, which also embeds the bundle into
+`crates/devboard/assets` for the binary to serve from memory; `bun scripts/embed-client.mjs`
+refreshes that copy on its own. Start a private dashboard with
 `cargo run -p devboard -- serve --port <free> --state-dir <dir> --repo-dir <dir>` and open it in
 a browser; the corpus tests cover the protocol and HTTP behavior the page depends on.
 
@@ -617,7 +616,7 @@ every agent write and eventually exhausts the dev server's heap.
   adrkit accepts are listed. Each record carries the first paragraph of its `Decision` section as
   a short summary.
 - State: the dashboard's server-owned state is written atomically to
-  `<stateDir>/state/<24-hex hash of REPO_DIR>.json` (default `stateDir` is
+  `<stateDir>/state/<24-hex hash of the resolved REPO_DIR>.json` (default `stateDir` is
   `<REPO_DIR>/.devboard/.tmp`, the host prefix rather than the replaceable package tree), so it
   survives a backend restart without leaking between repositories that share one harness install.
   See [Durable state](#durable-state).
@@ -966,7 +965,9 @@ server; see [Devboard MCP server](#devboard-mcp-server) for its tools, bounds, a
 The dashboard keeps the state that drives the page in one file per host repository and restores
 it from a new process after a graceful stop, a launcher restart, or a `SIGKILL`. The file is
 `<stateDir>/state/<key>.json`, where `key` is the 24-hex SHA-256 prefix of the resolved
-`REPO_DIR` (the same key the journal uses) and `stateDir` is the harness state directory,
+`REPO_DIR` (made absolute against the working directory and stripped of `.` and `..`
+lexically; the same key every project state directory and the journal use) and `stateDir` is
+the harness state directory,
 `<REPO_DIR>/.devboard/.tmp` by default and overridable with `STATE_DIR`. A `STATE_DIR` inside
 the repository survives an implementation reset unchanged, and the reset records its path in the
 checkout's
@@ -1212,7 +1213,7 @@ abandon that change and implement another solution.
 
 ### Session state
 
-A session lives at `<stateDir>/flow/<24-hex journalKey(REPO_DIR)>/<session-id>/`, keyed exactly
+A session lives at `<stateDir>/flow/<24-hex repoKey(REPO_DIR)>/<session-id>/`, keyed exactly
 like the dashboard state, so repositories sharing one harness never see each other's sessions.
 `stateDir` is the harness state directory (`<REPO_DIR>/.devboard/.tmp` by default, overridable with
 `STATE_DIR`); `<session-id>` is an 8-hex id chosen when the session is created. The directory is
@@ -2273,8 +2274,8 @@ version that tag just published.
 |`PORT`|`8080`|Listen port.|
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
-|`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
-|`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
+|`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location. The derived default follows the ADR directory a serve flag leaves in force, so `--adrs-dir <repo>/adrs` without `REPO_DIR` or `--repo-dir` serves `<repo>`; a supplied `REPO_DIR` or `--repo-dir` stays authoritative.|
+|`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save. Derived from the repository directory in force after the serve flags when unset.|
 |`STATIC_DIR`|unset|Client directory to serve; unset serves the client embedded in the binary.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `devboard acp-stub` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|
@@ -2795,7 +2796,7 @@ documented color and description before Start proceeds; a failed creation refuse
 forge error. Start publishes `starting` before the spawn and `running` once the state is readable.
 At most one audit and release cycle runs at a time; Start, a cadence change, a page open, a tab
 restore, or a reload never starts a second cycle.
-State lives at `<STATE_DIR>/design/<journalKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
+State lives at `<STATE_DIR>/design/<repoKey(REPO_DIR)>/`; the lock, cycles, and worktrees stay
 inside the checkout, and the worker's audit input never leaves the repository root.
 
 ### Entry points for background-agent crawls
@@ -2882,7 +2883,7 @@ checkout, the origin is not a supported forge, the account cannot write, `omp` o
 missing, the `/dead-code-removal` command is not installed, or the `dead-code` label cannot be
 created. Start publishes `starting` before the spawn and `running` once the state is readable; at
 most one cycle runs at a time for a checkout. Stop ends the worker and leaves the settings and
-filed rows. State lives at `<STATE_DIR>/dead-code/<journalKey(REPO_DIR)>/`, the lock and cycles
+filed rows. State lives at `<STATE_DIR>/dead-code/<repoKey(REPO_DIR)>/`, the lock and cycles
 stay inside the checkout, and a dashboard restart, page open, or tab restore starts nothing.
 
 The periodic read records every resolution attempt, not just its empty version: a closed issue
@@ -2979,7 +2980,7 @@ outside the checkout, the origin is not a supported forge, the account cannot wr
 most one cycle runs at a time per checkout: Start during a cycle, a cadence change, a page open,
 a tab restore, or a reload starts no second cycle, and a replacement dashboard drains an older
 live worker of the family. Stop ends the worker and leaves the settings and filed rows. State
-lives at `<STATE_DIR>/single-responsibility/<journalKey(REPO_DIR)>/`, the lock and cycles stay
+lives at `<STATE_DIR>/single-responsibility/<repoKey(REPO_DIR)>/`, the lock and cycles stay
 inside `<REPO_DIR>/.devboard/.tmp/single-responsibility/`, and a cycle leaves
 `git status --porcelain` and `git rev-parse HEAD` unchanged. The worker tests
 proves the entry, the shared page, the seeded entry point, the excluded test and fixture files,
@@ -3786,7 +3787,7 @@ the ticker; no peer survives Stop. A fresh worker start terminates every ACP chi
 state recorded when `/proc` proves the process is that child, closes every interrupted run as
 `stopped`, clears `agents`, and starts no peer from stale state.
 
-State, ledger, runs, and activity live under `<STATE_DIR>/issues/<journalKey(REPO_DIR)>/`:
+State, ledger, runs, and activity live under `<STATE_DIR>/issues/<repoKey(REPO_DIR)>/`:
 `state.json` is atomic, `ledger.json` records handled numbers with the run id,
 `runs/<runId>/run.json` and `runs/<runId>/activity.json` keep the newest 50 finished runs plus
 every currently running run, and `control/` carries dashboard commands as atomically renamed
@@ -4110,10 +4111,15 @@ the forge through the shared dashboard reader, so a closure reaches the table wi
 own fresh read; a stopped worker is left stopped and receives no command. The page shows the
 shared lifecycle, last-read clock, cadence, limits, filed-issues table, and detail panel described
 above, plus `scout-activity` for the current or newest scan. The page also shows `agent-error` for
-the last error and `agent-sync-error` for a failed forge read. A fresh worker that inherits a scan
-the previous worker left `running` closes that scan in its record as failed with the cause, and
-raises no `agent-error`: the interruption belongs to the worker that exited, not to the worker that
-starts, and an error notification is never the recovery of a scan the running worker never began.
+the last error and `agent-sync-error` for a failed forge read. A read the forge never answered — a
+refused or reset connection, a `5xx`, a timeout, or another transport failure — spends the retry
+schedule and keeps its reason in `agent-sync-error` alone: it raises no `agent-error`, because that
+error notification files a board issue back into the forge that is down. A refusal the forge
+answered, such as an unusable credential or a missing repository, still raises `agent-error`. A
+fresh worker that inherits a scan the previous worker left `running` closes that scan in its
+record as failed with the cause, and raises no `agent-error`: the interruption belongs to the
+worker that exited, not to the worker that starts, and an error notification is never the recovery
+of a scan the running worker never began.
 
 There is no review path. While a worker runs, each scan turn describes the complete survey and lets
 the agent file its own accepted items: every recommendation scored 4 or 5 is created as a GitHub
@@ -4134,7 +4140,7 @@ latency: it stays on the card as Auto Scout's notice, not its error, so the page
 notification and files no board issue against the forge already behind.
 
 Auto Scout's persisted settings live at
-`<STATE_DIR>/scout/<journalKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
+`<STATE_DIR>/scout/<repoKey(REPO_DIR)>/settings.json` and carry `maxPerHour`, `maxPending`,
 and `intervalMinutes`. Empty limits remove that constraint. `maxPerHour` counts every Auto Scout
 issue whose creation time is inside a rolling 60-minute window, in any state; `maxPending` counts
 every open `scout` issue. One scan requests at most the smaller room, or 100 when both are
@@ -4303,12 +4309,17 @@ stays in report selection mode with an empty composer, and shows the
 `Goal proposed: <repository-relative path>` toast as plain text with no link; a failed write keeps
 the panel open with the server's error and leaves no draft. The drafts are ignored by git.
 
-Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header. A goal
-proposal's result is retained under `<STATE_DIR>/idempotency/` for 24 hours, so a retry answers
-the first draft instead of creating a second, while a failed proposal is never retained. A
+Both `POST /reports` and `POST /goal-proposals` accept an `Idempotency-Key` header, and so does
+every REST route. A keyed REST request runs through the same store under a `METHOD path` scope: the
+first request claims the key, a concurrent retry waits for that claim instead of dispatching the
+command again, and the stored answer — status, `Location`, and body — replays for 24 hours,
+bounded at 1000 entries, so a retry after a dashboard restart answers the same status and body. A
+goal proposal's result is retained under `<STATE_DIR>/idempotency/` for 24 hours, so a retry
+answers the first draft instead of creating a second, while a failed proposal is never retained. A
 report's key owns one record under `<STATE_DIR>/reports/` for 24 hours: a `FILING` or `FILED`
 record replays, and a `FAILED` record is filed again under the same record. A key is 1–255
-characters with no control characters; an empty or oversized key is refused with `400`.
+characters with no control characters; an empty, oversized, or control-character key is refused
+with `400`.
 
 Every request may carry an `X-Flow-ID` header so one call flow stays correlatable across the
 dashboard, its journal, and the forge. The server reads it on every request, echoes the same value
@@ -4483,19 +4494,25 @@ The dashboard's only WebSocket belongs to one live ACP run:
 - One sample serves every viewer. A run's state is sampled once per 500 ms and its activity
   journals are checked once per 250 ms, however many sockets are open; the sample fans out to
   each socket's own cursor. Every state file is read through one `(mtime, len)` cache, so an
-  unchanged file is never re-read and a page with several runs open costs one `stat` per file
+  unchanged file is never re-read and a viewer with several runs open costs one `stat` per file
   per interval. A socket's first tick samples its run, so a new subscriber starts current.
 - `GET /agent-runs` carries an `ETag`; a request whose `If-None-Match` names it answers `304`
   with an empty body and reads no run record, and only a record whose file changed is read
-  again. The run-output client sends that validator on its collection poll.
-- A run record still says `running` after its worker died. The recorded worker pid is the
-  authority: such a record is represented with a stopped lifecycle, is not in the live set the
-  page opens sockets for, and its bytes are never rewritten.
+  again.
+- A run record still says `running` after its worker died. The recorded worker pid and the kernel
+  start tick recorded beside it are the authority: a record is live only while a process holds
+  that pid with that start tick, so a recycled pid never revives it. A record whose pid is gone or
+  whose start tick is absent or different is represented with a stopped lifecycle, is not in the
+  live set a viewer opens sockets for, and its bytes are never rewritten. A socket another viewer
+  already holds samples the record on the tick that finds the worker gone, pushes the one terminal
+  `status` frame naming that stopped lifecycle, and only then closes; the `state` frame on the
+  same sample names the same word, so the two frames never disagree.
 - The MCP server, the desktop launcher, and `devboard bench` use the same REST API. The launcher
   restarts a dashboard with one `POST /server-restarts`; `devboard bench` measures a REST read
   and names the method and path, and `devboard bench cpu --scenario runs-view --json` (or
-  `--scenario all-workers`) builds a scratch host under `.test-tmp`, drives the scenario, and
-  prints the dashboard's and the workers' `cpuPercent` and `readBytesPerSecond`.
+  `--scenario all-workers`) builds a scratch host under `.test-tmp`, measures the scenario's
+  processes, and prints the dashboard's and the workers' `cpuPercent` and
+  `readBytesPerSecond`.
 
 ## Tests
 

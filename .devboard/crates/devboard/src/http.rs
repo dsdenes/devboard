@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -462,11 +462,37 @@ pub async fn serve(server: Arc<Server>) -> std::io::Result<()> {
 const BESIDE_ROUTE_TABLE_ROOTS: [&str; 5] =
     ["agent-runs", "flows", "goal-proposals", "ready", "reports"];
 
+/// Records one served request when `DEVBOARD_ACCESS_LOG` names a file.
+///
+/// Every served request appends one `METHOD PATH` line, and an unset or empty
+/// value writes nothing. The benchmark's runs-view pin reads that log to prove
+/// the scenario opens no read of its own.
+fn record_access(method: &Method, path: &str) {
+    static LOG: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
+        std::env::var_os("DEVBOARD_ACCESS_LOG")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    });
+    let Some(log) = LOG.as_deref() else {
+        return;
+    };
+    use std::io::Write as _;
+    let line = format!("{} {path}\n", method.as_str());
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 /// One request for the dashboard.
 async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response {
     let method = request.method().clone();
     let headers = request.headers().clone();
     let uri = request.uri().clone();
+    record_access(&method, uri.path());
     let flow_id = match parse_flow_id(&headers) {
         Ok(flow_id) => flow_id,
         Err(detail) => return Replies::problem(&headers, 400, &detail, &[]),
