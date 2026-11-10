@@ -2671,6 +2671,10 @@ paths:
               schema: {$ref: "#/components/schemas/RunCollection"}
           headers:
             ETag: {schema: {type: string}}
+        "304":
+          description: "The representation is unchanged."
+          headers:
+            ETag: {schema: {type: string}}
         "400":
           $ref: "#/components/responses/Problem"
         "403":
@@ -2704,6 +2708,7 @@ paths:
           $ref: "#/components/responses/Problem"
         "500":
           $ref: "#/components/responses/Problem"
+      x-cache: "no-cache; ETag validation"
   /agent-runs/{run_id}:
     get:
       operationId: "get /agent-runs/{run_id}"

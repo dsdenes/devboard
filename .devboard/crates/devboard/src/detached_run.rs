@@ -444,8 +444,9 @@ pub fn detached_run_handoff_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {
 
 /// Reads JSON, treating unreadable bytes as absent.
 pub fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    // Every detached-run reader samples through the shared cache: a file is
+    // read once per change, not once per viewer.
+    crate::sampling::json(path).map(|value| (*value).clone())
 }
 
 /// Writes one JSON document atomically with a trailing newline.

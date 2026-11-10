@@ -70,7 +70,7 @@ pub const DEFAULT_SKILL_DIRECTORY: &str = ".omp/skills/devboard-restful-api-impl
 pub const SKILL_FILE: &str = "SKILL.md";
 pub const RULES_FILE: &str = "references/zalando-rest-rules.md";
 
-pub const TICK_MS: u64 = 100;
+pub const TICK_MS: u64 = 250;
 pub const DEFAULT_AGENT_COMMAND: &str = "omp acp";
 pub const FIRST_LINE_MAX: usize = 400;
 pub const READ_TIMEOUT_MS: u64 = 30_000;
@@ -4286,5 +4286,20 @@ mod length_tests {
         assert!(!title_problem(&plain_at_cap).contains("title must be"));
         let plain_over = "a".repeat(TITLE_MAX + 1);
         assert!(title_problem(&plain_over).contains("title must be"));
+    }
+}
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::TICK_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
     }
 }

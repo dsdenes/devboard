@@ -1038,7 +1038,7 @@ Every agentic run the dashboard starts owns a detached process, not a peer insid
 lifecycle lanes, a manual ADR run, goal creation, goal revision, skills preparation, goal-draft
 elaboration, Discover, Flow, and Ask. Each owner spawns the ACP peer, appends activity to a
 run-keyed file, publishes its question, and consumes answer, stop, pause, and resume commands.
-A goal-draft owner consumes commands every 25 ms and records the id of the answer it applied in
+A goal-draft owner consumes commands every 250 ms and records the id of the answer it applied in
 its published state, because a peer that asks its next question at once replaces the applied run
 state in the same tick. The answer reply waits for that acknowledgement, bounded at 700 ms, so it
 carries the applied state without waiting out the bound; a slower owner still leaves the page's
@@ -4480,9 +4480,22 @@ The dashboard's only WebSocket belongs to one live ACP run:
   project, providers, resources, skills, records, issues, drafts, flow or discover workspace
   state, goal state, another agent's state, or another run's output. A stopped run holds no open
   socket.
+- One sample serves every viewer. A run's state is sampled once per 500 ms and its activity
+  journals are checked once per 250 ms, however many sockets are open; the sample fans out to
+  each socket's own cursor. Every state file is read through one `(mtime, len)` cache, so an
+  unchanged file is never re-read and a page with several runs open costs one `stat` per file
+  per interval. A socket's first tick samples its run, so a new subscriber starts current.
+- `GET /agent-runs` carries an `ETag`; a request whose `If-None-Match` names it answers `304`
+  with an empty body and reads no run record, and only a record whose file changed is read
+  again. The run-output client sends that validator on its collection poll.
+- A run record still says `running` after its worker died. The recorded worker pid is the
+  authority: such a record is represented with a stopped lifecycle, is not in the live set the
+  page opens sockets for, and its bytes are never rewritten.
 - The MCP server, the desktop launcher, and `devboard bench` use the same REST API. The launcher
-  restarts a dashboard with one `POST /server-restarts`; the benchmark measures a REST read and
-  names the method and path.
+  restarts a dashboard with one `POST /server-restarts`; `devboard bench` measures a REST read
+  and names the method and path, and `devboard bench cpu --scenario runs-view --json` (or
+  `--scenario all-workers`) builds a scratch host under `.test-tmp`, drives the scenario, and
+  prints the dashboard's and the workers' `cpuPercent` and `readBytesPerSecond`.
 
 ## Tests
 

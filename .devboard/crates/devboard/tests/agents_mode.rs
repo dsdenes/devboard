@@ -14,6 +14,12 @@ use devboard::journal::Journal;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+#[cfg(target_os = "linux")]
+mod common;
+
+#[cfg(target_os = "linux")]
+use common::AccessCounter;
+
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 type RecordedSpawns = Arc<Mutex<Vec<(Vec<String>, HashMap<String, String>)>>>;
@@ -1796,4 +1802,130 @@ async fn an_unchanged_snapshot_is_not_rebroadcast() {
         find(&all, "agentState").is_empty(),
         "an unchanged snapshot was rebroadcast: {all:?}"
     );
+}
+
+/// One versioned worker state in a family's tree.
+fn versioned_worker_state(repo: &Path, state_dir: &Path, version: &str, worker_pid: u32) -> Value {
+    let mut value = dead_code_state(&repo.join(".."), repo, state_dir, worker_pid);
+    value["version"] = json!(1);
+    value["harnessVersion"] = json!(version);
+    value
+}
+
+fn versioned_state_path(state_dir: &Path, family: &str, repo: &Path, version: &str) -> PathBuf {
+    state_dir
+        .join(family)
+        .join(repo_key(repo))
+        .join("workers")
+        .join(version)
+        .join("state.json")
+}
+
+#[tokio::test]
+async fn an_unchanged_family_is_not_read_and_history_does_not_matter() {
+    let root = scratch("history");
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let five = state.join("dead-code").join(repo_key(&repo));
+    let fifty = state.join("consistent-naming").join(repo_key(&repo));
+    for index in 0..5 {
+        let version = format!("1.0.{index}");
+        write_json(
+            &versioned_state_path(&state, "dead-code", &repo, &version),
+            versioned_worker_state(&repo, &state, &version, 9_000 + index),
+        );
+    }
+    let mut changed_path = PathBuf::new();
+    for index in 0..50 {
+        let version = format!("1.1.{index}");
+        let path = versioned_state_path(&state, "consistent-naming", &repo, &version);
+        write_json(
+            &path,
+            versioned_worker_state(&repo, &state, &version, 8_000 + index),
+        );
+        if index == 7 {
+            changed_path = path;
+        }
+    }
+
+    let app = app_at(&root);
+    // One interval warms the projections; the next one is the measured
+    // interval, and it reads nothing at all.
+    devboard::agents_mode::poll_once(&app);
+    let watcher = AccessCounter::watch(&state);
+    devboard::agents_mode::poll_once(&app);
+    let counts = watcher.take();
+    let reads_under = |root: &Path| -> u64 {
+        counts
+            .iter()
+            .filter(|(path, _)| path.starts_with(root))
+            .map(|(_, count)| *count)
+            .sum()
+    };
+    let five_reads = reads_under(&five);
+    let fifty_reads = reads_under(&fifty);
+    assert_eq!(
+        five_reads, 0,
+        "an unchanged five-worker family is not read: {counts:?}"
+    );
+    assert_eq!(
+        fifty_reads, five_reads,
+        "history does not change an unchanged interval's reads"
+    );
+
+    // A changed family reads exactly the changed file.
+    let mut changed = versioned_worker_state(&repo, &state, "1.1.7", 8_007);
+    changed["updatedAt"] = json!("2026-11-10T01:00:00.000Z");
+    write_json(&changed_path, changed);
+    devboard::agents_mode::poll_once(&app);
+    let counts = watcher.take();
+    assert_eq!(
+        counts.get(&changed_path).copied().unwrap_or(0),
+        1,
+        "the changed record is read once"
+    );
+    assert_eq!(
+        counts
+            .iter()
+            .filter(|(path, _)| path.starts_with(&five))
+            .map(|(_, count)| *count)
+            .sum::<u64>(),
+        0,
+        "the unchanged family stays unread"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_family_reaches_a_client_within_one_second() {
+    let root = scratch("freshness");
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let family = state.join("dead-code").join(repo_key(&repo));
+    let path = family.join("workers").join("1.0.0").join("state.json");
+    write_json(&path, versioned_worker_state(&repo, &state, "1.0.0", 9_001));
+    let app = app_at(&root);
+    let (_conn, mut inbox) = connection_for(&app).await;
+    // The first poll builds the projection; the change is what the measured
+    // tick has to notice.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let _ = frames(&mut inbox);
+
+    let mut changed = versioned_worker_state(&repo, &state, "1.0.0", 9_001);
+    changed["lifecycle"] = json!("failed");
+    write_json(&path, changed);
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        let all = frames(&mut inbox);
+        if let Some(agent) = agent(&all, "dead-code") {
+            if agent["lifecycle"] == json!("failed") {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a changed family reaches the client within one second"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }

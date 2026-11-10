@@ -27,7 +27,7 @@ use crate::workers::WorkerInvocation;
 /// How often the owner consumes commands. This is the operator's answer round
 /// trip, not a housekeeping interval: the reply that confirms an answer waits
 /// for the acknowledgement the owner writes when it applies it.
-const OWNER_COMMAND_MS: u64 = 25;
+const OWNER_COMMAND_MS: u64 = 250;
 /// How long the owner waits for the peer to exit before it forces it.
 const PEER_CLOSE_GRACE_MS: u64 = 1_500;
 /// How long the owner waits for the dashboard's running state to appear.
@@ -348,5 +348,20 @@ async fn close_peer(peer: Option<Arc<AcpConnection>>, child: Option<RecordedChil
     let forced = Instant::now() + Duration::from_millis(500);
     while Instant::now() < forced && recorded_child_alive(&child) {
         tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::OWNER_COMMAND_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
     }
 }

@@ -4321,3 +4321,18 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::CONTROL_POLL_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}

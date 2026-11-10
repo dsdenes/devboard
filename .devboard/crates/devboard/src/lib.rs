@@ -54,6 +54,7 @@ pub mod resources;
 pub mod rest;
 pub mod runs;
 pub mod runtime_boundary;
+pub mod sampling;
 pub mod source_refresh;
 pub mod state;
 pub mod supervision;

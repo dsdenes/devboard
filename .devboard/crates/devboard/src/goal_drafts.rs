@@ -35,8 +35,9 @@ pub const GOAL_DRAFT_OWNER_DID_NOT_START: &str = "The elaboration owner did not 
 /// restart also died.
 pub const GOAL_DRAFT_OWNER_EXITED: &str = "The elaboration owner exited before it finished.";
 
-/// The poll cadence the dashboard observes owners with.
-const POLL_MS: u64 = 150;
+/// The poll cadence the dashboard observes owners with. A tick reads file
+/// contents only when a stamp changed; an idle watcher costs a directory scan.
+const POLL_MS: u64 = 250;
 /// The owners are told their supervisor is alive at this cadence, not every poll.
 const LEASE_INTERVAL_MS: i64 = 400;
 /// How long an accepted answer waits for its owner to record it. The reply
@@ -374,8 +375,9 @@ pub fn goal_draft_lease_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {
 // Durable JSON
 
 fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    // Sampled through the shared cache: the 250 ms watcher reads an owner's
+    // state once per change, never once per tick.
+    crate::sampling::json(path).map(|value| (*value).clone())
 }
 
 /// Replaces one file atomically; a reader never sees a half-written value.

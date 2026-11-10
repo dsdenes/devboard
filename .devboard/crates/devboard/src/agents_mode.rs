@@ -679,9 +679,10 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
 /* Files                                                                     */
 /* ------------------------------------------------------------------------ */
 
+/// One family state document, sampled through the shared `(mtime, len)`
+/// cache: an unchanged file is not read, however many samples open it.
 fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    crate::sampling::json(path).map(|value| (*value).clone())
 }
 
 fn read_activity(directory: &Path) -> Vec<String> {
@@ -2038,7 +2039,7 @@ fn parse_lock(text: &str) -> Option<LockOwner> {
 }
 
 fn read_lock(path: &Path) -> Option<LockOwner> {
-    parse_lock(&std::fs::read_to_string(path).ok()?)
+    parse_lock(crate::sampling::text(path)?.as_str())
 }
 
 fn live_lock_owner(path: &Path) -> Option<LockOwner> {
@@ -2167,7 +2168,7 @@ fn parse_basic_settings(text: &str) -> Option<BasicSettings> {
 }
 
 fn read_basic_settings(path: &Path) -> Option<BasicSettings> {
-    parse_basic_settings(&std::fs::read_to_string(path).ok()?)
+    parse_basic_settings(crate::sampling::text(path)?.as_str())
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2247,10 +2248,8 @@ fn parse_mcp_settings(text: &str) -> Option<McpSettings> {
 }
 
 fn read_mcp_settings(directory: &Path) -> McpSettings {
-    parse_mcp_settings(
-        &std::fs::read_to_string(directory.join("settings.json")).unwrap_or_default(),
-    )
-    .unwrap_or_else(McpSettings::defaults)
+    parse_mcp_settings(&crate::sampling::text(&directory.join("settings.json")).unwrap_or_default())
+        .unwrap_or_else(McpSettings::defaults)
 }
 
 /* ------------------------------------------------------------------------ */
@@ -4034,13 +4033,13 @@ fn seed_forge_facts(family_id: RepoFamilyId, state_dir: &Path, repo_dir: &Path) 
         .join(family_id.directory())
         .join(crate::journal::journal_key(repo_dir));
     let mut states = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(directory.join("state.json")) {
+    if let Some(text) = crate::sampling::text(&directory.join("state.json")) {
         if let Some(state) = parse_repo_state(family_id, &text) {
             states.push(state);
         }
     }
     for worker in worker_state_directories(&directory) {
-        if let Ok(text) = std::fs::read_to_string(worker.join("state.json")) {
+        if let Some(text) = crate::sampling::text(&worker.join("state.json")) {
             if let Some(state) = parse_repo_state(family_id, &text) {
                 states.push(state);
             }
@@ -4145,6 +4144,11 @@ struct RepoMutable {
     last_sync_request_at: i64,
     last_activity_cycle: Option<String>,
     last_activity: Vec<String>,
+    /// The activity file's `(modified, len)` the retained lines were read at.
+    last_activity_stamp: Option<(std::time::SystemTime, u64)>,
+    /// The state tree's metadata fingerprint the parsed states were read at.
+    states_signature: Option<u64>,
+    states: Vec<RepoState>,
 }
 
 struct RepoFamily {
@@ -4222,6 +4226,9 @@ impl RepoFamily {
                 last_sync_request_at: i64::MIN / 2,
                 last_activity_cycle: None,
                 last_activity: Vec::new(),
+                last_activity_stamp: None,
+                states_signature: None,
+                states: Vec::new(),
             })),
             start_lock: tokio::sync::Mutex::new(()),
         }
@@ -4283,18 +4290,30 @@ impl RepoFamily {
     fn all_states(&self) -> Vec<RepoState> {
         #[cfg(test)]
         STATE_TREE_WALKS.with(|walks| walks.set(walks.get() + 1));
+        // One metadata walk decides whether the parsed states are still
+        // current: an unchanged tree costs no parse and no content read.
+        let signature = tree_signature(&self.repo_state_directory());
+        if let Ok(mutable) = self.mutable.lock() {
+            if mutable.states_signature == Some(signature) {
+                return mutable.states.clone();
+            }
+        }
         let mut states = Vec::new();
-        if let Ok(text) = std::fs::read_to_string(self.legacy_state_path()) {
+        if let Some(text) = crate::sampling::text(&self.legacy_state_path()) {
             if let Some(state) = parse_repo_state(self.family_id, &text) {
                 states.push(state);
             }
         }
         for directory in worker_state_directories(&self.repo_state_directory()) {
-            if let Ok(text) = std::fs::read_to_string(directory.join("state.json")) {
+            if let Some(text) = crate::sampling::text(&directory.join("state.json")) {
                 if let Some(state) = parse_repo_state(self.family_id, &text) {
                     states.push(state);
                 }
             }
+        }
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable.states_signature = Some(signature);
+            mutable.states = states.clone();
         }
         states
     }
@@ -4366,13 +4385,13 @@ impl RepoFamily {
 
     fn state_for_owner(&self, owner: &LockOwner) -> Option<RepoState> {
         if let Some(version) = owner.harness_version.as_deref() {
-            if let Ok(text) = std::fs::read_to_string(self.versioned_state_path(Some(version))) {
+            if let Some(text) = crate::sampling::text(&self.versioned_state_path(Some(version))) {
                 if let Some(state) = parse_repo_state(self.family_id, &text) {
                     return Some(state);
                 }
             }
         }
-        let text = std::fs::read_to_string(self.legacy_state_path()).ok()?;
+        let text = crate::sampling::text(&self.legacy_state_path())?;
         parse_repo_state(self.family_id, &text)
     }
 
@@ -4787,10 +4806,12 @@ impl RepoFamily {
         let Some(cycle_id) = cycle_id else {
             return;
         };
-        let activity = read_activity(&self.cycle_directory(&cycle_id));
+        let directory = self.cycle_directory(&cycle_id);
+        let activity = read_activity(&directory);
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.last_activity_cycle = Some(cycle_id.clone());
             mutable.last_activity = activity.clone();
+            mutable.last_activity_stamp = crate::sampling::stamp(&directory.join("activity.json"));
         }
         let event = json!({
             "type": "agentActivity",
@@ -4814,10 +4835,20 @@ impl RepoFamily {
             if let Ok(mut mutable) = self.mutable.lock() {
                 mutable.last_activity_cycle = None;
                 mutable.last_activity.clear();
+                mutable.last_activity_stamp = None;
             }
             return;
         };
-        let activity = read_activity(&self.cycle_directory(&cycle_id));
+        let directory = self.cycle_directory(&cycle_id);
+        let stamp = crate::sampling::stamp(&directory.join("activity.json"));
+        if let Ok(mutable) = self.mutable.lock() {
+            if mutable.last_activity_cycle.as_deref() == Some(cycle_id.as_str())
+                && mutable.last_activity_stamp == stamp
+            {
+                return;
+            }
+        }
+        let activity = read_activity(&directory);
         let mut previous = None;
         let mut is_new = false;
         if let Ok(mut mutable) = self.mutable.lock() {
@@ -4828,6 +4859,7 @@ impl RepoFamily {
             }
             mutable.last_activity_cycle = Some(cycle_id.clone());
             mutable.last_activity = activity.clone();
+            mutable.last_activity_stamp = stamp;
         }
         if is_new {
             let event = json!({
@@ -5890,7 +5922,7 @@ fn clear_stopping(mutable: &Mutex<RepoMutable>, pid: u32) {
 fn design_is_releasing(paths: &[PathBuf], pid: u32) -> bool {
     let states: Vec<RepoState> = paths
         .iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|path| crate::sampling::text(path))
         .filter_map(|text| parse_repo_state(RepoFamilyId::Design, &text))
         .collect();
     let releasing = states
@@ -6362,7 +6394,7 @@ fn parse_watchdog_worker_state(text: &str) -> Option<WatchdogWorkerState> {
 }
 
 fn read_watchdog_worker_state(directory: &Path) -> Option<WatchdogWorkerState> {
-    parse_watchdog_worker_state(&std::fs::read_to_string(directory.join("worker.json")).ok()?)
+    parse_watchdog_worker_state(&crate::sampling::text(&directory.join("worker.json"))?)
 }
 
 fn read_watchdog_worker_states(directory: &Path) -> Vec<WatchdogWorkerState> {
@@ -7736,7 +7768,7 @@ fn parse_mcp_worker_state(text: &str) -> Option<McpWorkerState> {
 }
 
 fn read_mcp_worker_state(directory: &Path) -> Option<McpWorkerState> {
-    parse_mcp_worker_state(&std::fs::read_to_string(directory.join("worker.json")).ok()?)
+    parse_mcp_worker_state(&crate::sampling::text(&directory.join("worker.json"))?)
 }
 
 fn mcp_family_entries(directory: &Path) -> Vec<Value> {
@@ -8670,7 +8702,7 @@ fn parse_release_worker_state(text: &str) -> Option<ReleaseWorkerState> {
 }
 
 fn read_release_worker_state(directory: &Path) -> Option<ReleaseWorkerState> {
-    parse_release_worker_state(&std::fs::read_to_string(directory.join("worker.json")).ok()?)
+    parse_release_worker_state(&crate::sampling::text(&directory.join("worker.json"))?)
 }
 
 fn release_worker_states(directory: &Path) -> Vec<ReleaseWorkerState> {

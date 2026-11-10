@@ -1161,8 +1161,13 @@ async fn release_suite_command(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `devboard bench --port <n> --iterations <n> --command <name>`.
+/// `devboard bench --port <n> --iterations <n> --command <name>`, or
+/// `devboard bench cpu --scenario <runs-view|all-workers> [--json]
+/// [--seconds <n>]`.
 async fn bench_command(args: &[String]) -> anyhow::Result<()> {
+    if args.get(1).map(String::as_str) == Some("cpu") {
+        return bench_cpu_command(args).await;
+    }
     let mut port: u16 = 0;
     let mut iterations: u64 = 200;
     let mut command = "getProject".to_string();
@@ -1175,6 +1180,7 @@ async fn bench_command(args: &[String]) -> anyhow::Result<()> {
             "--command" => command = value.context("--command needs a name")?,
             "--help" | "-h" => {
                 println!("usage: devboard bench --port <n> [--iterations <n>] [--command <name>]");
+                println!("       devboard bench cpu --scenario <runs-view|all-workers> [--json] [--seconds <n>]");
                 return Ok(());
             }
             other => anyhow::bail!("unknown bench option {other}"),
@@ -1183,6 +1189,35 @@ async fn bench_command(args: &[String]) -> anyhow::Result<()> {
     }
     let result = devboard::bench::measure(port, iterations, &command).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+/// One idle-cost measurement against a scratch host.
+async fn bench_cpu_command(args: &[String]) -> anyhow::Result<()> {
+    let mut scenario = "runs-view".to_string();
+    let mut seconds: u64 = 30;
+    let mut json = false;
+    let mut index = 2;
+    while index < args.len() {
+        let value = args.get(index + 1).cloned();
+        match args[index].as_str() {
+            "--scenario" => scenario = value.context("--scenario needs a name")?,
+            "--seconds" => seconds = value.context("--seconds needs a number")?.parse()?,
+            "--json" => {
+                json = true;
+                index += 1;
+                continue;
+            }
+            "--help" | "-h" => {
+                println!("usage: devboard bench cpu --scenario <runs-view|all-workers> [--json] [--seconds <n>]");
+                return Ok(());
+            }
+            other => anyhow::bail!("unknown bench cpu option {other}"),
+        }
+        index += 2;
+    }
+    let result = devboard::bench::cpu(&devboard::bench::CpuOptions { scenario, seconds }).await?;
+    devboard::bench::print(&result, json);
     Ok(())
 }
 

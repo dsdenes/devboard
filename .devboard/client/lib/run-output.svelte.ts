@@ -66,6 +66,8 @@ export class RunOutputStore {
   private handlers: Array<(frame: RunFrame) => void> = [];
   private polling = false;
   private reading = false;
+  /** The collection's validator, so an unchanged collection answers 304. */
+  private etag: string | undefined;
 
   onFrame(handler: (frame: RunFrame) => void): void {
     this.handlers.push(handler);
@@ -96,11 +98,18 @@ export class RunOutputStore {
     try {
       let body: unknown;
       try {
+        const headers: Record<string, string> = { accept: "application/json" };
+        if (this.etag !== undefined) headers["if-none-match"] = this.etag;
         const response = await fetch("/agent-runs", {
-          headers: { accept: "application/json" },
+          headers,
           cache: "no-store",
         });
+        // 304: the collection is byte-identical to the one this page last
+        // read, so there is nothing to reconcile and no socket to open.
+        if (response.status === 304) return;
         if (!response.ok) return;
+        const etag = response.headers.get("etag");
+        if (etag !== null) this.etag = etag;
         body = await response.json();
       } catch {
         return;

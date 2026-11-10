@@ -16,6 +16,12 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
+#[cfg(target_os = "linux")]
+mod common;
+
+#[cfg(target_os = "linux")]
+use common::AccessCounter;
+
 fn devboard_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -826,4 +832,170 @@ async fn ask_runs_survive_a_replacement_with_one_ask_done() {
             libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
         }
     }
+}
+
+/// One Issues run record plus its activity file: the durable source the
+/// collection and the output sockets read.
+fn seed_issue_run(scratch: &Scratch, id: &str, status: &str, worker_pid: u32) -> PathBuf {
+    let repo = scratch.repo();
+    let directory = scratch
+        .state()
+        .join("issues")
+        .join(devboard::journal::journal_key(&repo))
+        .join("runs")
+        .join(id);
+    write(
+        &directory.join("run.json"),
+        &format!(
+            "{}\n",
+            json!({
+                "version": 1,
+                "runId": id,
+                "repo": "fixture",
+                "status": status,
+                "workerPid": worker_pid,
+                "startedAt": "2026-11-10T00:00:00.000Z",
+                "harnessVersion": "1.0.0",
+            })
+        ),
+    );
+    write(
+        &directory.join("activity.json"),
+        &format!("{}\n", json!(["one", "two"])),
+    );
+    directory
+}
+
+fn file_identity(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let text = std::fs::read(path).expect("a record");
+    let modified = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .expect("a modification time");
+    (text, modified)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn four_sockets_read_one_run_once_per_interval() {
+    let scratch = Scratch::new("sample");
+    let _repo = fixture_repo(&scratch);
+    let directory = seed_issue_run(&scratch, "fixture", "running", std::process::id());
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+    // The collection read happens before the watch: only the sockets are
+    // measured.
+    let id = run_id(&base, "fixture").await;
+    let watcher = AccessCounter::watch(&directory);
+
+    let mut sockets = Vec::new();
+    for _ in 0..4 {
+        sockets.push(run_socket(port, &id, None).await);
+    }
+    for socket in sockets.iter_mut() {
+        let _ = frames_until(
+            socket,
+            |frame| frame["type"] == "state",
+            Duration::from_secs(10),
+        )
+        .await;
+    }
+    // Let the first sample settle, then measure five unchanged intervals.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = watcher.take();
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let counts = watcher.take();
+    let run_reads = counts
+        .get(&directory.join("run.json"))
+        .copied()
+        .unwrap_or(0);
+    let activity_reads = counts
+        .get(&directory.join("activity.json"))
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        run_reads <= 5,
+        "four sockets sample one run at most once per interval: run.json read {run_reads} times"
+    );
+    assert!(
+        activity_reads <= 5,
+        "activity.json read {activity_reads} times"
+    );
+
+    // No interval elapses: nothing is read at all.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let quiet = watcher.take();
+    assert!(
+        quiet.is_empty(),
+        "an interval with no sample reads nothing: {quiet:?}"
+    );
+    drop(sockets);
+    if let Some(lease) =
+        devboard::detached_run::read_detached_lease(&scratch.state(), &scratch.repo())
+    {
+        unsafe {
+            libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    let _ = server.child.kill();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_orphaned_running_record_is_stopped_and_unrewritten() {
+    let scratch = Scratch::new("orphan");
+    let _repo = fixture_repo(&scratch);
+    let directory = seed_issue_run(&scratch, "orphan", "running", 999_995);
+    let before = file_identity(&directory.join("run.json"));
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+    let _ = port;
+
+    let client = reqwest::Client::new();
+    let body: Value = client
+        .get(format!("{base}/agent-runs"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a collection")
+        .json()
+        .await
+        .expect("JSON");
+    let run = body["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|run| run["id"] == json!("issues--orphan")))
+        .expect("the orphaned record");
+    assert_eq!(run["live"], json!(false), "a dead worker holds no socket");
+    assert_eq!(
+        run["lifecycle"],
+        json!("stopped"),
+        "and is reported stopped"
+    );
+
+    let body: Value = client
+        .get(format!("{base}/agent-runs/issues--orphan"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a representation")
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(body["live"], json!(false));
+    assert_eq!(body["lifecycle"], json!("stopped"));
+    assert_eq!(
+        file_identity(&directory.join("run.json")),
+        before,
+        "the record's bytes and modification time are unchanged"
+    );
+    if let Some(lease) =
+        devboard::detached_run::read_detached_lease(&scratch.state(), &scratch.repo())
+    {
+        unsafe {
+            libc::kill(lease.pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    let _ = server.child.kill();
 }

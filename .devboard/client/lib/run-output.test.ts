@@ -55,3 +55,48 @@ test("a slow run read is not stacked by the next tick", async () => {
   );
   await third;
 });
+
+test("the collection poll revalidates with the previous ETag", async () => {
+  // An unchanged collection answers 304 with an empty body, so the poll opens
+  // no socket and reads no run record on the server.
+  const seen: Array<Record<string, string>> = [];
+  let calls = 0;
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    seen.push(headers);
+    calls += 1;
+    if (calls === 1) {
+      const body = {
+        runs: [
+          {
+            id: "run-a",
+            kind: "flow",
+            label: "run-a",
+            lifecycle: "stopped",
+            live: false,
+            updated_at: null,
+            self: "",
+            output: "ws://127.0.0.1:1/agent-runs/run-a/output",
+          },
+        ],
+      };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json", etag: '"abc"' },
+        }),
+      );
+    }
+    return Promise.resolve(new Response(null, { status: 304, headers: { etag: '"abc"' } }));
+  }) as unknown as typeof fetch;
+
+  const store = new RunOutputStore();
+  const poll = (): Promise<void> => (store as unknown as { poll(): Promise<void> }).poll();
+  await poll();
+  expect(store.runs.length).toBe(1);
+  expect(seen[0]["if-none-match"]).toBeUndefined();
+  await poll();
+  expect(seen[1]["if-none-match"]).toBe('"abc"');
+  expect(store.runs.length).toBe(1);
+  expect(calls).toBe(2);
+});

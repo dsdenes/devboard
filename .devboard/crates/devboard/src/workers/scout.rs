@@ -68,7 +68,7 @@ pub const CATEGORIES: [&str; 6] = [
 ];
 /// How long a closed issue whose release could not be determined waits.
 pub const RESOLUTION_RETRY_MS: i64 = 6 * HOUR_MS;
-const TICK_MS: u64 = 100;
+const TICK_MS: u64 = 250;
 const FIRST_LINE_MAX: usize = 400;
 const MAX_ACTIVITY_LINE: usize = 2000;
 const READ_TIMEOUT_MS: u64 = 30_000;
@@ -4956,5 +4956,20 @@ mod tests {
         assert!(is_valid_limit(Some(100)));
         assert!(!is_valid_limit(Some(0)));
         assert!(!is_valid_limit(Some(101)));
+    }
+}
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::TICK_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
     }
 }

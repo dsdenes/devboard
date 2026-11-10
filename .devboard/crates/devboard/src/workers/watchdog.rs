@@ -329,8 +329,8 @@ pub fn write_json_atomic(path: &Path, value: &Value) -> io::Result<()> {
 
 /// Reads one JSON document, or `None` when it is missing or unparseable.
 pub fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    // Sampled: an idle control tick reads no unchanged document.
+    crate::sampling::json(path).map(|value| (*value).clone())
 }
 
 fn json_integer(value: Option<&Value>) -> Option<i64> {
@@ -626,9 +626,7 @@ fn nullable_string(value: Option<&Value>) -> Option<Option<String>> {
 }
 
 pub fn read_worker_state(directory: &Path) -> Option<WatchdogWorkerState> {
-    std::fs::read_to_string(worker_state_path(directory))
-        .ok()
-        .and_then(|text| parse_worker_state(&text))
+    crate::sampling::text(&worker_state_path(directory)).and_then(|text| parse_worker_state(&text))
 }
 
 pub fn write_worker_state(directory: &Path, state: &WatchdogWorkerState) -> io::Result<()> {
@@ -776,7 +774,7 @@ fn read_snapshot(path: &Path) -> Option<LockSnapshot> {
     };
     #[cfg(not(unix))]
     let (device, inode) = (0, 0);
-    let content = std::fs::read_to_string(path).ok()?;
+    let content = crate::sampling::text(path)?;
     let (owner, token) = parse_lock(&content);
     Some(LockSnapshot {
         owner,
@@ -7337,4 +7335,19 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         );
     }
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::CONTROL_POLL_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
+    }
 }

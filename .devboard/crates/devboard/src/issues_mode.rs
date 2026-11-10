@@ -65,7 +65,7 @@ const AUTO_RESUME_INTERVAL_MS: u64 = 2_000;
 const AUTO_RESUME_BACKOFF_MS: u64 = 15_000;
 const COOLDOWN_MS: u64 = 5 * 60_000;
 const DISMISS_MS: u64 = 2 * 60_000;
-const WORKER_TICK_MS: u64 = 100;
+const WORKER_TICK_MS: u64 = 250;
 const IMPLEMENT_ISSUE_COMMAND: &str = "/implement-issue";
 const IMPLEMENT_GOAL_COMMAND: &str = "/implement-goal-issue";
 const GOAL_LABEL: &str = "goal";
@@ -442,9 +442,7 @@ fn parse_lock(text: &str) -> Option<LockOwner> {
 }
 
 fn read_lock(path: &Path) -> Option<LockOwner> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| parse_lock(&text))
+    crate::sampling::text(path).and_then(|text| parse_lock(&text))
 }
 
 fn live_lock_owner(path: &Path) -> Option<LockOwner> {
@@ -860,7 +858,7 @@ fn write_drain_marker(path: &Path, marker: &DrainMarker) -> std::io::Result<()> 
 }
 
 fn read_drain_marker(path: &Path) -> Option<DrainMarker> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::sampling::text(path)?;
     let parsed: Value = serde_json::from_str(&text).ok()?;
     let object = parsed.as_object()?;
     let pid = object.get("pid").and_then(Value::as_u64)?;
@@ -1475,9 +1473,9 @@ fn parse_state(text: &str) -> Option<IssuesState> {
 }
 
 fn read_state(path: &Path) -> Option<IssuesState> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| parse_state(&text))
+    // Sampled through the shared cache: the dashboard's 250 ms refresh never
+    // re-reads an unchanged state file.
+    crate::sampling::text(path).and_then(|text| parse_state(&text))
 }
 
 fn write_state(path: &Path, state: &IssuesState) -> std::io::Result<()> {
@@ -1491,14 +1489,14 @@ fn write_state(path: &Path, state: &IssuesState) -> std::io::Result<()> {
 }
 
 fn load_state_with_text(path: &Path) -> (Option<IssuesState>, Option<String>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(text) = crate::sampling::text(path) else {
         return (None, None);
     };
     let state = parse_state(&text);
     if state.is_none() {
         quarantine(path);
     }
-    (state, Some(text))
+    (state, Some(text.to_string()))
 }
 
 fn quarantine(path: &Path) -> Option<PathBuf> {
@@ -1643,8 +1641,7 @@ fn parse_activity(text: &str) -> Option<Vec<String>> {
 }
 
 fn read_activity(directory: &Path) -> Vec<String> {
-    std::fs::read_to_string(activity_path(directory))
-        .ok()
+    crate::sampling::text(&activity_path(directory))
         .and_then(|text| parse_activity(&text))
         .unwrap_or_default()
 }
@@ -1774,7 +1771,7 @@ fn parse_ledger(text: &str) -> Option<Ledger> {
 
 fn load_ledger(state_dir: &Path, repo_dir: &Path) -> Ledger {
     let path = ledger_path(state_dir, repo_dir);
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Some(text) = crate::sampling::text(&path) else {
         return Ledger::empty();
     };
     match parse_ledger(&text) {
@@ -2954,8 +2951,7 @@ impl IssuesBridge {
             }
         }
         let path = run_file_path(&run_directory(&self.state_dir, &self.repo_dir, &run.run_id));
-        let version = std::fs::read_to_string(path)
-            .ok()
+        let version = crate::sampling::text(&path)
             .and_then(|text| parse_run_file(&text))
             .and_then(|record| record.harness_version);
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
@@ -3907,8 +3903,7 @@ impl IssuesBridge {
             return None;
         }
         let directory = run_directory(&self.state_dir, &self.repo_dir, run_id);
-        let run = std::fs::read_to_string(run_file_path(&directory))
-            .ok()
+        let run = crate::sampling::text(&run_file_path(&directory))
             .and_then(|text| parse_run_file(&text))?;
         let activity = self.read_activity(run_id);
         let summary = run_summary(&run, activity.len());
@@ -7052,3 +7047,18 @@ mod tests {
 }
 
 // __ISSUES_MODE_NEXT__
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::WORKER_TICK_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}

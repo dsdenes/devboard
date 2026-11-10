@@ -76,7 +76,7 @@ pub const DEAD_CODE_CATEGORIES: [&str; 5] = [
     "unmatched-selector",
 ];
 
-pub const TICK_MS: u64 = 100;
+pub const TICK_MS: u64 = 250;
 pub const DEFAULT_AGENT_COMMAND: &str = "omp acp";
 pub const FIRST_LINE_MAX: usize = 400;
 pub const MAX_ACTIVITY_LINE: usize = 2000;
@@ -3642,4 +3642,19 @@ async fn preflight_gitea(
         }
     }
     Ok(repository.to_string())
+}
+
+#[cfg(test)]
+mod tick_bounds {
+    //! The worker's control tick is a housekeeping cadence: at most four
+    //! observations a second, never a busy loop.
+
+    #[test]
+    fn the_control_tick_is_at_least_250_ms() {
+        // Read through a binding so the guard runs at test time: the point is
+        // that a later edit to the constant cannot quietly restore a 100 ms
+        // poll.
+        let tick = super::TICK_MS;
+        assert!(tick >= 250, "the control tick is {tick} ms");
+    }
 }

@@ -8,7 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request};
@@ -26,8 +26,13 @@ use crate::http::{Replies, Server};
 
 /// The retained window of one run's output journal.
 pub const RUN_OUTPUT_WINDOW: usize = 1000;
-/// How often one socket reads its run's journals.
-const RUN_POLL_MS: u64 = 100;
+/// How often one run's state is sampled. Every socket for that run shares
+/// the one sample: the interval bounds the reads, never the number of
+/// viewers.
+const RUN_POLL_MS: u64 = 500;
+/// How often the run's activity journals are checked for an appended line.
+/// A check costs one `stat`; the file is read only when its stamp changed.
+const RUN_ACTIVITY_MS: u64 = 250;
 /// The family directories a worker run can live under.
 const FAMILIES: [&str; 9] = [
     "scout",
@@ -73,20 +78,25 @@ pub struct RunSource {
 
 impl RunSource {
     /// The run's current durable state.
-    pub fn state(&self) -> Option<Value> {
+    pub fn state(&self) -> Option<Arc<Value>> {
         match &self.source {
             Source::Detached(directory) => {
                 let state = read_detached_run_state(directory)?;
-                Some(state.to_json())
+                Some(Arc::new(state.to_json()))
             }
-            Source::Worker { state_path, .. } => read_json(state_path),
-            Source::Issues { run_path, .. } => read_json(run_path),
+            Source::Worker { state_path, .. } => crate::sampling::json(state_path),
+            Source::Issues { run_path, .. } => crate::sampling::json(run_path),
         }
     }
 
     /// The run's lifecycle string, read from its state.
     pub fn current_lifecycle(&self) -> String {
-        let Some(state) = self.state() else {
+        self.lifecycle_of(self.state().as_deref())
+    }
+
+    /// The lifecycle one already-sampled state names.
+    pub fn lifecycle_of(&self, state: Option<&Value>) -> String {
+        let Some(state) = state else {
             return "stopped".to_string();
         };
         match &self.source {
@@ -95,25 +105,43 @@ impl RunSource {
                 .and_then(Value::as_str)
                 .unwrap_or("stopped")
                 .to_string(),
-            Source::Worker { .. } => worker_lifecycle(&state),
-            Source::Issues { .. } => state
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("stopped")
-                .to_string(),
+            Source::Worker { .. } => worker_lifecycle(state),
+            Source::Issues { .. } => issue_run_lifecycle(state),
         }
     }
 
     /// True while the run may still produce output.
     pub fn current_live(&self) -> bool {
+        self.live_of(self.state().as_deref())
+    }
+
+    /// Whether the run is live, from one already-sampled state.
+    pub fn live_of(&self, state: Option<&Value>) -> bool {
+        let Some(state) = state else {
+            return false;
+        };
         match &self.source {
-            Source::Worker { .. } => self
-                .state()
-                .map(|state| worker_run_live(&state))
-                .unwrap_or(false),
-            _ => live_lifecycle(&self.current_lifecycle()),
+            Source::Worker { .. } => worker_run_live(state),
+            Source::Issues { .. } => live_lifecycle(&issue_run_lifecycle(state)),
+            Source::Detached(_) => live_lifecycle(
+                state
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("stopped"),
+            ),
         }
     }
+}
+
+/// True when `interval_ms` elapsed since the last sample, or none was taken.
+fn elapsed(last: Option<Instant>, now: Instant, interval_ms: u64) -> bool {
+    last.map(|last| now.saturating_duration_since(last) >= Duration::from_millis(interval_ms))
+        .unwrap_or(true)
+}
+
+/// One file's `(modified, len)`, the stamp an activity check compares.
+fn stamp_of(path: &Path) -> Option<(SystemTime, u64)> {
+    crate::sampling::stamp(path)
 }
 
 fn live_lifecycle(lifecycle: &str) -> bool {
@@ -121,6 +149,29 @@ fn live_lifecycle(lifecycle: &str) -> bool {
         lifecycle,
         "stopped" | "failed" | "succeeded" | "idle" | "done"
     )
+}
+
+/// The lifecycle one Issues run record represents. A record still says
+/// `running` after its worker died; the recorded pid is the authority, so a
+/// dead worker is reported stopped without rewriting the record.
+fn issue_run_lifecycle(state: &Value) -> String {
+    let status = state
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("stopped");
+    if !live_lifecycle(status) {
+        return status.to_string();
+    }
+    match state.get("workerPid").and_then(Value::as_u64) {
+        Some(pid) if (1..=u32::MAX as u64).contains(&pid) => {
+            if crate::supervision::live_process(pid as u32) {
+                status.to_string()
+            } else {
+                "stopped".to_string()
+            }
+        }
+        _ => status.to_string(),
+    }
 }
 
 /// A family worker is live while its recorded pid is alive; between cycles
@@ -156,13 +207,8 @@ fn worker_lifecycle(state: &Value) -> String {
     }
 }
 
-fn read_json(path: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
 fn read_activity(path: &Path) -> Vec<String> {
-    read_json(path)
+    crate::sampling::json(path)
         .and_then(|value| value.as_array().cloned())
         .map(|entries| {
             entries
@@ -197,6 +243,10 @@ fn worker_activity_path(repo_dir: &Path, family: &str, state: &Value) -> Option<
 }
 
 /// Every run this dashboard can see, newest state first.
+///
+/// Each state file is sampled through the `(mtime, len)` cache, so a
+/// collection read costs one `stat` per record and one content read only for
+/// a record that changed.
 pub fn discover(app: &App) -> Vec<RunSource> {
     let state_dir = &app.config().state_dir;
     let repo_dir = &app.config().repo_dir;
@@ -248,7 +298,7 @@ pub fn discover(app: &App) -> Vec<RunSource> {
             }
         }
         for state_path in state_paths {
-            let Some(state) = read_json(&state_path) else {
+            let Some(state) = crate::sampling::json(&state_path) else {
                 continue;
             };
             if state.get("lifecycle").and_then(Value::as_str).is_none() {
@@ -290,12 +340,12 @@ pub fn discover(app: &App) -> Vec<RunSource> {
         for entry in entries.flatten() {
             let directory = entry.path();
             let run_path = directory.join("run.json");
-            let Some(state) = read_json(&run_path) else {
+            let Some(state) = crate::sampling::json(&run_path) else {
                 continue;
             };
-            let Some(status) = state.get("status").and_then(Value::as_str) else {
+            if state.get("status").and_then(Value::as_str).is_none() {
                 continue;
-            };
+            }
             let run_id = state
                 .get("runId")
                 .and_then(Value::as_str)
@@ -310,12 +360,13 @@ pub fn discover(app: &App) -> Vec<RunSource> {
                 continue;
             }
             let id = format!("issues--{run_id}");
+            let lifecycle = issue_run_lifecycle(&state);
             runs.push(RunSource {
                 id,
                 kind: "issues".to_string(),
                 label: format!("Issues run {run_id}"),
-                lifecycle: status.to_string(),
-                live: live_lifecycle(status),
+                live: live_lifecycle(&lifecycle),
+                lifecycle,
                 updated_at: state
                     .get("startedAt")
                     .and_then(Value::as_str)
@@ -393,6 +444,17 @@ struct RunJournal {
     activity_cursor: DetachedRunJournalCursor,
     text_cursor: DetachedRunJournalCursor,
     worker_activity: Vec<String>,
+    /// When this run's state was last sampled. Every socket for the run
+    /// shares the one sample, so the interval bounds the reads, never the
+    /// viewers.
+    last_sync: Option<Instant>,
+    /// When the activity journals were last checked.
+    last_activity_sync: Option<Instant>,
+    /// The activity journal's last `(modified, len)`, so an idle journal is
+    /// never opened at all.
+    activity_stamp: Option<(SystemTime, u64)>,
+    /// The detached text journal's last `(modified, len)`.
+    text_stamp: Option<(SystemTime, u64)>,
 }
 
 impl RunJournal {
@@ -408,6 +470,27 @@ impl RunJournal {
             activity_cursor: DetachedRunJournalCursor::default(),
             text_cursor: DetachedRunJournalCursor::default(),
             worker_activity: Vec::new(),
+            last_sync: None,
+            last_activity_sync: None,
+            activity_stamp: None,
+            text_stamp: None,
+        }
+    }
+
+    /// Samples the run's source when its interval is due.
+    fn sync_if_due(&mut self, run: &RunSource, now: Instant, force: bool) {
+        let state_due = force || elapsed(self.last_sync, now, RUN_POLL_MS);
+        let activity_due = force || elapsed(self.last_activity_sync, now, RUN_ACTIVITY_MS);
+        if !state_due && !activity_due {
+            return;
+        }
+        if activity_due {
+            self.last_activity_sync = Some(now);
+            self.sync_activity(run);
+        }
+        if state_due {
+            self.last_sync = Some(now);
+            self.sync(run);
         }
     }
 
@@ -426,18 +509,102 @@ impl RunJournal {
         }
     }
 
+    /// Emits whatever the run's activity journals appended, and nothing when
+    /// they did not change.
+    fn sync_activity(&mut self, run: &RunSource) {
+        match &run.source {
+            Source::Detached(directory) => self.sync_detached_activity(run, directory),
+            Source::Worker { activity_path, .. } => {
+                if let Some(path) = activity_path.as_deref() {
+                    self.sync_activity_file(run, path);
+                }
+            }
+            Source::Issues { activity_path, .. } => self.sync_activity_file(run, activity_path),
+        }
+    }
+
+    /// The whole sample: state, the one terminal status frame, the first
+    /// error, and any activity the check had not yet seen.
     fn sync(&mut self, run: &RunSource) {
         match &run.source {
-            Source::Detached(directory) => self.sync_detached(run, directory),
-            Source::Worker {
-                state_path,
-                activity_path,
-                ..
-            } => self.sync_worker(run, state_path, activity_path.as_deref()),
-            Source::Issues {
-                run_path,
-                activity_path,
-            } => self.sync_issues(run, run_path, activity_path),
+            Source::Detached(directory) => {
+                let Some(state) = crate::sampling::json(&detached_run_state_path(directory)) else {
+                    return;
+                };
+                self.emit_state(run, &state, "status");
+                self.emit_error(run, &state);
+            }
+            Source::Worker { state_path, .. } => {
+                let Some(state) = crate::sampling::json(state_path) else {
+                    return;
+                };
+                self.emit_state(run, &state, "lifecycle");
+                self.emit_error(run, &state);
+            }
+            Source::Issues { run_path, .. } => {
+                let Some(state) = crate::sampling::json(run_path) else {
+                    return;
+                };
+                self.emit_state(run, &state, "status");
+                self.emit_error(run, &state);
+            }
+        }
+    }
+
+    /// One `activity.json` array: read only when its stamp changed.
+    fn sync_activity_file(&mut self, run: &RunSource, path: &Path) {
+        let Some(stamp) = stamp_of(path) else {
+            return;
+        };
+        if self.activity_stamp == Some(stamp) {
+            return;
+        }
+        self.activity_stamp = Some(stamp);
+        let activity = read_activity(path);
+        if activity.len() < self.worker_activity.len() {
+            self.worker_activity.clear();
+        }
+        let previous = std::mem::take(&mut self.worker_activity);
+        let delta = crate::activity::activity_delta(&previous, &activity);
+        self.worker_activity = activity;
+        for entry in delta.entries {
+            let mut frame = Map::new();
+            frame.insert("type".to_string(), Value::String("activity".to_string()));
+            frame.insert("text".to_string(), Value::String(entry.text));
+            frame.insert("append".to_string(), Value::Bool(entry.append));
+            self.push(frame, &run.id);
+        }
+    }
+
+    /// The detached run's append-only journals, each checked by its stamp.
+    fn sync_detached_activity(&mut self, run: &RunSource, directory: &Path) {
+        let activity_path = crate::detached_run::detached_run_activity_path(directory);
+        if let Some(stamp) = stamp_of(&activity_path) {
+            if self.activity_stamp != Some(stamp) {
+                self.activity_stamp = Some(stamp);
+                let activity =
+                    read_detached_run_activity_since(directory, &mut self.activity_cursor);
+                for entry in activity.entries {
+                    let mut frame = Map::new();
+                    frame.insert("type".to_string(), Value::String("activity".to_string()));
+                    frame.insert("text".to_string(), Value::String(entry.text));
+                    frame.insert("append".to_string(), Value::Bool(entry.append));
+                    self.push(frame, &run.id);
+                }
+            }
+        }
+        let text_path = crate::detached_run::detached_run_text_path(directory);
+        if let Some(stamp) = stamp_of(&text_path) {
+            if self.text_stamp != Some(stamp) {
+                self.text_stamp = Some(stamp);
+                let text = read_detached_run_text_since(directory, &mut self.text_cursor);
+                for chunk in text.entries {
+                    let mut frame = Map::new();
+                    frame.insert("type".to_string(), Value::String("text".to_string()));
+                    frame.insert("text".to_string(), Value::String(chunk));
+                    self.push(frame, &run.id);
+                }
+            }
         }
     }
 
@@ -448,15 +615,13 @@ impl RunJournal {
             return;
         }
         self.last_state = Some(text);
-        let status = run
-            .state()
-            .and_then(|value| {
-                value
-                    .get(cursor_key)
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| run.current_lifecycle());
+        // The status is the already-sampled state's own field, or the same
+        // lifecycle the collection reports for this record.
+        let status = state
+            .get(cursor_key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| run.lifecycle_of(Some(state)));
         if !live_lifecycle(&status) && self.last_status.as_deref() != Some(status.as_str()) {
             let mut status_frame = Map::new();
             status_frame.insert("type".to_string(), Value::String("status".to_string()));
@@ -497,82 +662,6 @@ impl RunJournal {
                 self.push(frame, &run.id);
             }
         }
-    }
-
-    fn sync_detached(&mut self, run: &RunSource, directory: &Path) {
-        let Some(state) = read_json(&detached_run_state_path(directory)) else {
-            return;
-        };
-        let activity = read_detached_run_activity_since(directory, &mut self.activity_cursor);
-        for entry in activity.entries {
-            let mut frame = Map::new();
-            frame.insert("type".to_string(), Value::String("activity".to_string()));
-            frame.insert("text".to_string(), Value::String(entry.text));
-            frame.insert("append".to_string(), Value::Bool(entry.append));
-            self.push(frame, &run.id);
-        }
-        let text = read_detached_run_text_since(directory, &mut self.text_cursor);
-        for chunk in text.entries {
-            let mut frame = Map::new();
-            frame.insert("type".to_string(), Value::String("text".to_string()));
-            frame.insert("text".to_string(), Value::String(chunk));
-            self.push(frame, &run.id);
-        }
-        self.emit_state(run, &state, "status");
-        self.emit_error(run, &state);
-    }
-
-    fn sync_worker(&mut self, run: &RunSource, state_path: &Path, activity_path: Option<&Path>) {
-        let Some(state) = read_json(state_path) else {
-            return;
-        };
-        let Some(activity_path) = activity_path else {
-            self.emit_state(run, &state, "lifecycle");
-            self.emit_error(run, &state);
-            return;
-        };
-        let activity = read_activity(activity_path);
-        if activity.len() < self.worker_activity.len() {
-            self.worker_activity.clear();
-        }
-        let previous = self.worker_activity.clone();
-        let delta = crate::activity::activity_delta(&previous, &activity);
-        self.worker_activity = activity;
-        for entry in delta.entries {
-            let mut frame = Map::new();
-            frame.insert("type".to_string(), Value::String("activity".to_string()));
-            frame.insert("text".to_string(), Value::String(entry.text));
-            frame.insert("append".to_string(), Value::Bool(entry.append));
-            self.push(frame, &run.id);
-        }
-        if delta.replay && !previous.is_empty() {
-            // A rewritten log replays from its start; the retained window
-            // keeps the ordering monotonic without duplicating a prefix.
-        }
-        self.emit_state(run, &state, "lifecycle");
-        self.emit_error(run, &state);
-    }
-
-    fn sync_issues(&mut self, run: &RunSource, run_path: &Path, activity_path: &Path) {
-        let Some(state) = read_json(run_path) else {
-            return;
-        };
-        let activity = read_activity(activity_path);
-        if activity.len() < self.worker_activity.len() {
-            self.worker_activity.clear();
-        }
-        let previous = self.worker_activity.clone();
-        let delta = crate::activity::activity_delta(&previous, &activity);
-        self.worker_activity = activity;
-        for entry in delta.entries {
-            let mut frame = Map::new();
-            frame.insert("type".to_string(), Value::String("activity".to_string()));
-            frame.insert("text".to_string(), Value::String(entry.text));
-            frame.insert("append".to_string(), Value::Bool(entry.append));
-            self.push(frame, &run.id);
-        }
-        self.emit_state(run, &state, "status");
-        self.emit_error(run, &state);
     }
 
     fn window_start(&self) -> u64 {
@@ -646,12 +735,11 @@ fn project_state(run: &RunSource, state: &Value) -> Value {
             }
         }
         Source::Issues { .. } => {
+            // The recorded status of an orphaned run still says `running`;
+            // the projection carries the lifecycle its dead worker implies.
             projected.insert(
                 "status".to_string(),
-                state
-                    .get("status")
-                    .cloned()
-                    .unwrap_or_else(|| Value::String("stopped".to_string())),
+                Value::String(issue_run_lifecycle(state)),
             );
             for key in [
                 "startedAt",
@@ -688,11 +776,27 @@ impl RunHub {
 
     /// The retained window and entries after one cursor.
     pub fn read(&self, run: &RunSource, after: Option<u64>) -> (Option<u64>, Vec<Value>) {
+        // A direct read answers the run as it stands now.
+        self.read_at(run, after, Instant::now(), true)
+    }
+
+    /// The retained window and entries after one cursor, sampling the run at
+    /// most once per interval. A second socket for the same run in the same
+    /// interval answers what the first sample already found. A new subscriber
+    /// forces one sample; the `(mtime, len)` cache still bounds the reads to
+    /// one per change.
+    pub fn read_at(
+        &self,
+        run: &RunSource,
+        after: Option<u64>,
+        now: Instant,
+        force: bool,
+    ) -> (Option<u64>, Vec<Value>) {
         let mut journals = self.journals.lock().expect("the run journal lock");
         let journal = journals
             .entry(run.id.clone())
             .or_insert_with(RunJournal::new);
-        journal.sync(run);
+        journal.sync_if_due(run, now, force);
         journal.read_after(after)
     }
 }
@@ -878,14 +982,19 @@ async fn run_socket(
 ) {
     use futures_util::{SinkExt, StreamExt};
     let mut sent = after;
-    let mut interval = tokio::time::interval(Duration::from_millis(RUN_POLL_MS));
+    let mut fresh = true;
+    // The socket tick is the activity check's cadence; the run's state is
+    // sampled once per `RUN_POLL_MS` however many sockets are open.
+    let mut interval = tokio::time::interval(Duration::from_millis(RUN_ACTIVITY_MS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                run.lifecycle = run.current_lifecycle();
-                run.live = run.current_live();
-                let (reset, entries) = hub.read(&run, sent);
+                let state = run.state();
+                run.lifecycle = run.lifecycle_of(state.as_deref());
+                run.live = run.live_of(state.as_deref());
+                let (reset, entries) = hub.read_at(&run, sent, Instant::now(), fresh);
+                fresh = false;
                 if let Some(cursor) = reset {
                     if send_frame(&mut socket, &json!({"type": "reset", "run": run.id, "cursor": cursor})).await.is_err() {
                         break;

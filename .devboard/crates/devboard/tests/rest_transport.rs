@@ -1069,3 +1069,260 @@ async fn rest_refusals_are_problem_json() {
         assert_problem(status, &headers, &body, 403);
     }
 }
+
+/// One Issues run record under the instance's state directory: the durable
+/// source the run collection and its sockets read.
+fn seed_issue_run(instance: &Instance, id: &str, status: &str, worker_pid: u32) -> PathBuf {
+    let directory = instance
+        .state
+        .join("issues")
+        .join(devboard::journal::journal_key(&instance.repo))
+        .join("runs")
+        .join(id);
+    std::fs::create_dir_all(&directory).expect("a run directory");
+    let record = json!({
+        "version": 1,
+        "runId": id,
+        "repo": "fixture",
+        "status": status,
+        "workerPid": worker_pid,
+        "startedAt": "2026-11-10T00:00:00.000Z",
+        "harnessVersion": "1.0.0",
+    });
+    std::fs::write(directory.join("run.json"), format!("{record}\n")).expect("a run record");
+    std::fs::write(
+        directory.join("activity.json"),
+        format!("{}\n", json!(["one", "two"])),
+    )
+    .expect("an activity file");
+    directory
+}
+
+/// The content of one state file, so a test can prove it was not rewritten.
+fn bytes(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
+    let text = std::fs::read(path).expect("a state file");
+    let modified = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .expect("a modification time");
+    (text, modified)
+}
+
+#[tokio::test]
+async fn the_run_collection_answers_304_without_reading_records() {
+    let instance = start("collection-etag").await;
+    let first = seed_issue_run(&instance, "first", "succeeded", 999_999);
+    let second = seed_issue_run(&instance, "second", "stopped", 999_998);
+    // The dashboard's own pollers sample these records first, so the
+    // conditional read below is measured against a warm cache.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let (status, headers, _body) =
+        send(&instance.base, Method::GET, "/agent-runs", HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let etag = headers
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("an ETag")
+        .to_string();
+
+    devboard::sampling::reset_reads_under(&instance.state);
+    let (status, headers, body) = send(
+        &instance.base,
+        Method::GET,
+        "/agent-runs",
+        headers_with(IF_NONE_MATCH, &etag),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 304, "an unchanged collection is a 304");
+    assert!(body.is_empty());
+    assert_eq!(
+        headers
+            .get(reqwest::header::ETAG)
+            .and_then(|value| value.to_str().ok()),
+        Some(etag.as_str())
+    );
+    assert_eq!(
+        devboard::sampling::reads_under(&instance.state),
+        0,
+        "a 304 reads no run record"
+    );
+
+    // One record changes: the answer is a fresh 200, and only that record is
+    // read again.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let record = json!({
+        "version": 1,
+        "runId": "first",
+        "repo": "fixture",
+        "status": "failed",
+        "workerPid": 999_999,
+        "startedAt": "2026-11-10T00:00:00.000Z",
+        "harnessVersion": "1.0.0",
+    });
+    std::fs::write(first.join("run.json"), format!("{record}\n")).expect("a changed record");
+    let (status, headers, _body) = send(
+        &instance.base,
+        Method::GET,
+        "/agent-runs",
+        headers_with(IF_NONE_MATCH, &etag),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200, "a changed collection is a fresh 200");
+    let changed_etag = headers
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("a new ETag")
+        .to_string();
+    assert_ne!(changed_etag, etag);
+    assert_eq!(
+        devboard::sampling::reads(&first.join("run.json")),
+        1,
+        "the changed record is read once"
+    );
+    assert_eq!(
+        devboard::sampling::reads(&second.join("run.json")),
+        0,
+        "an unchanged record is not read"
+    );
+}
+
+#[tokio::test]
+async fn an_orphaned_issues_run_is_stopped_and_not_live() {
+    let instance = start("orphan").await;
+    let directory = seed_issue_run(&instance, "orphan", "running", 999_997);
+    let run_path = directory.join("run.json");
+    let before = bytes(&run_path);
+
+    let (status, _headers, body) =
+        send(&instance.base, Method::GET, "/agent-runs", HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    let run = value["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|run| run["id"] == json!("issues--orphan")))
+        .expect("the orphaned record");
+    assert_eq!(run["live"], json!(false), "a dead worker holds no socket");
+    assert_eq!(
+        run["lifecycle"],
+        json!("stopped"),
+        "and is reported stopped"
+    );
+    assert_eq!(bytes(&run_path), before, "the record is not rewritten");
+
+    // The run's own read carries the same lifecycle, and the socket closes
+    // instead of following a stopped run.
+    let (status, _headers, body) = send(
+        &instance.base,
+        Method::GET,
+        "/agent-runs/issues--orphan",
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200);
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["live"], json!(false));
+    assert_eq!(value["lifecycle"], json!("stopped"));
+}
+
+#[tokio::test]
+async fn run_sockets_share_one_sample_per_run() {
+    let instance = start("fan-out").await;
+    let (a, directory_a) = make_run(&instance, "flow", "share-a", DetachedRunStatus::Running);
+    let (b, directory_b) = make_run(&instance, "flow", "share-b", DetachedRunStatus::Running);
+    append_detached_run_activity(
+        &directory_a,
+        &DetachedRunActivity {
+            text: "A line".to_string(),
+            append: false,
+        },
+    );
+    append_detached_run_activity(
+        &directory_b,
+        &DetachedRunActivity {
+            text: "B line".to_string(),
+            append: false,
+        },
+    );
+    // Two sockets for A, one for B: the second A socket must add no read.
+    let mut first_a = socket(instance.port, &a, None).await;
+    let mut second_a = socket(instance.port, &a, None).await;
+    let mut socket_b = socket(instance.port, &b, None).await;
+    let warm_a = collect(&mut first_a, Duration::from_millis(200)).await;
+    let warm_b = collect(&mut socket_b, Duration::from_millis(200)).await;
+    assert!(!warm_a.is_empty());
+    assert!(!warm_b.is_empty());
+
+    devboard::sampling::reset_reads_under(&directory_a);
+    devboard::sampling::reset_reads_under(&directory_b);
+    let more_a = collect(&mut first_a, Duration::from_millis(1_200)).await;
+    let more_a2 = collect(&mut second_a, Duration::from_millis(50)).await;
+    let more_b = collect(&mut socket_b, Duration::from_millis(1_200)).await;
+    let reads_a = devboard::sampling::reads(&directory_a.join("state.json"));
+    let reads_b = devboard::sampling::reads(&directory_b.join("state.json"));
+    assert!(
+        reads_a <= 4,
+        "two sockets for A sample it at most once per interval: {reads_a}"
+    );
+    assert_eq!(
+        reads_a, reads_b,
+        "the second socket for A adds no read: {reads_a} vs {reads_b}"
+    );
+    for frame in more_a.iter().chain(more_a2.iter()) {
+        assert_eq!(frame["run"], a, "A's sockets carry only A's frames");
+    }
+    for frame in &more_b {
+        assert_eq!(frame["run"], b, "B's socket carries only B's frames");
+    }
+    assert!(!more_b.iter().any(|frame| frame["text"] == json!("A line")));
+
+    // A cursor that is caught up answers no frames and keeps the socket open.
+    let caught_up = warm_b
+        .iter()
+        .filter_map(|frame| frame["cursor"].as_u64())
+        .max()
+        .expect("a cursor");
+    let mut resumed = socket(instance.port, &b, Some(caught_up)).await;
+    let empty = collect(&mut resumed, Duration::from_millis(300)).await;
+    assert!(
+        empty.is_empty(),
+        "a caught-up cursor answers no frames: {empty:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_appended_activity_reaches_a_socket_within_500_ms() {
+    let instance = start("freshness").await;
+    let (id, directory) = make_run(&instance, "flow", "fresh", DetachedRunStatus::Running);
+    let mut socket = socket(instance.port, &id, None).await;
+    let warm = collect(&mut socket, Duration::from_millis(300)).await;
+    assert!(!warm.is_empty());
+
+    let started = tokio::time::Instant::now();
+    append_detached_run_activity(
+        &directory,
+        &DetachedRunActivity {
+            text: "an appended line".to_string(),
+            append: false,
+        },
+    );
+    let frames = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(frame) = serde_json::from_str::<Value>(&text) {
+                        if frame["type"] == "activity" && frame["text"] == json!("an appended line")
+                        {
+                            return frame;
+                        }
+                    }
+                }
+                Some(Ok(_)) => continue,
+                _ => panic!("the socket closed before the appended line"),
+            }
+        }
+    })
+    .await
+    .expect("the appended line arrives within 500 ms");
+    assert_eq!(frames["run"], id);
+    assert!(started.elapsed() < Duration::from_millis(500));
+}
