@@ -1592,14 +1592,22 @@ pub struct CreatedScan {
     pub started_at: String,
 }
 
-const SKIPPED_DIRECTORIES: [&str; 5] = [".git", "node_modules", "dist", ".worktree", ".tmp"];
-const SKIPPED_PREFIXES: [&str; 1] = [".devboard/.tmp"];
-const EXCLUDED_TREES: [&str; 6] = [
+const SKIPPED_DIRECTORIES: [&str; 6] = [
     ".git",
     "node_modules",
     "dist",
     ".worktree",
     ".tmp",
+    ".test-tmp",
+];
+const SKIPPED_PREFIXES: [&str; 1] = [".devboard/.tmp"];
+const EXCLUDED_TREES: [&str; 7] = [
+    ".git",
+    "node_modules",
+    "dist",
+    ".worktree",
+    ".tmp",
+    ".test-tmp",
     ".devboard/.tmp",
 ];
 
@@ -5008,6 +5016,65 @@ mod tests {
         assert!(is_valid_limit(Some(100)));
         assert!(!is_valid_limit(Some(0)));
         assert!(!is_valid_limit(Some(101)));
+    }
+
+    #[test]
+    fn the_pool_skips_every_test_tmp_segment_and_the_request_names_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("scout-pool-test-tmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".test-tmp")).expect("a scratch tree");
+        std::fs::create_dir_all(root.join(".devboard/.test-tmp")).expect("a nested scratch tree");
+        std::fs::write(root.join("a.md"), "# a\n").expect("a source file");
+        std::fs::write(root.join(".test-tmp/b.md"), "b\n").expect("a scratch file");
+        std::fs::write(root.join(".devboard/.test-tmp/c.md"), "c\n").expect("a scratch file");
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(status.success(), "the fixture is a work tree");
+
+        assert_eq!(scout_pool(&root), vec!["a.md".to_string()]);
+        let roots = excluded_roots(&root);
+        assert!(
+            roots.contains(&".test-tmp".to_string()),
+            "excluded roots name the tree: {roots:?}"
+        );
+
+        let scan = CreatedScan {
+            scan_id: "scan".to_string(),
+            directory: root.join("scan"),
+            started_at: "2026-11-10T00:00:00.000Z".to_string(),
+        };
+        std::fs::create_dir_all(&scan.directory).expect("a scan directory");
+        let request = build_request(
+            &scan,
+            "fixture",
+            &root,
+            1,
+            &[],
+            &ScoutLimits::default(),
+            Some("seed"),
+        )
+        .expect("a scan request");
+        write_request(&scan.directory, &request).expect("a written request");
+        let text = std::fs::read_to_string(request_path(&scan.directory)).expect("the request");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("request json");
+        let excluded = value
+            .get("excludedRoots")
+            .and_then(serde_json::Value::as_array)
+            .expect("excludedRoots");
+        assert!(
+            excluded
+                .iter()
+                .any(|entry| entry.as_str() == Some(".test-tmp")),
+            "the written request names the tree: {excluded:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
