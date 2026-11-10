@@ -3324,7 +3324,21 @@ impl ReleaseTrainWorker {
         control.tick().await;
         while !self.is_stopping() {
             tokio::select! {
-                _ = ticker.tick() => self.guard_tick().await,
+                _ = ticker.tick() => {
+                    // A tick can run for hours — a gate fetch, a release suite,
+                    // a whole release run — so the control files must keep
+                    // arriving while it does. Awaiting the tick alone here
+                    // leaves a Stop or a drain unread until the run ends, and
+                    // the run itself watches the stop flag this consumes.
+                    let tick = self.guard_tick();
+                    tokio::pin!(tick);
+                    loop {
+                        tokio::select! {
+                            _ = &mut tick => break,
+                            _ = control.tick() => self.consume(),
+                        }
+                    }
+                }
                 _ = control.tick() => self.consume(),
             }
         }

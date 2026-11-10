@@ -633,6 +633,7 @@ fn worker(
     let mut options = ReleaseTrainWorkerOptions::new(&workspace.repo_dir, &workspace.state_dir);
     options.harness_version = Some(version.to_string());
     options.manual = true;
+    options.tick_ms = Some(20);
     options.now = Some(clock.function());
     options.gate = Some(gate);
     options.run_release = Some(run);
@@ -1083,6 +1084,71 @@ async fn drain_stops_after_the_active_run_and_publishes_stopped_state() {
         .iter()
         .any(|owner| owner.pid == std::process::id()
             && owner.harness_version.as_deref() == Some("test-version")));
+}
+
+#[tokio::test]
+async fn a_stop_command_reaches_a_run_that_is_still_in_flight() {
+    let workspace = workspace("stop-in-flight");
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let target = "d".repeat(40);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+    let observed_stop = Arc::new(AtomicUsize::new(0));
+    let run: RunReleaseFn = {
+        let runs = runs.clone();
+        let started_tx = started_tx.clone();
+        let observed_stop = observed_stop.clone();
+        Arc::new(move |input: ReleaseRunInput| -> RunFuture {
+            runs.fetch_add(1, Ordering::SeqCst);
+            if let Some(sender) = started_tx.lock().expect("the sender").take() {
+                let _ = sender.send(());
+            }
+            let observed_stop = observed_stop.clone();
+            Box::pin(async move {
+                loop {
+                    if (input.stopping)() {
+                        observed_stop.fetch_add(1, Ordering::SeqCst);
+                        return ok_result("1.0.1");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+        })
+    };
+    let worker = Arc::new(worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(unreleased(&target, "1.0.1")),
+        run,
+    ));
+    let running = {
+        let worker = worker.clone();
+        tokio::spawn(async move { worker.run().await })
+    };
+    started_rx.await.expect("the run started");
+    let directory = release_train_directory(&workspace.state_dir);
+    let control = versioned_control_directory(&directory, Some("test-version"));
+    write_command(&control, &ReleaseTrainCommand::Stop).expect("a stop command");
+    let code = tokio::time::timeout(std::time::Duration::from_secs(10), running)
+        .await
+        .expect("the stop reaches the in-flight run instead of waiting for it")
+        .expect("the worker task");
+    assert_eq!(code, 0);
+    assert_eq!(
+        observed_stop.load(Ordering::SeqCst),
+        1,
+        "the in-flight run observed the stop flag"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    let record = read_worker_state(&versioned_worker_state_path(
+        &directory,
+        Some("test-version"),
+    ))
+    .expect("the worker record");
+    assert_eq!(record.lifecycle, AgentLifecycle::Stopped);
+    assert!(!record.enabled);
 }
 
 #[tokio::test]
