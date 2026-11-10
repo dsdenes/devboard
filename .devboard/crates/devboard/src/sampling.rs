@@ -17,18 +17,22 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-/// One file's cached content and the stamp it was read at.
-struct Entry {
+/// One file's retained content for one representation and the stamp it was
+/// read at.
+struct Entry<T> {
     modified: SystemTime,
     len: u64,
-    json: Option<Arc<Value>>,
-    text: Option<Arc<String>>,
-    reads: u64,
+    value: T,
 }
 
+/// The two representations are cached apart. One `text` read and one `json`
+/// read of the same unchanged file each cost one content read, and neither
+/// makes the other look like a document that failed to parse.
 #[derive(Default)]
 struct Cache {
-    entries: HashMap<PathBuf, Entry>,
+    json: HashMap<PathBuf, Entry<Option<Arc<Value>>>>,
+    text: HashMap<PathBuf, Entry<Option<Arc<String>>>>,
+    reads: HashMap<PathBuf, u64>,
 }
 
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
@@ -45,7 +49,7 @@ fn stamp_of(path: &Path) -> Option<(SystemTime, u64)> {
     Some((modified, metadata.len()))
 }
 
-fn matches(entry: &Entry, modified: SystemTime, len: u64) -> bool {
+fn matches<T>(entry: &Entry<T>, modified: SystemTime, len: u64) -> bool {
     entry.len == len && entry.modified == modified
 }
 
@@ -61,20 +65,31 @@ pub fn json(path: &Path) -> Option<Arc<Value>> {
         forget(path);
         return None;
     };
-    if let Ok(cache) = cache().lock() {
-        if let Some(entry) = cache.entries.get(path) {
-            if matches(entry, modified, len) {
-                return entry.json.clone();
-            }
+    let Ok(mut cache) = cache().lock() else {
+        return std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .map(Arc::new);
+    };
+    if let Some(entry) = cache.json.get(path) {
+        if matches(entry, modified, len) {
+            return entry.value.clone();
         }
     }
-    let text = std::fs::read_to_string(path).ok();
-    let json = text
-        .as_deref()
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+    let value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .map(Arc::new);
-    store(path, modified, len, json.clone(), text.map(Arc::new));
-    json
+    cache.json.insert(
+        path.to_path_buf(),
+        Entry {
+            modified,
+            len,
+            value: value.clone(),
+        },
+    );
+    *cache.reads.entry(path.to_path_buf()).or_insert(0) += 1;
+    value
 }
 
 /// One file's text, read only when the file changed since the last sample.
@@ -83,50 +98,34 @@ pub fn text(path: &Path) -> Option<Arc<String>> {
         forget(path);
         return None;
     };
-    if let Ok(cache) = cache().lock() {
-        if let Some(entry) = cache.entries.get(path) {
-            if matches(entry, modified, len) {
-                return entry.text.clone();
-            }
+    let Ok(mut cache) = cache().lock() else {
+        return std::fs::read_to_string(path).ok().map(Arc::new);
+    };
+    if let Some(entry) = cache.text.get(path) {
+        if matches(entry, modified, len) {
+            return entry.value.clone();
         }
     }
-    let text = std::fs::read_to_string(path).ok().map(Arc::new);
-    store(path, modified, len, None, text.clone());
-    text
-}
-
-fn store(
-    path: &Path,
-    modified: SystemTime,
-    len: u64,
-    json: Option<Arc<Value>>,
-    text: Option<Arc<String>>,
-) {
-    let Ok(mut cache) = cache().lock() else {
-        return;
-    };
-    let entry = cache
-        .entries
-        .entry(path.to_path_buf())
-        .or_insert_with(|| Entry {
+    let value = std::fs::read_to_string(path).ok().map(Arc::new);
+    cache.text.insert(
+        path.to_path_buf(),
+        Entry {
             modified,
             len,
-            json: None,
-            text: None,
-            reads: 0,
-        });
-    entry.modified = modified;
-    entry.len = len;
-    entry.json = json;
-    entry.text = text;
-    entry.reads += 1;
+            value: value.clone(),
+        },
+    );
+    *cache.reads.entry(path.to_path_buf()).or_insert(0) += 1;
+    value
 }
 
 /// Drops one path's retained content, so a vanished file is read again when
 /// it returns.
 fn forget(path: &Path) {
     if let Ok(mut cache) = cache().lock() {
-        cache.entries.remove(path);
+        cache.json.remove(path);
+        cache.text.remove(path);
+        cache.reads.remove(path);
     }
 }
 
@@ -135,7 +134,7 @@ pub fn reads(path: &Path) -> u64 {
     cache()
         .lock()
         .ok()
-        .and_then(|cache| cache.entries.get(path).map(|entry| entry.reads))
+        .and_then(|cache| cache.reads.get(path).copied())
         .unwrap_or(0)
 }
 
@@ -146,10 +145,10 @@ pub fn reads_under(directory: &Path) -> u64 {
         .ok()
         .map(|cache| {
             cache
-                .entries
+                .reads
                 .iter()
                 .filter(|(path, _)| path.starts_with(directory))
-                .map(|(_, entry)| entry.reads)
+                .map(|(_, reads)| *reads)
                 .sum()
         })
         .unwrap_or(0)
@@ -159,9 +158,9 @@ pub fn reads_under(directory: &Path) -> u64 {
 /// the retained content.
 pub fn reset_reads_under(directory: &Path) {
     if let Ok(mut cache) = cache().lock() {
-        for (path, entry) in cache.entries.iter_mut() {
+        for (path, reads) in cache.reads.iter_mut() {
             if path.starts_with(directory) {
-                entry.reads = 0;
+                *reads = 0;
             }
         }
     }
@@ -171,7 +170,9 @@ pub fn reset_reads_under(directory: &Path) {
 /// fixture before another test sampled the same path starts from a cold cache.
 pub fn reset() {
     if let Ok(mut cache) = cache().lock() {
-        cache.entries.clear();
+        cache.json.clear();
+        cache.text.clear();
+        cache.reads.clear();
     }
 }
 
@@ -224,6 +225,30 @@ mod tests {
         assert_eq!(
             json(&path).map(|value| value["a"].clone()),
             Some(Value::from(1))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_text_sample_never_hides_a_json_sample() {
+        let root = scratch("representations");
+        let path = root.join("worker.json");
+        std::fs::write(&path, "{\"lifecycle\":\"running\"}").expect("a fixture");
+        assert_eq!(
+            text(&path).map(|text| text.to_string()),
+            Some("{\"lifecycle\":\"running\"}".to_string())
+        );
+        assert_eq!(
+            json(&path).map(|value| value["lifecycle"].clone()),
+            Some(Value::String("running".into())),
+            "a text sample of an unchanged file leaves its JSON a parsed document"
+        );
+        assert_eq!(reads(&path), 2, "one content read per representation");
+        assert!(text(&path).is_some() && json(&path).is_some());
+        assert_eq!(
+            reads(&path),
+            2,
+            "an unchanged file is sampled without a read"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

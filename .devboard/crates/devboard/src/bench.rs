@@ -14,20 +14,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-/// The background families the dashboard keeps live for one host.
-const FAMILIES: [&str; 10] = [
-    "scout",
-    "design",
-    "dead-code",
-    "api-standards",
-    "single-responsibility",
-    "consistent-naming",
-    "mcp-optimizer",
-    "release-train",
-    "watchdog",
-    "issues",
-];
-
 /// The families whose worker takes a `--sync` cadence. The others own their
 /// cadence in their settings file and refuse an unknown flag.
 const SYNCED_FAMILIES: [&str; 6] = [
@@ -445,7 +431,7 @@ fn start_workers(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Vec<W
     let watchdog = repo.join(".devboard/.tmp/watchdog");
     seed_idle_watchdog(&watchdog)?;
     let mut workers = Vec::new();
-    for family in FAMILIES {
+    for family in crate::workers::FAMILIES {
         let log = std::fs::File::create(root.join(format!("worker-{family}.log")))?;
         let mut command = Command::new(&binary);
         command

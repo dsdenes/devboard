@@ -23,6 +23,7 @@ use crate::detached_run::{
     read_detached_run_state, read_detached_run_text_since, DetachedRunJournalCursor,
 };
 use crate::http::{Replies, Server};
+use crate::workers::{mcp_optimizer, release_train, watchdog, FAMILIES};
 
 /// The retained window of one run's output journal.
 pub const RUN_OUTPUT_WINDOW: usize = 1000;
@@ -41,18 +42,6 @@ pub const RUN_JOURNAL_SWEEP_MS: u64 = 30_000;
 /// leaves the discovered set, so a run whose record is being rewritten keeps
 /// its retained window and its cursors.
 const RUN_JOURNAL_GRACE_MS: u64 = 60_000;
-/// The family directories a worker run can live under.
-const FAMILIES: [&str; 9] = [
-    "scout",
-    "design",
-    "dead-code",
-    "mcp-optimizer",
-    "api-standard",
-    "api-standards",
-    "single-responsibility",
-    "consistent-naming",
-    "release-train",
-];
 
 /// One run's durable source.
 #[derive(Clone)]
@@ -183,13 +172,16 @@ fn issue_run_lifecycle(state: &Value) -> String {
 }
 
 /// A family worker is live while its recorded pid is alive; between cycles
-/// its lifecycle is `idle` but the worker still serves the family.
+/// its lifecycle is `idle` but the worker still serves the family. The
+/// repository-scoped families nest the pid under `worker`; the families that
+/// publish a flat record put it at the top level.
 fn worker_run_live(state: &Value) -> bool {
-    if let Some(pid) = state
+    let recorded = state
         .get("worker")
         .and_then(|worker| worker.get("pid"))
         .and_then(Value::as_u64)
-    {
+        .or_else(|| state.get("pid").and_then(Value::as_u64));
+    if let Some(pid) = recorded {
         if (1..=u32::MAX as u64).contains(&pid) {
             return crate::supervision::live_process(pid as u32);
         }
@@ -250,6 +242,99 @@ fn worker_activity_path(repo_dir: &Path, family: &str, state: &Value) -> Option<
     )
 }
 
+/// One version directory's label: the directory's own name.
+fn version_label(directory: &Path) -> String {
+    directory
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// The repository-scoped families publish one `state.json` per repository and
+/// one per worker version under `<state>/<family>/<key>`.
+fn repo_scoped_worker_states(
+    state_dir: &Path,
+    repo_dir: &Path,
+    family: &str,
+) -> Vec<(String, PathBuf)> {
+    let root = state_dir
+        .join(family)
+        .join(crate::journal::journal_key(repo_dir));
+    let mut states = Vec::new();
+    let legacy = root.join("state.json");
+    if legacy.is_file() {
+        states.push((version_label(&root), legacy));
+    }
+    if let Ok(entries) = std::fs::read_dir(root.join("workers")) {
+        for entry in entries.flatten() {
+            let path = entry.path().join("state.json");
+            if path.is_file() {
+                states.push((version_label(&entry.path()), path));
+            }
+        }
+    }
+    states
+}
+
+/// The flat published worker records under one family directory: the legacy
+/// record at its root, when the family writes one, and one record per
+/// version directory.
+fn flat_worker_states(
+    directory: &Path,
+    versions: Vec<PathBuf>,
+    record: fn(&Path) -> PathBuf,
+) -> Vec<(String, PathBuf)> {
+    let mut states = Vec::new();
+    let legacy = record(directory);
+    if legacy.is_file() {
+        states.push(("legacy".to_string(), legacy));
+    }
+    for version in versions {
+        states.push((version_label(&version), record(&version)));
+    }
+    states
+}
+
+/// Every worker state file one background family publishes, with the version
+/// label each path names.
+///
+/// The repository-scoped families keep `state.json`; the MCP optimizer, the
+/// Release Train, and the Watchdog publish a flat `worker.json` under their
+/// own directory instead, and the Watchdog's lives beside the repository
+/// rather than in the state directory.
+fn family_worker_states(state_dir: &Path, repo_dir: &Path, family: &str) -> Vec<(String, PathBuf)> {
+    match family {
+        "watchdog" => {
+            let directory = watchdog::watchdog_directory(repo_dir);
+            flat_worker_states(
+                &directory,
+                watchdog::worker_state_directories(&directory),
+                watchdog::worker_state_path,
+            )
+        }
+        "mcp-optimizer" => {
+            let directory = mcp_optimizer::mcp_optimizer_directory(state_dir);
+            flat_worker_states(
+                &directory,
+                mcp_optimizer::worker_state_directories(&directory),
+                mcp_optimizer::worker_state_path,
+            )
+        }
+        "release-train" => {
+            let directory = release_train::release_train_directory(state_dir);
+            release_train::worker_state_directories(&directory)
+                .into_iter()
+                .map(|version| {
+                    let label = version_label(&version);
+                    let path = release_train::versioned_worker_state_path(&directory, Some(&label));
+                    (label, path)
+                })
+                .collect()
+        }
+        _ => repo_scoped_worker_states(state_dir, repo_dir, family),
+    }
+}
+
 /// Every run this dashboard can see, newest state first.
 ///
 /// Each state file is sampled through the `(mtime, len)` cache, so a
@@ -290,22 +375,7 @@ pub fn discover(app: &App) -> Vec<RunSource> {
     }
 
     for family in FAMILIES {
-        let root = state_dir
-            .join(family)
-            .join(crate::journal::journal_key(repo_dir));
-        let mut state_paths = Vec::new();
-        if root.join("state.json").is_file() {
-            state_paths.push(root.join("state.json"));
-        }
-        if let Ok(entries) = std::fs::read_dir(root.join("workers")) {
-            for entry in entries.flatten() {
-                let path = entry.path().join("state.json");
-                if path.is_file() {
-                    state_paths.push(path);
-                }
-            }
-        }
-        for state_path in state_paths {
+        for (version, state_path) in family_worker_states(state_dir, repo_dir, family) {
             let Some(state) = crate::sampling::json(&state_path) else {
                 continue;
             };
@@ -313,11 +383,6 @@ pub fn discover(app: &App) -> Vec<RunSource> {
                 continue;
             }
             let lifecycle = worker_lifecycle(&state);
-            let version = state_path
-                .parent()
-                .and_then(Path::file_name)
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "legacy".to_string());
             let id = format!("{family}--{version}");
             let activity_path = worker_activity_path(repo_dir, family, &state);
             let live = worker_run_live(&state);
@@ -1150,5 +1215,68 @@ mod tests {
             .lock()
             .expect("the run journal lock")
             .is_empty());
+    }
+
+    #[test]
+    fn the_collection_lists_exactly_the_families_the_worker_accepts() {
+        let mut families: Vec<&str> = FAMILIES.to_vec();
+        families.sort_unstable();
+        families.dedup();
+        assert_eq!(
+            families.len(),
+            FAMILIES.len(),
+            "a family is listed once: {FAMILIES:?}"
+        );
+        for family in FAMILIES {
+            assert!(
+                crate::workers::known_family(family),
+                "{family} is a family the worker command accepts"
+            );
+        }
+        assert!(
+            !crate::workers::known_family("api-standard"),
+            "a name nothing writes is neither accepted nor collected"
+        );
+    }
+
+    #[test]
+    fn the_watchdog_worker_states_are_read_from_its_own_layout() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("runs-family-{}", std::process::id()));
+        let repo = root.join("repo");
+        let state_dir = root.join("state");
+        let directory = watchdog::watchdog_directory(&repo);
+        std::fs::create_dir_all(directory.join("workers/1.45.0")).expect("a version directory");
+        std::fs::write(directory.join("worker.json"), "{}").expect("the legacy record");
+        std::fs::write(directory.join("workers/1.45.0/worker.json"), "{}")
+            .expect("the versioned record");
+
+        let states = family_worker_states(&state_dir, &repo, "watchdog");
+        assert_eq!(
+            states,
+            vec![
+                ("legacy".to_string(), directory.join("worker.json")),
+                (
+                    "1.45.0".to_string(),
+                    directory.join("workers/1.45.0/worker.json"),
+                ),
+            ],
+            "the watchdog publishes beside the repository, not under the state directory"
+        );
+
+        // The repository-scoped families keep their own `state.json` layout.
+        let scout = state_dir
+            .join("scout")
+            .join(crate::journal::journal_key(&repo));
+        std::fs::create_dir_all(scout.join("workers/1.45.0")).expect("a version directory");
+        std::fs::write(scout.join("state.json"), "{}").expect("the repository state");
+        std::fs::write(scout.join("workers/1.45.0/state.json"), "{}").expect("the versioned state");
+        let states = family_worker_states(&state_dir, &repo, "scout");
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[1].0, "1.45.0");
+
+        std::fs::remove_dir_all(&root).expect("the scratch tree is removed");
     }
 }

@@ -1023,6 +1023,73 @@ async fn an_orphaned_running_record_is_stopped_and_unrewritten() {
     let _ = server.child.kill();
 }
 
+/// A worker that publishes its record beside the repository is still a run
+/// the collection lists, and its representation is one the socket can open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_watchdog_worker_is_a_collected_run() {
+    let scratch = Scratch::new("watchdog");
+    let repo = fixture_repo(&scratch);
+    let directory = repo.join(".devboard/.tmp/watchdog/workers/1.45.0");
+    write(
+        &directory.join("worker.json"),
+        &json!({
+            "version": 1,
+            "pid": std::process::id(),
+            "startedAt": "2026-01-01T00:00:00.000Z",
+            "root": repo.to_string_lossy(),
+            "stateDir": scratch.state().to_string_lossy(),
+            "lifecycle": "running",
+            "enabled": true,
+            "harnessVersion": "1.45.0",
+            "argv": [],
+            "lastRunAt": null,
+            "nextRunAt": null,
+            "lastError": null,
+            "notice": null,
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+        })
+        .to_string(),
+    );
+    let mut server = spawn_server(&scratch, "true");
+    let port = server.listening_port().await;
+    let base = server.base();
+    wait_ready(&base).await;
+    let _ = port;
+
+    let client = reqwest::Client::new();
+    let body: Value = client
+        .get(format!("{base}/agent-runs"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a collection")
+        .json()
+        .await
+        .expect("JSON");
+    let run = body["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|run| run["kind"] == json!("watchdog")))
+        .unwrap_or_else(|| panic!("the live watchdog run: {body}"));
+    assert_eq!(run["live"], json!(true), "its recorded pid is alive");
+    assert_eq!(run["lifecycle"], json!("running"));
+    let id = run["id"].as_str().expect("an id").to_string();
+
+    let response = client
+        .get(format!("{base}/agent-runs/{id}"))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a representation");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the watchdog run is addressable"
+    );
+    let body: Value = response.json().await.expect("JSON");
+    assert_eq!(body["kind"], json!("watchdog"));
+    let _ = server.child.kill();
+}
+
 /// The latency guard budgets an operator action at 1000 ms. An ask is an
 /// accepted creation: it answers its conversation at once and the turn streams
 /// into the polled resource, so the operator's request never waits for the

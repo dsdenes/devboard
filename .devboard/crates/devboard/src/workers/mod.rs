@@ -147,21 +147,28 @@ async fn run_family(invocation: &WorkerInvocation) -> anyhow::Result<()> {
     }
 }
 
-/// Whether a family name is one the harness ships.
+/// The background families the dashboard keeps live for one host.
+///
+/// The run collection, the CPU bench, and [`known_family`] read this one
+/// set, so a family cannot be listed by one consumer and unknown to another.
+pub const FAMILIES: [&str; 10] = [
+    "issues",
+    "scout",
+    "design",
+    "api-standards",
+    "dead-code",
+    "single-responsibility",
+    "consistent-naming",
+    "mcp-optimizer",
+    "release-train",
+    "watchdog",
+];
+
+/// Whether a family name is one of the background families the dashboard
+/// keeps live. `goal-draft` and `run-owner` are per-run engines: `worker`
+/// dispatches them, but no dashboard family hosts them.
 pub fn known_family(family: &str) -> bool {
-    matches!(
-        family,
-        "issues"
-            | "scout"
-            | "design"
-            | "api-standards"
-            | "dead-code"
-            | "single-responsibility"
-            | "consistent-naming"
-            | "mcp-optimizer"
-            | "release-train"
-            | "watchdog"
-    )
+    FAMILIES.contains(&family)
 }
 
 /// A path inside the state directory, for family workers.
