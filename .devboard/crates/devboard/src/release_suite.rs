@@ -17,6 +17,14 @@
 //! condition instead of claiming a compile error: no repository change frees
 //! the disk.
 //!
+//! Every attempt builds with `TMPDIR`, `TMP`, and `TEMP` naming a directory
+//! inside the workspace's own `target/tmp`, so the compiler temporaries
+//! `cargo`, `rustc`, and a build script's C compiler write stay on the disk
+//! the build already uses. The host temporary directory is never a build
+//! input: a small or full one there fails a build the workspace could hold,
+//! and the harness neither owns nor cleans the files it leaves behind. The
+//! run removes its directory when the suite ends.
+//!
 //! One condition is retried instead of ending the run: the kernel refusing to
 //! start a freshly built test binary, which is what another build writing the
 //! same target directory does while that binary's executable bit is not yet
@@ -661,6 +669,19 @@ pub struct CommandAttempts<'a> {
     pub timeout: Duration,
 }
 
+/// The temporary directory one run's compiler children use, inside the
+/// workspace the run builds.
+///
+/// `cargo` and `rustc` pass `TMPDIR` to every build script, and the `cc` crate
+/// writes its assembly there. A path under `target/tmp` keeps those writes on
+/// the filesystem the build already uses and inside the workspace's own
+/// `target` tree, never in the host temporary directory.
+fn attempt_temp_directory(dir: &Path) -> PathBuf {
+    dir.join("target")
+        .join("tmp")
+        .join(format!("release-suite-{}", std::process::id()))
+}
+
 impl SuiteAttempts for CommandAttempts<'_> {
     fn attempt<'a>(
         &'a mut self,
@@ -677,11 +698,37 @@ impl SuiteAttempts for CommandAttempts<'_> {
             args.push("--exact".to_string());
             args.extend(names.iter().cloned());
         }
+        let temp = attempt_temp_directory(self.dir);
+        if let Err(error) = std::fs::create_dir_all(&temp) {
+            let reason = format!(
+                "the release suite cannot use its temporary directory {}: {error}",
+                temp.display()
+            );
+            return Box::pin(async move {
+                AttemptRecord {
+                    index,
+                    code: -1,
+                    pass: 0,
+                    skip: 0,
+                    failures: Vec::new(),
+                    names: Vec::new(),
+                    structural: Some(reason.clone()),
+                    transient: None,
+                    error_line: Some(reason),
+                    output: String::new(),
+                }
+            });
+        }
+        let temp_value = temp.to_string_lossy().into_owned();
+        let mut environment = self.environment.clone();
+        for key in ["TMPDIR", "TMP", "TEMP"] {
+            environment.insert(key.to_string(), temp_value.clone());
+        }
         let invocation = CommandInvocation {
             program: "cargo".to_string(),
             args,
             cwd: self.dir.to_path_buf(),
-            env: self.environment.clone(),
+            env: environment,
             timeout: self.timeout,
         };
         let runner = self.runner;
@@ -1118,6 +1165,9 @@ pub async fn run_suite(options: ReleaseSuiteOptions) -> Result<ReleaseSuiteRepor
         options.consecutive_failures.max(1),
     )
     .await;
+    // No child of this run is alive once the outcome is in, so the compiler
+    // temporaries can leave with it instead of growing the build tree.
+    let _ = std::fs::remove_dir_all(attempt_temp_directory(&options.dir));
 
     let error_line = outcome.error_line.clone();
 
@@ -1432,6 +1482,62 @@ Caused by:
             let outcome = self.outcome.clone();
             Box::pin(async move { outcome })
         }
+    }
+
+    struct RecordingRunner {
+        outcome: CommandOutcome,
+        invocations: Arc<Mutex<Vec<CommandInvocation>>>,
+    }
+
+    impl CommandRunner for RecordingRunner {
+        fn run<'a>(&'a self, invocation: CommandInvocation) -> BoxFuture<'a, CommandOutcome> {
+            self.invocations
+                .lock()
+                .expect("recorded invocations")
+                .push(invocation);
+            let outcome = self.outcome.clone();
+            Box::pin(async move { outcome })
+        }
+    }
+
+    #[tokio::test]
+    async fn release_suite_builds_with_its_temporaries_inside_the_workspace() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("release-suite-temp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).expect("a scratch workspace");
+        let invocations: Arc<Mutex<Vec<CommandInvocation>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut options = ReleaseSuiteOptions::new(workspace.clone());
+        options.runner = Some(Arc::new(RecordingRunner {
+            outcome: CommandOutcome {
+                code: 0,
+                stdout: "running 1 test\ntest passes ... ok\n".to_string(),
+                stderr: "     Running unittests src/lib.rs (target/debug/deps/fixture-abc)\n"
+                    .to_string(),
+            },
+            invocations: invocations.clone(),
+        }));
+        options.file_issues = false;
+        let report = run_suite(options).await.expect("a suite report");
+        assert_eq!(report.code, 0);
+        let temp = attempt_temp_directory(&workspace);
+        assert!(temp.starts_with(&workspace), "{}", temp.display());
+        let recorded = invocations.lock().expect("recorded invocations").clone();
+        assert!(!recorded.is_empty());
+        for invocation in &recorded {
+            assert_eq!(invocation.cwd, workspace);
+            for key in ["TMPDIR", "TMP", "TEMP"] {
+                assert_eq!(
+                    invocation.env.get(key).map(String::as_str),
+                    Some(temp.to_string_lossy().as_ref()),
+                    "{key}"
+                );
+            }
+        }
+        assert!(!temp.exists(), "the run removes its temporary directory");
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     #[tokio::test]

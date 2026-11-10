@@ -710,11 +710,14 @@ exit code. A suite that cannot compile, or whose output names no test, is struct
 nonzero, files nothing, and prints the first concrete error line. A build that could not write its
 artifacts because the host filesystem is full is structural too, and its reason starts with
 `the host filesystem is full:` and quotes that write failure, never a compile error: no repository
-change frees the disk, and the release is refused until space is available. An attempt whose test
-binary the kernel refused to start is the one retried case: another build writing the same target
-directory leaves that binary without its executable bit, so the attempt ran no test at all. The run
-retries the whole suite and reports the condition only once the attempt budget is spent, with the
-binary path and the errno.
+change frees the disk, and the release is refused until space is available. Every attempt builds
+with `TMPDIR`, `TMP`, and `TEMP` naming a per-run directory under the workspace's `target/tmp`, so
+the compiler temporaries `cargo`, `rustc`, and a build script's C compiler write stay on the disk
+the build already uses instead of the host temporary directory, and the run removes that directory
+when the suite ends. An attempt whose test binary the kernel refused to start is the one retried
+case: another build writing the same target directory leaves that binary without its executable
+bit, so the attempt ran no test at all. The run retries the whole suite and reports the condition
+only once the attempt budget is spent, with the binary path and the errno.
 
 ### Publish-only source refresh
 
