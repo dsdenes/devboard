@@ -79,31 +79,52 @@ impl Config {
         let adrs_dir = env::var("ADRS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/repo/adrs"));
-        let repo_dir = env::var("REPO_DIR").map(PathBuf::from).unwrap_or_else(|_| {
-            adrs_dir
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("/repo"))
-        });
-        let goal_file = env::var("GOAL_FILE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| repo_dir.join("GOAL.md"));
+        let repo_dir = env::var("REPO_DIR").ok().map(PathBuf::from);
+        let goal_file = env::var("GOAL_FILE").ok().map(PathBuf::from);
         let static_dir = env::var("STATIC_DIR").ok().map(PathBuf::from);
         let agent_command = env::var("AGENT_COMMAND").unwrap_or_else(|_| "omp acp".to_string());
         let state_dir = env::var("STATE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| running_harness_dir.join(".tmp"));
-        Self {
+        let repo_dir_supplied = repo_dir.is_some();
+        let goal_file_supplied = goal_file.is_some();
+        let mut config = Self {
             hostname,
             port,
             adrs_dir,
-            repo_dir,
-            goal_file,
+            // Both are filled by `derive_path_defaults` below when the
+            // environment supplied neither.
+            repo_dir: repo_dir.unwrap_or_default(),
+            goal_file: goal_file.unwrap_or_default(),
             static_dir,
             agent_command,
             state_dir,
             allowed_hosts,
             feedback: FeedbackConfig::from_env(),
+        };
+        config.derive_path_defaults(repo_dir_supplied, goal_file_supplied);
+        config
+    }
+
+    /// Fills the path defaults that no explicit input supplied, from the values
+    /// actually in force.
+    ///
+    /// The repository directory is the ADR directory's parent and the goal
+    /// document is the repository's `GOAL.md`. The serve flag loop runs before
+    /// the call that lands, so a `--adrs-dir` flag that replaced the ADR
+    /// directory also moves the repository derived from it, exactly as an
+    /// `ADRS_DIR` from the environment does. A `REPO_DIR`/`--repo-dir` and a
+    /// `GOAL_FILE` stay authoritative: a supplied value is never re-derived.
+    pub fn derive_path_defaults(&mut self, repo_dir_supplied: bool, goal_file_supplied: bool) {
+        if !repo_dir_supplied {
+            self.repo_dir = self
+                .adrs_dir
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/repo"));
+        }
+        if !goal_file_supplied {
+            self.goal_file = self.repo_dir.join("GOAL.md");
         }
     }
 
@@ -223,5 +244,34 @@ mod tests {
     fn an_empty_agent_command_is_refused_by_name() {
         let error = config("  ").agent_executable().expect_err("empty");
         assert!(error.contains("AGENT_COMMAND"), "{error}");
+    }
+
+    #[test]
+    fn an_adr_directory_moves_the_repository_derived_from_it() {
+        let mut config = config("omp acp");
+        config.adrs_dir = PathBuf::from("/host/checkout/adrs");
+        config.derive_path_defaults(false, false);
+        assert_eq!(config.repo_dir, PathBuf::from("/host/checkout"));
+        assert_eq!(config.goal_file, PathBuf::from("/host/checkout/GOAL.md"));
+    }
+
+    #[test]
+    fn a_supplied_repository_keeps_its_own_derived_goal() {
+        let mut config = config("omp acp");
+        config.adrs_dir = PathBuf::from("/host/other/adrs");
+        config.repo_dir = PathBuf::from("/host/checkout");
+        config.derive_path_defaults(true, false);
+        assert_eq!(config.repo_dir, PathBuf::from("/host/checkout"));
+        assert_eq!(config.goal_file, PathBuf::from("/host/checkout/GOAL.md"));
+    }
+
+    #[test]
+    fn a_supplied_goal_file_is_never_re_derived() {
+        let mut config = config("omp acp");
+        config.adrs_dir = PathBuf::from("/host/checkout/adrs");
+        config.goal_file = PathBuf::from("/host/goals/CUSTOM.md");
+        config.derive_path_defaults(false, true);
+        assert_eq!(config.repo_dir, PathBuf::from("/host/checkout"));
+        assert_eq!(config.goal_file, PathBuf::from("/host/goals/CUSTOM.md"));
     }
 }

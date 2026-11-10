@@ -2273,8 +2273,8 @@ version that tag just published.
 |`PORT`|`8080`|Listen port.|
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
-|`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location.|
-|`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save.|
+|`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location. The derived default follows the ADR directory a serve flag leaves in force, so `--adrs-dir <repo>/adrs` without `REPO_DIR` or `--repo-dir` serves `<repo>`; a supplied `REPO_DIR` or `--repo-dir` stays authoritative.|
+|`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save. Derived from the repository directory in force after the serve flags when unset.|
 |`STATIC_DIR`|unset|Client directory to serve; unset serves the client embedded in the binary.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `devboard acp-stub` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|

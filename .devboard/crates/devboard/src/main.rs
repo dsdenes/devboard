@@ -142,6 +142,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     discover_source_gitea(&repo_for_discovery).await;
     let mut config = Config::from_env(&harness_dir);
+    let mut repo_dir_supplied = std::env::var_os("REPO_DIR").is_some();
     let mut index = 1;
     while index < args.len() {
         let value = args.get(index + 1);
@@ -154,6 +155,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             }
             "--repo-dir" => {
                 config.repo_dir = PathBuf::from(value.context("--repo-dir needs a value")?);
+                repo_dir_supplied = true;
             }
             "--adrs-dir" => {
                 config.adrs_dir = PathBuf::from(value.context("--adrs-dir needs a value")?);
@@ -166,9 +168,11 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         }
         index += 2;
     }
-    if std::env::var_os("GOAL_FILE").is_none() {
-        config.goal_file = config.repo_dir.join("GOAL.md");
-    }
+    // The flags are in force now, so the derived defaults are resolved once
+    // from the values that actually won: a `--adrs-dir` without `REPO_DIR` or
+    // `--repo-dir` moves the repository directory with it, and the goal file
+    // follows the final repository directory.
+    config.derive_path_defaults(repo_dir_supplied, std::env::var_os("GOAL_FILE").is_some());
     if !config.repo_dir.is_dir() {
         anyhow::bail!(
             "the repository directory {} does not exist",
