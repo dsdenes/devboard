@@ -1,5 +1,6 @@
 <script lang="ts">
   import { connection } from "../connection.svelte";
+  import { relativeTime } from "../discover-format";
   import { issues } from "../issues.svelte";
   import { versionLabel } from "../issues-label";
   import { layout } from "../layout.svelte";
@@ -24,6 +25,8 @@
   const unavailable = $derived(agent === null && detail === null && issues.runError !== null);
   const harnessVersion = $derived(detail?.harnessVersion ?? issues.versionForRun(runId));
   const startedAt = $derived(agent?.startedAt ?? detail?.startedAt ?? null);
+  let now = $state(Date.now());
+  const startedLabel = $derived(startedAt === null ? "" : relativeTime(startedAt, now));
   const barState = $derived(
     agent !== null
       ? ("running" as const)
@@ -44,6 +47,13 @@
   $effect(() => {
     if (agent !== null || !connection.open || !issues.ready) return;
     issues.loadRun(runId);
+  });
+
+  // The header's relative start stays current without a reload.
+  $effect(() => {
+    if (startedAt === null) return;
+    const timer = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(timer);
   });
 </script>
 
@@ -95,6 +105,25 @@
       <section class="panel issues-activity-panel issues-agent-focus__output">
         <div class="panel__header">
           <h2 class="panel__title">Output</h2>
+          <span class="issues-run-identity" data-testid="issues-agent-focus-run">
+            <span class="issues-run-identity__label">Run</span>
+            <code
+              class="code-chip issues-run-identity__id"
+              title={`Run identifier: ${runId}`}
+              data-testid="issues-agent-focus-run-id"
+            >
+              {runId}
+            </code>
+            {#if startedAt !== null}
+              <span
+                class="issues-run-identity__started"
+                title={`Started ${startedAt}`}
+                data-testid="issues-agent-focus-run-started"
+              >
+                Started {startedLabel}
+              </span>
+            {/if}
+          </span>
         </div>
         <div class="panel__body stack-sm">
           <IssuesAgentLog lines={lines} testid="issues-agent-focus-activity" {runId} />

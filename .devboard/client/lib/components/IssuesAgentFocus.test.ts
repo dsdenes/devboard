@@ -85,6 +85,14 @@ test("the focus page shows the live streamed activity", async () => {
   expect(log.textContent).toContain("$ cargo test");
   expect(log.textContent).toContain("running tests");
 
+  // The Output header names the run being read and when it started.
+  const runId = view.getByTestId("issues-agent-focus-run-id");
+  expect(runId.textContent?.trim()).toBe("run-42");
+  expect(runId.getAttribute("title")).toBe("Run identifier: run-42");
+  const started = view.getByTestId("issues-agent-focus-run-started");
+  expect(started.textContent?.trim()).toStartWith("Started ");
+  expect(started.getAttribute("title")).toBe("Started 2026-11-09T10:00:00Z");
+
   // A later frame reaches the panel without a reload.
   issues.handleEvent({
     type: "issuesActivity",
@@ -177,4 +185,22 @@ test("a pruned run shows the unavailable panel and its way to the run list", asy
 
   await fireEvent.click(view.getByText("Open Runs"));
   expect(opened).toBe(1);
+});
+
+test("a run restored from history keeps its id and start in the header", async () => {
+  issues.handleEvent(finishedSnapshot());
+
+  const view = render(IssuesAgentFocus, {
+    props: { tab: TAB, close: () => {}, openRuns: () => {} },
+  });
+  issues.handleEvent({ type: "issuesRun", run: finishedRun() });
+
+  const runId = await view.findByTestId("issues-agent-focus-run-id");
+  expect(runId.textContent?.trim()).toBe("run-42");
+  expect(runId.getAttribute("title")).toBe("Run identifier: run-42");
+
+  // The start comes from the run history when no live agent owns the run.
+  const started = view.getByTestId("issues-agent-focus-run-started");
+  expect(started.textContent?.trim()).toStartWith("Started ");
+  expect(started.getAttribute("title")).toBe("Started 2026-11-09T10:00:00Z");
 });

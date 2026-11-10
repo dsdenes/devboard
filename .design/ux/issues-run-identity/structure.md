@@ -18,9 +18,8 @@
 - The title keeps the left edge; the identity group is right-aligned with an 8px gap.
 - The identity group is one row: a `code-chip` carrying C1 verbatim, then the relative start C2.
 - The chip takes at most 220px and ellipses; its `title` carries the complete id. The age keeps
-  its own complete ISO timestamp in a tooltip.
-- The age drops first when the row is narrow; the chip keeps its 220px cap so the header title
-  never wraps. Both live inside the panel header's existing `space-between` flex row.
+  its own complete ISO timestamp in a tooltip. The title ellipses as the row narrows, so the
+  identity group never wraps. Both live inside the panel header's existing `space-between` flex row.
 
 ## States
 
@@ -30,7 +29,7 @@
 | Finished run | chip + `Started … ago` from history | history log; no question |
 | Unavailable | no output panel | message + `Open Runs` |
 | Loading | no output panel | loading line |
-| Narrow (1024px) | chip capped, age may wrap under the header's flex wrap rule | unchanged |
+| Narrow (1024px) | chip capped at 220px, age keeps one line | unchanged |
 
 ## Hierarchy
 
@@ -41,8 +40,8 @@ as the single state badge; the panel header repeats no state.
 ## Responsive order
 
 At every supported width the panel header is title then identity; the identity group never moves
-above the title and never becomes a separate row. When it cannot fit, the age text yields before
-the chip, and the chip ellipses before the title.
+above the title and never becomes a separate row. The title is the only flexible item, so it
+ellipses as the header narrows while the identity group stays on one line.
 
 ## Rationale
 

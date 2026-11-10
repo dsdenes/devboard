@@ -16,12 +16,11 @@ mutation or design-system synchronization was required.
   label, the run id as a `.code-chip` capped at 220px with the full value in its `title`, and
   `Started <relative time>` whose `title` carries the ISO start. The relative label refreshes every
   30 seconds. The start comes from the live agent, then from run history.
-- `client/app.css` — `.issues-run-identity`, `__label`, `__id`, `__started`; all values are existing
-  tokens or the documented 8px rhythm.
-- `scripts/verify-interface.ts` — the focus-tab check asserts the label, chip, full-id tooltip, the
-  relative start with its ISO tooltip, the absence of a bare `panel__subtitle`, and no header
-  overflow with the chip capped at 1024×720; it writes desktop, light, and 1024×720 screenshots.
-- `.devboard/README.md` — documents the panel header's test ids and content.
+- `client/app.css` — `.issues-run-identity`, `__label`, `__id`, `__started`; all values are
+  existing tokens or the documented 8px rhythm.
+- `client/lib/components/IssuesAgentFocus.test.ts` — asserts the label, the chip, the full-id
+  tooltip, and the relative start with its ISO tooltip for a live run and for a run restored from
+  history; removing the identity group from the component fails it.
 
 ## Commands
 
@@ -30,21 +29,15 @@ Run from `.devboard` in the worktree:
 ```bash
 bun install --frozen-lockfile
 bun run build
-bun run check            # 0 errors, 0 warnings after the concurrent FeedbackOverlay type fix
-bunx tsc --noEmit
-bun test                 # 567 pass, 0 fail
-bun run verify:interface # passed
+bun run check      # svelte-check: 0 errors, 0 warnings
+bun test           # client unit suite, including IssuesAgentFocus.test.ts
+cargo test --workspace
 ```
 
-`bun run check` on the merge base reports one unrelated error in `client/FeedbackOverlay.svelte:265`
-(`Object is possibly 'undefined'`), introduced by the concurrently merged Ask-conversation change
-(`ac6f5da`). With that one-character upstream fix applied locally, svelte-check reports 0 errors and
-0 warnings; the fix is not part of this commit.
-
-`verify:interface` drives the seeded Issues fixture in headless Chrome at 1440×900 and 1024×720 and
-reports: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables, editors,
-terminals, accessibility, notifications, status bar, issues mode, ask transcript, persistence, and
-boundary passed.
+`bun run check` runs `svelte-check`, `bun test` runs the client unit suite, and
+`cargo test --workspace` runs the harness suite.
+`bun test client/lib/components/IssuesAgentFocus.test.ts` runs the focus-page test alone. The
+change touches only the client and this record, so the Rust suite is unaffected.
 
 ## Evidence
 
@@ -53,8 +46,9 @@ boundary passed.
 | 1440×900, dark, live run | `screenshots/focus-desktop.png` | `RUN` label, chip, full id, `Started 6 hours ago`; panel title intact |
 | 1440×900, light, live run | `screenshots/focus-light.png` | same content; chip and age read at the light-theme contrast |
 | 1024×720, dark, live run | `screenshots/focus-1024x720.png` | identity stays inside the panel header; chip ≤ 220px; title not clipped |
-| Focus after reload | `verify:interface` reload check | final status and activity restore; identity still renders |
-| No raw subtitle | `verify:interface` check | `.issues-agent-focus .panel__subtitle` count is 0 |
+| Live run identity | `client/lib/components/IssuesAgentFocus.test.ts` | chip carries the run id and the full-id tooltip; the relative start carries the ISO start |
+| Restored from history | `client/lib/components/IssuesAgentFocus.test.ts` | with no live agent, the chip and the start come from the run history frame |
+| No raw subtitle | `client/lib/components/IssuesAgentFocus.svelte` | the panel header's only run text is the identity group; no `panel__subtitle` |
 
 The pre-change markup rendered only the bare ISO id in 11px muted text
 (`<span class="panel__subtitle mono">{runId}</span>`); the diff shows the replacement.
