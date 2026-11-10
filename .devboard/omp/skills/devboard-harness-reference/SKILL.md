@@ -2156,6 +2156,10 @@ component that dispatches it.
   shell and PowerShell installers and publishes them to GitHub Releases; the same tag then carries
   a Gitea release holding `devboard-manifest.json` and the checksums. A rerun on the same commit
   leaves the existing GitHub assets and Gitea release untouched.
+- A Gitea release or asset write answers a transient refusal — a busy database, recorded as HTTP
+  500 `database is locked` — by reading back what the forge already holds inside a bounded budget:
+  a release or asset the refused request committed is adopted, and only a write the forge does not
+  hold is sent again. A refusal that outlives that budget is what the run reports.
 - A failing workflow conclusion, a missing GitHub asset, a missing Gitea manifest, or a rejected
   derived version records the failure with its detail — a failing workflow names the job and the
   step that failed, so a cancelled run never hides its cause — ships nothing, and leaves the range

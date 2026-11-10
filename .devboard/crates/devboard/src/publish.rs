@@ -56,8 +56,12 @@ pub const DEFAULT_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// How often one idempotent Gitea read is attempted while the forge answers a
 /// transient refusal, such as a busy database.
 const GITEA_READ_ATTEMPTS: usize = 6;
+/// How often one Gitea write is attempted while the forge answers a transient
+/// refusal. The write is proven applied by a read-back before it is resent, so
+/// the budget never creates a second release or asset.
+const GITEA_WRITE_ATTEMPTS: usize = 6;
 /// The delay between those attempts.
-const GITEA_READ_RETRY_DELAY: Duration = Duration::from_secs(5);
+const GITEA_RETRY_DELAY: Duration = Duration::from_secs(5);
 /// The six targets `.devboard/dist-workspace.toml` asks cargo-dist to build.
 pub const RELEASE_TARGETS: [&str; 6] = [
     "aarch64-apple-darwin",
@@ -1015,8 +1019,10 @@ impl Api {
 
     /// One Gitea call. A GET is idempotent, so a transient refusal — a busy
     /// database, a rate limit, or another server-side failure — is retried
-    /// before the caller sees it. A write is sent once, because a retry could
-    /// create the same release or asset twice.
+    /// before the caller sees it. A write is sent once here, because a retry
+    /// blind to what the refused attempt committed could create the same
+    /// release or asset twice; the release writes retry above this layer,
+    /// after reading back what the forge already holds.
     async fn gitea_request(
         &self,
         method: &str,
@@ -1037,7 +1043,7 @@ impl Api {
         loop {
             attempt += 1;
             if attempt > 1 {
-                self.sleeper.sleep(GITEA_READ_RETRY_DELAY).await;
+                self.sleeper.sleep(GITEA_RETRY_DELAY).await;
             }
             let request = HttpRequest {
                 method: method.to_string(),
@@ -1063,12 +1069,15 @@ impl Api {
         }
     }
 
-    async fn gitea_upload(
-        &self,
-        release_id: u64,
-        name: &str,
-        bytes: Vec<u8>,
-    ) -> Result<HttpResponse> {
+    /// Uploads one release asset, retrying a transient refusal safely.
+    ///
+    /// Gitea answers a busy database with HTTP 500 "database is locked", and
+    /// that refusal may still commit. A retry never resends blindly: the
+    /// release is read back after every refusal, so the asset the release
+    /// already holds is adopted as the upload the refused request performed
+    /// and no asset is uploaded twice. A retried upload that the forge already
+    /// applied answers HTTP 409; the read-back settles that case too.
+    async fn gitea_upload(&self, release_id: u64, name: &str, bytes: Vec<u8>) -> Result<()> {
         let boundary = format!("----devboard{}", uuid::Uuid::new_v4().simple());
         let mut body = Vec::new();
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -1095,13 +1104,53 @@ impl Api {
                 encode_component(name)
             ),
         );
-        self.send(HttpRequest {
-            method: "POST".to_string(),
-            url,
-            headers,
-            body,
-        })
-        .await
+        for attempt in 1..=GITEA_WRITE_ATTEMPTS {
+            let response = self
+                .send(HttpRequest {
+                    method: "POST".to_string(),
+                    url: url.clone(),
+                    headers: headers.clone(),
+                    body: body.clone(),
+                })
+                .await?;
+            if (200..300).contains(&response.status) {
+                return Ok(());
+            }
+            let applied_elsewhere = transient_status(response.status) || response.status == 409;
+            if attempt == GITEA_WRITE_ATTEMPTS || !applied_elsewhere {
+                bail!(
+                    "POST {url} failed (HTTP {}): {}",
+                    response.status,
+                    failure_message(&response)
+                );
+            }
+            self.sleeper.sleep(GITEA_RETRY_DELAY).await;
+            if self.gitea_release_has_asset(release_id, name).await? {
+                return Ok(());
+            }
+        }
+        unreachable!("the retry budget returns on its last attempt")
+    }
+
+    /// Whether one release already carries the named asset.
+    async fn gitea_release_has_asset(&self, release_id: u64, name: &str) -> Result<bool> {
+        let path = format!("{}/releases/{release_id}", gitea::repo_path(&self.gitea));
+        let response = self.gitea_request("GET", &path, None).await?;
+        if response.status == 404 {
+            return Ok(false);
+        }
+        if !(200..300).contains(&response.status) {
+            bail!(
+                "GET {} failed (HTTP {}): {}",
+                gitea::api_url(&self.gitea, &path),
+                response.status,
+                failure_message(&response)
+            );
+        }
+        let document: Value = response.json()?;
+        Ok(release_assets(&document)
+            .iter()
+            .any(|asset| asset_field(asset, "name") == Some(name)))
     }
 
     async fn github_request(
@@ -1426,29 +1475,48 @@ impl Api {
         Ok(versions)
     }
 
+    /// Creates one Gitea release, retrying a transient refusal safely.
+    ///
+    /// Gitea answers a busy database with HTTP 500 "database is locked", and
+    /// that refusal may still commit. A retry never posts the same release
+    /// twice: the tag is read back after every refusal, so the release a
+    /// refused attempt created is adopted. A retried create that the forge
+    /// already applied answers HTTP 409; the read-back settles that case too.
     async fn gitea_create_release(&self, tag: &str, version: &str, commit: &str) -> Result<u64> {
         let path = format!("{}/releases", gitea::repo_path(&self.gitea));
-        let document = self
-            .gitea_json(
-                "POST",
-                &path,
-                Some(json!({
-                    "tag_name": tag,
-                    "target_commitish": commit,
-                    "name": format!("Devboard {version}"),
-                    "body": format!(
-                        "Devboard {version}\n\nGitHub release: https://github.com/{}/releases/tag/{tag}",
-                        self.github_repo
-                    ),
-                    "draft": false,
-                    "prerelease": false,
-                })),
-            )
-            .await?;
-        document
-            .get("id")
-            .and_then(Value::as_u64)
-            .context("the created release has no identifier")
+        let body = json!({
+            "tag_name": tag,
+            "target_commitish": commit,
+            "name": format!("Devboard {version}"),
+            "body": format!(
+                "Devboard {version}\n\nGitHub release: https://github.com/{}/releases/tag/{tag}",
+                self.github_repo
+            ),
+            "draft": false,
+            "prerelease": false,
+        });
+        for attempt in 1..=GITEA_WRITE_ATTEMPTS {
+            let response = self
+                .gitea_request("POST", &path, Some(body.clone()))
+                .await?;
+            if (200..300).contains(&response.status) {
+                return release_identifier(&response.json()?, tag);
+            }
+            let applied_elsewhere = transient_status(response.status) || response.status == 409;
+            if attempt == GITEA_WRITE_ATTEMPTS || !applied_elsewhere {
+                bail!(
+                    "POST {} failed (HTTP {}): {}",
+                    gitea::api_url(&self.gitea, &path),
+                    response.status,
+                    failure_message(&response)
+                );
+            }
+            self.sleeper.sleep(GITEA_RETRY_DELAY).await;
+            if let Some(release) = self.gitea_release_by_tag(tag).await? {
+                return release_identifier(&release, tag);
+            }
+        }
+        unreachable!("the retry budget returns on its last attempt")
     }
 
     /// Proves the configured Gitea credential may create this project's
@@ -3593,6 +3661,14 @@ fn release_assets(release: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// The identifier one Gitea release document carries.
+fn release_identifier(release: &Value, tag: &str) -> Result<u64> {
+    release
+        .get("id")
+        .and_then(Value::as_u64)
+        .with_context(|| format!("the Gitea release {tag} has no identifier"))
+}
+
 fn find_asset<'a>(assets: &'a [Value], name: &str) -> Option<&'a Value> {
     assets
         .iter()
@@ -5398,12 +5474,12 @@ mod tests {
         assert_eq!(transport.requests.lock().unwrap().len(), 2);
         assert_eq!(
             sleeper.waits.lock().unwrap().as_slice(),
-            [GITEA_READ_RETRY_DELAY]
+            [GITEA_RETRY_DELAY]
         );
     }
 
     #[tokio::test]
-    async fn a_gitea_write_is_never_retried() {
+    async fn a_gitea_write_request_is_never_retried_at_the_request_layer() {
         let transport = Arc::new(ScriptedTransport {
             statuses: std::sync::Mutex::new(vec![500, 200]),
             requests: std::sync::Mutex::new(Vec::new()),
@@ -5419,6 +5495,136 @@ mod tests {
             .await
             .expect_err("the refused write fails");
         assert!(error.to_string().contains("HTTP 500"), "{error}");
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+        assert!(sleeper.waits.lock().unwrap().is_empty());
+    }
+
+    /// Answers each call with the queued status and body, so a retried write
+    /// and the read-back that proves it are scripted as they reach the forge.
+    struct QueuedTransport {
+        responses: std::sync::Mutex<Vec<(u16, &'static str)>>,
+        requests: std::sync::Mutex<Vec<HttpRequest>>,
+    }
+
+    impl HttpTransport for QueuedTransport {
+        fn send<'a>(&'a self, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, String>> {
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(request);
+                let (status, body) = self.responses.lock().unwrap().remove(0);
+                Ok(HttpResponse {
+                    status,
+                    body: body.as_bytes().to_vec(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_busy_gitea_database_retries_the_release_creation() {
+        let transport = Arc::new(QueuedTransport {
+            responses: std::sync::Mutex::new(vec![
+                (500, r#"{"message":"database is locked (5) (SQLITE_BUSY)"}"#),
+                (404, r#"{"message":"release not found"}"#),
+                (201, r#"{"id":7}"#),
+            ]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let api = test_api(transport.clone(), sleeper.clone());
+        let id = api
+            .gitea_create_release("v1.2.3", "1.2.3", "abc123")
+            .await
+            .expect("the retried create answers");
+        assert_eq!(id, 7);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[1].method, "GET");
+        assert!(
+            requests[1].url.ends_with("/releases/tags/v1.2.3"),
+            "{}",
+            requests[1].url
+        );
+        assert_eq!(requests[2].method, "POST");
+        assert_eq!(
+            sleeper.waits.lock().unwrap().as_slice(),
+            [GITEA_RETRY_DELAY]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_release_creation_that_committed_is_adopted() {
+        let transport = Arc::new(QueuedTransport {
+            responses: std::sync::Mutex::new(vec![
+                (500, r#"{"message":"database is locked (5) (SQLITE_BUSY)"}"#),
+                (200, r#"{"id":9,"assets":[]}"#),
+            ]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let api = test_api(transport.clone(), sleeper.clone());
+        let id = api
+            .gitea_create_release("v1.2.3", "1.2.3", "abc123")
+            .await
+            .expect("the created release is read back");
+        assert_eq!(id, 9);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].method, "GET");
+    }
+
+    #[tokio::test]
+    async fn a_busy_gitea_database_retries_the_asset_upload() {
+        let transport = Arc::new(QueuedTransport {
+            responses: std::sync::Mutex::new(vec![
+                (500, r#"{"message":"database is locked (5) (SQLITE_BUSY)"}"#),
+                (
+                    200,
+                    r#"{"id":5,"assets":[{"name":"devboard-manifest.json"}]}"#,
+                ),
+            ]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let api = test_api(transport.clone(), sleeper.clone());
+        api.gitea_upload(5, MANIFEST_ASSET, "{}".as_bytes().to_vec())
+            .await
+            .expect("the upload the refused attempt performed is read back");
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, "POST");
+        assert!(
+            requests[0]
+                .url
+                .ends_with("/releases/5/assets?name=devboard-manifest.json"),
+            "{}",
+            requests[0].url
+        );
+        assert_eq!(requests[1].method, "GET");
+        assert!(
+            requests[1].url.ends_with("/releases/5"),
+            "{}",
+            requests[1].url
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_release_creation_reports_the_forge_status() {
+        let transport = Arc::new(QueuedTransport {
+            responses: std::sync::Mutex::new(vec![(
+                401,
+                r#"{"message":"token does not have write access"}"#,
+            )]),
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let sleeper = Arc::new(RecordingSleeper::new());
+        let api = test_api(transport.clone(), sleeper.clone());
+        let error = api
+            .gitea_create_release("v1.2.3", "1.2.3", "abc123")
+            .await
+            .expect_err("the refused create fails");
+        assert!(error.to_string().contains("HTTP 401"), "{error}");
+        assert!(error.to_string().contains("write access"), "{error}");
         assert_eq!(transport.requests.lock().unwrap().len(), 1);
         assert!(sleeper.waits.lock().unwrap().is_empty());
     }
