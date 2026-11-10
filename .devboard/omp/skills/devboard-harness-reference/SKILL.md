@@ -2473,15 +2473,21 @@ transport error on the Start card. A read that stalls reports the request it was
 example `GET /repos/<owner>/<name>/labels?limit=50&page=1 failed: the request timed out after
 17175 ms`, and Start answers a bounded refusal that names the stalled read — the repository, or
 the labels — as unreadable before Start's deadline; only a permanent answer is reported as a
-missing prerequisite. A refusal that names a step which ran out of time is latency, not a fault:
-the request was still in flight against a forge that is slow, not broken, and the next Start runs
-the same preflight again. It is published as the family's `notice`, so the card states why Start
-spawned nothing, and never as its `startError`; the command's answer carries no error frame
-either, because the page turns that frame into an error notification and files a board issue for
-it — more load for the forge already behind. That rule covers every family whose Start preflight
-reads the forge: Auto Scout and the other repo families, Watchdog, and MCP optimizer. A refusal
-that names a missing prerequisite, a refused credential, or a rejected answer keeps `startError`
-and renders `agent-error`.
+missing prerequisite. A forge request starts only while the preflight's remaining budget carries
+a window worth spending: the time left, short of a 250 ms margin, at least two seconds. A step
+the earlier ones left below that floor refuses in its own name with the window it had — for
+example `reading the Gitea labels did not finish within 533 ms; press Start to retry.` — so a
+spent budget never reports a sub-second request timeout the forge had no chance to answer, and a
+label create is never sent on a window its caller would abandon. A refusal that names a step
+which ran out of time is latency, not a fault: the request was still in flight against a forge
+that is slow, not broken, and the next Start runs the same preflight again. It is published as
+the family's `notice`, so the card states why Start spawned nothing, and never as its
+`startError`; the command's answer carries no error frame either, because the page turns that
+frame into an error notification and files a board issue for it — more load for the forge
+already behind. That rule covers every family whose Start preflight reads the forge: Auto Scout
+and the other repo families, Watchdog, and MCP optimizer. A refusal that names a missing
+prerequisite, a refused credential, or a rejected answer keeps `startError` and renders
+`agent-error`.
 
 A Gitea `HTTP 401` carrying `invalid username, password or token` is the one refusal that is
 retried. Gitea answers that exact body when its own token store could not be read — a locked or

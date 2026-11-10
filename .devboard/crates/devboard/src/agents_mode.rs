@@ -47,6 +47,14 @@ const PREFLIGHT_REQUEST_MARGIN_MS: u64 = 250;
 /// The least window a retry needs to earn another attempt: a fast refusal
 /// leaves the whole window, while a stalled request leaves none.
 const PREFLIGHT_RETRY_WINDOW_MS: u64 = 2_000;
+/// The least window a preflight forge request is worth starting in.
+///
+/// A step that begins with less than this has already spent the budget on an
+/// earlier step, so a request started there reports a sub-second timeout the
+/// forge never had a chance to answer, and a create could reach the forge after
+/// its caller stopped waiting for it. Such a step refuses in its own name with
+/// the window it had instead.
+const PREFLIGHT_MIN_REQUEST_MS: u64 = 2_000;
 /// How long past its own preflight bound a Start may hold its family at
 /// `starting` before the snapshot names it and resets the state. A command
 /// whose future was dropped, and a start wedged behind an await that never
@@ -58,7 +66,9 @@ const START_ABANDON_GRACE_MS: i64 = 2_000;
 /// The steps used to carry their own twenty second timeouts while being
 /// chained, so three slow forge reads could outlive the whole preflight and
 /// surface only the generic refusal. Each step now gets the remaining budget,
-/// so the preflight settles inside its bound and names the step that stalled.
+/// so the preflight settles inside its bound and names the step that stalled,
+/// and a step the earlier ones left with no usable window refuses in its own
+/// name instead of spending the sliver on a request the forge cannot answer.
 #[derive(Debug, Clone, Copy)]
 pub struct PreflightBudget {
     deadline: tokio::time::Instant,
@@ -82,10 +92,32 @@ impl PreflightBudget {
     /// The bound one forge request may spend: the step's remaining window, short
     /// of its end by [`PREFLIGHT_REQUEST_MARGIN_MS`], so the request's own named
     /// timeout reports before the step's generic deadline does.
-    pub fn request_ms(&self) -> u64 {
+    fn request_ms(&self) -> u64 {
         self.remaining_ms()
             .saturating_sub(PREFLIGHT_REQUEST_MARGIN_MS)
             .max(1)
+    }
+
+    /// The bound a forge request may start with, or `None` when the budget no
+    /// longer carries a window worth spending.
+    ///
+    /// A request started on the sliver a spent budget leaves would report a
+    /// sub-second timeout the forge never had a chance to answer, which reads as
+    /// a broken request rather than a preflight that ran out of time. The step
+    /// answers [`PreflightBudget::spent`] instead.
+    fn forge_request_ms(&self) -> Option<u64> {
+        let window = self.request_ms();
+        (window >= PREFLIGHT_MIN_REQUEST_MS).then_some(window)
+    }
+
+    /// The refusal a step answers when only a sliver of the budget is left, in
+    /// the same wording as [`PreflightBudget::run`] so it reads as latency and
+    /// stays on the card.
+    fn spent(&self, step: &str) -> String {
+        format!(
+            "{step} did not finish within {} ms; press Start to retry.",
+            self.remaining_ms()
+        )
     }
 
     /// Runs one step under the remaining budget, naming the step on expiry.
@@ -5402,9 +5434,12 @@ impl RepoFamily {
                 return Ok(());
             }
             let created = {
+                let Some(window) = budget.forge_request_ms() else {
+                    return Err(budget.spent(&format!("creating the \"{label}\" label")));
+                };
                 let call = crate::forge::GiteaCallOptions {
                     flow_id: None,
-                    timeout_ms: Some(budget.request_ms()),
+                    timeout_ms: Some(window),
                 };
                 budget
                     .run(&format!("creating the \"{label}\" label"), async {
@@ -6066,9 +6101,12 @@ async fn gitea_repository_within(
     let subject = format!("the Gitea repository {}", target.project);
     let mut retry = crate::forge::ForgeReadRetry::new();
     loop {
+        let Some(window) = budget.forge_request_ms() else {
+            return Err(budget.spent("reading the Gitea repository"));
+        };
         let call = crate::forge::GiteaCallOptions {
             flow_id: None,
-            timeout_ms: Some(budget.request_ms()),
+            timeout_ms: Some(window),
         };
         let attempt = budget
             .run("reading the Gitea repository", async {
@@ -6107,9 +6145,12 @@ async fn gitea_labels_within(
     let subject = format!("the labels of {}", target.project);
     let mut retry = crate::forge::ForgeReadRetry::new();
     loop {
+        let Some(window) = budget.forge_request_ms() else {
+            return Err(budget.spent("reading the Gitea labels"));
+        };
         let call = crate::forge::GiteaCallOptions {
             flow_id: None,
-            timeout_ms: Some(budget.request_ms()),
+            timeout_ms: Some(window),
         };
         let attempt = budget
             .run("reading the Gitea labels", async {
@@ -9439,7 +9480,7 @@ mod gitea_preflight_tests {
     #[tokio::test]
     async fn a_stalled_read_names_the_request_and_is_not_a_missing_prerequisite() {
         let (transport, _, _) = transport(vec![Err(HttpError::Timeout)]);
-        let error = gitea_repository_within(PreflightBudget::new(400), &target(), &transport)
+        let error = gitea_repository_within(PreflightBudget::new(3_000), &target(), &transport)
             .await
             .expect_err("a stalled read refuses");
         assert!(
@@ -9496,7 +9537,7 @@ mod gitea_preflight_tests {
     #[tokio::test]
     async fn a_stalled_label_read_answers_the_bounded_refusal() {
         let (transport, _, _) = transport(vec![Err(HttpError::Timeout)]);
-        let error = gitea_labels_within(PreflightBudget::new(400), &target(), &transport)
+        let error = gitea_labels_within(PreflightBudget::new(3_000), &target(), &transport)
             .await
             .expect_err("a stalled label read refuses");
         assert!(
@@ -9504,6 +9545,41 @@ mod gitea_preflight_tests {
             "{error}"
         );
         assert!(error.ends_with("; press Start to retry."), "{error}");
+    }
+
+    /// One slow step may spend the shared budget, but the step after it must not
+    /// report a sub-second request timeout the forge never had a chance to
+    /// answer: it never issues the request and names its own window instead.
+    #[tokio::test]
+    async fn a_spent_budget_issues_no_forge_request() {
+        let (transport, calls, _) = transport(vec![Err(HttpError::Timeout)]);
+        let budget = PreflightBudget::new(400);
+        assert_eq!(budget.forge_request_ms(), None);
+        let error = gitea_labels_within(budget, &target(), &transport)
+            .await
+            .expect_err("a spent budget refuses");
+        assert!(
+            error.starts_with("reading the Gitea labels did not finish within "),
+            "{error}"
+        );
+        assert!(error.ends_with(" ms; press Start to retry."), "{error}");
+        assert!(crate::forge::is_forge_read_latency(&error), "{error}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_window_worth_a_request_is_offered_down_to_the_floor() {
+        let window = PreflightBudget::new(3_000)
+            .forge_request_ms()
+            .expect("a three second budget carries one request");
+        assert!(window > PREFLIGHT_MIN_REQUEST_MS, "{window}");
+        assert!(window <= 3_000, "{window}");
+        let refusal = PreflightBudget::new(400).spent("reading the Gitea labels");
+        assert!(
+            refusal.starts_with("reading the Gitea labels did not finish within "),
+            "{refusal}"
+        );
+        assert!(refusal.ends_with(" ms; press Start to retry."), "{refusal}");
     }
 
     #[tokio::test]
