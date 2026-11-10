@@ -669,6 +669,135 @@ async fn ask_answers_a_follow_up_requested_by_a_new_handle() {
     .await;
 }
 
+/// A replacement dashboard restores a conversation whose owner a handoff left
+/// alive. The follow-up is delivered to that owner, so the settled transcript
+/// holds each answer once instead of replaying the earlier journal as the new
+/// answer.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn ask_restored_conversation_delivers_its_follow_up_to_the_live_owner() {
+    let _env = env_guard();
+    let scratch = Scratch::new("restored-owner");
+    let log = scratch.path.join("agent.log");
+    save_subscriptions(
+        &scratch.state(),
+        &[StoredSubscription {
+            id: "subscription-1".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "Test".to_string(),
+            key: "test-key".to_string(),
+            enabled: true,
+            created_at: "2026-11-03T00:00:00.000Z".to_string(),
+            updated_at: "2026-11-03T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("the credentials file is written");
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+
+    let first = app_for(&scratch, stub_command(&log));
+    let (conn, mut inbox) = connection();
+    let question_one = "What does the issues indicator show?";
+    first
+        .command(
+            &conn,
+            Command::Ask {
+                conversation_id: Some(json!("conversation-1")),
+                question: Some(json!(question_one)),
+                context: Some(context()),
+            },
+        )
+        .await;
+    settled(&first, &conn, &mut inbox, "conversation-1").await;
+
+    // The dashboard goes away and hands the owner it leaves behind to the
+    // replacement that has not started yet.
+    devboard::detached_run::begin_detached_handoff(
+        &scratch.state(),
+        &scratch.repo(),
+        &first.instance,
+    );
+    drop(conn);
+    drop(first);
+
+    let second = app_for(&scratch, stub_command(&log));
+    let (follow, mut follow_inbox) = request_connection();
+    let question_two = "Which component renders it?";
+    second
+        .command(
+            &follow,
+            Command::Ask {
+                conversation_id: Some(json!("conversation-1")),
+                question: Some(json!(question_two)),
+                context: Some(context()),
+            },
+        )
+        .await;
+    let frames = drain(&mut follow_inbox);
+    assert!(
+        frames.iter().all(|frame| frame["type"] != "askError"),
+        "the restored conversation accepts the follow-up: {frames:?}"
+    );
+    let frames = settled(&second, &follow, &mut follow_inbox, "conversation-1").await;
+    let inquiry = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
+    assert_eq!(
+        inquiry["transcript"],
+        json!([
+            {"role": "developer", "text": question_one},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+            {"role": "developer", "text": question_two},
+            {"role": "agent", "text": streamed(ANSWER_TWO)},
+        ]),
+        "the earlier answer appears once, followed by this turn's answer"
+    );
+
+    let delivered: Vec<String> = log_lines(&log)
+        .into_iter()
+        .filter_map(|line| line.strip_prefix("ask-text 2 ").map(str::to_string))
+        .collect();
+    assert_eq!(
+        delivered.len(),
+        1,
+        "the live owner received the follow-up prompt"
+    );
+    let sent: Value = serde_json::from_str(&delivered[0]).expect("the logged prompt is JSON");
+    assert!(
+        sent.as_str()
+            .is_some_and(|text| text.contains(question_two)),
+        "the delivered prompt carries the question: {sent:?}"
+    );
+    assert_eq!(
+        log_lines(&log)
+            .iter()
+            .filter(|line| line.starts_with("ask-start "))
+            .count(),
+        1,
+        "the restored conversation reused the owner instead of starting one"
+    );
+
+    second
+        .command(
+            &follow,
+            Command::CloseAsk {
+                conversation_id: Some(json!("conversation-1")),
+            },
+        )
+        .await;
+    let spawned = log_lines(&log)
+        .iter()
+        .find_map(|line| {
+            line.strip_prefix("spawn ")
+                .and_then(|pid| pid.parse::<u32>().ok())
+        })
+        .expect("the log names the spawned peer");
+    wait_for_process_exit(spawned).await;
+}
+
 /// A conversation answers one turn at a time: a second ask while the first is
 /// still running is refused, whichever client asks it.
 // The environment guard serializes process-wide env across concurrently

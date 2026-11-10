@@ -654,6 +654,18 @@ impl AskMode {
                 conversation.peer.as_ref().is_none_or(|peer| peer.closed())
             })
         };
+        // A replacement dashboard restores the conversation without its peer,
+        // yet the owner a handoff left alive still holds the session. That
+        // owner is adopted and the turn is delivered to it, so the run journal
+        // keeps the earlier turns' text; only a fresh owner resets it.
+        let adopted = first_turn
+            && crate::detached_run::detached_run_adoptable(
+                &self.state_dir,
+                &self.repo_dir,
+                "ask",
+                &id,
+                &self.instance,
+            );
         // The provider is chosen before the turn is admitted: a refused
         // selection answers at once and starts no process.
         let environment = if first_turn {
@@ -695,7 +707,7 @@ impl AskMode {
                 conversation.last_progress = Instant::now();
                 // A fresh owner resets its run journal; a reused one keeps the
                 // earlier turns' text, so only this turn's entries count.
-                conversation.text_start = if first_turn {
+                conversation.text_start = if first_turn && !adopted {
                     0
                 } else {
                     turn_text_count(&self.state_dir, &self.repo_dir, &id)

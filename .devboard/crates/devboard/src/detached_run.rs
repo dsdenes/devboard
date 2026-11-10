@@ -1060,6 +1060,52 @@ pub fn detached_run_live(
         .is_some_and(|handoff| now_millis() < handoff.at + DETACHED_HANDOFF_GRACE_MS)
 }
 
+/// True when a dashboard with this instance adopts the run's live owner here
+/// and now instead of starting a fresh one, so the run journal keeps the
+/// entries already written and a new turn's answer follows them.
+pub fn detached_run_adoptable(
+    state_dir: &Path,
+    repo_dir: &Path,
+    kind: &str,
+    key: &str,
+    instance: &str,
+) -> bool {
+    let directory = detached_run_directory(state_dir, repo_dir, kind, key);
+    read_detached_run_state(&directory)
+        .is_some_and(|state| adoptable(&directory, state_dir, repo_dir, instance, &state))
+}
+
+/// The adoption rule one handle shares with the state read above it.
+fn adoptable(
+    directory: &Path,
+    state_dir: &Path,
+    repo_dir: &Path,
+    instance: &str,
+    state: &DetachedRunState,
+) -> bool {
+    if detached_run_closed_path(directory).exists() {
+        return false;
+    }
+    let Some(owner) = state.owner.as_ref() else {
+        return false;
+    };
+    if !crate::supervision::live_process(owner.pid) || state.status.terminal() {
+        return false;
+    }
+    // A live owner is adopted whether the replacement already recorded its own
+    // instance or not.
+    if state.instance == instance {
+        return true;
+    }
+    // A second dashboard in this same process supervises the same owners; it
+    // adopts them without a handoff.
+    if state.launcher_pid == Some(std::process::id()) {
+        return true;
+    }
+    read_detached_handoff(state_dir, repo_dir)
+        .is_some_and(|handoff| now_millis() < handoff.at + DETACHED_HANDOFF_GRACE_MS)
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard handle
 
@@ -1383,7 +1429,22 @@ impl DetachedPeer {
         }
         if let Some(existing) = existing {
             if self.live(&existing) {
+                // A conversation owner keeps its session and its journal, so a
+                // turn is delivered to it: an adopted owner that the prompt
+                // never reached would replay its earlier answer instead.
+                let pending = existing
+                    .turn_seq
+                    .filter(|_| existing.turn_status == Some(DetachedTurnStatus::Running));
                 self.adopt(existing);
+                if self.inner.options.multi {
+                    // The owner drops a prompt that arrives while a turn runs,
+                    // so the turn in flight settles before this one is sent.
+                    if let Some(seq) = pending {
+                        self.wait_turn(seq).await?;
+                    }
+                    self.turn_prompt(prompt).await?;
+                    return Ok(DetachedRunOutcome::Completed);
+                }
                 return self.wait_outcome().await;
             }
             if existing
@@ -1432,29 +1493,35 @@ impl DetachedPeer {
         if !self.inner.options.multi {
             self.run(prompt).await.map(|_| ())
         } else {
-            let seq = {
-                let mut next = self
-                    .inner
-                    .next_turn
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let last = *self
-                    .inner
-                    .last_turn_seq
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                *next = (*next).max(last) + 1;
-                *next
-            };
-            write_detached_run_command(
-                &self.inner.control,
-                &DetachedRunCommand::Prompt {
-                    seq,
-                    text: prompt.to_string(),
-                },
-            );
-            self.wait_turn(seq).await
+            self.turn_prompt(prompt).await
         }
+    }
+
+    /// Writes the next turn's prompt to the conversation owner and waits for
+    /// that turn to settle.
+    async fn turn_prompt(&self, prompt: &str) -> Result<(), String> {
+        let seq = {
+            let mut next = self
+                .inner
+                .next_turn
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let last = *self
+                .inner
+                .last_turn_seq
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *next = (*next).max(last) + 1;
+            *next
+        };
+        write_detached_run_command(
+            &self.inner.control,
+            &DetachedRunCommand::Prompt {
+                seq,
+                text: prompt.to_string(),
+            },
+        );
+        self.wait_turn(seq).await
     }
 
     pub fn answer(&self, id: &AcpId, value: &str) -> bool {
@@ -1557,27 +1624,13 @@ impl DetachedPeer {
     }
 
     fn live(&self, state: &DetachedRunState) -> bool {
-        if detached_run_closed_path(&self.inner.directory).exists() {
-            return false;
-        }
-        let Some(owner) = state.owner.as_ref() else {
-            return false;
-        };
-        if !crate::supervision::live_process(owner.pid) || state.status.terminal() {
-            return false;
-        }
-        // A live owner is adopted whether the replacement already recorded its
-        // own instance or not.
-        if state.instance == self.inner.options.instance {
-            return true;
-        }
-        // A second dashboard in this same process supervises the same owners;
-        // it adopts them without a handoff.
-        if state.launcher_pid == Some(std::process::id()) {
-            return true;
-        }
-        read_detached_handoff(&self.inner.options.state_dir, &self.inner.options.repo_dir)
-            .is_some_and(|handoff| now_millis() < handoff.at + DETACHED_HANDOFF_GRACE_MS)
+        adoptable(
+            &self.inner.directory,
+            &self.inner.options.state_dir,
+            &self.inner.options.repo_dir,
+            &self.inner.options.instance,
+            state,
+        )
     }
 
     fn start(&self, prompt: &str) -> Result<(), String> {
