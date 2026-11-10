@@ -757,27 +757,38 @@ async fn a_start_whose_command_was_dropped_resets_after_its_bound() {
     let app = app_at(&root);
     let repo = root.join("repo");
     let state = root.join("state");
-    // A hundred-and-fifty-millisecond preflight outlasts the test's patience,
-    // so the drop is what leaves the bookkeeping behind; its window
-    // (preflight, grace, abandonment) closes inside the same test.
-    devboard::agents_mode::set_preflight(&app, "watchdog", hanging_preflight());
+    // The preflight never answers, and the test drops the start the moment
+    // that preflight is entered. A wall-clock race between the test's patience
+    // and the preflight bound fails on a loaded host even when the handler is
+    // correct: both timers expire, and the handler's bound is the one polled
+    // first. The callback's own signal names the drop, so the drop is what
+    // leaves the bookkeeping behind; its window (preflight, grace,
+    // abandonment) closes inside the same test.
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let entered = Arc::new(Mutex::new(Some(entered)));
+    let hanging: devboard::agents_mode::PreflightCallback = Arc::new(move |_request| {
+        if let Some(entered) = entered.lock().expect("the entered signal").take() {
+            let _ = entered.send(());
+        }
+        Box::pin(std::future::pending())
+    });
+    devboard::agents_mode::set_preflight(&app, "watchdog", hanging);
     devboard::agents_mode::set_preflight_timeout(&app, "watchdog", 150);
 
     let (conn, _inbox) = connection_for(&app).await;
-    let dropped = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        devboard::agents_mode::handle(
-            &app,
-            &conn,
-            &Command::StartAgent {
-                id: Some(json!("watchdog")),
-            },
-        ),
-    )
-    .await;
+    let start_command = Command::StartAgent {
+        id: Some(json!("watchdog")),
+    };
+    let answered = {
+        let mut start = std::pin::pin!(devboard::agents_mode::handle(&app, &conn, &start_command));
+        tokio::select! {
+            _ = entered_rx => None,
+            result = &mut start => Some(result),
+        }
+    };
     assert!(
-        dropped.is_err(),
-        "the hanging preflight must outlast the test's patience"
+        answered.is_none(),
+        "the start answered before its hanging preflight: {answered:?}"
     );
 
     let (conn, mut inbox) = connection_for(&app).await;
