@@ -1238,7 +1238,7 @@ fn runtime_command(args: &[String]) -> anyhow::Result<()> {
     if !violations.is_empty() {
         anyhow::bail!("{} runtime import(s) reach Node or Bun", violations.len());
     }
-    println!("runtime boundary: no Node or Bun import outside fixtures and client tooling");
+    println!("runtime boundary: no Node or Bun import outside test fixtures and build tooling");
     Ok(())
 }
 
