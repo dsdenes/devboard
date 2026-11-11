@@ -281,23 +281,26 @@ fn recording(case: &Case, observed: &Observed, allowlist: &Allowlist) -> http_ta
         method: case.method.as_str().to_string(),
         path: case.path.to_string(),
         status: observed.status,
-        body: placeholder(&body, allowlist),
+        body: placeholder(&body, None, allowlist),
     }
 }
 
 /// Replaces every allowlisted value with a placeholder of its own type. The
 /// comparator ignores those values and asserts the type, so the corpus names
-/// the answer's stable content and a re-recording stays byte-identical.
-fn placeholder(value: &Value, allowlist: &Allowlist) -> Value {
+/// the answer's stable content and a re-recording stays byte-identical. An
+/// entry scoped to a parent key replaces only the field under that key; a bare
+/// entry replaces the field at every depth. An array is transparent, so an
+/// object it holds keeps the key that names the array.
+fn placeholder(value: &Value, parent: Option<&str>, allowlist: &Allowlist) -> Value {
     match value {
         Value::Object(object) => Value::Object(
             object
                 .iter()
                 .map(|(key, value)| {
-                    let value = if allowlist.contains(key) {
+                    let value = if allowlist.contains(key, parent) {
                         typed_placeholder(value)
                     } else {
-                        placeholder(value, allowlist)
+                        placeholder(value, Some(key), allowlist)
                     };
                     (key.clone(), value)
                 })
@@ -306,7 +309,7 @@ fn placeholder(value: &Value, allowlist: &Allowlist) -> Value {
         Value::Array(items) => Value::Array(
             items
                 .iter()
-                .map(|item| placeholder(item, allowlist))
+                .map(|item| placeholder(item, parent, allowlist))
                 .collect(),
         ),
         other => other.clone(),
@@ -340,4 +343,49 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allowlist() -> Allowlist {
+        Allowlist::load(&allowlist_path()).expect("the nondeterminism allowlist")
+    }
+
+    #[test]
+    fn the_placeholder_replaces_a_scoped_field_only_at_its_scope() {
+        let body = serde_json::json!({
+            "state": {
+                "error": "read_artifacts failed",
+                "agents": [{
+                    "error": "read failed",
+                    "sync": {"error": "the forge read was refused"},
+                    "prompt": {"agent": "discover-sheet", "text": null,
+                        "error": "ENOENT: no such file: /abs/fixture"}
+                }]
+            }
+        });
+        let recorded = placeholder(&body, None, &allowlist());
+        assert_eq!(
+            recorded["state"]["error"],
+            Value::String("read_artifacts failed".to_string()),
+            "the state's own error is recorded as it answered"
+        );
+        assert_eq!(
+            recorded["state"]["agents"][0]["error"],
+            Value::String("read failed".to_string()),
+            "an agent's error is recorded as it answered"
+        );
+        assert_eq!(
+            recorded["state"]["agents"][0]["sync"]["error"],
+            Value::String(String::new()),
+            "the fixture's forge read outcome is replaced"
+        );
+        assert_eq!(
+            recorded["state"]["agents"][0]["prompt"]["error"],
+            Value::String(String::new()),
+            "the prompt's diagnostic is replaced at its own scope"
+        );
+    }
 }

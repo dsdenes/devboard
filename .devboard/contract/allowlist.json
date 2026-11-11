@@ -1,5 +1,5 @@
 {
-  "note": "Every field the HTTP corpus comparison ignores, and why it cannot be equal across two runs. A field is listed only when its value is generated per run or names the installation, never to hide a behavioral difference. The comparison asserts the field is present and, unless the recording holds null, carries the recorded type; every other field, frame, and body is compared exactly.",
+  "note": "Every field the HTTP corpus comparison ignores, and why it cannot be equal across two runs. A field is listed only when its value is generated per run or names the installation, never to hide a behavioral difference. An entry with an \"at\" names the key of the object that holds the field, so the field is ignored only there; a bare entry applies at every depth. The comparison asserts the field is present and, unless the recording holds null, carries the recorded type; every other field, frame, and body is compared exactly.",
   "fields": [
     {
       "name": "pid",
@@ -127,7 +127,13 @@
     },
     {
       "name": "error",
-      "reason": "an ENOENT diagnostic naming an absolute fixture path"
+      "at": "prompt",
+      "reason": "the Discover prompt's ENOENT diagnostic naming an absolute fixture path"
+    },
+    {
+      "name": "error",
+      "at": "sync",
+      "reason": "the fixture's forge read races the answer and its diagnostic names an absolute fixture path"
     },
     {
       "name": "effective",

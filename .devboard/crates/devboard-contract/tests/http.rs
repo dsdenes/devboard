@@ -202,6 +202,106 @@ fn a_recorded_refusal_fails_only_the_row_that_names_a_live_request() {
 fn the_allowlist_names_every_field_it_excludes() {
     let allowlist = allowlist();
     assert!(!allowlist.is_empty(), "the allowlist is read");
+    let mut seen = BTreeSet::new();
+    for (name, at) in allowlist.entries() {
+        assert!(!name.is_empty(), "every entry names a field");
+        assert!(
+            seen.insert((name.to_string(), at.map(str::to_string))),
+            "{name} is listed twice at {at:?}"
+        );
+        assert!(
+            allowlist.contains(name, at),
+            "{name} is ignored at its own scope {at:?}"
+        );
+        assert!(
+            !allowlist.contains(&format!("{name}_"), at),
+            "{name} names one field, not a prefix"
+        );
+        if let Some(at) = at {
+            assert!(!at.trim().is_empty(), "{name} names a non-empty parent key");
+            assert!(
+                !allowlist.contains(name, None),
+                "{name} is ignored only under {at}, not at the body's top level"
+            );
+            assert!(
+                !allowlist.contains(name, Some("anotherKey")),
+                "{name} is ignored only under {at}"
+            );
+        } else {
+            assert!(
+                allowlist.contains(name, Some("anotherKey")),
+                "{name} applies at every depth"
+            );
+        }
+    }
+}
+
+/// The row whose answer carries the Discover state, with its recorded error
+/// fields.
+fn discover_row() -> http_table::Case {
+    http_table::all_cases()
+        .into_iter()
+        .find(|case| case.name == "createFlowGoal")
+        .expect("the Discover state row")
+}
+
+fn discover_state(body: &mut Value) -> &mut Value {
+    body["frames"]
+        .as_array_mut()
+        .expect("the frames envelope")
+        .iter_mut()
+        .find(|frame| frame["type"] == "discoverState")
+        .expect("a Discover state frame")
+        .get_mut("state")
+        .expect("the Discover state")
+}
+
+fn observed_body(name: &'static str, status: u16, body: &Value) -> http_table::Observed {
+    http_table::Observed {
+        name,
+        status,
+        headers: Default::default(),
+        body: body.to_string(),
+    }
+}
+
+#[test]
+fn a_served_discover_error_diverges_where_the_recording_names_none() {
+    let allowlist = allowlist();
+    let case = discover_row();
+    let recording = corpus()
+        .get("createFlowGoal")
+        .cloned()
+        .expect("the createFlowGoal recording");
+    let served = |body: &Value| observed_body(case.name, recording.status, body);
+    http_table::check(&case, &recording, &allowlist, &served(&recording.body))
+        .expect("the recorded answer replays");
+
+    // The Discover prompt's ENOENT diagnostic is allowlisted at its own
+    // location: it carries an absolute fixture path, so another text there is
+    // ignored.
+    let mut observed = recording.body.clone();
+    discover_state(&mut observed)["agents"][0]["prompt"]["error"] = Value::String(
+        "ENOENT: No such file or directory (os error 2): /abs/fixture/prompts/sheet.md".to_string(),
+    );
+    http_table::check(&case, &recording, &allowlist, &served(&observed))
+        .expect("the prompt's ENOENT text names the fixture installation");
+
+    // A read error the recording says is absent is compared at its own
+    // location, so the corpus catches one appearing.
+    for appear in [
+        |state: &mut Value| state["error"] = Value::String("read_artifacts failed".to_string()),
+        |state: &mut Value| {
+            state["agents"][0]["error"] = Value::String("read_artifacts failed".to_string());
+        },
+    ] {
+        let mut answer = recording.body.clone();
+        appear(discover_state(&mut answer));
+        let error = http_table::check(&case, &recording, &allowlist, &served(&answer))
+            .expect_err("a served error where the recording names null diverges");
+        assert!(error.contains(".error"), "{error}");
+        assert!(!error.contains("prompt"), "{error}");
+    }
 }
 
 #[tokio::test]

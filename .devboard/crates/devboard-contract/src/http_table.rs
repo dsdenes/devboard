@@ -2,7 +2,7 @@
 //! names, plus one row for every served REST operation. The table runs against
 //! the Rust dashboard, so it proves the transport before anything relies on it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING, HOST, ORIGIN, UPGRADE};
@@ -635,11 +635,22 @@ impl Corpus {
     }
 }
 
-/// Every field a comparison ignores, and its reason. An empty allowlist
-/// ignores nothing.
+/// One allowlist entry: the field every comparison ignores, the key of the
+/// object that holds it when the entry is not installation-wide, and the
+/// reason it cannot be equal across two runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedField {
+    pub name: String,
+    /// The key of the object holding the field, or `None` for an entry that
+    /// applies at every depth.
+    pub at: Option<String>,
+}
+
+/// Every field a comparison ignores: its name, the parent key it is limited
+/// to, and its reason. An empty allowlist ignores nothing.
 #[derive(Default)]
 pub struct Allowlist {
-    fields: BTreeSet<String>,
+    fields: Vec<AllowedField>,
 }
 
 impl Allowlist {
@@ -653,8 +664,18 @@ impl Allowlist {
             .get("fields")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("{}: no fields", path.display()))?;
-        let mut fields = BTreeSet::new();
+        let mut fields = Vec::new();
         for entry in entries {
+            if let Some(unknown) = entry.as_object().and_then(|object| {
+                object
+                    .keys()
+                    .find(|key| !matches!(key.as_str(), "name" | "reason" | "at"))
+            }) {
+                return Err(format!(
+                    "{}: an entry carries {unknown}, which is not name, reason, or at",
+                    path.display()
+                ));
+            }
             let name = entry
                 .get("name")
                 .and_then(Value::as_str)
@@ -666,16 +687,42 @@ impl Allowlist {
             if reason.trim().is_empty() {
                 return Err(format!("{}: {name} has no reason", path.display()));
             }
-            if !fields.insert(name.to_string()) {
+            let at = match entry.get("at") {
+                None => None,
+                Some(Value::String(at)) if !at.trim().is_empty() => Some(at.to_string()),
+                Some(_) => {
+                    return Err(format!(
+                        "{}: {name} has an at that is not a parent key",
+                        path.display()
+                    ));
+                }
+            };
+            let field = AllowedField {
+                name: name.to_string(),
+                at,
+            };
+            if fields.contains(&field) {
                 return Err(format!("{}: {name} is listed twice", path.display()));
             }
+            fields.push(field);
         }
         Ok(Self { fields })
     }
 
-    /// True when a comparison ignores this field's value.
-    pub fn contains(&self, name: &str) -> bool {
-        self.fields.contains(name)
+    /// True when a comparison ignores this field's value. `parent` is the key
+    /// of the object that holds the field, with an array transparent, or
+    /// `None` at the body's top level.
+    pub fn contains(&self, name: &str, parent: Option<&str>) -> bool {
+        self.fields.iter().any(|field| {
+            field.name == name && field.at.as_deref().is_none_or(|at| Some(at) == parent)
+        })
+    }
+
+    /// Every entry, as its field name and the parent key it is limited to.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
+        self.fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.at.as_deref()))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -854,6 +901,7 @@ fn compare_records(
     compare_value(
         case.name,
         "frames.0.",
+        Some("frames"),
         &recorded,
         frame,
         &Allowlist::default(),
@@ -1044,12 +1092,13 @@ fn compare_body(
     }
     let parsed: Value = serde_json::from_str(served)
         .map_err(|error| format!("{}: the body is not JSON: {error}", case.name))?;
-    compare_value(case.name, "", recorded, &parsed, allowlist)
+    compare_value(case.name, "", None, recorded, &parsed, allowlist)
 }
 
 fn compare_value(
     name: &str,
     at: &str,
+    parent: Option<&str>,
     recorded: &Value,
     served: &Value,
     allowlist: &Allowlist,
@@ -1060,7 +1109,7 @@ fn compare_value(
                 let Some(other) = served.get(key) else {
                     return Err(format!("{name}: the answer has no {at}{key}"));
                 };
-                if allowlist.contains(key) {
+                if allowlist.contains(key, parent) {
                     // A recorded null names no type to compare: the field is
                     // asserted present, and its value is ignored.
                     if !value.is_null() && json_type(value) != json_type(other) {
@@ -1071,7 +1120,14 @@ fn compare_value(
                         ));
                     }
                 } else {
-                    compare_value(name, &format!("{at}{key}."), value, other, allowlist)?;
+                    compare_value(
+                        name,
+                        &format!("{at}{key}."),
+                        Some(key),
+                        value,
+                        other,
+                        allowlist,
+                    )?;
                 }
             }
             if let Some(extra) = served.keys().find(|key| !recorded.contains_key(*key)) {
@@ -1090,7 +1146,14 @@ fn compare_value(
                 ));
             }
             for (index, (recorded, served)) in recorded.iter().zip(served).enumerate() {
-                compare_value(name, &format!("{at}{index}."), recorded, served, allowlist)?;
+                compare_value(
+                    name,
+                    &format!("{at}{index}."),
+                    parent,
+                    recorded,
+                    served,
+                    allowlist,
+                )?;
             }
             Ok(())
         }
@@ -1167,7 +1230,13 @@ mod tests {
 
     fn allowlist(names: &[&str]) -> Allowlist {
         Allowlist {
-            fields: names.iter().map(|name| name.to_string()).collect(),
+            fields: names
+                .iter()
+                .map(|name| AllowedField {
+                    name: name.to_string(),
+                    at: None,
+                })
+                .collect(),
         }
     }
 
@@ -1323,6 +1392,47 @@ mod tests {
             &observed(r#"{}"#),
         )
         .expect_err("a missing field diverges");
+    }
+
+    #[test]
+    fn a_scoped_allowlist_entry_ignores_only_its_own_location() {
+        let scoped = Allowlist {
+            fields: vec![AllowedField {
+                name: "error".to_string(),
+                at: Some("prompt".to_string()),
+            }],
+        };
+        let recorded = recording(serde_json::json!({
+            "prompt": {"error": ""},
+            "state": {"error": null}
+        }));
+        check(
+            &case(Answer::Exact),
+            &recorded,
+            &scoped,
+            &observed(
+                r#"{"prompt":{"error":"ENOENT: no such file: /abs/fixture"},"state":{"error":null}}"#,
+            ),
+        )
+        .expect("the prompt's diagnostic names the fixture installation");
+        let error = check(
+            &case(Answer::Exact),
+            &recorded,
+            &scoped,
+            &observed(
+                r#"{"prompt":{"error":"ENOENT: no such file: /abs/fixture"},"state":{"error":"read_artifacts failed"}}"#,
+            ),
+        )
+        .expect_err("the same field beside prompt is compared");
+        assert!(error.contains("state.error"), "{error}");
+        let error = check(
+            &case(Answer::Exact),
+            &recording(serde_json::json!({"error": null})),
+            &scoped,
+            &observed(r#"{"error":"read_artifacts failed"}"#),
+        )
+        .expect_err("the entry names no top-level field");
+        assert!(error.contains("error"), "{error}");
     }
 
     #[test]
