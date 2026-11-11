@@ -1969,8 +1969,11 @@ fn stage_discover_skill(context: &McpContext, args: &Map<String, Value>) -> Resu
     if description.contains('\r') || description.contains('\n') {
         return Err("description must be one line.".to_string());
     }
-    if byte_len(description) > 1024 {
-        return Err("description must be at most 1024 bytes.".to_string());
+    if description.chars().count() > crate::discover_mode::SKILL_DESCRIPTION_MAX_CHARS {
+        return Err(format!(
+            "description must be at most {} characters.",
+            crate::discover_mode::SKILL_DESCRIPTION_MAX_CHARS
+        ));
     }
     let body = args.get("body").and_then(Value::as_str).unwrap_or_default();
     if !starts_with_heading(body) {

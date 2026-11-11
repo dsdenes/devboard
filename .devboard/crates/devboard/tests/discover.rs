@@ -1286,6 +1286,51 @@ fn an_unreadable_skill_fails_the_publishing_run() {
 }
 
 #[test]
+fn a_staged_skill_description_is_published_by_character_count() {
+    let scratch = Scratch::new("skill-description-chars");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    let description = "技".repeat(1024);
+    assert!(
+        description.len() > 1024,
+        "the description exceeds 1024 bytes"
+    );
+    write(
+        &staging.join("skills/discover-testing-strategy/SKILL.md"),
+        &format!(
+            concat!(
+                "---\n",
+                "name: discover-testing-strategy\n",
+                "description: \"{}\"\n",
+                "metadata:\n",
+                "  devboard-managed: \"true\"\n",
+                "  devboard-family: \"discover\"\n",
+                "  devboard-skill: testing-strategy\n",
+                "---\n\n",
+                "# Testing\n\n",
+                "- Run the suite.\n",
+            ),
+            description
+        ),
+    );
+
+    let facts = devboard::discover_mode::host_facts(&repo);
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-description-chars",
+        &facts,
+        &staging,
+        "fixture",
+        "discover-testing-strategy",
+    )
+    .expect("a 1024-character description publishes");
+    let published =
+        std::fs::read_to_string(repo.join(".omp/skills/discover-testing-strategy/SKILL.md"))
+            .expect("the published skill");
+    assert!(published.contains(&description), "{published}");
+}
+
+#[test]
 fn usage_examples_order_case_insensitively() {
     let scratch = Scratch::new("usage-order");
     let repo = scratch.path().join("repo");

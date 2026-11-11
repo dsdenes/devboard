@@ -921,3 +921,76 @@ async fn a_refused_issues_control_answers_the_dashboards_error_frame() {
     assert_eq!(reads, 0, "a refused control sends no follow-up read");
     server.abort();
 }
+
+/// The description limit counts characters in the staging tool exactly as the
+/// publication validator does: a CJK description longer than 1024 bytes stages,
+/// and one character over the cap is refused in characters.
+#[tokio::test]
+async fn a_staged_skill_description_is_capped_in_characters() {
+    let context = fixture("skill-description-cap");
+    let staging = context
+        .repo_dir
+        .join(".omp")
+        .join("discover")
+        .join("staging")
+        .join("run-1");
+    std::fs::create_dir_all(&staging).expect("the staging directory");
+    let at_cap = "技".repeat(1024);
+    assert!(at_cap.len() > 1024, "the description exceeds 1024 bytes");
+    let over_cap = "技".repeat(1025);
+
+    let frames = drive(
+        &context,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": 80,
+                "method": "tools/call",
+                "params": {
+                    "name": "discover_skill_stage",
+                    "arguments": {
+                        "stagingDir": "run-1",
+                        "name": "discover-testing-strategy",
+                        "description": at_cap,
+                        "body": "# Testing\n\n- Run the suite.",
+                    }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "tools/call",
+                "params": {
+                    "name": "discover_skill_stage",
+                    "arguments": {
+                        "stagingDir": "run-1",
+                        "name": "discover-testing-strategy",
+                        "description": over_cap,
+                        "body": "# Testing\n\n- Run the suite.",
+                    }
+                }
+            }),
+        ],
+    )
+    .await;
+
+    let staged = tool_result(&frames, 80);
+    assert_eq!(staged["name"], "discover-testing-strategy");
+    let document =
+        std::fs::read_to_string(staging.join("skills/discover-testing-strategy/SKILL.md"))
+            .expect("the staged skill");
+    assert!(
+        document.contains(&at_cap),
+        "the staged skill carries the full description"
+    );
+
+    let refused = reply(&frames, 81);
+    assert_eq!(refused["result"]["isError"], true);
+    let message = refused["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text");
+    assert!(
+        message.contains("description must be at most 1024 characters."),
+        "{message}"
+    );
+}

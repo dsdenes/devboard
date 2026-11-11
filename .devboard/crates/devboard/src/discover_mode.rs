@@ -101,6 +101,9 @@ pub const DISCOVER_RUN_ORDER: &[&str] = &[
     "discover-contribution",
 ];
 
+/// The longest skill description accepted, counted in characters.
+pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 1024;
+
 /// The six project-local skills Discover publishes.
 pub const DISCOVER_SKILLS: &[&str] = &[
     "discover-testing-strategy",
@@ -2525,10 +2528,10 @@ fn validate_skill_text(name: &str, text: &str, path: &str) -> Result<StagedSkill
     if description.trim().is_empty() {
         return Err(invalid(&format!("{path}:description"), "must not be empty"));
     }
-    if description.chars().count() > 1024 {
+    if description.chars().count() > SKILL_DESCRIPTION_MAX_CHARS {
         return Err(invalid(
             &format!("{path}:description"),
-            "must be at most 1024 characters",
+            format!("must be at most {SKILL_DESCRIPTION_MAX_CHARS} characters"),
         ));
     }
     if parsed
