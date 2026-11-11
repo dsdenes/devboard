@@ -54,6 +54,7 @@ const globals = globalThis as unknown as Record<string, unknown>;
 // Static imports evaluate before the DOM globals exist, so the component and
 // the testing library load after registration.
 const { cleanup, fireEvent, render, within } = await import("@testing-library/svelte");
+const { tick } = await import("svelte");
 const { agents } = await import("../agents.svelte");
 // Loaded after the DOM globals, like every other store the component reads.
 const { connection } = await import("../connection.svelte");
@@ -340,4 +341,66 @@ test("switching to an agent with the same saved settings rewrites the fields fro
     socket.restore();
     connection.state = previous;
   }
+});
+
+/** The prompt reads one page sent over the stub socket, in dispatch order. */
+function promptCommands(socket: FakeSocket): Record<string, unknown>[] {
+  return socket.sent
+    .map((data) => JSON.parse(data) as Record<string, unknown>)
+    .filter((command) => command.type === "getAgentPrompt");
+}
+
+test("an agent page asks for that agent's prompt and renders its answer", async () => {
+  delete agents.prompts["release-train"];
+  delete agents.promptErrors["release-train"];
+  const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }), "open");
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  expect(promptCommands(socket)).toEqual([{ type: "getAgentPrompt", id: "release-train" }]);
+  expect(within(view.container).getByText("Loading the prompt…")).toBeTruthy();
+
+  agents.handleEvent({
+    type: "agentPromptState",
+    id: "release-train",
+    prompt: { id: "release-train", absent: false, text: "Release the train.", error: null },
+  });
+  await tick();
+  expect(within(view.container).getByTestId("agent-prompt-text").textContent).toBe(
+    "Release the train.",
+  );
+  expect(within(view.container).queryByText("Loading the prompt…")).toBeNull();
+});
+
+test("a refused prompt read states the refusal instead of the loading hint", async () => {
+  delete agents.prompts["release-train"];
+  delete agents.promptErrors["release-train"];
+  const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }), "open");
+  agents.handleEvent({
+    type: "agentPromptError",
+    id: "release-train",
+    message: "Unknown background agent: release-train.",
+  });
+  await tick();
+  const error = within(view.container).getByTestId("agent-prompt-error");
+  expect(error.getAttribute("role")).toBe("alert");
+  expect(error.textContent).toBe("Unknown background agent: release-train.");
+  expect(within(view.container).queryByText("Loading the prompt…")).toBeNull();
+});
+
+test("switching agents requests the newly shown agent's prompt", async () => {
+  delete agents.prompts["scout"];
+  delete agents.promptErrors["scout"];
+  const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }), "open");
+  const socket = FakeSocket.instances[0];
+  if (socket === undefined) throw new Error("no socket created");
+  expect(promptCommands(socket)).toEqual([{ type: "getAgentPrompt", id: "release-train" }]);
+
+  await view.rerender({ agentId: "scout" });
+  await tick();
+  const requests = promptCommands(socket);
+  expect(requests.length).toBe(2);
+  expect(requests[1]).toEqual({ type: "getAgentPrompt", id: "scout" });
+  expect(within(view.container).getByTestId("agent-prompt").getAttribute("data-agent")).toBe(
+    "scout",
+  );
 });

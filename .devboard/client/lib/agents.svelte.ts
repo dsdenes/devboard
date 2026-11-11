@@ -61,6 +61,8 @@ export class AgentsStore {
   activity = $state<Record<string, string[]>>({});
   activityScan = $state<Record<string, string | null>>({});
   prompts = $state<Record<string, AgentPromptState>>({});
+  /** A refused prompt read's text, cleared when that agent's prompt arrives. */
+  promptErrors = $state<Record<string, string>>({});
   private readonly seen = new Set<string>();
   private readonly lastError = new Map<string, string | null>();
   private readonly lastNotice = new Map<string, string | null>();
@@ -174,10 +176,35 @@ export class AgentsStore {
     connection.send({ type: "refreshAgent", id });
   }
 
+  /**
+   * The prompt section opened for this agent: ask for its document. The
+   * store's snapshot read carries no prompt, and a section mounted before the
+   * socket settles sends this when it opens.
+   */
+  readPrompt(id: string): void {
+    if (!connection.open) return;
+    connection.send({ type: "getAgentPrompt", id });
+  }
+
+  /** The section closed: stop polling a prompt no page shows. */
+  forgetPrompt(id: string): void {
+    connection.forget({ type: "getAgentPrompt", id });
+  }
+
   handleEvent(message: Record<string, unknown>): void {
     if (message.type === "agentPromptState" && typeof message.id === "string") {
       const prompt = message.prompt as AgentPromptState | null;
-      if (prompt !== null && typeof prompt === "object") this.prompts[message.id] = prompt;
+      if (prompt !== null && typeof prompt === "object") {
+        this.prompts[message.id] = prompt;
+        delete this.promptErrors[message.id];
+      }
+      return;
+    }
+    if (message.type === "agentPromptError" && typeof message.id === "string") {
+      this.promptErrors[message.id] =
+        typeof message.message === "string" && message.message.length > 0
+          ? message.message
+          : "The prompt could not be read.";
       return;
     }
     if (message.type === "agentsState" && Array.isArray(message.agents)) {
