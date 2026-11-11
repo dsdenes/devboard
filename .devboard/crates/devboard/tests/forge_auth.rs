@@ -143,6 +143,8 @@ fn gitea_handler(
     }
 }
 
+/// An isolated scratch root. It is its own git repository with no remote, so a
+/// run never inherits the enclosing checkout's origin.
 fn temp_dir(label: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -150,11 +152,6 @@ fn temp_dir(label: &str) -> PathBuf {
         .join(format!("forge-auth-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("a fixture root");
-    root
-}
-
-fn git_repo(label: &str, remote: Option<&str>) -> PathBuf {
-    let root = temp_dir(label);
     let status = Command::new("git")
         .arg("-C")
         .arg(&root)
@@ -162,6 +159,11 @@ fn git_repo(label: &str, remote: Option<&str>) -> PathBuf {
         .status()
         .expect("git init");
     assert!(status.success());
+    root
+}
+
+fn git_repo(label: &str, remote: Option<&str>) -> PathBuf {
+    let root = temp_dir(label);
     if let Some(remote) = remote {
         let status = Command::new("git")
             .arg("-C")
@@ -306,7 +308,7 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
 
     let parsed = parsed_of(&["check", "--json"], &repo, &context.environment);
     assert_eq!(parsed.action, Action::Check);
-    assert_eq!(parsed.host, "gitea.test");
+    assert_eq!(parsed.host, server.host());
     assert_eq!(parsed.project, "owner/name");
     assert_eq!(parsed.required, forge::RequiredAccess::Read);
     assert_eq!(parsed.forge, None);
@@ -320,7 +322,7 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
             "{}\n",
             json!({
                 "forge": "gitea",
-                "host": "gitea.test",
+                "host": server.host(),
                 "project": "owner/name",
                 "login": "alice",
                 "source": "GITEA_TOKEN",
@@ -360,7 +362,10 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
     assert_eq!(human.exit_code, 0);
     assert_eq!(
         human.stdout,
-        "gitea.test owner/name: alice (pull, active) via GITEA_TOKEN\n"
+        format!(
+            "{} owner/name: alice (pull, active) via GITEA_TOKEN\n",
+            server.host()
+        )
     );
     assert_no_token(&human, "gitea-secret-value");
 }
@@ -939,7 +944,7 @@ async fn the_binary_exits_with_the_check_verdict_and_prints_no_token() {
     assert!(!stdout.contains("binary-secret"));
     let document: Value = serde_json::from_str(&stdout).expect("the check report");
     assert_eq!(document["forge"], json!("gitea"));
-    assert_eq!(document["host"], json!("gitea.test"));
+    assert_eq!(document["host"], json!(server.host()));
     assert_eq!(document["project"], json!("owner/name"));
     assert_eq!(document["source"], json!("GITEA_TOKEN"));
 
@@ -1056,4 +1061,212 @@ async fn exec_puts_the_gitea_token_in_the_child_environment_without_a_forge_cli(
         calls.lock().expect("calls").is_empty(),
         "the child ran without a forge CLI probe"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The published host is an accepted --host
+
+#[tokio::test]
+async fn a_reported_gitea_host_is_accepted_back_as_the_target() {
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+    let repo = git_repo(
+        "host-round-trip",
+        Some("ssh://ds@127.0.0.1:2223/owner/name.git"),
+    );
+    let environment = forge::environment(&[
+        ("GITEA_TOKEN", "round-trip-secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+    ]);
+    let (exec, calls) = recording_unavailable_exec();
+    let context = Context {
+        exec,
+        transport: forge::default_transport(5_000),
+        environment,
+    };
+
+    let first = forge_auth::execute(
+        &parsed_of(
+            &["check", "--required", "read", "--json"],
+            &repo,
+            &context.environment,
+        ),
+        &context,
+    )
+    .await;
+    assert_eq!(first.exit_code, 0, "{}", first.stderr);
+    let reported = json_of(&first);
+    assert_eq!(reported["host"], json!(server.host()));
+    assert_eq!(reported["project"], json!("owner/name"));
+    let host = reported["host"]
+        .as_str()
+        .expect("a reported host")
+        .to_string();
+    let project = reported["project"]
+        .as_str()
+        .expect("a reported project")
+        .to_string();
+
+    let round_trip = forge_auth::execute(
+        &parsed_of(
+            &[
+                "check",
+                "--host",
+                host.as_str(),
+                "--project",
+                project.as_str(),
+                "--required",
+                "read",
+                "--json",
+            ],
+            &repo,
+            &context.environment,
+        ),
+        &context,
+    )
+    .await;
+    assert_eq!(round_trip.exit_code, 0, "{}", round_trip.stderr);
+    let echoed = json_of(&round_trip);
+    for field in ["forge", "host", "login", "permission", "canWrite"] {
+        assert_eq!(echoed[field], reported[field], "{field} changed");
+    }
+
+    // The origin remote drops its port, so a caller reusing the bare host name
+    // still reaches the configured address and reports it back.
+    let bare = host
+        .rsplit_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(host.as_str());
+    let bare_outcome = forge_auth::execute(
+        &parsed_of(
+            &[
+                "check",
+                "--host",
+                bare,
+                "--project",
+                project.as_str(),
+                "--json",
+            ],
+            &repo,
+            &context.environment,
+        ),
+        &context,
+    )
+    .await;
+    assert_eq!(bare_outcome.exit_code, 0, "{}", bare_outcome.stderr);
+    assert_eq!(json_of(&bare_outcome)["host"], reported["host"]);
+
+    let recorded = calls.lock().expect("calls").clone();
+    assert!(
+        recorded.is_empty(),
+        "a Gitea round trip started a gh or glab probe: {recorded:?}"
+    );
+    assert_no_token(&first, "round-trip-secret");
+    assert_no_token(&round_trip, "round-trip-secret");
+}
+
+#[tokio::test]
+async fn an_explicit_foreign_host_on_a_gitea_checkout_starts_no_forge_cli() {
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+    let repo = git_repo("foreign-gitea", Some("https://gitea.test/owner/name.git"));
+    let environment = forge::environment(&[
+        ("GITEA_TOKEN", "foreign-secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+    ]);
+    let (exec, calls) = recording_unavailable_exec();
+    let context = Context {
+        exec,
+        transport: forge::default_transport(5_000),
+        environment,
+    };
+
+    let outcome = forge_auth::execute(
+        &parsed_of(
+            &[
+                "check",
+                "--host",
+                "other.example",
+                "--project",
+                "owner/name",
+                "--json",
+            ],
+            &repo,
+            &context.environment,
+        ),
+        &context,
+    )
+    .await;
+    assert_eq!(outcome.exit_code, 1);
+    assert!(outcome.stdout.is_empty());
+    assert!(
+        outcome.stderr.contains("other.example"),
+        "the refusal names the requested host: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(&server.host()),
+        "the refusal names the configured address: {}",
+        outcome.stderr
+    );
+    let recorded = calls.lock().expect("calls").clone();
+    assert!(
+        recorded.is_empty(),
+        "a Gitea checkout started a gh or glab probe: {recorded:?}"
+    );
+    assert!(
+        server.requests().is_empty(),
+        "the configured instance answered a request for a foreign host"
+    );
+    assert_no_token(&outcome, "foreign-secret");
+}
+
+#[tokio::test]
+async fn a_wrong_port_is_refused_as_a_foreign_gitea_address() {
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+    let repo = git_repo("wrong-port", Some("ssh://ds@127.0.0.1:2223/owner/name.git"));
+    let environment = forge::environment(&[
+        ("GITEA_TOKEN", "wrong-port-secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+    ]);
+    let (exec, calls) = recording_unavailable_exec();
+    let context = Context {
+        exec,
+        transport: forge::default_transport(5_000),
+        environment,
+    };
+
+    let requested = "127.0.0.1:1";
+    let outcome = forge_auth::execute(
+        &parsed_of(
+            &[
+                "check",
+                "--host",
+                requested,
+                "--project",
+                "owner/name",
+                "--json",
+            ],
+            &repo,
+            &context.environment,
+        ),
+        &context,
+    )
+    .await;
+    assert_eq!(outcome.exit_code, 1);
+    assert!(outcome.stdout.is_empty());
+    assert!(
+        outcome.stderr.contains(requested),
+        "the refusal names the requested host: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(&server.host()),
+        "the refusal names the configured address: {}",
+        outcome.stderr
+    );
+    assert!(calls.lock().expect("calls").is_empty());
+    assert!(server.requests().is_empty());
+    assert_no_token(&outcome, "wrong-port-secret");
 }

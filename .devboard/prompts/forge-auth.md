@@ -60,9 +60,11 @@ specific access level pins only its `--required` value, for example `--required 
 
 The JSON result carries `forge`, `host`, `project`, `login`, `source`, `active`, `permission`, and
 `canWrite`. Those fields are the run's entire knowledge of the forge: no further probe is needed.
-When the session context already contains that JSON with `canWrite: true`, the precondition is
-resolved: use it as-is and skip the check. Run the check at most once per session, and only when
-the context carries no such result.
+On Gitea, `host` is the configured HTTP address, port included, and the wrapper accepts it back as
+`--host`, so a result can be passed to another invocation unchanged. When the session context
+already contains that JSON with `canWrite: true`, the precondition is resolved: use it as-is and
+skip the check. Run the check at most once per session, and only when the context carries no such
+result.
 
 When a prompt needs the token inside a child process, it names
 `<devboard> forge-auth exec ... -- <command>`; that `exec` uses the same resolved path as the

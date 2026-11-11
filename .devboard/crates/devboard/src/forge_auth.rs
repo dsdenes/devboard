@@ -30,7 +30,7 @@ pub const USAGE: &str = concat!(
     "\n",
     "Options:\n",
     "  --host <host>        forge hostname, e.g. github.com; defaults to the Gitea URL's\n",
-    "                       host for --forge gitea, otherwise the origin remote's host\n",
+    "                       host for a Gitea target, otherwise the origin remote's host\n",
     "  --project <path>     repository path; defaults to the origin remote's path\n",
     "  --forge <name>       github, gitlab, or gitea; inferred from the host when omitted\n",
     "  --required <access>  read or write; default read\n",
@@ -68,9 +68,7 @@ pub struct Parsed {
     /// The child command of `exec`, empty for `check`.
     pub command: Vec<String>,
     /// Whether `--host` was omitted, so the origin (or the configured Gitea
-    /// address) named the host. An inferred host is classified like the
-    /// checkout's origin; an explicit one keeps the legacy GitHub and GitLab
-    /// probe chain.
+    /// address) named the host.
     pub host_inferred: bool,
 }
 
@@ -100,6 +98,7 @@ impl UsageError {
 pub struct OriginTarget {
     pub host: String,
     pub project: String,
+    pub forge: Forge,
 }
 
 /// The origin remote's forge target, for callers that omit `--host` or
@@ -111,18 +110,60 @@ pub fn origin_target(cwd: &Path, environment: &Environment) -> Option<OriginTarg
     Some(OriginTarget {
         host: parsed.host,
         project: parsed.project,
+        forge: parsed.forge,
     })
 }
 
-/// The host label of the configured Gitea HTTP origin, if any.
-pub fn configured_gitea_host(environment: &Environment) -> Option<String> {
-    let url = forge::configured_gitea_url(environment)?;
-    let parsed = Url::parse(&url).ok()?;
+/// The host label of one Gitea HTTP origin: its host name, and its port when
+/// the URL names one.
+fn host_label(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     Some(match parsed.port() {
         Some(port) => format!("{host}:{port}"),
         None => host.to_string(),
     })
+}
+
+/// The host label of the configured Gitea HTTP origin, if any.
+pub fn configured_gitea_host(environment: &Environment) -> Option<String> {
+    host_label(&forge::configured_gitea_url(environment)?)
+}
+
+/// The host label of the Gitea address one invocation uses: the `--url` the
+/// caller supplied, otherwise the configured `DEVBOARD_GITEA_URL`.
+fn gitea_address_host(url: Option<&str>, environment: &Environment) -> Option<String> {
+    match url {
+        Some(url) => host_label(url),
+        None => configured_gitea_host(environment),
+    }
+}
+
+/// The host name and the optional port one host label names. A value that is
+/// not a host label at all yields `None`, so it matches nothing.
+fn split_host_port(label: &str) -> Option<(String, Option<u16>)> {
+    let parsed = Url::parse(&format!("http://{}", label.trim())).ok()?;
+    Some((parsed.host_str()?.to_ascii_lowercase(), parsed.port()))
+}
+
+/// Whether a requested host names the same server as an address label.
+///
+/// The host name decides. A port the request carries must equal the address's
+/// port; a request without one names the address's own port, because every
+/// Gitea request goes to the configured address and never to a host the
+/// request merely spells.
+fn host_matches(requested: &str, address: &str) -> bool {
+    let Some((requested_host, requested_port)) = split_host_port(requested) else {
+        return false;
+    };
+    let Some((address_host, address_port)) = split_host_port(address) else {
+        return false;
+    };
+    requested_host == address_host
+        && match requested_port {
+            Some(port) => Some(port) == address_port,
+            None => true,
+        }
 }
 
 /// Parses the wrapper's arguments, resolving a missing host or project from the
@@ -226,8 +267,12 @@ pub fn parse(args: &[String], cwd: &Path, environment: &Environment) -> Result<S
     };
     let origin_host = origin.as_ref().map(|target| target.host.clone());
     let origin_project = origin.as_ref().map(|target| target.project.clone());
-    let inferred_host = if forge_name == Some(Forge::Gitea) {
-        configured_gitea_host(environment).or(origin_host)
+    let gitea_target = match forge_name {
+        Some(forge) => forge == Forge::Gitea,
+        None => origin.as_ref().map(|target| target.forge) == Some(Forge::Gitea),
+    };
+    let inferred_host = if gitea_target {
+        gitea_address_host(url.as_deref(), environment).or(origin_host)
     } else {
         origin_host
     };
@@ -295,38 +340,36 @@ impl Context {
 
 /// Resolves the one credential a command should use.
 ///
-/// A pinned `--forge` decides directly. A host inferred from the checkout's
-/// origin is classified exactly like the origin: `github.com` is GitHub, a
-/// GitLab host is GitLab, an explicit `DEVBOARD_FORGE` wins, and every other
-/// host — including this checkout's Gitea origin — is Gitea. No `gh` or `glab`
-/// probe starts for a Gitea host. An explicit `--host` that is not
-/// `github.com` or GitLab keeps the legacy GitHub and GitLab probe, which a
-/// self-hosted GitHub Enterprise `--host` needs. The Gitea probe runs only for
-/// the configured Gitea address, because every Gitea request goes to that
-/// address: a foreign `--host` is refused instead of being reported as
-/// resolved from a server it does not name.
+/// A pinned `--forge` decides directly. Otherwise the host name decides:
+/// `github.com` is GitHub, a GitLab host is GitLab, an explicit
+/// `DEVBOARD_FORGE` wins, and every other host is Gitea. A Gitea target — a
+/// pinned `--forge gitea`, a Gitea origin, a host inferred from one, or a host
+/// that names the configured Gitea address — resolves from that address before
+/// any `gh` or `glab` probe starts, so a Gitea-only checkout never runs one. An
+/// explicit `--host` that names neither the checkout's Gitea origin nor the
+/// configured address is refused instead of being reported as resolved from a
+/// server it does not name. Every other explicit host keeps the legacy GitHub
+/// and GitLab probe, which a self-hosted GitHub Enterprise `--host` needs.
 pub async fn resolve(parsed: &Parsed, context: &Context) -> AuthOutcome {
-    if let Some(forge) = parsed.forge {
+    let address = gitea_address_host(parsed.url.as_deref(), &context.environment);
+    if let Some(forge) = parsed.forge.filter(|forge| *forge != Forge::Gitea) {
         return resolve_for(parsed, context, forge).await;
     }
-    let lower = parsed.host.to_ascii_lowercase();
-    let gitea_host =
-        configured_gitea_host(&context.environment).map(|host| host.to_ascii_lowercase());
-    if lower == "github.com" || lower.contains("gitlab") {
-        return resolve_for(
-            parsed,
-            context,
-            forge::forge_from_host(&lower, &context.environment),
-        )
-        .await;
+    if parsed.forge.is_none() {
+        let classified = forge::forge_from_host(&parsed.host, &context.environment);
+        if classified != Forge::Gitea {
+            return resolve_for(parsed, context, classified).await;
+        }
     }
-    if parsed.host_inferred || gitea_host.as_deref() == Some(lower.as_str()) {
-        return resolve_for(
-            parsed,
-            context,
-            forge::forge_from_host(&lower, &context.environment),
-        )
-        .await;
+    let origin = origin_target(&parsed.cwd, &context.environment);
+    let gitea_origin = origin
+        .as_ref()
+        .is_some_and(|target| target.forge == Forge::Gitea);
+    let names_address = address
+        .as_deref()
+        .is_some_and(|address| host_matches(&parsed.host, address));
+    if parsed.forge == Some(Forge::Gitea) || gitea_origin || names_address {
+        return resolve_gitea_target(parsed, context, address.as_deref(), origin.as_ref()).await;
     }
 
     let github = resolve_for(parsed, context, Forge::GitHub).await;
@@ -337,11 +380,10 @@ pub async fn resolve(parsed: &Parsed, context: &Context) -> AuthOutcome {
     if !gitlab.is_failure() {
         return gitlab;
     }
-    // The Gitea probe queries the configured address and reports the requested
-    // host, so it answers only for a host that address serves. An exact match
-    // already resolved above; a foreign `--host` must never inherit an
+    // The Gitea probe queries the configured address, so it answers only for a
+    // host that address serves. A foreign `--host` must never inherit an
     // identity read from a server it does not name.
-    if let Some(address) = configured_gitea_host(&context.environment) {
+    if let Some(address) = address {
         return AuthOutcome::Failure(AuthFailure {
             error: format!(
                 "{} is not the configured Gitea address {address}; pass --host {address} or omit --host\ngh: {}\nglab: {}",
@@ -366,6 +408,38 @@ pub async fn resolve(parsed: &Parsed, context: &Context) -> AuthOutcome {
             failure_message(&gitea),
         ),
     })
+}
+
+/// Resolves a Gitea target from the one address every Gitea request uses.
+///
+/// The report names that address, so the identity the wrapper publishes is the
+/// identity its own `--host` accepts. A requested host that names neither the
+/// address nor the checkout's Gitea origin is refused before any probe, because
+/// the credential is read from the address and never from the server the
+/// request merely spells.
+async fn resolve_gitea_target(
+    parsed: &Parsed,
+    context: &Context,
+    address: Option<&str>,
+    origin: Option<&OriginTarget>,
+) -> AuthOutcome {
+    let Some(address) = address else {
+        return resolve_for(parsed, context, Forge::Gitea).await;
+    };
+    let names_origin = origin
+        .filter(|target| target.forge == Forge::Gitea)
+        .is_some_and(|target| host_matches(&parsed.host, &target.host));
+    if !names_origin && !host_matches(&parsed.host, address) {
+        return AuthOutcome::Failure(AuthFailure {
+            error: format!(
+                "{} is not the configured Gitea address {address}; pass --host {address} or omit --host",
+                parsed.host
+            ),
+        });
+    }
+    let mut reported = parsed.clone();
+    reported.host = address.to_string();
+    resolve_for(&reported, context, Forge::Gitea).await
 }
 
 async fn resolve_for(parsed: &Parsed, context: &Context, forge: Forge) -> AuthOutcome {
