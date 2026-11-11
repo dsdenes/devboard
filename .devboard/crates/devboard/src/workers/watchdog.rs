@@ -2296,7 +2296,11 @@ fn sweep_provider_agents(
     if !is_real_directory(&agents) {
         return;
     }
-    let ids = subscription_ids(&providers.join("credentials.json"));
+    let ids = subscription_ids(&providers.join("credentials.json")).map(|ids| {
+        ids.into_iter()
+            .map(|id| crate::providers::subscription_key(&id))
+            .collect::<HashSet<String>>()
+    });
     let mut names: Vec<std::ffi::OsString> = match std::fs::read_dir(&agents) {
         Ok(entries) => entries.flatten().map(|entry| entry.file_name()).collect(),
         Err(_) => return,
@@ -2316,7 +2320,7 @@ fn sweep_provider_agents(
                 .unwrap_or(&name_text);
             let known = ids
                 .iter()
-                .any(|id| base == id.as_str() || base.ends_with(&format!("-{id}")));
+                .any(|key| base == key.as_str() || base.ends_with(&format!("-{key}")));
             let newest = newest_file_ms(&selection);
             if !known && newest < now_ms - retention.floor_ms {
                 let candidate = CleanupCandidate {

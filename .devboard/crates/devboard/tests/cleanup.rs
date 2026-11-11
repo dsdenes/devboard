@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+use devboard::providers::{agent_directory, ProviderId};
 use devboard::workers::builds::{run_build_cleanup_with, BuildCandidateKind};
 use devboard::workers::watchdog::{
     apparent_tree_bytes, covered_state_dirs, epoch_ms, run_cleanup, run_cleanup_with,
     sweep_state_dir_with, CleanupSource, CoveredStateDir, Instance, ProviderRetention,
-    PROVIDER_RETENTION_MS,
+    PROVIDER_FLOOR_MS, PROVIDER_RETENTION_MS,
 };
 use devboard::workers::worktrees::{run_worktree_cleanup, WorktreeCandidateKind};
 
@@ -549,6 +550,55 @@ fn providers_orphan_selection_directories_follow_the_credentials_rule() {
     assert!(
         fresh_orphan.exists(),
         "a directory holding a file younger than 24 hours stays"
+    );
+
+    // The directory name is the sanitized id, so an id that needs sanitizing
+    // still names its live selection directory.
+    let sanitized = directory.join("sanitized");
+    let sanitized_state = sanitized.join("state");
+    let sanitized_id = "id+with/slash";
+    let sanitized_dir = agent_directory(&sanitized_state, ProviderId::OpenCodeGo, sanitized_id);
+    write_bytes(&sanitized_dir.join("config.yml"), 8);
+    write_bytes(&sanitized_dir.join("agent.db"), 8);
+    set_mtime(
+        &sanitized_dir.join("config.yml"),
+        now - PROVIDER_FLOOR_MS - HOUR_MS,
+    );
+    set_mtime(
+        &sanitized_dir.join("agent.db"),
+        now - PROVIDER_FLOOR_MS - HOUR_MS,
+    );
+    let sanitized_orphan = sanitized_state.join("providers/agents/opencode-go-unknown");
+    write_bytes(&sanitized_orphan.join("config.yml"), 8);
+    set_mtime(&sanitized_orphan.join("config.yml"), old);
+    let sanitized_dedup = sanitized_state.join(format!(
+        "{}-watchdog-dedup",
+        sanitized_dir.file_name().unwrap().to_string_lossy()
+    ));
+    write_bytes(&sanitized_dedup.join("config.yml"), 8);
+    set_mtime(&sanitized_dedup.join("config.yml"), old);
+    write_text(
+        &sanitized_state.join("providers/credentials.json"),
+        &credentials_with(sanitized_id),
+    );
+    sweep_state_dir_with(
+        &sanitized_state,
+        now,
+        false,
+        None,
+        &ProviderRetention::default(),
+    );
+    assert!(
+        sanitized_dir.exists(),
+        "a live subscription whose id needs sanitizing is never removed"
+    );
+    assert!(
+        sanitized_dedup.exists(),
+        "the dedup suffix strips before the sanitized id matches"
+    );
+    assert!(
+        !sanitized_orphan.exists(),
+        "an old unmatched directory is still removed"
     );
 
     // A missing credentials file removes none.

@@ -926,8 +926,10 @@ pub fn decide_provider(ranked: &[RankedSubscription], configured: bool) -> Provi
     }
 }
 
-/// A path-safe, stable directory name for one selection.
-pub fn selection_id(provider: ProviderId, subscription_id: &str) -> String {
+/// The path-safe, stable form of one subscription id: every character outside
+/// `[A-Za-z0-9._-]` becomes `_`, at most 96 UTF-16 units survive, and the
+/// result names the selection directory after the provider prefix.
+pub fn subscription_key(subscription_id: &str) -> String {
     let units: Vec<u16> = subscription_id
         .encode_utf16()
         .map(|unit| {
@@ -940,7 +942,16 @@ pub fn selection_id(provider: ProviderId, subscription_id: &str) -> String {
         })
         .take(96)
         .collect();
-    format!("{}-{}", provider.as_str(), String::from_utf16_lossy(&units))
+    String::from_utf16_lossy(&units)
+}
+
+/// A path-safe, stable directory name for one selection.
+pub fn selection_id(provider: ProviderId, subscription_id: &str) -> String {
+    format!(
+        "{}-{}",
+        provider.as_str(),
+        subscription_key(subscription_id)
+    )
 }
 
 pub fn agent_directory(state_dir: &Path, provider: ProviderId, subscription_id: &str) -> PathBuf {
