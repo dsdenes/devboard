@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wireframe — status bar project identity</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #222;
+        --muted: #666;
+        --line: #bbb;
+        --fill: #f2f2f2;
+        --note: #7a5c00;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #fff;
+        color: var(--ink);
+        font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      .lede {
+        color: var(--muted);
+        margin: 0 0 24px;
+        max-width: 68ch;
+      }
+      .stage {
+        border: 1px dashed var(--line);
+        border-radius: 4px;
+        padding: 12px;
+        margin: 0 0 8px;
+      }
+      .stage-label {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin: 0 0 8px;
+      }
+      .workspace {
+        border: 1px solid var(--line);
+        background: var(--fill);
+        height: 140px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+      footer.bar {
+        border: 1px solid var(--line);
+        background: #fafafa;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: nowrap;
+        overflow: hidden;
+        padding: 4px 6px;
+        min-height: 34px;
+      }
+      .group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 5px;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      .chip {
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        background: #fff;
+        padding: 3px 6px;
+        max-width: 320px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .glyph {
+        width: 12px;
+        height: 12px;
+        border: 1px solid var(--muted);
+        border-radius: 2px;
+      }
+      .dot {
+        width: 7px;
+        height: 7px;
+        border: 1px solid var(--muted);
+        border-radius: 50%;
+        display: inline-block;
+      }
+      .name {
+        font-family: ui-monospace, monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .note {
+        color: var(--note);
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .annotations {
+        margin: 16px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .annotations code {
+        color: var(--ink);
+      }
+      @media (max-width: 768px) {
+        .bar {
+          align-items: stretch;
+          flex-direction: column;
+          row-gap: 6px;
+        }
+        .group {
+          flex-wrap: wrap;
+        }
+        .group--right {
+          justify-content: flex-start;
+        }
+        .note {
+          flex-basis: 100%;
+        }
+        .item--optional {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Status bar — project identity</h1>
+    <p class="lede">
+      Structural wireframe for A2UI surface <code>status-bar-project</code>. Grayscale and system
+      font only; this is not a visual design.
+    </p>
+    <section class="stage" aria-labelledby="shell-heading">
+      <p class="stage-label" id="shell-heading">Application shell, footer strip</p>
+      <div class="workspace">workspace</div>
+      <footer class="bar" aria-label="Status bar">
+        <div class="group group--left">
+          <span class="note">region_left P0</span>
+          <span class="item">
+            <span class="dot" aria-hidden="true"></span>
+            <span>Connected</span>
+            <span class="note">region_connection P0</span>
+          </span>
+          <span class="item chip">
+            <span class="glyph" aria-hidden="true"></span>
+            <span class="name">devboard</span>
+            <span class="note">region_project P0</span>
+          </span>
+          <span class="item item--optional">OpenCode Go · 96%</span>
+        </div>
+        <div class="group group--right">
+          <span class="note">region_right P1</span>
+          <span class="item">LANES 0/0</span>
+          <span class="item">ISSUES stopped</span>
+          <span class="item item--optional">notifications off</span>
+          <span class="item">RUNNING 1.46.4 · SOURCE 1.46.4</span>
+        </div>
+      </footer>
+    </section>
+    <ul class="annotations">
+      <li><code>region_project</code> — one chip: glyph, name, full path as tooltip.</li>
+      <li>
+        <code>region_connection</code> — state dot plus word; stays its own item so the chip carries
+        one decision.
+      </li>
+      <li>
+        Empty state replaces the name with <code>No project</code> in the same chip; a long name
+        ellipsizes inside the 320px cap.
+      </li>
+      <li>Below 768px the right group wraps under the left group; the project chip never wraps.</li>
+    </ul>
+  </body>
+</html>

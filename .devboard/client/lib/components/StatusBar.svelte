@@ -85,8 +85,7 @@
       <span class="status-dot" data-state={connection.state} aria-hidden="true"></span>
       <span data-testid="status-connection">{connectionLabel}</span>
     </span>
-    <span class="status-divider" aria-hidden="true"></span>
-    <span class="status-item status-project" title={connection.projectPath}>
+    <span class="status-item status-project code-chip" title={connection.projectPath}>
       <FolderGit2 size={12} aria-hidden="true" />
       <span class="mono" data-testid="status-project">{projectName}</span>
     </span>

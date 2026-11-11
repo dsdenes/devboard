@@ -715,13 +715,19 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   filing action. The 2px action gap sits inside the existing 6px 8px card padding and adds at
   most one line to the card.
 - **Status bar** (`.status-bar`) — a 26px two-group strip on `surface-raised` with a 1px `border`
-  top edge. The left group states connection (7px dot plus word) and the project (folder icon plus
-  the last path segment in mono), divided by a 1px `border` rule. The right group holds the lane
-  count, the issues worker with a 6px state dot, the watchdog, the OS notifications control, the
-  running and installed versions, and, while the installed version is newer than the running one,
-  the reload control (12px refresh icon plus an 11px `reload` word); every metric pairs a 10px
-  `overline` label with an 11px value, so no meaning rests on color. Items are 20px tall with 5px
-  horizontal padding; a hovered control takes `secondary`.
+  top edge. The left group states connection (7px dot plus word) and the project as the shared
+  inline-code chip (`.code-chip`, 18px tall, 6px horizontal padding, a 4px gap between its 12px
+  `muted-foreground` folder-git icon and the last path segment at the chip's 11.5px mono
+  `foreground`), so a repository name draws the one identifier treatment and the chip's own
+  hairline, not a second divider, separates identity from the connection state. The right group
+  holds the lane count, the issues worker with a 6px state dot, the watchdog, the OS notifications
+  control, the running and installed versions, and, while the installed version is newer than the
+  running one, the reload control (12px refresh icon plus an 11px `reload` word); every metric
+  pairs a 10px `overline` label with an 11px value, so no meaning rests on color. Items are 20px
+  tall with 5px horizontal padding; a hovered control takes `secondary`. The project chip keeps
+  that 5px as 6px inner padding inside its hairline, takes `background` and `border-subtle` from
+  the shared chip, and ellipsizes with the full path as its tooltip, so it never grows past the
+  320px status-item bound.
 - **OS notifications control** (`os-notifications` in `StatusBar.svelte`) — one status-bar button
   beside the watchdog whose accessible name always begins `OS notifications` and ends in `off`,
   `on`, or `blocked`, with a 6px state dot (`border-strong` off, `success` on, `error` blocked).

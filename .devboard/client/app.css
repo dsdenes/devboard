@@ -922,12 +922,26 @@ kbd {
   color: var(--foreground);
 }
 
+/*
+ * The project takes the shared inline-code chip, so a repository name draws
+ * the same treatment as every other identifier instead of a bare run of icon
+ * and text. Its 18px height keeps the hairline 4px clear of the 26px bar's
+ * edges, and the chip's own border separates identity from the connection
+ * state, so the left group carries no second divider.
+ */
+.status-bar .status-project {
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+}
+
 .status-project svg {
   color: var(--muted-foreground);
   flex: 0 0 auto;
 }
 
 .status-project .mono {
+  font-size: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
 }
