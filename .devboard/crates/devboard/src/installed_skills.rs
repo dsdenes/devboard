@@ -213,6 +213,16 @@ pub fn project_ignored_skills(document: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// The first `skills.ignoredSkills` entry whose glob matches `name`, or `None`
+/// when no string entry does. A non-string entry names no pattern and disables
+/// nothing, so it never answers this question.
+pub fn first_ignored_skill_pattern(current: &[Value], name: &str) -> Option<String> {
+    current.iter().find_map(|value| match value {
+        Value::String(pattern) if glob_matches(pattern, name) => Some(pattern.clone()),
+        _ => None,
+    })
+}
+
 /// The array the setting takes when one skill toggles, or `None` when it
 /// already holds the requested state. Entries the dashboard did not write are
 /// kept as they are, so only the named skill changes.
@@ -272,9 +282,27 @@ pub async fn skill_exclusion_after_removal(
     Ok(Some(document))
 }
 
+/// What one exclusion write did to the settings document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkillExclusionWrite {
+    /// The document already held the requested state; nothing was written.
+    Unchanged,
+    /// The document was rewritten to hold the requested state.
+    Written,
+    /// Enabling was refused: this glob pattern still matches the skill, so only
+    /// editing that pattern can enable it.
+    BlockedByPattern(String),
+}
+
 /// Adds or removes one skill's name in the project-level exclusion, writing
-/// the whole settings document atomically and creating it when absent.
-pub async fn write_skill_exclusion(path: &Path, name: &str, enabled: bool) -> Result<(), String> {
+/// the whole settings document atomically and creating it when absent. A skill
+/// a pattern still excludes is never reported as enabled: the write refuses and
+/// names that pattern.
+pub async fn write_skill_exclusion(
+    path: &Path,
+    name: &str,
+    enabled: bool,
+) -> Result<SkillExclusionWrite, String> {
     let mut document = read_project_settings(path).await?;
     let skills = document.get("skills").cloned();
     if let Some(value) = &skills {
@@ -294,9 +322,27 @@ pub async fn write_skill_exclusion(path: &Path, name: &str, enabled: bool) -> Re
         }
     }
     let current = project_ignored_skills(&document);
+    if !enabled && first_ignored_skill_pattern(&current, name).is_some() {
+        // Disabled already holds when the array names the skill exactly or a
+        // pattern matches it, so no redundant entry is written.
+        return Ok(SkillExclusionWrite::Unchanged);
+    }
     let Some(next) = next_ignored_skills(&current, name, enabled) else {
-        return Ok(());
+        // Enabling already holds through the array's own entries, but a pattern
+        // may be the reason the row reports the skill disabled.
+        if enabled {
+            if let Some(pattern) = first_ignored_skill_pattern(&current, name) {
+                return Ok(SkillExclusionWrite::BlockedByPattern(pattern));
+            }
+        }
+        return Ok(SkillExclusionWrite::Unchanged);
     };
+    if enabled {
+        // Removing the exact entry can still leave a pattern that excludes it.
+        if let Some(pattern) = first_ignored_skill_pattern(&next, name) {
+            return Ok(SkillExclusionWrite::BlockedByPattern(pattern));
+        }
+    }
     let mut object = match &skills {
         Some(Value::Object(skills)) => skills.clone(),
         Some(Value::Array(items)) => array_spread(items),
@@ -311,7 +357,8 @@ pub async fn write_skill_exclusion(path: &Path, name: &str, enabled: bool) -> Re
     let text = format!("{}\n", pretty(&document));
     write_file_atomically(path, &text)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(SkillExclusionWrite::Written)
 }
 
 /// The object an array spreads into: its index keys, in order.
@@ -326,20 +373,12 @@ fn array_spread(items: &[Value]) -> Map<String, Value> {
 /// The installed rows as `getInstalledSkills` reports them.
 pub async fn installed_skill_rows(repo_dir: &Path) -> Result<Vec<Value>, String> {
     let document = read_project_settings(&project_settings_path(repo_dir)).await?;
-    let patterns: Vec<String> = project_ignored_skills(&document)
-        .into_iter()
-        .filter_map(|value| match value {
-            Value::String(pattern) => Some(pattern),
-            _ => None,
-        })
-        .collect();
+    let ignored = project_ignored_skills(&document);
     let files = installed_skill_files(&skills_root(repo_dir)).await?;
     Ok(files
         .into_iter()
         .map(|file| {
-            let enabled = !patterns
-                .iter()
-                .any(|pattern| glob_matches(pattern, &file.name));
+            let enabled = first_ignored_skill_pattern(&ignored, &file.name).is_none();
             let mut row = Map::new();
             row.insert("name".to_string(), Value::String(file.name));
             row.insert("enabled".to_string(), Value::Bool(enabled));
@@ -376,7 +415,8 @@ fn error_frame(message: impl Into<String>) -> Value {
 
 /// What one `setInstalledSkillEnabled` command sends, in order.
 pub enum ToggleOutcome {
-    /// The setting changed; every client receives this authoritative frame.
+    /// The requested state holds; every client receives this authoritative
+    /// frame.
     Changed(Value),
     /// Nothing changed: these frames go to the requesting client only.
     Refused(Vec<Value>),
@@ -411,14 +451,22 @@ pub async fn toggle_installed_skill(
         let message = format!("No skill named \"{name}\" is installed.");
         return refuse_with_rows(repo_dir, message).await;
     }
-    if let Err(message) =
-        write_skill_exclusion(&project_settings_path(repo_dir), name, enabled).await
-    {
-        return refuse_with_rows(
-            repo_dir,
-            format!("Could not save the skill setting: {message}"),
-        )
-        .await;
+    match write_skill_exclusion(&project_settings_path(repo_dir), name, enabled).await {
+        Ok(SkillExclusionWrite::BlockedByPattern(pattern)) => {
+            let message = format!(
+                "\"{name}\" stays disabled by the pattern \"{pattern}\" in \
+                 .omp/settings.json; edit that pattern to enable it."
+            );
+            return refuse_with_rows(repo_dir, message).await;
+        }
+        Ok(SkillExclusionWrite::Unchanged | SkillExclusionWrite::Written) => {}
+        Err(message) => {
+            return refuse_with_rows(
+                repo_dir,
+                format!("Could not save the skill setting: {message}"),
+            )
+            .await
+        }
     }
     match installed_skill_rows(repo_dir).await {
         Ok(skills) => ToggleOutcome::Changed(installed_skills_frame(skills)),

@@ -325,6 +325,81 @@ async fn glob_patterns_disable_matching_names() {
     assert_eq!(states, [("alpha", true), ("beta", false), ("gamma", false)]);
 }
 
+#[tokio::test]
+async fn enabling_a_skill_a_pattern_disables_refuses_and_names_the_pattern() {
+    let repo = scratch("glob-enable");
+    for name in ["alpha", "gamma"] {
+        write_skill(&repo, name, &basic_skill(name));
+    }
+    let settings = "{\"skills\":{\"ignoredSkills\":[\"gam*\"]}}\n";
+    std::fs::write(settings_path(&repo), settings).expect("a settings document");
+
+    assert_eq!(
+        toggle(&repo, "gamma", true).await.expect_err("a refusal"),
+        "\"gamma\" stays disabled by the pattern \"gam*\" in .omp/settings.json; edit that pattern to enable it."
+    );
+    // The stored pattern and every other byte survive the refusal.
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&repo)).expect("the settings"),
+        settings
+    );
+
+    // The sender receives the refusal, then the rows that agree with the file.
+    let name = value("gamma");
+    let enabled = json!(true);
+    match toggle_installed_skill(&repo, Some(&name), Some(&enabled)).await {
+        ToggleOutcome::Refused(frames) => {
+            assert_eq!(frames.len(), 2);
+            assert_eq!(
+                frames[0],
+                json!({
+                    "type": "error",
+                    "message": "\"gamma\" stays disabled by the pattern \"gam*\" in .omp/settings.json; edit that pattern to enable it.",
+                })
+            );
+            let rows = frames[1]["skills"].as_array().expect("rows");
+            assert_eq!(rows[1]["name"], "gamma");
+            assert_eq!(rows[1]["enabled"], false);
+        }
+        ToggleOutcome::Changed(_) => panic!("a pattern keeps gamma disabled"),
+    }
+}
+
+#[tokio::test]
+async fn removing_the_exact_entry_still_refuses_a_matching_pattern() {
+    let repo = scratch("glob-exact");
+    write_skill(&repo, "gamma", &basic_skill("gamma"));
+    let settings = "{\"skills\":{\"ignoredSkills\":[\"gamma\",\"gam*\"]}}\n";
+    std::fs::write(settings_path(&repo), settings).expect("a settings document");
+
+    assert_eq!(
+        toggle(&repo, "gamma", true).await.expect_err("a refusal"),
+        "\"gamma\" stays disabled by the pattern \"gam*\" in .omp/settings.json; edit that pattern to enable it."
+    );
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&repo)).expect("the settings"),
+        settings
+    );
+}
+
+#[tokio::test]
+async fn disabling_a_skill_a_pattern_already_excludes_writes_nothing() {
+    let repo = scratch("glob-disable");
+    write_skill(&repo, "gamma", &basic_skill("gamma"));
+    let settings = "{\"skills\":{\"ignoredSkills\":[\"gam*\"]}}\n";
+    std::fs::write(settings_path(&repo), settings).expect("a settings document");
+
+    let unchanged = toggle(&repo, "gamma", false).await.expect("no change");
+    assert_eq!(
+        unchanged["skills"].as_array().expect("rows")[0]["enabled"],
+        false
+    );
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&repo)).expect("the settings"),
+        settings
+    );
+}
+
 #[test]
 fn patterns_match_as_bun_matches_them() {
     // Every expectation below was read off `new Bun.Glob(pattern).match(name)`.
