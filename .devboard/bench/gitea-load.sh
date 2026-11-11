@@ -22,6 +22,11 @@
 # when --gitea is absent; --db defaults to GITEA_DB, then to the database the
 # running Gitea server names in its own config.
 set -euo pipefail
+# Latency arithmetic and the JSON report are decimal-point only: a locale
+# that writes a comma instead hands the shell a sleep interval it
+# rejects and a reader a JSON number it cannot parse, so the run pins
+# the C locale.
+export LC_ALL=C
 
 harness=$(cd -- "$(dirname -- "$0")/.." && pwd)
 host_root=$(cd -- "$harness/.." && pwd)
