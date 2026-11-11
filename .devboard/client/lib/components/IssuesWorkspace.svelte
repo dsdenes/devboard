@@ -391,6 +391,7 @@
               <IssuesQuestion
                 runId={selectedAgent.runId}
                 question={selectedAgent.question}
+                answerRevision={() => issues.answerRevision(selectedAgent.runId)}
                 testid="issues-overview-question"
               />
             {/if}
@@ -526,6 +527,7 @@
               <IssuesQuestion
                 runId={agent.runId}
                 question={agent.question}
+                answerRevision={() => issues.answerRevision(agent.runId)}
                 testid="issues-agent-question"
               />
             {/if}

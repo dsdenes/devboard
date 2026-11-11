@@ -81,6 +81,36 @@ export class IssuesStore {
    * refusal, because the issue stays in the queue.
    */
   closeAnswers = $state<Record<number, number>>({});
+  /**
+   * One revision per run, bumped by the frame that answers a dispatched
+   * answer: an `issuesState` snapshot after an accepted answer, or the `error`
+   * frame of a refused one. An Answer control latches this as its confirming
+   * evidence, so a refusal releases its busy word at once instead of waiting
+   * for the ceiling.
+   */
+  private answerRevisions = $state<Record<string, number>>({});
+  /** Runs whose answer frame was dispatched and still awaits its reply. */
+  private readonly unanswered = new Set<string>();
+
+  /**
+   * The number of answering frames for a run's dispatched answer. It never
+   * changes until an answer is sent, so an idle control never leaves its
+   * resting label.
+   */
+  answerRevision(runId: string): number {
+    return this.answerRevisions[runId] ?? 0;
+  }
+
+  /** Settles every dispatched answer the server has now answered. */
+  private settleAnswers(): void {
+    if (this.unanswered.size === 0) return;
+    const next = { ...this.answerRevisions };
+    for (const runId of this.unanswered) {
+      next[runId] = (next[runId] ?? 0) + 1;
+    }
+    this.unanswered.clear();
+    this.answerRevisions = next;
+  }
 
   /**
    * True once the connect-time replay has named the live agents. A run request
@@ -283,14 +313,25 @@ export class IssuesStore {
     }
   }
 
-  submitAgentAnswer(runId: string, questionId: number | string, value: string): void {
-    if (value.trim().length === 0) return;
-    connection.send({
-      type: "answerIssues",
-      id: questionId,
-      value: value.trim(),
-      runId,
-    });
+  /**
+   * Sends one answer to the run that asked it. Returns false when nothing was
+   * sent, so the control keeps the typed text and shows no busy word; a
+   * dispatch that did send settles `answerRevision` on its answering frame.
+   */
+  submitAgentAnswer(runId: string, questionId: number | string, value: string): boolean {
+    if (value.trim().length === 0) return false;
+    if (
+      !connection.send({
+        type: "answerIssues",
+        id: questionId,
+        value: value.trim(),
+        runId,
+      })
+    ) {
+      return false;
+    }
+    this.unanswered.add(runId);
+    return true;
   }
 
   /**
@@ -320,9 +361,17 @@ export class IssuesStore {
   }
 
   handleEvent(message: Record<string, unknown>): void {
+    if (message.type === "error") {
+      // The generic error frame is a command's refusal. An answer dispatch
+      // still awaiting its reply is refused by it, so release its control
+      // instead of leaving it to the ceiling.
+      this.settleAnswers();
+      return;
+    }
     if (isSnapshot(message)) {
       const next = message as unknown as IssuesSnapshot;
       this.snapshot = next;
+      this.settleAnswers();
       const live = new Set((next.agents ?? []).map((agent) => agent.runId));
       const kept: Record<string, string[]> = {};
       for (const [runId, lines] of Object.entries(this.agentActivity)) {

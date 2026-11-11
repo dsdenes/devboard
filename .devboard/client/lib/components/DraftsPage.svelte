@@ -292,6 +292,8 @@
                 question={question}
                 testid="issues-draft-question"
                 onanswer={(value) => goalDrafts.submitDraftAnswer(value)}
+                answerRevision={() =>
+                  goalDrafts.draftPath === null ? 0 : goalDrafts.answerRevision(goalDrafts.draftPath)}
                 choiceTestid="issues-draft-choice"
                 inputTestid="issues-draft-answer-input"
                 submitTestid="issues-draft-answer-submit"

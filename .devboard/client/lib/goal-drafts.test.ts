@@ -55,3 +55,66 @@ test("a stored draft is not read again while its first read is unanswered", () =
   expect(sent).toHaveLength(3);
   expect(sent[2]).toEqual({ type: "getGoalDraft", path: PATH });
 });
+
+test("a refused draft answer reports nothing sent and its refusal frame answers the control", () => {
+  const sent: unknown[] = [];
+  Object.defineProperty(connection, "open", { get: () => true, configurable: true });
+  connection.send = ((command: unknown) => {
+    sent.push(command);
+    return true;
+  }) as typeof connection.send;
+
+  const question = { id: 3, message: "Which name?", options: [] };
+  goalDrafts.draftPath = PATH;
+  goalDrafts.draftRuns = {
+    [PATH]: {
+      status: "running",
+      path: PATH,
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+      activity: [],
+      question,
+    },
+  };
+
+  expect(goalDrafts.answerRevision(PATH)).toBe(0);
+  expect(goalDrafts.submitDraftAnswer("Aurora")).toBe(true);
+  expect(sent).toEqual([{ type: "answerGoalDraft", path: PATH, id: 3, value: "Aurora" }]);
+
+  // The refusal names the draft, so the waiting control's revision moves while
+  // the draft run and its question stay untouched.
+  goalDrafts.handleEvent({
+    type: "issuesDraftError",
+    path: PATH,
+    message: "That question is no longer waiting for an answer.",
+  });
+  expect(goalDrafts.answerRevision(PATH)).toBe(1);
+});
+
+test("a draft answer with no selected draft or no question sends nothing", () => {
+  const sent: unknown[] = [];
+  Object.defineProperty(connection, "open", { get: () => true, configurable: true });
+  connection.send = ((command: unknown) => {
+    sent.push(command);
+    return true;
+  }) as typeof connection.send;
+
+  goalDrafts.clearDraft();
+  expect(goalDrafts.submitDraftAnswer("Aurora")).toBe(false);
+
+  goalDrafts.draftPath = PATH;
+  goalDrafts.draftRuns = {
+    [PATH]: {
+      status: "idle",
+      path: PATH,
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+      activity: [],
+      question: null,
+    },
+  };
+  expect(goalDrafts.submitDraftAnswer("Aurora")).toBe(false);
+  expect(sent).toEqual([]);
+});

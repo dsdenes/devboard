@@ -12,8 +12,16 @@
     testid: string;
     /** The agent run answering through the shared store; omitted by the draft surface. */
     runId?: string;
-    /** Submits the answer; defaults to the agent-run store call for `runId`. */
-    onanswer?: (value: string) => void;
+    /**
+     * Submits the answer; defaults to the agent-run store call for `runId`.
+     * Returns false when it sent nothing, so the control keeps the draft.
+     */
+    onanswer?: (value: string) => boolean | void;
+    /**
+     * Reactive revision bumped by the frame that answers a dispatched answer.
+     * It releases the latch on a server refusal instead of the ceiling.
+     */
+    answerRevision?: () => number;
     choiceTestid?: string;
     inputTestid?: string;
     submitTestid?: string;
@@ -25,6 +33,7 @@
     testid,
     runId,
     onanswer,
+    answerRevision = () => 0,
     choiceTestid = "issues-agent-choice",
     inputTestid = "issues-agent-answer-input",
     submitTestid = "issues-agent-answer-submit",
@@ -47,16 +56,34 @@
     answer = "";
   });
 
-  /** One answer at a time; the question this control answers is the evidence. */
-  const answerPending = createCommandBusy({ label: "Answer", evidence: () => question });
+  /**
+   * One answer at a time. The answering frame is the evidence: an accepted
+   * answer changes the question, and a refused one bumps `answerRevision`
+   * without changing it, so the refusal never reaches the ceiling notice.
+   */
+  const answerPending = createCommandBusy({
+    label: "Answer",
+    evidence: () => answerRevision(),
+    scope: () => subject,
+  });
 
-  function submit(value: string): void {
+  /**
+   * Dispatches one answer. The draft stays in the input until the question
+   * changes, which is the accepted answer; a dispatch that sent nothing leaves
+   * it for the retry. Returns whether a frame was sent.
+   */
+  function submit(value: string): boolean {
     const trimmed = value.trim();
-    if (trimmed.length === 0) return;
+    if (trimmed.length === 0) return false;
     answerPending.start();
-    if (onanswer !== undefined) onanswer(trimmed);
-    else if (runId !== undefined) issues.submitAgentAnswer(runId, question.id, trimmed);
-    answer = "";
+    const sent =
+      onanswer !== undefined
+        ? onanswer(trimmed) !== false
+        : runId !== undefined
+          ? issues.submitAgentAnswer(runId, question.id, trimmed)
+          : false;
+    if (!sent) answerPending.refuse();
+    return sent;
   }
 </script>
 
@@ -70,7 +97,8 @@
           class="choice"
           label={option.label}
           busyLabel="Answering…"
-          evidence={() => question}
+          evidence={() => answerRevision()}
+          scope={() => subject}
           command={() => submit(option.label)}
           data-testid={choiceTestid}
           data-run={runId}

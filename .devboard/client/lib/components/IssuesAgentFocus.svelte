@@ -131,6 +131,7 @@
             <IssuesQuestion
               runId={runId}
               question={agent.question}
+              answerRevision={() => issues.answerRevision(runId)}
               testid="issues-agent-focus-question"
             />
           {/if}

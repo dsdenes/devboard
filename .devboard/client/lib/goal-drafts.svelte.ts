@@ -78,6 +78,36 @@ export class GoalDraftsStore {
    * list has confirmed the path or its run has ended.
    */
   private pendingCreatedPath: string | null = null;
+  /**
+   * One revision per draft path, bumped by the frame that answers a dispatched
+   * answer: the run state after an accepted answer, or the error frame of a
+   * refused one. An Answer control latches this as its confirming evidence, so
+   * a refusal releases its busy word at once instead of waiting for the
+   * ceiling.
+   */
+  private answerRevisions = $state<Record<string, number>>({});
+  /** Draft paths whose answer frame was dispatched and still awaits its reply. */
+  private readonly unanswered = new Set<string>();
+
+  /** The number of answering frames for a draft's dispatched answer. */
+  answerRevision(path: string): number {
+    return this.answerRevisions[path] ?? 0;
+  }
+
+  /**
+   * Settles every dispatched answer the server has now answered. A refusal
+   * that names no path answers whichever draft is waiting.
+   */
+  private settleAnswer(path: string | null): void {
+    if (this.unanswered.size === 0) return;
+    const settled = path === null ? [...this.unanswered] : [path];
+    const next = { ...this.answerRevisions };
+    for (const draft of settled) {
+      next[draft] = (next[draft] ?? 0) + 1;
+      this.unanswered.delete(draft);
+    }
+    this.answerRevisions = next;
+  }
 
   draftRunFor(path: string | null): GoalDraftRun | null {
     return path === null ? null : (this.draftRuns[path] ?? null);
@@ -237,12 +267,28 @@ export class GoalDraftsStore {
     }
   }
 
-  submitDraftAnswer(value: string): void {
+  /**
+   * Sends one answer to the open draft's elaboration. Returns false when
+   * nothing was sent — no selected draft, no waiting question, or a closed
+   * transport — so the control keeps the typed text and shows no busy word.
+   */
+  submitDraftAnswer(value: string): boolean {
     const path = this.draftPath;
-    if (path === null) return;
+    if (path === null) return false;
     const question = this.draftRunFor(path)?.question ?? null;
-    if (question === null || value.trim().length === 0) return;
-    connection.send({ type: "answerGoalDraft", path, id: question.id, value: value.trim() });
+    if (question === null || value.trim().length === 0) return false;
+    if (
+      !connection.send({
+        type: "answerGoalDraft",
+        path,
+        id: question.id,
+        value: value.trim(),
+      })
+    ) {
+      return false;
+    }
+    this.unanswered.add(path);
+    return true;
   }
 
   handleEvent(message: Record<string, unknown>): void {
@@ -303,6 +349,7 @@ export class GoalDraftsStore {
     if (message.type === "issuesDraftState" && isObject(message.draft)) {
       const run = message.draft as unknown as GoalDraftRun;
       if (typeof run.status !== "string" || typeof run.path !== "string") return;
+      this.settleAnswer(run.path);
       this.draftRuns = {
         ...this.draftRuns,
         [run.path]: {
@@ -328,6 +375,9 @@ export class GoalDraftsStore {
     }
     if (message.type === "issuesDraftError" && typeof message.message === "string") {
       const path = typeof message.path === "string" ? message.path : null;
+      // The error is the refused answer's own frame; settle the waiting draft
+      // it names, or the open one when it names none.
+      this.settleAnswer(path !== null && path.length > 0 ? path : this.draftPath);
       if (path === null || path === this.draftReading) this.draftReading = null;
       // A stored path whose draft is gone opens the list instead of an error.
       if (
