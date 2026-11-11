@@ -93,6 +93,12 @@ export class DiscoverStore {
   /** Every card's prompt, from the connect replay and each later read. */
   promptStates = $state<Record<string, DiscoverAgentPrompt>>({});
   error = $state<string | null>(null);
+  /**
+   * One revision per `discoverError` frame. A control that dispatches a
+   * Discover command reads it as its refusal answer: every error, the same
+   * message repeated included, changes it.
+   */
+  errorRevision = $state(0);
   /** The agent whose run failed; its own card carries that failure. */
   errorAgent = $state<string | null>(null);
   warnings = $state<string[]>([]);
@@ -368,12 +374,16 @@ export class DiscoverStore {
     this.socket.send({ type: "discoverAgent", agent: id });
   }
 
-  /** Sends exactly one `discoverRemote` for the trimmed URL. */
-  startRemote(): void {
+  /**
+   * Sends exactly one `discoverRemote` for the trimmed URL, and reports
+   * whether it sent it. The field keeps its value until the server's snapshot
+   * names this URL as the clone, so a refused URL is still there to correct.
+   */
+  startRemote(): boolean {
     const url = this.remoteUrl.trim();
-    if (url.length === 0 || this.remoteStartTitle !== undefined) return;
-    this.remoteUrl = "";
+    if (url.length === 0 || this.remoteStartTitle !== undefined) return false;
     this.socket.send({ type: "discoverRemote", url });
+    return true;
   }
 
   /** Returns to this checkout's own artifacts; retained projects are kept. */
@@ -488,6 +498,13 @@ export class DiscoverStore {
       ? payload.warnings.filter((warning): warning is string => typeof warning === "string")
       : [];
     this.interrupted = payload.interrupted === true;
+    // The accepted submission is the field's answer: the server names the URL
+    // it is cloning, so the operator's typed value clears only then. A refusal
+    // sends no snapshot and leaves the value for the operator to correct.
+    const cloningUrl = this.cloning?.url;
+    if (cloningUrl !== undefined && cloningUrl === this.remoteUrl.trim()) {
+      this.remoteUrl = "";
+    }
   }
 
   handleEvent(message: Message): void {
@@ -567,6 +584,7 @@ export class DiscoverStore {
     if (type === "discoverError" && typeof message.message === "string") {
       this.error = message.message;
       this.errorAgent = typeof message.agent === "string" ? message.agent : null;
+      this.errorRevision += 1;
     }
   }
 }

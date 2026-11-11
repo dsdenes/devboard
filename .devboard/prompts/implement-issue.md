@@ -142,11 +142,12 @@ comment on, close, or reopen another issue.
 
 Repository state — the checked-out branch, its upstream, and its ahead/behind count — comes from
 the one `devboard_status` result and a bare `git status --short --branch`: neither is a fetch and
-neither needs the network. The run fetches the canonical integration line at most once per turn,
-and at most once per landing attempt, and that fetch sits immediately before the landing merge and
-push verification — never at the start of the task, and never as a discovery step. A fetch on its
-own reports nothing about divergence, so the sync is two shell calls, in this order, run from the
-canonical checkout at landing:
+neither needs the network. The run runs `git fetch origin` at most once per turn, and at most once
+per landing attempt. That single fetch is combined with the status read it feeds: it is the first
+half of the landing pair below, issued immediately before the landing merge and the push, and never
+a step of its own before a read, an edit, a build, a test, a typecheck, or a `verification_run`
+check. A turn that never pushes never fetches. A fetch on its own reports nothing about divergence,
+so the sync is two shell calls, in this order, run from the canonical checkout at landing:
 
 ```sh
 git fetch origin
@@ -156,6 +157,10 @@ git fetch origin
 git status --short --branch
 ```
 
+- That pair is the only shape the fetch takes: a standalone `git fetch origin` before a read, an
+  edit, a build, a test, a typecheck, or a check is the defect this budget removes, and a turn that
+  never pushes has no landing attempt and fetches nothing. The only further fetch is the
+  rejected-push attempt's own first half, below.
 - One fetch and one status read, as separate invocations. Never join them with `&&` or `;`: a
   failed fetch must stay attributable on its own, and joining the two hides which half printed the
   output. Never open a task with `git fetch origin && git status --short --branch`: the status half

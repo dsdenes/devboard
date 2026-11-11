@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { DiscoverStatePayload } from "../types";
 
@@ -7,6 +7,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // Static imports evaluate before the DOM globals exist, so the component and
 // the testing library load after registration.
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
+const { tick } = await import("svelte");
 const { default: DiscoverOverview } = await import("./DiscoverOverview.svelte");
 const { discover } = await import("../discover.svelte");
 const { connection } = await import("../connection.svelte");
@@ -17,6 +18,9 @@ afterEach(() => {
   discover.active = false;
   discover.starting = false;
   discover.runningAll = false;
+  discover.remoteUrl = "";
+  discover.error = null;
+  discover.errorAgent = null;
 });
 
 function leaf(value: unknown): Record<string, unknown> {
@@ -397,5 +401,49 @@ test("Run all disables the remote strip's switch, remove, and clear", () => {
     }
   } finally {
     connection.state = previous;
+  }
+});
+
+test("a refused remote submission keeps the typed URL and never claims no answer", async () => {
+  const previousSend = connection.send;
+  const previousState = connection.state;
+  const sent: unknown[] = [];
+  connection.send = ((command: unknown) => {
+    sent.push(command);
+    return true;
+  }) as typeof connection.send;
+  connection.state = "open";
+  jest.useFakeTimers();
+  try {
+    discover.state = remoteState();
+    const view = render(DiscoverOverview);
+    const refused = "http://github.com/octocat/Hello-World";
+    const input = view.container.querySelector(
+      '[data-testid="discover-remote-url"]',
+    ) as HTMLInputElement;
+
+    await fireEvent.input(input, { target: { value: refused } });
+    await fireEvent.click(
+      view.container.querySelector('[data-testid="discover-remote-start"]')!,
+    );
+    await tick();
+
+    expect(sent).toEqual([{ type: "discoverRemote", url: refused }]);
+    expect(input.value).toBe(refused);
+
+    discover.handleEvent({
+      type: "discoverError",
+      message: "Could not clone the repository: the URL must start with https://.",
+    });
+    await tick();
+    jest.advanceTimersByTime(10_000);
+    await tick();
+
+    expect(input.value).toBe(refused);
+    expect(view.container.querySelector('[data-testid="command-notice"]')).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    connection.send = previousSend;
+    connection.state = previousState;
   }
 });
