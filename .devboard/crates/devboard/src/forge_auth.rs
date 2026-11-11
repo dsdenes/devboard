@@ -69,7 +69,8 @@ pub struct Parsed {
     pub command: Vec<String>,
     /// Whether `--host` was omitted, so the origin (or the configured Gitea
     /// address) named the host. An inferred host is classified like the
-    /// checkout's origin; an explicit one keeps the legacy probe chain.
+    /// checkout's origin; an explicit one keeps the legacy GitHub and GitLab
+    /// probe chain.
     pub host_inferred: bool,
 }
 
@@ -299,9 +300,11 @@ impl Context {
 /// GitLab host is GitLab, an explicit `DEVBOARD_FORGE` wins, and every other
 /// host — including this checkout's Gitea origin — is Gitea. No `gh` or `glab`
 /// probe starts for a Gitea host. An explicit `--host` that is not
-/// `github.com`, GitLab, or the configured Gitea address keeps the legacy
-/// GitHub, GitLab, then Gitea probe, which a self-hosted GitHub Enterprise
-/// `--host` needs.
+/// `github.com` or GitLab keeps the legacy GitHub and GitLab probe, which a
+/// self-hosted GitHub Enterprise `--host` needs. The Gitea probe runs only for
+/// the configured Gitea address, because every Gitea request goes to that
+/// address: a foreign `--host` is refused instead of being reported as
+/// resolved from a server it does not name.
 pub async fn resolve(parsed: &Parsed, context: &Context) -> AuthOutcome {
     if let Some(forge) = parsed.forge {
         return resolve_for(parsed, context, forge).await;
@@ -334,7 +337,20 @@ pub async fn resolve(parsed: &Parsed, context: &Context) -> AuthOutcome {
     if !gitlab.is_failure() {
         return gitlab;
     }
-    // Every other host is a Gitea instance; its public API or token decides.
+    // The Gitea probe queries the configured address and reports the requested
+    // host, so it answers only for a host that address serves. An exact match
+    // already resolved above; a foreign `--host` must never inherit an
+    // identity read from a server it does not name.
+    if let Some(address) = configured_gitea_host(&context.environment) {
+        return AuthOutcome::Failure(AuthFailure {
+            error: format!(
+                "{} is not the configured Gitea address {address}; pass --host {address} or omit --host\ngh: {}\nglab: {}",
+                parsed.host,
+                failure_message(&github),
+                failure_message(&gitlab),
+            ),
+        });
+    }
     let gitea = resolve_for(parsed, context, Forge::Gitea).await;
     if !gitea.is_failure() {
         return gitea;

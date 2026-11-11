@@ -406,6 +406,57 @@ async fn forge_gitea_defaults_the_host_to_the_configured_gitea_address() {
 }
 
 #[tokio::test]
+async fn a_foreign_explicit_host_is_refused_without_contacting_the_configured_gitea() {
+    let server =
+        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+    let root = git_repo("foreign-host", None);
+    let environment = forge::environment(&[
+        ("GITEA_TOKEN", "configured-secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+    ]);
+    let context = Context {
+        exec: unavailable_exec(),
+        transport: forge::default_transport(5_000),
+        environment,
+    };
+
+    let parsed = parsed_of(
+        &[
+            "check",
+            "--host",
+            "other.example",
+            "--project",
+            "owner/name",
+            "--json",
+        ],
+        &root,
+        &context.environment,
+    );
+    assert_eq!(parsed.host, "other.example");
+    assert!(!parsed.host_inferred);
+
+    let outcome = forge_auth::execute(&parsed, &context).await;
+    assert_eq!(outcome.exit_code, 1);
+    assert!(outcome.stdout.is_empty());
+    assert!(
+        outcome.stderr.contains("other.example"),
+        "the refusal names the requested host: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains(&server.host()),
+        "the refusal names the configured address: {}",
+        outcome.stderr
+    );
+    let requests = server.requests();
+    assert!(
+        requests.is_empty(),
+        "the configured instance answered a request for a foreign host: {requests:?}"
+    );
+    assert_no_token(&outcome, "configured-secret");
+}
+
+#[tokio::test]
 async fn gitea_token_precedence_follows_the_configured_order() {
     let server =
         StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
