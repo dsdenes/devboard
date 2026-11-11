@@ -45,6 +45,12 @@ fn preflight_script() -> PathBuf {
     package_dir().join("omp/skills/devboard-ui-ux/scripts/preflight.sh")
 }
 
+/// The directory every fixture lives under. It is the git ceiling a fixture
+/// that must not resolve a checkout sets, so no probe walks up into the repo.
+fn fixture_base() -> PathBuf {
+    package_dir().join(".test-tmp")
+}
+
 /// Runs the shipped registration probe in `cwd` with a cleared environment and
 /// the given extra variables, feeding `stdin`.
 fn run_probe(cwd: &Path, environment: &[(&str, &str)], stdin: &[u8]) -> Output {
@@ -73,6 +79,25 @@ fn run_probe(cwd: &Path, environment: &[(&str, &str)], stdin: &[u8]) -> Output {
     // closes before the probe is awaited.
     drop(pipe);
     child.wait_with_output().expect("the probe finishes")
+}
+
+/// Runs the shipped registration probe under `sh -x` with no input, so its
+/// stderr carries every command the probe expanded.
+fn run_probe_traced(cwd: &Path, environment: &[(&str, &str)]) -> Output {
+    let (command, args) = registration();
+    let mut traced = args;
+    traced.insert(0, "-x".to_string());
+    Command::new(command)
+        .args(traced)
+        .current_dir(cwd)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .envs(environment.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the shipped probe traces")
 }
 
 /// Runs the shipped preflight script in `cwd` with a cleared environment.
@@ -126,13 +151,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(label: &str) -> Self {
-        let base = package_dir().join(".test-tmp");
-        fs::create_dir_all(&base).expect("the fixture base");
-        let root = fs::canonicalize(&base)
-            .expect("a canonical fixture base")
-            .join(format!("mcp-registration-{}-{label}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("the fixture root");
+        let root = Self::root(label);
         let status = Command::new("git")
             .arg("-C")
             .arg(&root)
@@ -141,6 +160,25 @@ impl Fixture {
             .expect("git starts");
         assert!(status.success(), "the fixture is its own git checkout");
         Self { root }
+    }
+
+    /// A fixture directory that is no git checkout of its own, so a probe run
+    /// with the fixture base as its ceiling resolves no git top level.
+    fn unversioned(label: &str) -> Self {
+        Self {
+            root: Self::root(label),
+        }
+    }
+
+    fn root(label: &str) -> PathBuf {
+        let base = fixture_base();
+        fs::create_dir_all(&base).expect("the fixture base");
+        let root = fs::canonicalize(&base)
+            .expect("a canonical fixture base")
+            .join(format!("mcp-registration-{}-{label}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("the fixture root");
+        root
     }
 
     fn path(&self) -> &Path {
@@ -405,6 +443,83 @@ fn with_no_candidate_the_probe_names_the_build_tree_and_exits_127() {
         "cargo build",
     ] {
         assert!(line.contains(expected), "{expected} in {line:?}");
+    }
+}
+
+/// The commands the probe expanded, each without its `+ ` trace prefix.
+fn traced_commands(output: &Output) -> Vec<String> {
+    stderr_text(output)
+        .lines()
+        .filter_map(|line| line.strip_prefix("+ ").map(str::to_string))
+        .collect()
+}
+
+/// No expanded command may test a candidate outside the working tree, which an
+/// empty harness candidate or a failed git read used to produce.
+fn assert_no_root_candidate(commands: &[String]) {
+    for command in commands {
+        for root in [
+            "/.devboard",
+            " /bin/devboard",
+            " /target/release/devboard",
+            " /target/debug/devboard",
+        ] {
+            assert!(
+                !command.contains(root),
+                "{root} reached from an unresolved candidate: {command:?}"
+            );
+        }
+        assert!(
+            command != "[ -d ]" && command != "[ ! -d ]",
+            "an empty candidate became a path test: {command:?}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_git_read_leaves_the_git_candidate_empty() {
+    let fixture = Fixture::unversioned("no-git");
+    // The fixture base is the ceiling, so `git rev-parse --show-toplevel`
+    // fails here; the git candidate must stay empty rather than become
+    // `/.devboard`.
+    let base = fixture_base();
+    let base_text = base.to_string_lossy().to_string();
+    let output = run_probe_traced(fixture.path(), &[("GIT_CEILING_DIRECTORIES", &base_text)]);
+
+    assert_eq!(output.status.code(), Some(127), "{}", stderr_text(&output));
+    let commands = traced_commands(&output);
+    assert!(
+        commands
+            .iter()
+            .any(|command| command == "[ -x .devboard/bin/devboard ]"),
+        "the relative checkout candidate is still consulted: {commands:?}"
+    );
+    assert_no_root_candidate(&commands);
+}
+
+#[test]
+fn an_unset_or_empty_harness_variable_never_expands_to_the_root() {
+    let fixture = Fixture::unversioned("empty-harness-dir");
+    let base = fixture_base();
+    let base_text = base.to_string_lossy().to_string();
+    for environment in [
+        vec![("GIT_CEILING_DIRECTORIES", base_text.as_str())],
+        vec![
+            ("GIT_CEILING_DIRECTORIES", base_text.as_str()),
+            ("DEVBOARD_HARNESS_DIR", ""),
+            ("PI_CODING_AGENT_DIR", ""),
+        ],
+    ] {
+        let output = run_probe_traced(fixture.path(), &environment);
+        assert_eq!(output.status.code(), Some(127), "{}", stderr_text(&output));
+        let commands = traced_commands(&output);
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "[ -x .devboard/bin/devboard ]"),
+            "the relative checkout candidate is still consulted: {commands:?}"
+        );
+        assert_no_root_candidate(&commands);
     }
 }
 
