@@ -58,8 +58,18 @@ async fn main() -> anyhow::Result<()> {
     let corpus = Corpus::load(&contract.join("http")).map_err(anyhow::Error::msg)?;
     let allowlist =
         Allowlist::load(&contract.join("allowlist.json")).map_err(anyhow::Error::msg)?;
+    // The rows a live dashboard answers the same way the corpus recorded them,
+    // plus the goal document and the decision records this checkout names:
+    // those two name the served installation, so the comparison reads them
+    // here instead of from a recording made over the fixture repository.
+    let checkout = devboard_contract::fixture::repository_root();
+    let installation = devboard_contract::http_table::Installation {
+        goal_file: checkout.join("GOAL.md"),
+        adrs_dir: checkout.join("adrs"),
+    };
     let base = format!("http://127.0.0.1:{port}");
-    let results = devboard_contract::http_table::run(&base, &corpus, &allowlist).await;
+    let results =
+        devboard_contract::http_table::run(&base, &corpus, &allowlist, &installation).await;
     let mut failures = 0;
     for result in &results {
         if let Err(error) = result {
@@ -71,8 +81,11 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("{failures} HTTP table rows failed against {base}");
     }
     println!(
-        "the HTTP table passed against {base} ({} rows)",
-        results.len()
+        "the live HTTP table passed against {base} ({} rows): the rows a served checkout \
+         answers as recorded, plus {} and {}",
+        results.len(),
+        installation.goal_file.display(),
+        installation.adrs_dir.display()
     );
     Ok(())
 }

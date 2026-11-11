@@ -21,6 +21,13 @@ pub fn harness_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// The checkout that owns the harness root: the repository a dashboard started
+/// from this source serves, with its default goal document and records.
+pub fn repository_root() -> PathBuf {
+    let root = harness_root().join("..");
+    root.canonicalize().unwrap_or(root)
+}
+
 /// The contract corpus directory.
 pub fn contract_dir() -> PathBuf {
     harness_root().join("contract")
@@ -77,6 +84,15 @@ impl Fixture {
             allowed_hosts: Vec::new(),
             feedback: None,
         };
+        Self::start_with(root, config).await
+    }
+
+    /// Starts one dashboard over a supplied configuration and scratch root:
+    /// it runs on a runtime of its own, and dropping the fixture ends it
+    /// before that root goes away.
+    pub async fn start_with(root: PathBuf, config: Config) -> Result<Self, String> {
+        std::fs::create_dir_all(&config.state_dir)
+            .map_err(|error| format!("{}: {error}", config.state_dir.display()))?;
         let (started, bound) = std::sync::mpsc::channel::<Result<u16, String>>();
         let (shutdown, stop) = tokio::sync::oneshot::channel::<()>();
         let served = std::thread::spawn(move || {

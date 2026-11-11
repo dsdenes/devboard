@@ -3,7 +3,7 @@
 //! the Rust dashboard, so it proves the transport before anything relies on it.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING, HOST, ORIGIN, UPGRADE};
 use reqwest::{Method, StatusCode};
@@ -24,6 +24,26 @@ pub struct Case {
     pub expect_gzip: bool,
     /// How the row's answer is compared with its recording.
     pub answer: Answer,
+    /// What a live dashboard over a served checkout answers for the row.
+    pub live: Live,
+}
+
+/// What a live dashboard over a served checkout answers for one row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Live {
+    /// The recorded answer names nothing of the installation, so a dashboard
+    /// over any checkout answers it exactly as the recording does.
+    Recorded,
+    /// The answer carries the served checkout's goal document. A live
+    /// comparison reads that document instead of the fixture recording.
+    GoalDocument,
+    /// The answer lists the served checkout's decision records. A live
+    /// comparison reads that directory instead of the fixture recording.
+    RecordsDocument,
+    /// The recorded answer names fixture installation state — a copied
+    /// repository, an empty state directory, the fixture static root, or the
+    /// fixture's own configuration. Only the fixture replay can compare it.
+    Fixture,
 }
 
 /// How one row's answer is compared with its recording.
@@ -84,6 +104,7 @@ fn row(
         expect_allow,
         expect_gzip,
         answer: Answer::Exact,
+        live: Live::Recorded,
     }
 }
 
@@ -113,7 +134,7 @@ fn request_path(template: &str) -> String {
 
 /// The hand-written surface rows.
 pub fn cases() -> Vec<Case> {
-    vec![
+    let mut rows = vec![
         row(
             "ready-get",
             Method::GET,
@@ -402,13 +423,33 @@ pub fn cases() -> Vec<Case> {
             Some("GET, HEAD"),
             false,
         ),
-    ]
+    ];
+    // The hand-written rows whose answer is the served checkout's own
+    // document, and those whose answer names the fixture installation: the
+    // records the served dashboard lists, the goal it serves, the static
+    // bundle it was built with, the flow and agent-run state it holds, and
+    // whether it configured harness reporting.
+    for case in &mut rows {
+        case.live = match case.name {
+            "records-get" => Live::RecordsDocument,
+            "reports-disabled" | "static-document" | "flows-get" | "agent-runs-get" => {
+                Live::Fixture
+            }
+            _ => Live::Recorded,
+        };
+    }
+    rows
 }
 
 /// One row for every served REST operation. A parameterized path keeps its
 /// template in the row and carries the fixture identity its replay sends;
 /// `--compare-http` skips those rows because a live dashboard names no such
 /// resource, and the fixture replay sends them.
+///
+/// A route row defaults to `Live::Fixture`: its answer is the served
+/// installation's, and only the fixture replay knows the installation the
+/// recording describes. The rows a checkout answers independent of its
+/// installation are named here.
 pub fn route_cases() -> Vec<Case> {
     devboard::rest::ROUTES
         .iter()
@@ -428,6 +469,12 @@ pub fn route_cases() -> Vec<Case> {
             ) {
                 case.answer = Answer::Envelope;
             }
+            case.live = match route.command {
+                "getGoal" => Live::GoalDocument,
+                "listRecords" => Live::RecordsDocument,
+                "getProject" => Live::Recorded,
+                _ => Live::Fixture,
+            };
             case
         })
         .collect()
@@ -440,19 +487,24 @@ pub fn all_cases() -> Vec<Case> {
     rows
 }
 
-/// The rows `--compare-http` sends: every read and the hand-written refusals.
-/// A mutating operation has a row and a recording, but the compared dashboard
-/// may be a live one, where replaying it would start real work; the fixture
-/// replay sends it.
-pub fn runnable_cases() -> Vec<Case> {
-    let mut rows = cases();
-    rows.extend(
-        route_cases()
-            .into_iter()
-            .filter(|case| case.method == Method::GET)
-            .filter(|case| !case.path.contains('{')),
-    );
+/// The rows `--compare-http` sends against a live dashboard: every row a
+/// served checkout answers the way its recording records it, plus the two rows
+/// the comparison reads from the checkout's own documents — its goal document
+/// and its decision records. A row `Live::Fixture` names installation state,
+/// and a parameterized row carries the corpus's fixture identity, so neither is
+/// sent; `cargo test -p devboard-contract` replays both against the fixture.
+pub fn live_cases() -> Vec<Case> {
+    let mut rows = all_cases();
+    rows.retain(|case| case.live != Live::Fixture && !case.path.contains('{'));
     rows
+}
+
+/// The served checkout's own documents a live comparison reads instead of a
+/// recording: the goal document the dashboard serves and the directory of
+/// decision records it lists.
+pub struct Installation {
+    pub goal_file: PathBuf,
+    pub adrs_dir: PathBuf,
 }
 
 /// One recorded answer: what the fixture dashboard answered for one row.
@@ -583,7 +635,9 @@ impl Corpus {
     }
 }
 
-/// Every field a comparison ignores, and its reason.
+/// Every field a comparison ignores, and its reason. An empty allowlist
+/// ignores nothing.
+#[derive(Default)]
 pub struct Allowlist {
     fields: BTreeSet<String>,
 }
@@ -638,29 +692,199 @@ pub fn client() -> reqwest::Client {
         .expect("an HTTP client")
 }
 
-/// Runs the runnable table against one dashboard base URL and compares every
-/// answer with its recording.
+/// Runs the live table against one dashboard base URL: every row the served
+/// checkout answers the way its recording records it, and the goal and records
+/// rows against the documents the checkout itself names.
 pub async fn run(
     base: &str,
     corpus: &Corpus,
     allowlist: &Allowlist,
-) -> Vec<Result<Observed, String>> {
-    replay(base, corpus, allowlist, &runnable_cases()).await
-}
-
-/// Replays one set of rows against one dashboard base URL.
-pub async fn replay(
-    base: &str,
-    corpus: &Corpus,
-    allowlist: &Allowlist,
-    cases: &[Case],
+    installation: &Installation,
 ) -> Vec<Result<Observed, String>> {
     let client = client();
     let mut results = Vec::new();
-    for case in cases {
-        results.push(run_case(&client, base, corpus, allowlist, case).await);
+    for case in live_cases() {
+        results.push(run_live(&client, base, corpus, allowlist, installation, &case).await);
     }
     results
+}
+
+/// Sends one live row and compares its answer: with its recording for a row
+/// that names nothing of the installation, and with the checkout's own
+/// document for the goal and records rows.
+async fn run_live(
+    client: &reqwest::Client,
+    base: &str,
+    corpus: &Corpus,
+    allowlist: &Allowlist,
+    installation: &Installation,
+    case: &Case,
+) -> Result<Observed, String> {
+    let recording = corpus
+        .get(case.name)
+        .ok_or_else(|| format!("{}: no recording", case.name))?;
+    let observed = send(client, base, case).await?;
+    match case.live {
+        Live::Recorded => check(case, recording, allowlist, &observed)?,
+        Live::GoalDocument => {
+            let goal = match devboard::goal::read_goal(&installation.goal_file).await {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => return Err(format!("{}: {error}", installation.goal_file.display())),
+            };
+            compare_goal(
+                case,
+                recording.status,
+                &goal,
+                &installation.goal_file,
+                &observed,
+            )?;
+        }
+        Live::RecordsDocument => {
+            let (records, next) = devboard::records::read_records(&installation.adrs_dir)
+                .map_err(|error| format!("{}: {error}", installation.adrs_dir.display()))?;
+            compare_records(case, recording.status, &records, &next, &observed)?;
+        }
+        Live::Fixture => {
+            return Err(format!(
+                "{}: a fixture-only row reached the live table",
+                case.name
+            ))
+        }
+    }
+    Ok(observed)
+}
+
+/// Compares the goal frame a live dashboard serves with the checkout's goal
+/// document. A dashboard may send goal-authoring and goal-run frames beside it,
+/// and those name installation state, so only the goal frame is compared.
+fn compare_goal(
+    case: &Case,
+    status: u16,
+    goal: &str,
+    document: &Path,
+    observed: &Observed,
+) -> Result<(), String> {
+    check_status(case, status, observed)?;
+    let parsed: Value = serde_json::from_str(&observed.body)
+        .map_err(|error| format!("{}: the body is not JSON: {error}", case.name))?;
+    let frames = parsed
+        .get("frames")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            format!(
+                "{}: the body is not the frames envelope: {}",
+                case.name, observed.body
+            )
+        })?;
+    let mut goals = frames
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("goal"));
+    let frame = goals
+        .next()
+        .ok_or_else(|| format!("{}: the answer carries no goal frame", case.name))?;
+    if goals.next().is_some() {
+        return Err(format!("{}: the answer carries two goal frames", case.name));
+    }
+    let served = frame
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{}: the goal frame carries no text", case.name))?;
+    if served != goal {
+        let at = served
+            .bytes()
+            .zip(goal.bytes())
+            .position(|(left, right)| left != right)
+            .unwrap_or_else(|| served.len().min(goal.len()));
+        return Err(format!(
+            "{}: the served goal text differs from {} at byte {at} \
+             ({} served, {} derived bytes)",
+            case.name,
+            document.display(),
+            served.len(),
+            goal.len()
+        ));
+    }
+    check_vary(case, observed)
+}
+
+/// The page `/records` serves when the request names no limit: the dashboard's
+/// largest page.
+const RECORD_PAGE: usize = 200;
+
+/// Compares the records frame a live dashboard serves with the checkout's
+/// records, and the pagination wrapper around it. The wrapper's page links name
+/// the listener the request reached, so their values are not compared — only
+/// their presence and type.
+fn compare_records(
+    case: &Case,
+    status: u16,
+    records: &[Value],
+    next: &Value,
+    observed: &Observed,
+) -> Result<(), String> {
+    check_status(case, status, observed)?;
+    let parsed: Value = serde_json::from_str(&observed.body)
+        .map_err(|error| format!("{}: the body is not JSON: {error}", case.name))?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| format!("{}: the body is not the frames envelope", case.name))?;
+    let frames = object
+        .get("frames")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{}: the body is not the frames envelope", case.name))?;
+    let mut answers = frames
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("records"));
+    let frame = answers
+        .next()
+        .ok_or_else(|| format!("{}: the answer carries no records frame", case.name))?;
+    if answers.next().is_some() {
+        return Err(format!(
+            "{}: the answer carries two records frames",
+            case.name
+        ));
+    }
+    let page: Vec<Value> = records.iter().take(RECORD_PAGE).cloned().collect();
+    let recorded = serde_json::json!({
+        "type": "records",
+        "records": page,
+        "next": next,
+    });
+    compare_value(
+        case.name,
+        "frames.0.",
+        &recorded,
+        frame,
+        &Allowlist::default(),
+    )?;
+    for link in ["self", "next", "prev"] {
+        let Some(value) = object.get(link) else {
+            return Err(format!("{}: the answer carries no {link}", case.name));
+        };
+        let typed = if link == "self" {
+            value.is_string()
+        } else {
+            value.is_null() || value.is_string()
+        };
+        if !typed {
+            return Err(format!(
+                "{}: the answer carries {link} as {}",
+                case.name,
+                json_type(value)
+            ));
+        }
+    }
+    if let Some(extra) = object
+        .keys()
+        .find(|key| !matches!(key.as_str(), "frames" | "self" | "next" | "prev"))
+    {
+        return Err(format!(
+            "{}: the answer carries {extra}, which the wrapper does not name",
+            case.name
+        ));
+    }
+    check_vary(case, observed)
 }
 
 /// Sends one row's request and returns the answer, without comparing it.
@@ -731,21 +955,6 @@ pub async fn send(client: &reqwest::Client, base: &str, case: &Case) -> Result<O
     Ok(observed)
 }
 
-async fn run_case(
-    client: &reqwest::Client,
-    base: &str,
-    corpus: &Corpus,
-    allowlist: &Allowlist,
-    case: &Case,
-) -> Result<Observed, String> {
-    let recording = corpus
-        .get(case.name)
-        .ok_or_else(|| format!("{}: no recording", case.name))?;
-    let observed = send(client, base, case).await?;
-    check(case, recording, allowlist, &observed)?;
-    Ok(observed)
-}
-
 /// Asserts one answer against its recording and the row's contract headers.
 pub fn check(
     case: &Case,
@@ -753,10 +962,20 @@ pub fn check(
     allowlist: &Allowlist,
     observed: &Observed,
 ) -> Result<(), String> {
-    if observed.status != recording.status {
+    check_status(case, recording.status, observed)?;
+    match case.answer {
+        Answer::Exact => compare_body(case, &recording.body, &observed.body, allowlist)?,
+        Answer::Envelope => assert_envelope(case, &observed.body)?,
+    }
+    check_vary(case, observed)
+}
+
+/// Asserts the answer's status and the row's contract headers.
+fn check_status(case: &Case, status: u16, observed: &Observed) -> Result<(), String> {
+    if observed.status != status {
         return Err(format!(
             "{}: recorded status {}, got {}",
-            case.name, recording.status, observed.status
+            case.name, status, observed.status
         ));
     }
     if let Some(allow) = case.expect_allow {
@@ -775,10 +994,11 @@ pub fn check(
             observed.header("content-encoding")
         ));
     }
-    match case.answer {
-        Answer::Exact => compare_body(case, &recording.body, &observed.body, allowlist)?,
-        Answer::Envelope => assert_envelope(case, &observed.body)?,
-    }
+    Ok(())
+}
+
+/// Asserts a served body carries the `Vary` header its representation needs.
+fn check_vary(case: &Case, observed: &Observed) -> Result<(), String> {
     if observed.status == StatusCode::OK.as_u16()
         && observed.body != "[]"
         && observed.header("vary") != Some("Accept-Encoding")
@@ -949,6 +1169,98 @@ mod tests {
         Allowlist {
             fields: names.iter().map(|name| name.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn the_live_table_skips_every_row_that_names_the_installation() {
+        let live: std::collections::BTreeSet<&str> =
+            live_cases().iter().map(|case| case.name).collect();
+        for answered in [
+            "ready-get",
+            "records-get",
+            "getGoal",
+            "getProject",
+            "agent-run-get",
+        ] {
+            assert!(
+                live.contains(answered),
+                "{answered} is answered as recorded"
+            );
+        }
+        for skipped in [
+            "static-document",
+            "reports-disabled",
+            "flows-get",
+            "agent-runs-get",
+            "getSkills",
+            "getInstalledSkills",
+            "getMcpTools",
+            "getComplexity",
+            "getResources",
+            "getIssues",
+            "getGoalDrafts",
+            "getAgents",
+            "getDiscover",
+            "getProviders",
+            "getVersion",
+        ] {
+            assert!(
+                !live.contains(skipped),
+                "{skipped} names the fixture installation"
+            );
+        }
+        assert!(
+            live_cases().iter().all(|case| !case.path.contains('{')),
+            "a parameterized row keeps its fixture identity"
+        );
+    }
+
+    #[test]
+    fn a_live_goal_frame_must_match_the_goal_document() {
+        let case = row(
+            "getGoal",
+            Method::GET,
+            "/goal",
+            HeaderSpec::None,
+            200,
+            None,
+            false,
+        );
+        compare_goal(
+            &case,
+            200,
+            "# Contract goal\n",
+            Path::new("GOAL.md"),
+            &observed(r##"{"frames":[{"type":"goal","text":"# Contract goal\n"}]}"##),
+        )
+        .expect("the served text names the document");
+        let error = compare_goal(
+            &case,
+            200,
+            "# Contract goal\n",
+            Path::new("GOAL.md"),
+            &observed(r##"{"frames":[{"type":"goal","text":"# Contract goa1\n"}]}"##),
+        )
+        .expect_err("a one-byte change diverges");
+        assert!(error.contains("getGoal"), "{error}");
+        assert!(error.contains("differs from GOAL.md"), "{error}");
+        compare_goal(
+            &case,
+            200,
+            "a",
+            Path::new("GOAL.md"),
+            &observed(r#"{"frames":[{"type":"goal","text":"a"},{"type":"goalDraft","path":"x"}]}"#),
+        )
+        .expect("a frame beside the goal names installation state");
+        let error = compare_goal(
+            &case,
+            200,
+            "a",
+            Path::new("GOAL.md"),
+            &observed(r#"{"frames":[]}"#),
+        )
+        .expect_err("a missing goal frame diverges");
+        assert!(error.contains("no goal frame"), "{error}");
     }
 
     #[test]

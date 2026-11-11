@@ -1,8 +1,10 @@
 //! The HTTP table, its recorded answers, and the replay that proves them.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
-use devboard_contract::fixture::{allowlist_path, contract_dir, Fixture};
+use devboard_contract::fixture::{allowlist_path, contract_dir, repository_root, Fixture};
 use devboard_contract::http_table::{self, Allowlist, Corpus, Recording};
 use serde_json::Value;
 
@@ -12,6 +14,63 @@ fn corpus() -> Corpus {
 
 fn allowlist() -> Allowlist {
     Allowlist::load(&allowlist_path()).expect("the nondeterminism allowlist")
+}
+
+/// One scratch directory inside the harness for one live check.
+fn scratch(label: &str) -> PathBuf {
+    let root = repository_root()
+        .join(".devboard/.test-tmp")
+        .join(format!("live-{label}-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("a scratch directory");
+    root
+}
+
+/// One dashboard over this checkout: its goal document, its decision records,
+/// and an empty state directory, the way an operator starts one from the
+/// repository root.
+async fn checkout_dashboard(label: &str, goal_file: &Path) -> Fixture {
+    let root = scratch(label);
+    let static_dir = root.join("static");
+    std::fs::create_dir_all(&static_dir).expect("a static directory");
+    let config = devboard::config::Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repository_root().join("adrs"),
+        repo_dir: repository_root(),
+        goal_file: goal_file.to_path_buf(),
+        static_dir: Some(static_dir),
+        agent_command: "true".to_string(),
+        state_dir: root.join("state"),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    Fixture::start_with(root, config)
+        .await
+        .expect("a dashboard")
+}
+
+/// Runs `--compare-http` the way an operator does, against one listener. The
+/// child runs on a blocking thread so the in-process dashboard keeps serving
+/// while it waits.
+async fn compare(port: u16) -> Output {
+    tokio::task::spawn_blocking(move || {
+        let port = port.to_string();
+        Command::new(env!("CARGO_BIN_EXE_devboard-contract"))
+            .args(["--compare-http", port.as_str()])
+            .arg("--contract")
+            .arg(contract_dir())
+            .output()
+            .expect("the comparison runs")
+    })
+    .await
+    .expect("the comparison task")
+}
+
+fn port_of(base: &str) -> u16 {
+    base.rsplit(':')
+        .next()
+        .and_then(|port| port.parse().ok())
+        .expect("the listener port")
 }
 
 /// The recorded answer of a served operation: the frames envelope of a
@@ -126,4 +185,52 @@ async fn every_http_row_replays_against_the_fixture() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+#[tokio::test]
+async fn the_live_table_passes_against_a_dashboard_over_this_checkout() {
+    let goal_file = repository_root().join("GOAL.md");
+    let fixture = checkout_dashboard("pass", &goal_file).await;
+    let output = compare(port_of(&fixture.base)).await;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("the live HTTP table passed"), "{stdout}");
+    assert!(stdout.contains("GOAL.md"), "{stdout}");
+    assert!(stdout.contains("adrs"), "{stdout}");
+}
+
+#[tokio::test]
+async fn the_live_table_fails_when_the_served_goal_changed_by_one_byte() {
+    // The served answer is this checkout's goal document with one byte
+    // changed. A fresh worktree carries none (it is host data), so the served
+    // document is then one the comparison cannot derive at all, which is the
+    // same divergence.
+    let mut bytes = std::fs::read(repository_root().join("GOAL.md")).unwrap_or_default();
+    if bytes.is_empty() {
+        bytes = b"a".to_vec();
+    }
+    let at = bytes
+        .iter()
+        .position(u8::is_ascii_alphabetic)
+        .expect("the goal document carries a letter");
+    bytes[at] = if bytes[at] == b'A' { b'B' } else { b'A' };
+    let goal_file = scratch("changed").join("GOAL.md");
+    std::fs::write(&goal_file, &bytes).expect("the changed goal document");
+    let fixture = checkout_dashboard("changed", &goal_file).await;
+    let output = compare(port_of(&fixture.base)).await;
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("FAIL getGoal"), "{stderr}");
+    assert!(stderr.contains("differs from"), "{stderr}");
+    assert!(stderr.contains("GOAL.md"), "{stderr}");
 }
