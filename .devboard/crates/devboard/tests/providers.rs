@@ -11,8 +11,9 @@ use devboard::config::Config;
 use devboard::journal::Journal;
 use devboard::providers::{
     load_subscriptions, save_subscriptions, worker_peer_environment, write_selection_snapshot,
-    ProviderId, ProviderOptions, ProviderService, SaveProviderInput, StoredSubscription, Transport,
-    TransportError, TransportFuture, UsageResponse, UsageStatus, PROVIDER_CHANGE_NEEDS_ID,
+    ProviderChangeError, ProviderId, ProviderOptions, ProviderService, SaveProviderInput,
+    StoredSubscription, Transport, TransportError, TransportFuture, UsageResponse, UsageStatus,
+    PROVIDER_CHANGE_NEEDS_ID,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -131,6 +132,7 @@ async fn save(
             key: Some(json!(key)),
         })
         .await
+        .map_err(|error| error.message)
 }
 
 #[test]
@@ -234,7 +236,9 @@ async fn delete_removes_the_subscription_and_its_file_entry() {
     assert!(load_subscriptions(&state).subscriptions.is_empty());
     assert_eq!(
         service.remove(&id),
-        Err("That subscription no longer exists.".to_string())
+        Err(ProviderChangeError::new(
+            "That subscription no longer exists."
+        ))
     );
 }
 
@@ -257,7 +261,9 @@ async fn enable_and_disable_flip_the_stored_flag() {
     assert!(service.list()[0].enabled);
     assert_eq!(
         service.set_enabled("missing", true),
-        Err("That subscription no longer exists.".to_string())
+        Err(ProviderChangeError::new(
+            "That subscription no longer exists."
+        ))
     );
 }
 
@@ -503,6 +509,53 @@ async fn an_invalid_key_is_never_saved() {
     );
     assert!(service.list().is_empty());
     assert!(load_subscriptions(&state).subscriptions.is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_key_is_answered_as_the_operator_input_error_it_is() {
+    let root = fixture_root("refused-frame");
+    let transport: Transport = Arc::new(|_request| -> TransportFuture {
+        Box::pin(async move {
+            Ok(UsageResponse {
+                status: 401,
+                body: "{\"error\":{\"message\":\"invalid key\"}}".to_string(),
+            })
+        })
+    });
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(transport),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = ProviderService::with_options(root.join("state"), root.join("repo"), options);
+    let (conn, mut inbox) = connection();
+
+    let save = Command::SaveProvider {
+        request_id: Some(json!(12)),
+        id: None,
+        provider: Some(json!("opencode-go")),
+        label: Some(json!("main")),
+        key: Some(json!("sk-typo-0001")),
+    };
+    assert!(service.handle(&conn, &save).await);
+    assert_eq!(
+        frame(&mut inbox),
+        json!({
+            "type": "providerError",
+            "requestId": 12,
+            "message": "The provider rejected this key (HTTP 401).",
+            "keyRefused": true
+        })
+    );
+    assert!(
+        inbox.try_recv().is_err(),
+        "a refused key answers once and stores nothing"
+    );
+    assert!(service.list().is_empty());
 }
 
 #[tokio::test]

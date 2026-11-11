@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { connection } from "./connection.svelte";
+import { notifications } from "./notifications.svelte";
 import { ProviderStore } from "./providers.svelte";
 import { saveFeedback } from "./save-feedback.svelte";
 
@@ -191,4 +192,41 @@ test("a reconnect drops a change the lost socket can never answer", () => {
   store.resetActiveOperations();
   expect(store.busy).toBe(false);
   expect(store.saveResult).toBeNull();
+});
+
+test("a key the provider refused is reported inline and raises no notification", () => {
+  const { store } = connected();
+  const before = notifications.items.length;
+
+  const requestId = store.save({ provider: "openrouter", label: "Work", key: "sk-typo" });
+  if (requestId === null) throw new Error("the save was not sent");
+  expect(
+    store.handleEvent({
+      type: "providerError",
+      requestId,
+      keyRefused: true,
+      message: "The provider rejected this key (HTTP 401).",
+    }),
+  ).toBe(true);
+
+  expect(store.error).toBe("The provider rejected this key (HTTP 401).");
+  expect(store.saveResult).toEqual({ requestId, ok: false });
+  expect(notifications.items.length).toBe(before);
+});
+
+test("a provider change that failed on the server is still an error notification", () => {
+  const { store } = connected();
+  const before = notifications.items.length;
+
+  const requestId = store.save({ provider: "openrouter", label: "Work", key: "sk-good" });
+  if (requestId === null) throw new Error("the save was not sent");
+  store.handleEvent({
+    type: "providerError",
+    requestId,
+    message: "The credentials file could not be written: disk full",
+  });
+
+  expect(notifications.items.length).toBe(before + 1);
+  expect(notifications.items[0]?.source).toBe("Providers");
+  expect(notifications.items[0]?.text).toBe("The credentials file could not be written: disk full");
 });

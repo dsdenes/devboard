@@ -239,7 +239,11 @@ export class ProviderStore {
       const text = string(message.message) ?? "The provider change failed.";
       this.error = text;
       this.#settle(numberOrNull(message.requestId), false);
-      notifications.push("Providers", "error", text);
+      // The provider's verdict on a key the operator just entered is their own
+      // input error, and the dialog reports it inline. Every other refusal is a
+      // harness or stored-state fault, which the app-wide error notification
+      // and the issue it files exist to surface.
+      if (message.keyRefused !== true) notifications.push("Providers", "error", text);
       return true;
     }
     return false;

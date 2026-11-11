@@ -1370,7 +1370,41 @@ pub struct SaveProviderInput {
     pub key: Option<Value>,
 }
 
-pub type SaveProviderResult = Result<(), String>;
+/// One provider change's refusal.
+///
+/// A key the provider itself refused is the operator's own input error: the
+/// Providers dialog reports it inline, so it raises no app-wide error
+/// notification and files no tracker issue. Every other refusal is a harness or
+/// stored-state fault and keeps that notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderChangeError {
+    pub message: String,
+    pub key_refused: bool,
+}
+
+impl ProviderChangeError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            key_refused: false,
+        }
+    }
+
+    pub fn refused_key(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            key_refused: true,
+        }
+    }
+}
+
+impl From<String> for ProviderChangeError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+pub type SaveProviderResult = Result<(), ProviderChangeError>;
 
 struct ValidatedInput {
     provider: ProviderId,
@@ -1828,7 +1862,7 @@ impl ProviderService {
             None => None,
         };
         if input.id.is_some() && existing.is_none() {
-            return Err("That subscription no longer exists.".to_string());
+            return Err("That subscription no longer exists.".to_string().into());
         }
 
         let key = validated
@@ -1836,17 +1870,19 @@ impl ProviderService {
             .clone()
             .or_else(|| existing.as_ref().map(|entry| entry.key.clone()));
         let Some(key) = key else {
-            return Err("An API key is required.".to_string());
+            return Err("An API key is required.".to_string().into());
         };
 
         let mut checked = None;
         if validated.key.is_some() {
             let report = self.fetch_usage_for(validated.provider, &key).await;
             if report.status == UsageStatus::Invalid {
-                return Err(report
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "The provider rejected this key.".to_string()));
+                return Err(ProviderChangeError::refused_key(
+                    report
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "The provider rejected this key.".to_string()),
+                ));
             }
             checked = Some(report);
         }
@@ -1889,9 +1925,7 @@ impl ProviderService {
                 .collect(),
         };
         if let Err(error) = save_subscriptions(&self.state_dir, &next) {
-            return Err(format!(
-                "The credentials file could not be written: {error}"
-            ));
+            return Err(format!("The credentials file could not be written: {error}").into());
         }
         inner.subscriptions = next;
         if let Some(existing) = &existing {
@@ -1917,12 +1951,10 @@ impl ProviderService {
             .cloned()
             .collect();
         if next.len() == inner.subscriptions.len() {
-            return Err("That subscription no longer exists.".to_string());
+            return Err("That subscription no longer exists.".to_string().into());
         }
         if let Err(error) = save_subscriptions(&self.state_dir, &next) {
-            return Err(format!(
-                "The credentials file could not be written: {error}"
-            ));
+            return Err(format!("The credentials file could not be written: {error}").into());
         }
         inner.subscriptions = next;
         inner.usage.remove(id);
@@ -1939,7 +1971,7 @@ impl ProviderService {
             .find(|subscription| subscription.id == id)
             .cloned()
         else {
-            return Err("That subscription no longer exists.".to_string());
+            return Err("That subscription no longer exists.".to_string().into());
         };
         let updated_at = iso_timestamp((self.now_ms)());
         let next: Vec<StoredSubscription> = inner
@@ -1958,9 +1990,7 @@ impl ProviderService {
             })
             .collect();
         if let Err(error) = save_subscriptions(&self.state_dir, &next) {
-            return Err(format!(
-                "The credentials file could not be written: {error}"
-            ));
+            return Err(format!("The credentials file could not be written: {error}").into());
         }
         inner.subscriptions = next;
         drop(inner);
@@ -2098,7 +2128,7 @@ impl ProviderService {
                 let Some(id) = id.as_ref().and_then(Value::as_str) else {
                     conn.send(provider_error_frame(
                         request_id.as_ref(),
-                        "A delete needs the subscription id.",
+                        &ProviderChangeError::new("A delete needs the subscription id."),
                     ));
                     return true;
                 };
@@ -2107,7 +2137,10 @@ impl ProviderService {
                     .map(is_provider_request_id)
                     .unwrap_or(false)
                 {
-                    conn.send(provider_error_frame(None, PROVIDER_CHANGE_NEEDS_ID));
+                    conn.send(provider_error_frame(
+                        None,
+                        &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
+                    ));
                     return true;
                 }
                 let result = self.remove(id);
@@ -2124,7 +2157,9 @@ impl ProviderService {
                 let (Some(id), Some(enabled)) = (id, enabled) else {
                     conn.send(provider_error_frame(
                         request_id.as_ref(),
-                        "Enabling a subscription needs its id and a boolean.",
+                        &ProviderChangeError::new(
+                            "Enabling a subscription needs its id and a boolean.",
+                        ),
                     ));
                     return true;
                 };
@@ -2133,7 +2168,10 @@ impl ProviderService {
                     .map(is_provider_request_id)
                     .unwrap_or(false)
                 {
-                    conn.send(provider_error_frame(None, PROVIDER_CHANGE_NEEDS_ID));
+                    conn.send(provider_error_frame(
+                        None,
+                        &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
+                    ));
                     return true;
                 }
                 let result = self.set_enabled(id, enabled);
@@ -2152,7 +2190,10 @@ impl ProviderService {
         input: SaveProviderInput,
     ) {
         if !request_id.map(is_provider_request_id).unwrap_or(false) {
-            conn.send(provider_error_frame(None, PROVIDER_CHANGE_NEEDS_ID));
+            conn.send(provider_error_frame(
+                None,
+                &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
+            ));
             return;
         }
         let result = self.save(input).await;
@@ -2167,7 +2208,7 @@ impl ProviderService {
                 self.refresh(false).await;
                 self.push_state(conn);
             }
-            Err(message) => conn.send(provider_error_frame(request_id, &message)),
+            Err(error) => conn.send(provider_error_frame(request_id, &error)),
         }
     }
 }
@@ -2210,7 +2251,10 @@ pub fn is_provider_request_id(value: &Value) -> bool {
     }
 }
 
-pub fn provider_error_frame(request_id: Option<&Value>, message: &str) -> Value {
+/// One `providerError` frame. `keyRefused` marks the provider's own verdict on
+/// a key the operator just entered: the dialog reports it inline, so the client
+/// raises no app-wide error notification and files no tracker issue.
+pub fn provider_error_frame(request_id: Option<&Value>, error: &ProviderChangeError) -> Value {
     let mut object = Map::new();
     object.insert(
         "type".to_string(),
@@ -2219,7 +2263,10 @@ pub fn provider_error_frame(request_id: Option<&Value>, message: &str) -> Value 
     if let Some(request_id) = request_id {
         object.insert("requestId".to_string(), request_id.clone());
     }
-    object.insert("message".to_string(), Value::String(message.to_string()));
+    object.insert("message".to_string(), Value::String(error.message.clone()));
+    if error.key_refused {
+        object.insert("keyRefused".to_string(), Value::Bool(true));
+    }
     Value::Object(object)
 }
 
