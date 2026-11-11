@@ -75,10 +75,6 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
   },
 };
 
-export function isProviderId(value: unknown): value is ProviderId {
-  return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
-}
-
 export function providerName(id: ProviderId): string {
   return PROVIDERS[id].name;
 }
