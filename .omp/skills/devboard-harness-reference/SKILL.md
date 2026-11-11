@@ -3695,10 +3695,12 @@ tracker read per interval. That read is the only source of a row: no worker stat
 worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
 one forge state that marks a run in progress: a running worker ensures the label exists, adds it
 to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
-stops. The pending count is every listed issue without that label; the running count is every
-listed issue with it, and the page badge, sidebar entry, overview `Queue` line, and status bar all
-read those numbers from the same queue. A failed read freezes the last successful answer and
-publishes its error in `sync.error`.
+stops. The label marks a run only while the repository's claim file names a live process, so the
+dashboard strips it from a row no live claim owns: a stopped, killed, or upgraded-away run never
+keeps a row running. The pending count is every listed issue without that label; the running
+count is every listed issue with it, and the page badge, sidebar entry, overview `Queue` line, and
+status bar all read those numbers from the same queue. A failed read freezes the last successful
+answer and publishes its error in `sync.error`.
 
 A running issue that no longer appears in the dashboard's read is stopped: the dashboard sends one
 `abandon` command for that issue, and the worker records its run `stopped` with no handled entry
@@ -3708,7 +3710,10 @@ resource and no socket client the dashboard makes no tracker call, and the worke
 still ends a run the moment it sees the issue leave the open list. Every running worker also
 reconciles the `processing` label against the repository's live claims: an open issue that
 carries the label with no live claim is repaired on the next poll, which covers a killed worker,
-a restarted dashboard, and an upgrade that leaves an older worker's state behind.
+a restarted dashboard, and an upgrade that leaves an older worker's state behind. A fresh
+dashboard read repairs the same labels before it publishes the queue, so a worker that is stopped
+or gone leaves nothing running: the row is served pending, and a clear write that failed is
+retried by the next fresh read.
 
 A goal issue is the record of one goal, so its run settles only on a proven close: while the
 issue is open it never finishes `succeeded` or `stopped`. A poll that drops an open goal issue

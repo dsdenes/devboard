@@ -673,6 +673,25 @@ fn live_issue_claims(repo_dir: &Path) -> Vec<IssueClaim> {
     claims
 }
 
+/// The issue numbers this checkout's live claims own.
+fn claimed_issue_numbers(repo_dir: &Path) -> HashSet<u64> {
+    live_issue_claims(repo_dir)
+        .into_iter()
+        .map(|claim| claim.number)
+        .collect()
+}
+
+/// The open issues that carry the `processing` label with no owner in
+/// `owned`: the labels a stopped, killed, or upgraded-away run left behind.
+fn unclaimed_processing(issues: &[Issue], owned: &HashSet<u64>) -> Vec<u64> {
+    issues
+        .iter()
+        .filter(|issue| crate::forge::has_processing_label(&issue.labels))
+        .filter(|issue| !owned.contains(&issue.number))
+        .map(|issue| issue.number)
+        .collect()
+}
+
 fn claim_issue(repo_dir: &Path, number: u64, run_id: &str, version: Option<&str>) -> bool {
     if std::fs::create_dir_all(claims_directory(repo_dir)).is_err() {
         return false;
@@ -2510,6 +2529,10 @@ pub type EnvironmentFuture =
     Pin<Box<dyn Future<Output = Result<HashMap<String, String>, String>> + Send>>;
 pub type EnvironmentFn = Arc<dyn Fn() -> EnvironmentFuture + Send + Sync>;
 pub type SendFn = Arc<dyn Fn(Value, Option<u64>) + Send + Sync>;
+/// Writes or clears one issue's `processing` label.
+pub type ProcessingFn = Arc<
+    dyn Fn(u64, bool) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
+>;
 
 /// Everything one dashboard bridge needs from its process.
 #[derive(Clone)]
@@ -2519,6 +2542,7 @@ pub struct IssuesHooks {
     pub close_issue: CloseFn,
     pub tracker_read: TrackerRead,
     pub agent_environment: EnvironmentFn,
+    pub processing_write: ProcessingFn,
 }
 
 /// The legacy systemd orchestrator's lock, read only for migration.
@@ -2909,6 +2933,8 @@ impl IssuesOptions {
         let environment = crate::forge::process_environment();
         let repo = repo_dir.to_path_buf();
         let state = state_dir.to_path_buf();
+        let processing_repo = repo_dir.to_path_buf();
+        let processing_environment = environment.clone();
         IssuesHooks {
             preflight: Arc::new(|request: PreflightRequest| {
                 Box::pin(production_preflight(request))
@@ -2925,6 +2951,17 @@ impl IssuesOptions {
                 TRACKER_TIMEOUT_MS,
             ),
             agent_environment,
+            processing_write: Arc::new(move |number, active| {
+                let repo = processing_repo.clone();
+                let environment = processing_environment.clone();
+                Box::pin(async move {
+                    let source = crate::forge::TrackerSource::resolve(&repo, &environment);
+                    let Some(remote) = source.remote else {
+                        return Err(source.operation(crate::forge::PROCESSING_WRITE));
+                    };
+                    write_processing(&repo, &remote.project, &environment, number, active).await
+                })
+            }),
         }
     }
 }
@@ -3544,8 +3581,19 @@ impl IssuesBridge {
         Value::Object(map)
     }
 
+    /// The rows this dashboard serves. The `processing` label marks a run in
+    /// progress only while a live claim owns that issue, so a label a stopped,
+    /// killed, or upgraded-away run left behind never keeps a row running.
     fn queue_for(&self, states: &[IssuesState]) -> Vec<QueuedIssue> {
-        queue_rows(self.tracker.open_issues(), states)
+        let owned = claimed_issue_numbers(&self.repo_dir);
+        let mut rows = queue_rows(self.tracker.open_issues(), states);
+        for row in &mut rows {
+            if !owned.contains(&row.number) {
+                row.labels
+                    .retain(|label| label != crate::forge::PROCESSING_LABEL);
+            }
+        }
+        rows
     }
 
     fn active_run_ids(&self, snapshot: &Value) -> Vec<String> {
@@ -4250,11 +4298,37 @@ impl IssuesBridge {
                     self.stop_closed_runs(&open, epoch_millis(started));
                 }
             }
+        }
+        // The projection is built before any repair write: `queue_for` serves
+        // an unclaimed label as pending, so a slow or failing clear never
+        // delays the queue.
+        self.refresh();
+        if result.fresh {
             if let Some(issues) = &result.issues {
                 (self.on_open_issues)(issues.clone());
+                self.repair_stale_processing(issues).await;
             }
         }
-        self.refresh();
+    }
+
+    /// Clears every `processing` label this read lists with no live claim
+    /// behind it. The Issues worker repairs the label on its own poll, but a
+    /// stopped or killed worker never polls again, so the dashboard — the
+    /// other always-on reader of exactly that list — repairs it here. A failed
+    /// write is retried by the next fresh read; the row never keeps running,
+    /// because `queue_for` hides a label no claim owns.
+    async fn repair_stale_processing(&self, issues: &[Issue]) {
+        let owned = claimed_issue_numbers(&self.repo_dir);
+        for number in unclaimed_processing(issues, &owned) {
+            // A claim written after the read belongs to a run that just
+            // started; its label is not stale, so it is never cleared.
+            if claimed_issue_numbers(&self.repo_dir).contains(&number) {
+                continue;
+            }
+            if let Err(detail) = (self.hooks.processing_write)(number, false).await {
+                eprintln!("issues: could not clear the processing label on #{number}: {detail}");
+            }
+        }
     }
 
     /// Ends every run the dashboard's fresh read no longer lists.
@@ -4931,9 +5005,6 @@ struct RunEntry {
 }
 
 type IssueStateFn = Arc<dyn Fn(u64) -> IssueStateFuture + Send + Sync>;
-type ProcessingFn = Arc<
-    dyn Fn(u64, bool) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
->;
 
 struct IssuesWorker {
     repo_dir: PathBuf,
@@ -5514,36 +5585,23 @@ impl IssuesWorker {
     }
 
     async fn reconcile_processing(&mut self, issues: &[Issue]) {
-        let live: HashSet<u64> = live_issue_claims(&self.repo_dir)
-            .into_iter()
-            .map(|claim| claim.number)
-            .collect();
-        let active: HashSet<u64> = self.active.keys().copied().collect();
-        let mut cleared: Vec<u64> = Vec::new();
-        for issue in issues {
-            if !crate::forge::has_processing_label(&issue.labels) {
-                continue;
-            }
-            if live.contains(&issue.number) || active.contains(&issue.number) {
-                continue;
-            }
-            match write_processing(
+        // This worker's own runs hold a live claim; the active set is the
+        // local proof for a claim released a moment before its label clears.
+        let mut owned = claimed_issue_numbers(&self.repo_dir);
+        owned.extend(self.active.keys().copied());
+        for number in unclaimed_processing(issues, &owned) {
+            if let Err(detail) = write_processing(
                 &self.repo_dir,
                 &self.state.repo,
                 &self.environment,
-                issue.number,
+                number,
                 false,
             )
             .await
             {
-                Ok(()) => cleared.push(issue.number),
-                Err(detail) => eprintln!(
-                    "issues: could not clear the processing label on #{}: {detail}",
-                    issue.number
-                ),
+                eprintln!("issues: could not clear the processing label on #{number}: {detail}");
             }
         }
-        let _ = cleared;
     }
 
     async fn set_processing(&self, number: u64, active: bool) -> bool {

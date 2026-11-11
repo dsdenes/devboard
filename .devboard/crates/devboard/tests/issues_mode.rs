@@ -211,6 +211,7 @@ fn hooks(
         }),
         tracker_read: empty_tracker(),
         agent_environment: Arc::new(|| Box::pin(async { Ok(HashMap::new()) })),
+        processing_write: Arc::new(|_number, _active| Box::pin(async { Ok(()) })),
     }
 }
 
@@ -358,6 +359,84 @@ async fn a_fresh_tracker_read_publishes_the_open_queue() {
     assert!(snapshot["sync"]["lastSyncAt"].is_string());
     let last = sink.lock().expect("sink").last().cloned().expect("a frame");
     assert_eq!(last["type"], "issuesState");
+}
+
+/// A `processing` label no live claim owns marks no run: the fresh read
+/// clears it on the tracker, and the row is served pending. The label a live
+/// claim owns stays, so a running issue never loses its marker.
+#[tokio::test]
+async fn a_fresh_read_clears_a_processing_label_no_live_claim_owns() {
+    fn claimed_issue(number: u64) -> Issue {
+        Issue {
+            number,
+            title: format!("Issue {number}"),
+            url: format!("https://example.test/{number}"),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            labels: vec!["processing".into()],
+            body: None,
+        }
+    }
+
+    let (repo, state) = scratch("stale-processing");
+    write_state(&repo, &state, &state_document(&repo, "idle", json!([])));
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let writes: Arc<Mutex<Vec<(u64, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&writes);
+    let tracker: TrackerRead = Arc::new(|_request: TrackerReadRequest| {
+        Box::pin(async {
+            PollResult::Issues {
+                issues: vec![claimed_issue(4), claimed_issue(5)],
+                etag: Some("etag-1".into()),
+            }
+        })
+    });
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    );
+    settings.hooks.tracker_read = tracker;
+    settings.hooks.processing_write = Arc::new(move |number, active| {
+        let recorded = Arc::clone(&recorded);
+        Box::pin(async move {
+            recorded.lock().expect("writes").push((number, active));
+            Ok(())
+        })
+    });
+    // Issue #5 is owned by a claim this live process holds; #4 is not.
+    let claims = repo.join(".devboard/.tmp/issues/claims");
+    std::fs::create_dir_all(&claims).expect("a claims directory");
+    std::fs::write(
+        claims.join("5.json"),
+        json!({
+            "number": 5,
+            "pid": std::process::id(),
+            "runId": "run-5",
+        })
+        .to_string(),
+    )
+    .expect("a claim");
+    let bridge = IssuesBridge::new(settings);
+
+    bridge.sync_now().await;
+
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["queue"][0]["number"], json!(4));
+    assert_eq!(snapshot["queue"][0]["labels"], json!([]));
+    assert_eq!(snapshot["queue"][1]["number"], json!(5));
+    assert_eq!(snapshot["queue"][1]["labels"], json!(["processing"]));
+    assert_eq!(
+        *writes.lock().expect("writes"),
+        vec![(4, false)],
+        "only the unclaimed label is cleared"
+    );
 }
 
 /// A tracker read that answers one open issue and counts its calls.
@@ -784,6 +863,7 @@ async fn a_start_answers_before_its_preflight_finishes() {
             close_issue: Arc::new(|_request| Box::pin(async { Ok(()) })),
             tracker_read: empty_tracker(),
             agent_environment: Arc::new(|| Box::pin(async { Ok(HashMap::new()) })),
+            processing_write: Arc::new(|_number, _active| Box::pin(async { Ok(()) })),
         },
         Arc::clone(&sink),
     ));
@@ -863,6 +943,7 @@ async fn a_stop_supersedes_an_accepted_start() {
             close_issue: Arc::new(|_request| Box::pin(async { Ok(()) })),
             tracker_read: empty_tracker(),
             agent_environment: Arc::new(|| Box::pin(async { Ok(HashMap::new()) })),
+            processing_write: Arc::new(|_number, _active| Box::pin(async { Ok(()) })),
         },
         Arc::clone(&sink),
     ));
