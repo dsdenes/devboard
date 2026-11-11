@@ -113,6 +113,11 @@ comment on, close, or reopen another issue.
   that text verbatim as the blocker, and write nothing to the forge. Never retry the call to look
   for a different answer, never switch host or account by hand, and never fall back to `curl` or
   another forge API probe.
+- A Devboard MCP call that times out at the transport gets at most one retry of that exact call.
+  A second timeout ends that tool path for the rest of the run: finish through the path that
+  still answers, or report the timeout as the blocker, and never probe the same server through
+  `journal_search`, `issues_list`, or `issue_get` as a liveness check. Never read one issue
+  number more than twice.
 - Never discover forge or registry configuration from the environment or a credential file: no
   `env | grep`, `printenv`, `cat .env`, `cat ~/.npmrc`, `git config --get-regexp 'url\..*'`, or
   any other sweep of the process environment or a credential file, and no invocation of a
