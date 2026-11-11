@@ -3957,10 +3957,6 @@ fn newest_first(left: &IssueRow, right: &IssueRow) -> std::cmp::Ordering {
     }
 }
 
-pub fn normalize_title(title: &str) -> String {
-    crate::forge::normalize_issue_title(title)
-}
-
 pub fn limit_label(value: Option<i64>) -> String {
     value
         .map(|value| value.to_string())
