@@ -1673,24 +1673,17 @@ fn iso_now() -> String {
         .unwrap_or_default()
 }
 
+/// Replaces one governor file through the harness's one atomic writer.
+///
+/// A staged write plus a rename keeps the file whole and is what answers the
+/// operator; the kernel's writeback owns the flush. A `sync_all` here put the
+/// filesystem's own flush latency on every `setResources` request, and on this
+/// host that flush measured 250 ms to 1 s for a hundred-byte settings file.
+/// The dashboard state file, which is the larger and more consequential
+/// record, is written the same way.
 fn write_json_atomically(path: &Path, value: &Value) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-    write_text_atomically(path, &format!("{text}\n"))
-}
-
-fn write_text_atomically(path: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension(format!("{}.{}.tmp", std::process::id(), epoch_millis()));
-    {
-        let mut file = File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all().ok();
-    }
-    fs::rename(&temporary, path).inspect_err(|_| {
-        let _ = fs::remove_file(&temporary);
-    })
+    crate::state::write_state_file(path, &format!("{text}\n"))
 }
 
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {

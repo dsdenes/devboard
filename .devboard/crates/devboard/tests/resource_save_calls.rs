@@ -1,21 +1,27 @@
-//! What one resource save costs the user manager.
+//! What one resource save costs the operator.
 //!
-//! A save is an operator waiting on a control, so its path to the slice is
-//! measured in `systemctl` round trips: each one is a process spawn plus a
-//! serialized bus request, and the endpoint answers only after the last one
-//! returns. The governor may spend one read and one property write on a budget
-//! that changed, and nothing on one the slice already carries. This fixture
-//! shadows `systemctl` with a script that records and delays every invocation,
-//! so the old eight-call save models 1.6 s against the fixed 1000 ms budget
-//! while the current one models well inside it. The round trips, not a
-//! wall-clock reading, are what the assertion counts: a loaded builder must
-//! not decide this test.
+//! A save is an operator waiting on a control, so the endpoint may spend
+//! neither a serialized user-manager round trip nor a durable flush on the
+//! request path. The slice half is measured in `systemctl` round trips: each
+//! one is a process spawn plus a serialized bus request, and the endpoint
+//! answers only after the last one returns. The governor may spend one read
+//! and one property write on a budget that changed, and nothing on one the
+//! slice already carries. This fixture shadows `systemctl` with a script that
+//! records and delays every invocation, so the old eight-call save models
+//! 1.6 s against the fixed 1000 ms budget while the current one models well
+//! inside it. The round trips, not a wall-clock reading, are what that
+//! assertion counts: a loaded builder must not decide this test.
+//!
+//! The storage half is a staged write and a rename. When the filesystem's own
+//! flush is slow enough to exhibit a `sync_all` on the path — the defect this
+//! file regresses — the save is timed against that flush instead.
 
 #![cfg(target_os = "linux")]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devboard::resources::{Governor, GovernorOptions, MemoryReader, Settings};
 
@@ -223,6 +229,79 @@ fn a_resource_save_costs_one_read_and_one_write() {
     assert!(
         calls.is_empty(),
         "a cap-only edit rewrites no slice property: {calls:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// One durable flush of a settings-sized file in the directory the save
+/// writes, so the probe pays what a flushing save pays in the same window.
+fn flush_probe(directory: &Path, index: usize) -> Duration {
+    let path = directory.join(format!("flush-probe-{index}.json"));
+    let started = Instant::now();
+    {
+        let mut file = std::fs::File::create(&path).expect("the flush probe");
+        file.write_all(b"{\"maxAgentPeers\":8}\n")
+            .expect("the flush probe write");
+        file.sync_all().expect("the flush probe sync");
+    }
+    let elapsed = started.elapsed();
+    let _ = std::fs::remove_file(&path);
+    elapsed
+}
+
+/// Saving the settings answers after the staged write is renamed, not after
+/// the filesystem flushes it.
+///
+/// The save used to `sync_all` its hundred-byte settings file, so the
+/// operator's request waited on the disk: on this host one flush measured
+/// 250 ms to 1 s, and a save pressed twice in that window breached the 1000 ms
+/// action budget. A host whose flush is already instant cannot exhibit the
+/// defect, so the test skips there, the way the slice tests skip without a
+/// user manager. Each probe runs beside one save, so a loaded builder moves
+/// both readings together instead of deciding the verdict.
+#[test]
+fn a_resource_save_does_not_wait_for_the_settings_flush() {
+    let root = scratch("flush");
+    let state = root.join("state");
+    let settings_directory = state.join("resources");
+    std::fs::create_dir_all(&settings_directory).expect("the state directory");
+    let governor = Governor::new(
+        &state,
+        GovernorOptions {
+            memory: Arc::new(FakeMemory),
+            env: Default::default(),
+            slice: false,
+        },
+    );
+    let mut flushes = Vec::new();
+    let mut saves = Vec::new();
+    for index in 0..9usize {
+        flushes.push(flush_probe(&settings_directory, index));
+        let started = Instant::now();
+        governor
+            .save(settings(4096 + index as u64))
+            .expect("the save validates");
+        saves.push(started.elapsed());
+    }
+    flushes.sort();
+    saves.sort();
+    let flush = flushes[flushes.len() / 2];
+    let save = saves[saves.len() / 2];
+    if flush < Duration::from_micros(500) {
+        // A filesystem whose flush is free (tmpfs) cannot separate the two
+        // paths at all.
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    assert!(
+        save * 2 < flush,
+        "the median save takes {save:?} while the median flush of the same file \
+         takes {flush:?}: the settings write must answer after its rename, not \
+         after the disk. saves: {saves:?} flushes: {flushes:?}"
+    );
+    assert!(
+        save < UI_ACTION_BUDGET,
+        "a save is held to the operator's action budget: {save:?}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
