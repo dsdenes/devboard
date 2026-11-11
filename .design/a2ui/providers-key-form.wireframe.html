@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Providers key form</title>
+<style>
+  :root { --ink:#222; --muted:#666; --line:#bbb; --fill:#f4f4f4; --accent:#0b5cad; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink); font: 13px/1.45 system-ui, sans-serif; }
+  .shell { min-height: 100vh; display: grid; grid-template-rows: 1fr 26px; background: #fafafa; }
+  .canvas { position: relative; padding: 48px 16px; display: grid; place-items: center; }
+  .scrim { position: absolute; inset: 0; background: #e9e9e9; }
+  .dialog { position: relative; width: min(640px, 100%); background: #fff; border: 1px solid var(--ink);
+            border-radius: 6px; }
+  .dialog__header { align-items: center; border-bottom: 1px solid var(--line); display: flex;
+                    gap: 8px; justify-content: space-between; padding: 8px 10px; }
+  .dialog__title { font-size: 13px; font-weight: 600; margin: 0; }
+  .dialog__body { display: flex; flex-direction: column; gap: 10px; padding: 8px; }
+  .button { border: 1px solid var(--line); border-radius: 4px; font-size: 12px; padding: 4px 8px;
+            text-align: center; white-space: nowrap; }
+  .button--primary { background: var(--fill); border-color: var(--ink); font-weight: 600; }
+  .compose { background: #fbfbfb; border: 1px solid var(--line); border-radius: 4px; display: flex;
+             flex-direction: column; gap: 8px; padding: 10px; }
+  .compose__title { font-size: 12px; font-weight: 600; margin: 0; }
+  .caption { color: var(--muted); font-size: 11px; margin: 0; }
+  .fields { display: grid; gap: 8px 10px; grid-template-columns: 168px minmax(0, 1fr); }
+  .fields--key { align-items: end; grid-template-columns: minmax(0, 1fr) auto; width: 100%; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field > span { color: var(--muted); font-size: 11px; }
+  .control { border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 12px;
+             height: 28px; line-height: 26px; overflow: hidden; padding: 0 8px;
+             text-overflow: ellipsis; white-space: nowrap; }
+  .actions { display: flex; gap: 6px; }
+  .keys { display: flex; flex-direction: column; gap: 8px; }
+  .divider { border: 0; border-top: 1px solid var(--line); margin: 2px 0 0; }
+  .row { border: 1px solid var(--line); border-radius: 4px; display: flex; flex-direction: column;
+         gap: 6px; padding: 8px; }
+  .row__head { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+  .row__name { font-weight: 600; font-size: 12px; }
+  .row__actions { align-items: center; display: flex; gap: 6px; }
+  .row__actions .button { font-size: 11px; padding: 2px 6px; }
+  .row__actions .enabled { color: var(--muted); font-size: 11px; margin-right: auto; }
+  .anno { border: 1px dashed var(--accent); border-radius: 3px; color: var(--accent);
+          display: block; font: 10px/1.3 ui-monospace, monospace; margin: 0 0 2px; padding: 2px 4px; }
+  .statusbar { border-top: 1px solid var(--line); color: var(--muted); font-size: 11px;
+               padding: 4px 8px; }
+  @media (max-width: 768px) {
+    .fields, .fields--key { grid-template-columns: minmax(0, 1fr); }
+    .actions { justify-content: flex-end; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="canvas">
+    <div class="scrim" aria-hidden="true"></div>
+    <main class="dialog" aria-labelledby="dialog-title">
+      <header class="dialog__header">
+        <span class="anno">region_header · P1</span>
+        <h1 class="dialog__title" id="dialog-title">Providers</h1>
+        <span class="button">Refresh</span>
+      </header>
+
+      <div class="dialog__body">
+        <section class="compose" aria-labelledby="compose-title">
+          <span class="anno">region_compose · P0</span>
+          <h2 class="compose__title" id="compose-title">Add a key</h2>
+          <p class="caption">
+            A key is used only when every quota window is above 1% remaining; the harness rotates
+            at 1% remaining. Usage is checked at most once a minute unless refreshed.
+          </p>
+
+          <div class="fields">
+            <div class="field">
+              <span class="anno">provider_choice · P0</span>
+              <span>Provider</span>
+              <div class="control">OpenCode Go ▾</div>
+            </div>
+            <div class="field">
+              <span class="anno">label_input · P2</span>
+              <span>Label</span>
+              <div class="control">Go #4</div>
+            </div>
+          </div>
+
+          <div class="fields fields--key">
+            <div class="field">
+              <span class="anno">key_input · P0</span>
+              <span>API key</span>
+              <div class="control">Paste the key</div>
+            </div>
+            <div class="actions">
+              <span class="anno">submit_button · P0</span>
+              <span class="button button--primary">Add key</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="keys" aria-label="Configured keys">
+          <span class="anno">region_keys · unchanged, out of scope</span>
+          <hr class="divider">
+          <div class="row">
+            <div class="row__head">
+              <span class="row__name">OpenCode Go ····w81 · Go #2</span>
+              <span class="caption">EXHAUSTED</span>
+            </div>
+            <p class="caption">
+              Rolling 5h: 100% remaining (0% used) · Weekly: 100% remaining (0% used) · Monthly: 0%
+              remaining (100% used) · opencode-go/deepseek-v4.1-flash · checked 11/11/2026, 09:50
+            </p>
+            <div class="row__actions">
+              <span class="enabled">☑ enabled</span>
+              <span class="button">Edit</span>
+              <span class="button">Delete</span>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row__head">
+              <span class="row__name">OpenRouter ····f499 · OpenRouter</span>
+              <span class="caption">OK</span>
+            </div>
+            <p class="caption">
+              Account limit: 78.9% remaining (21.1% used) ·
+              openrouter/deepseek/deepseek-v4.1-flash-1017 · checked 11/11/2026, 09:50
+            </p>
+            <div class="row__actions">
+              <span class="enabled">☐ enabled</span>
+              <span class="button">Edit</span>
+              <span class="button">Delete</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <footer class="statusbar">Status bar (unchanged) — provider indicator opens this dialog</footer>
+</div>
+</body>
+</html>

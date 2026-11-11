@@ -116,82 +116,97 @@
         </CommandButton>
       </div>
       <div class="dialog-body providers-body">
-        <Dialog.Description class="providers-rule" data-testid="provider-rule">
-          Providers in order: {PROVIDER_IDS.map((id) => PROVIDERS[id].name).join(", ")}. A key is
-          used only when every quota window is above 1% remaining; the harness {providers.rule}.
-          Usage is checked at most once a minute unless refreshed.
-        </Dialog.Description>
-
         {#if providers.error !== null}
           <p class="providers-error" data-testid="provider-error" role="alert">{providers.error}</p>
         {/if}
 
         <form
-          class="providers-form"
+          class="providers-compose"
+          aria-labelledby="providers-compose-title"
           onsubmit={(event) => {
             event.preventDefault();
             save();
           }}
         >
-          <label class="providers-field">
-            <span>Provider</span>
-            <select
-              data-testid="provider-select"
-              bind:value={provider}
-              disabled={editing !== null}
-            >
-              {#each PROVIDER_IDS as id}
-                <option value={id}>{PROVIDERS[id].name}</option>
-              {/each}
-            </select>
-            <span class="providers-model" data-testid="provider-model">
-              model <span class="mono">{PROVIDERS[provider].model}</span>
-            </span>
-          </label>
-          <label class="providers-field">
-            <span>Label</span>
-            <Input
-              data-testid="provider-label-input"
-              placeholder={PROVIDERS[provider].name}
-              value={label}
-              oninput={(event) => (label = (event.currentTarget as HTMLInputElement).value)}
-            />
-          </label>
-          <label class="providers-field providers-field--key">
-            <span>API key</span>
-            <Input
-              data-testid="provider-key-input"
-              type="password"
-              autocomplete="off"
-              placeholder={editing === null ? "Paste the key" : "Leave blank to keep the current key"}
-              value={key}
-              oninput={(event) => (key = (event.currentTarget as HTMLInputElement).value)}
-            />
-          </label>
-          <div class="providers-form-actions">
-            {#if editing !== null}
-              <Button variant="ghost" size="sm" data-testid="provider-cancel-edit" onclick={resetForm}>
-                Cancel
+          <div class="providers-compose__head">
+            <h3 class="providers-compose__title" id="providers-compose-title">
+              {editing === null ? "Add a key" : "Edit key"}
+            </h3>
+            <Dialog.Description class="providers-compose__caption" data-testid="provider-rule">
+              A key is used only when every quota window is above 1% remaining; the harness
+              {providers.rule}. Usage is checked at most once a minute unless refreshed.
+            </Dialog.Description>
+          </div>
+
+          <div class="providers-fields">
+            <label class="providers-field">
+              <span>Provider</span>
+              <select
+                data-testid="provider-select"
+                bind:value={provider}
+                disabled={editing !== null}
+              >
+                {#each PROVIDER_IDS as id}
+                  <option value={id}>{PROVIDERS[id].name}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="providers-field">
+              <span>Label</span>
+              <Input
+                data-testid="provider-label-input"
+                placeholder={PROVIDERS[provider].name}
+                value={label}
+                oninput={(event) => (label = (event.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+          </div>
+
+          <div class="providers-key-row">
+            <label class="providers-field">
+              <span>API key</span>
+              <Input
+                data-testid="provider-key-input"
+                type="password"
+                autocomplete="off"
+                placeholder={editing === null
+                  ? "Paste the key"
+                  : "Leave blank to keep the current key"}
+                value={key}
+                oninput={(event) => (key = (event.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+            <div class="providers-actions">
+              {#if editing !== null}
+                <Button
+                  variant="ghost"
+                  data-testid="provider-cancel-edit"
+                  onclick={resetForm}
+                >
+                  Cancel
+                </Button>
+              {/if}
+              <Button
+                variant="default"
+                type="submit"
+                busy={savePending.busy}
+                busyLabel={editing === null ? "Adding…" : "Saving…"}
+                data-testid="provider-save"
+                data-command="settings.providers.save"
+                disabled={editing === null && key.trim().length === 0}
+              >
+                {editing === null ? "Add key" : "Save changes"}
               </Button>
-            {/if}
-            <Button
-              variant="default"
-              size="sm"
-              type="submit"
-              busy={savePending.busy}
-              busyLabel={editing === null ? "Adding…" : "Saving…"}
-              data-testid="provider-save"
-              data-command="settings.providers.save"
-              disabled={editing === null && key.trim().length === 0}
-            >
-              {editing === null ? "Add key" : "Save changes"}
-            </Button>
+            </div>
+          </div>
+
+          <div class="providers-feedback">
             <SaveFeedback scope="providers.form" />
+            {#if savePending.notice !== null}
+              <CommandNotice text={savePending.notice} ondismiss={() => savePending.dismiss()} />
+            {/if}
           </div>
         </form>
-        {#if savePending.notice !== null}
-          <CommandNotice text={savePending.notice} ondismiss={() => savePending.dismiss()} />
-        {/if}
 
         <div class="providers-list" data-testid="provider-list">
           {#if providers.subscriptions.length === 0}
@@ -305,9 +320,10 @@
     max-height: calc(80vh - 56px);
   }
 
-  :global(.providers-rule) {
+  :global(.providers-compose__caption) {
     color: var(--muted-foreground);
     font-size: 11px;
+    line-height: 1.45;
     margin: 0;
   }
 
@@ -320,32 +336,59 @@
     padding: 6px 8px;
   }
 
-  .providers-form {
+  .providers-compose {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .providers-compose__head {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .providers-compose__title {
+    font-size: 12px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .providers-fields {
+    display: grid;
+    gap: 8px 10px;
+    grid-template-columns: 168px minmax(0, 1fr);
+  }
+
+  .providers-key-row {
     align-items: end;
     display: grid;
     gap: 8px;
-    grid-template-columns: 150px 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .providers-field {
+    color: var(--muted-foreground);
     display: flex;
     flex-direction: column;
     font-size: 11px;
     gap: 4px;
   }
 
-  .providers-field--key {
-    grid-column: 1 / -1;
-  }
-
-  .providers-form-actions {
+  .providers-actions {
     display: flex;
     gap: 6px;
-    grid-column: 1 / -1;
-    justify-content: flex-end;
   }
 
-  .providers-form select {
+  .providers-feedback {
+    display: contents;
+  }
+
+  .providers-compose select {
     background: var(--background);
     border: 1px solid var(--border-strong);
     border-radius: 4px;
@@ -353,14 +396,11 @@
     font-size: 12px;
     height: 28px;
     padding: 0 6px;
+    width: 100%;
   }
 
-  .providers-model {
-    color: var(--muted-foreground);
-    font-size: 11px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .providers-compose select:disabled {
+    opacity: 0.5;
   }
 
   .providers-list {
