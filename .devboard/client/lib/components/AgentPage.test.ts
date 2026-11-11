@@ -287,3 +287,57 @@ test("Save limits dispatches one settings command and waits for its answer", asy
     connection.state = previous;
   }
 });
+
+test("switching to an agent with the same saved settings rewrites the fields from its snapshot", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const cadenceField = within(view.container).getByTestId("agent-cadence") as HTMLInputElement;
+    const hourField = within(view.container).getByTestId("agent-limit-hour") as HTMLInputElement;
+    await fireEvent.input(cadenceField, { target: { value: "20" } });
+    await fireEvent.input(hourField, { target: { value: "5" } });
+    // A refused save leaves an error the next agent must not inherit.
+    await fireEvent.input(cadenceField, { target: { value: "" } });
+    await fireEvent.click(within(view.container).getByTestId("agent-save-limits"));
+    expect(within(view.container).getByTestId("agent-settings-error")).toBeTruthy();
+    expect(settingsFrames(socket.sent)).toEqual([]);
+
+    // Watchdog's saved settings carry the same 10/null/null signature, so the
+    // signature alone would keep the text typed for the Release Train.
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({
+        id: "watchdog",
+        label: "Watchdog",
+        detail: { panel: "cycles", cycles: [] },
+      }),
+    });
+    await view.rerender({ agentId: "watchdog" });
+
+    const switchedCadence = within(view.container).getByTestId(
+      "agent-cadence",
+    ) as HTMLInputElement;
+    const switchedHour = within(view.container).getByTestId(
+      "agent-limit-hour",
+    ) as HTMLInputElement;
+    expect(switchedCadence.value).toBe("10");
+    expect(switchedHour.value).toBe("");
+    expect(within(view.container).queryByTestId("agent-settings-error")).toBeNull();
+
+    await fireEvent.click(within(view.container).getByTestId("agent-save-limits"));
+    expect(settingsFrames(socket.sent)).toEqual([
+      {
+        type: "setAgentSettings",
+        id: "watchdog",
+        minutes: 10,
+        maxPerHour: null,
+        maxPending: null,
+      },
+    ]);
+  } finally {
+    socket.restore();
+    connection.state = previous;
+  }
+});

@@ -81,17 +81,22 @@
   let maxPerHourText = $state("");
   let maxPendingText = $state("");
   let settingsError = $state<string | null>(null);
+  let settingsAgent = $state("");
   let lastSettings = $state("");
 
-  // A snapshot that changes the saved settings wins over the fields; typing
-  // never changes the snapshot, so an edit in progress is never overwritten.
+  // One page instance serves every background-agent tab; the workspace swaps
+  // the `agentId` prop instead of remounting. The identity therefore belongs in
+  // the comparison: a different agent always rewrites the fields, even when its
+  // saved settings match the previous agent's. Within one agent, typing never
+  // changes the snapshot, so an edit in progress is never overwritten.
   $effect(() => {
     const current = snapshot;
     if (current === null) return;
     const signature =
       `${current.cadence.minutes}/${current.limits.maxPerHour}/` +
       `${current.limits.maxPending}`;
-    if (signature === lastSettings) return;
+    if (agentId === settingsAgent && signature === lastSettings) return;
+    settingsAgent = agentId;
     lastSettings = signature;
     cadenceText = String(current.cadence.minutes);
     maxPerHourText = current.limits.maxPerHour === null ? "" : String(current.limits.maxPerHour);
