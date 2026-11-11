@@ -9,6 +9,7 @@
   import { discover } from "../discover.svelte";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
+  import { discoverSuiteRunState } from "../run-state";
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import DiscoverAgentCard from "./DiscoverAgentCard.svelte";
   import DataTable from "./DataTable.svelte";
@@ -83,27 +84,49 @@
   const barLabel = $derived(
     ownerAgent === null ? "Discover" : (discover.agent(ownerAgent)?.label ?? "Discovery agent"),
   );
+  /**
+   * The seven-agent suite's own run state, the same source the sidebar's
+   * Overview entry reads. The Overview and the warnings page report the suite,
+   * so one agent's run never paints their bar running.
+   */
+  const suiteState = $derived(
+    discoverSuiteRunState(
+      discover.runningAll,
+      discover.allFailed !== null,
+      discover.question !== null,
+    ),
+  );
   const barState = $derived(
     ownerAgent !== null
       ? (agentCard?.state ?? "idle")
-      : discover.active
+      : suiteState === "answer"
         ? ("running" as const)
-        : discover.displayError !== null
-          ? ("failed" as const)
-          : ("idle" as const),
+        : suiteState,
   );
   const barStartedAt = $derived(
     barState === "running"
       ? ownerAgent !== null
         ? (agentCard?.startedAt ?? null)
-        : discover.startedAt
+        : discover.runningAll
+          ? discover.startedAt
+          : null
       : null,
   );
   const barActivity = $derived(
-    ownerAgent === null ? discover.activity : agentRunActive ? discover.activity : [],
+    ownerAgent !== null
+      ? agentRunActive
+        ? discover.activity
+        : []
+      : discover.runningAll
+        ? discover.activity
+        : [],
   );
   const barQuestion = $derived(
-    ownerAgent === null ? discover.question : discover.agentQuestionOf(ownerAgent),
+    ownerAgent !== null
+      ? discover.agentQuestionOf(ownerAgent)
+      : discover.runningAll
+        ? discover.question
+        : null,
   );
 
   function clearGlossaryFilters(): void {
@@ -424,13 +447,13 @@
             </CommandButton>
           {/if}
         {:else if tab.kind === "overview"}
-          {#if discover.active}
+          {#if discover.runningAll}
             <CommandButton
               bare
               type="button"
               class="discover-run__stop"
               label="Stop"
-              evidence={() => discover.active}
+              evidence={() => discover.runningAll}
               command={() => discover.stop()}
               data-command="discover.stop"
               data-testid="discover-stop"

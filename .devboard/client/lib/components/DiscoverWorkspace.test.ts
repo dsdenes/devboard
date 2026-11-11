@@ -38,6 +38,7 @@ function payload(
   options: {
     states?: Record<string, string>;
     activeAgent?: string | null;
+    runningAll?: boolean;
     glossaries?: Glossary[];
   } = {},
 ): DiscoverStatePayload {
@@ -47,7 +48,7 @@ function payload(
     runId: null,
     startedAt: activeAgent === null ? null : "2026-11-02T15:20:23.238Z",
     activeAgent,
-    runningAll: false,
+    runningAll: options.runningAll ?? false,
     allFailed: null,
     agents: agentStates(options.states),
     interrupted: false,
@@ -147,12 +148,63 @@ test("the running Overview run stops through the quiet destructive control", asy
     { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
     payload(),
   );
-  discover.active = true;
+  discover.runningAll = true;
   await tick();
   await waitFor(() => expect(controlTestId()).toBe("discover-stop"), { timeout: 5000 });
   const stop = bar().querySelector('[data-testid="discover-stop"]');
   expect(stop?.classList.contains("discover-run__stop")).toBe(true);
   expect(stop?.getAttribute("data-variant")).toBe("bare");
+});
+
+test("a single agent's live run never marks the Overview bar", async () => {
+  await show(
+    { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+    payload({
+      states: { "discover-contribution": "running" },
+      activeAgent: "discover-contribution",
+    }),
+  );
+  discover.handleEvent({
+    type: "discoverActivity",
+    agent: "discover-contribution",
+    text: "- contribution: recorded a staged contribution.",
+  });
+  discover.handleEvent({
+    type: "discoverQuestion",
+    agent: "discover-contribution",
+    id: "q-1",
+    message: "Which tier?",
+    options: [{ id: "one", label: "One" }],
+  });
+  await tick();
+  expect(bar().getAttribute("aria-label")).toBe("Discover activity");
+  expect(
+    bar().querySelector('[data-testid="agent-activity-dot"]')?.getAttribute("data-state"),
+  ).toBe("idle");
+  expect(bar().querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim()).toBe(
+    "No activity yet.",
+  );
+  expect(bar().querySelector('[data-testid="agent-activity-question"]')).toBeNull();
+  expect(controlTestId()).toBe("discover-start");
+  expect(document.querySelector('[data-testid="discover-start"]')?.hasAttribute("disabled")).toBe(
+    true,
+  );
+});
+
+test("the Run all suite paints the Overview bar running with its start time", async () => {
+  await show(
+    { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+    payload({
+      states: { "discover-contribution": "running" },
+      activeAgent: "discover-contribution",
+      runningAll: true,
+    }),
+  );
+  const dot = bar().querySelector('[data-testid="agent-activity-dot"]');
+  expect(dot?.getAttribute("data-state")).toBe("running");
+  expect(dot?.getAttribute("aria-label")).toBe(
+    "Discover is running since 2026-11-02T15:20:23.238Z",
+  );
 });
 
 test("a Contribution skill page starts the Contribution agent only", async () => {
