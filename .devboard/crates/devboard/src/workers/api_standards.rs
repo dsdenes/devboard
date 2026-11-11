@@ -1273,6 +1273,9 @@ fn handler_index(sources: &[AuditFile]) -> HashMap<String, HandlerSpan> {
     let mut handlers = HashMap::new();
     for (source, file) in sources.iter().enumerate() {
         let lines: Vec<&str> = file.text.split('\n').collect();
+        let module = Path::new(&file.path)
+            .file_stem()
+            .and_then(|value| value.to_str());
         let starts: Vec<usize> = lines
             .iter()
             .enumerate()
@@ -1284,11 +1287,17 @@ fn handler_index(sources: &[AuditFile]) -> HashMap<String, HandlerSpan> {
                 continue;
             };
             let end = starts.get(position + 1).copied().unwrap_or(lines.len());
-            handlers.entry(name.to_string()).or_insert(HandlerSpan {
+            let span = HandlerSpan {
                 source,
                 start: *start,
                 end,
-            });
+            };
+            // A branch that calls `crate::runs::handle(..)` names the module and
+            // the handler, so a bare `handle` keeps the first file's body only.
+            if let Some(module) = module {
+                handlers.entry(format!("{module}::{name}")).or_insert(span);
+            }
+            handlers.entry(name.to_string()).or_insert(span);
         }
     }
     handlers
@@ -1395,30 +1404,89 @@ fn dispatcher_arms(lines: &[&str]) -> Vec<(usize, String, usize)> {
     routes
 }
 
-/// Each `uri.path().strip_prefix("<prefix>")` route: its line, its path, and
-/// the line its branch ends on.
-fn prefix_routes(lines: &[&str]) -> Vec<(usize, String, usize)> {
-    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+/// The last line of the block one `if`/`if let` statement opens at `start`.
+/// A guard without a block covers only its own line.
+fn block_end(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0i32;
+    let mut opened = false;
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        let (opens, closes) = brace_delta(line);
+        depth += opens - closes;
+        if opens > 0 {
+            opened = true;
+        }
+        if opened && depth <= 0 {
+            return index;
+        }
+        if !opened && line.trim_end().ends_with(';') {
+            return index;
+        }
+    }
+    start
+}
+
+/// The first captured group of `pattern` in `line`.
+fn captured(pattern: &regex::Regex, line: &str) -> Option<String> {
+    pattern
+        .captures(line)
+        .and_then(|capture| capture.get(1))
+        .map(|value| value.as_str().to_string())
+}
+
+/// Each `uri.path()` guard route — `==`, `starts_with`, and `strip_prefix` —
+/// with its line, its path, and the line its own block ends on.
+fn guard_routes(lines: &[&str]) -> Vec<(usize, String, usize)> {
+    static STRIP_PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r#"uri\.path\(\)\.strip_prefix\("([^"]+)"\)"#)
             .expect("a prefix-route pattern")
     });
+    static EQUALS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"uri\.path\(\)\s*==\s*"([^"]+)""#).expect("an equality-route pattern")
+    });
+    static STARTS_WITH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"uri\.path\(\)\.starts_with\("([^"]+)"\)"#)
+            .expect("a subtree-route pattern")
+    });
     let mut routes = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        let Some(capture) = PREFIX.captures(line) else {
+        let mut paths: Vec<String> = Vec::new();
+        if let Some(prefix) = captured(&STRIP_PREFIX, line) {
+            paths.push(format!("{prefix}{{name}}"));
+        }
+        if let Some(path) = captured(&EQUALS, line) {
+            paths.push(path);
+        }
+        if let Some(path) = captured(&STARTS_WITH, line) {
+            paths.push(path.trim_end_matches('/').to_string());
+        }
+        if paths.is_empty() {
             continue;
-        };
-        let Some(prefix) = capture.get(1) else {
-            continue;
-        };
-        let end = lines[index + 1..]
-            .iter()
-            .position(|line| function_name(line).is_some())
-            .map(|offset| index + 1 + offset)
-            .unwrap_or(lines.len())
-            .min(index + 60);
-        routes.push((index, format!("{}{{name}}", prefix.as_str()), end));
+        }
+        let end = block_end(lines, index);
+        for path in paths {
+            routes.push((index, path, end));
+        }
     }
     routes
+}
+
+/// Each `route!("<command>", <METHOD>, "<path>", ...)` the REST table declares:
+/// its line, its path, and its method.
+fn declared_operations(text: &str) -> Vec<(usize, String, String)> {
+    static DECLARED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"route!\s*\(\s*"[^"]+"\s*,\s*([A-Z]+)\s*,\s*"([^"]+)"\s*,"#)
+            .expect("a declared-operation pattern")
+    });
+    let mut operations = Vec::new();
+    for capture in DECLARED.captures_iter(text) {
+        let (Some(method), Some(path)) = (capture.get(1), capture.get(2)) else {
+            continue;
+        };
+        let offset = capture.get(0).map(|whole| whole.start()).unwrap_or(0);
+        let line = text[..offset].matches('\n').count();
+        operations.push((line, path.as_str().to_string(), method.as_str().to_string()));
+    }
+    operations
 }
 
 /// The handler one route branch forwards to.
@@ -1429,36 +1497,93 @@ fn forwarded_handler(span: &str) -> Option<String> {
     static REPLY_CALL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"reply\(\s*([a-z][a-z0-9_]*)\s*\(").expect("a reply-call pattern")
     });
-    APP_CALL
+    static MODULE_CALL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?:^|[^A-Za-z0-9_])([a-z][a-z0-9_]*)::([a-z][a-z0-9_]*)\s*\(")
+            .expect("a module-call pattern")
+    });
+    if let Some(name) = APP_CALL
         .captures(span)
         .or_else(|| REPLY_CALL.captures(span))
         .and_then(|capture| capture.get(1))
-        .map(|value| value.as_str().to_string())
+    {
+        return Some(name.as_str().to_string());
+    }
+    MODULE_CALL.captures(span).and_then(|capture| {
+        let module = capture.get(1)?.as_str();
+        let name = capture.get(2)?.as_str();
+        Some(format!("{module}::{name}"))
+    })
 }
 
-/// The route's own branch names its methods; an arm that forwards to a handler
-/// takes them from that handler's body.
-fn route_methods(
+/// True when a branch upgrades the connection: it calls an upgrade helper or
+/// builds a `WebSocketUpgrade`.
+fn upgrades(branch: &str) -> bool {
+    branch.contains("upgrade(") || branch.contains("WebSocketUpgrade")
+}
+
+/// The route's own branch names its methods and whether it upgrades; an arm
+/// that forwards to a handler takes both from that handler's body.
+fn route_reading(
     span: &str,
     sources: &[AuditFile],
     handlers: &HashMap<String, HandlerSpan>,
-) -> Vec<String> {
+) -> (Vec<String>, bool) {
+    let mut upgrade = upgrades(span);
     let methods = methods_in(span);
-    if !methods.is_empty() {
-        return methods;
-    }
     let Some(name) = forwarded_handler(span) else {
-        return methods;
+        return (methods, upgrade);
     };
     let Some(handler) = handlers.get(&name) else {
-        return methods;
+        return (methods, upgrade);
     };
     let lines: Vec<&str> = sources[handler.source].text.split('\n').collect();
-    methods_in(&lines[handler.start..handler.end.min(lines.len())].join("\n"))
+    let body = lines[handler.start..handler.end.min(lines.len())].join("\n");
+    upgrade |= upgrades(&body);
+    let methods = if methods.is_empty() {
+        methods_in(&body)
+    } else {
+        methods
+    };
+    (methods, upgrade)
 }
 
-/// Every `match uri.path()` arm and every `uri.path().strip_prefix(...)` route
-/// is one route; the branch body up to the next route names its methods.
+/// Merge entries that name the same path: one entry per path carries the union
+/// of the methods, the strongest kind, and the source that first named a
+/// method.
+fn merged_routes(mut routes: Vec<RouteEntry>) -> Vec<RouteEntry> {
+    routes.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    let mut merged: Vec<RouteEntry> = Vec::new();
+    for route in routes {
+        let Some(existing) = merged.last_mut().filter(|entry| entry.path == route.path) else {
+            merged.push(route);
+            continue;
+        };
+        let named_methods = !existing.methods.is_empty();
+        let adds_methods = !route.methods.is_empty();
+        for method in route.methods {
+            if !existing.methods.contains(&method) {
+                existing.methods.push(method);
+            }
+        }
+        if route.kind == "upgrade" {
+            existing.kind = route.kind;
+        }
+        if !named_methods && adds_methods {
+            existing.source = route.source;
+            existing.line = route.line;
+        }
+    }
+    merged
+}
+
+/// Every route form the server declares: a `route!` operation, a
+/// `match uri.path()` arm, or a `uri.path()` guard. One entry per path names
+/// the methods it answers, whether it upgrades, and where it is declared.
 pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
     let handlers = handler_index(sources);
     let mut routes = Vec::new();
@@ -1469,17 +1594,26 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
         }
         let lines: Vec<&str> = source.text.split('\n').collect();
         let mut found = dispatcher_arms(&lines);
-        found.extend(prefix_routes(&lines));
+        found.extend(guard_routes(&lines));
         found.sort_by_key(|(start, _, _)| *start);
         for (start, path, end) in found {
-            let span = lines[start..end.min(lines.len())].join("\n");
-            let kind = if path == "/ws" { "upgrade" } else { "endpoint" };
+            let span = lines[start..=end.min(lines.len().saturating_sub(1))].join("\n");
+            let (methods, upgrade) = route_reading(&span, sources, &handlers);
             routes.push(RouteEntry {
                 path,
-                methods: route_methods(&span, sources, &handlers),
-                kind: kind.to_string(),
+                methods,
+                kind: if upgrade { "upgrade" } else { "endpoint" }.to_string(),
                 source: source.path.clone(),
                 line: start + 1,
+            });
+        }
+        for (line, path, method) in declared_operations(&source.text) {
+            routes.push(RouteEntry {
+                path,
+                methods: vec![method],
+                kind: "endpoint".to_string(),
+                source: source.path.clone(),
+                line: line + 1,
             });
         }
     }
@@ -1503,12 +1637,7 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
             line: 1,
         });
     }
-    routes.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.source.cmp(&right.source))
-    });
-    routes
+    merged_routes(routes)
 }
 
 pub fn read_audit_input(repo_dir: &Path, config: &Config) -> Result<AuditInput, String> {

@@ -40,9 +40,10 @@ The REST skill is the only normative text for this turn: `documents` in `input.j
 ## Audited surface
 
 Audit the HTTP surface the dashboard server exposes, as `request.json`'s `routes` describes it:
-the endpoints, the `/ws` upgrade with its refusal and method handling, and the static-file
-fallback. Every file in `sources` is the server's own routing, request parsing, and response code;
-a route that appears in those files but not in `routes` is still part of the surface.
+the endpoints, the `/agent-runs` output upgrade with its refusal and method handling, and the
+static-file fallback. Every file in `sources` is the server's own routing, request parsing, and
+response code; a route that appears in those files but not in `routes` is still part of the
+surface.
 
 Excluded, and never a finding:
 

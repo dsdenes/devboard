@@ -1777,11 +1777,38 @@ fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
     assert!(route("/ready", "GET"));
     assert!(route("/ready", "HEAD"));
     assert!(route("/goal-proposals", "POST"));
+    // The retired socket path answers 404; the inventory never names it.
     assert!(!input.routes.iter().any(|entry| entry.path == "/ws"));
     assert!(input
         .routes
         .iter()
         .any(|entry| entry.kind == "static-fallback"));
+    assert!(input
+        .routes
+        .iter()
+        .any(|entry| entry.path == "/flows" && entry.methods == ["GET", "HEAD"]));
+    assert!(input.routes.iter().any(|entry| entry.path == "/agent-runs"
+        && entry.kind == "upgrade"
+        && entry.methods.iter().any(|method| method == "GET")));
+    assert!(input
+        .routes
+        .iter()
+        .any(|entry| entry.path == "/reports/{name}" && entry.methods == ["GET"]));
+    let mut paths: Vec<&str> = input
+        .routes
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    assert_eq!(paths.len(), input.routes.len(), "one entry per path");
+    let declared: Vec<(String, String)> = devboard::rest::ROUTES
+        .iter()
+        .map(|entry| (entry.path.to_string(), entry.method.as_str().to_string()))
+        .collect();
+    for (path, method) in &declared {
+        assert!(route(path, method), "the inventory serves {method} {path}");
+    }
 }
 
 #[test]
