@@ -865,7 +865,10 @@ the model that provider pins, every saved subscription row names its model, and 
 provider therefore chooses its model. It shows each key's masked value, status (`ok`, `near
 limit`, `exhausted`, `invalid`, `unknown`), every quota window's remaining fraction, and the last
 check time. A running peer keeps the key it started with; the next peer resolves the selection
-again.
+again. A key the provider itself refuses is answered by the dialog alone: the save is rejected,
+the typed key is kept for a retry, and no notification is raised or issue filed, because the
+operator owns that fix. Every other provider change failure keeps the error notification that
+surfaces a harness or stored-state fault.
 
 Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
 atomic replacement). A file whose envelope is unusable is moved aside, and a file with only some
