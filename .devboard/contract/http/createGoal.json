@@ -16,6 +16,7 @@
           "runId": null,
           "startedAt": null,
           "activeAgent": null,
+          "questionId": null,
           "runningAll": false,
           "allFailed": null,
           "agents": [

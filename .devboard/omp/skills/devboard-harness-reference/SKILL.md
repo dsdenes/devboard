@@ -1557,9 +1557,10 @@ repository links for installed packages, the VS Code handoff for each Overview p
 document or `null`), glossaries, per-concept usage and examples measured from the host's
 documentation and source, `glossarySignificance` keyed by bounded context and then concept id with
 `{ score, reason }` values, decisions, and every published skill with baseline text, live text,
-hashes, and state. It adds `activeAgent`, `runningAll`, and `agents`: the seven cards in sidebar
-order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`, and `prompt`
-(`{ agent, text, error }`).
+hashes, and state. It adds `activeAgent`, `questionId` (the decision the run is waiting on, or
+`null`, so a page drops a question another page answered), `runningAll`, and `agents`: the seven
+cards in sidebar order with `id`, `label`, `command`, `state`, `startedAt`, `endedAt`, `error`,
+and `prompt` (`{ agent, text, error }`).
 `discoverQuestion`, `discoverActivity`, and `discoverStopped` carry `agent`; a question also
 carries `id`, `message`, and `options` of `{ label, description?, recommended }`.
 

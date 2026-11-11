@@ -444,6 +444,30 @@ export class DiscoverStore {
     this.glossarySignificantOnly = true;
   }
 
+  /**
+   * Keeps the pending question and its per-agent entries only while the
+   * snapshot names that id. An answer sent from another page clears the id
+   * server-side, so the next poll drops a panel this page can no longer
+   * answer; a replayed id keeps the panel and the typed `answerDraft`.
+   */
+  private reconcileQuestion(pending: string | number | null | undefined): void {
+    const named =
+      typeof pending === "string" || typeof pending === "number" ? String(pending) : null;
+    if (named === null) {
+      this.question = null;
+      this.agentQuestions = {};
+      this.answerDraft = "";
+      return;
+    }
+    if (this.question === null || String(this.question.id) !== named) {
+      this.question = null;
+      this.answerDraft = "";
+    }
+    for (const [agent, question] of Object.entries(this.agentQuestions)) {
+      if (question !== null && String(question.id) !== named) this.agentQuestions[agent] = null;
+    }
+  }
+
   private applySnapshot(payload: DiscoverStatePayload): void {
     this.state = payload;
     this.glossaryThreshold = Math.min(100, Math.max(0, Math.round(this.glossaryThreshold)));
@@ -453,7 +477,7 @@ export class DiscoverStore {
       typeof payload.activeAgent === "string" ? payload.activeAgent : null;
     this.runningAll = payload.runningAll === true;
     this.allFailed = typeof payload.allFailed === "string" ? payload.allFailed : null;
-    if (!this.active) this.agentQuestions = {};
+    this.reconcileQuestion(this.active ? payload.questionId : null);
     if (Array.isArray(payload.agents)) {
       const prompts = { ...this.promptStates };
       for (const entry of payload.agents) {

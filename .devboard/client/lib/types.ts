@@ -548,6 +548,12 @@ export interface DiscoverStatePayload {
   startedAt: string | null;
   /** The agent the active run belongs to, or null when nothing runs. */
   activeAgent: string | null;
+  /**
+   * The id of the decision the run is waiting on, or null when it waits on
+   * none. Additive: the snapshot is authoritative for a question the page
+   * already showed, so an absent or null id drops it.
+   */
+  questionId?: string | number | null;
   /** True while the seven agents run as one Run all sequence. */
   runningAll: boolean;
   /**

@@ -7937,6 +7937,18 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
             .map(|run| Value::String(run.agent.clone()))
             .unwrap_or(Value::Null),
     );
+    // The snapshot is the page's authority on whether a decision is still
+    // pending: a page that already showed a question another page answered
+    // keeps it until this id stops naming it.
+    payload.insert(
+        "questionId".to_string(),
+        state
+            .run
+            .as_ref()
+            .and_then(|run| run.question.as_ref())
+            .map(|question| acp_id_json(&question.id))
+            .unwrap_or(Value::Null),
+    );
     payload.insert("runningAll".to_string(), Value::Bool(state.all_active));
     payload.insert(
         "allFailed".to_string(),

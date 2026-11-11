@@ -86,15 +86,63 @@ describe("discover pending questions", () => {
     expect(discover.agentQuestionOf("sheet")).toBeNull();
   });
 
-  test("an active snapshot keeps the entries the run replayed", () => {
-    const { discover } = asking();
+  test("an active snapshot naming no question drops the panel and refuses an answer", () => {
+    const { discover, socket } = asking();
+    discover.answerDraft = "Aurora";
 
     discover.handleEvent({
       type: "discoverState",
       state: { active: true, activeAgent: "sheet" },
     });
 
+    expect(discover.active).toBe(true);
+    expect(discover.question).toBeNull();
+    expect(discover.agentQuestionOf("sheet")).toBeNull();
+    expect(discover.answerDraft).toBe("");
+
+    discover.answer("Alpha");
+
+    expect(socket.sent).toEqual([]);
+  });
+
+  test("an active snapshot naming the pending question keeps the panel and its draft", () => {
+    const { discover } = asking();
+    discover.answerDraft = "Aurora";
+
+    discover.handleEvent({
+      type: "discoverState",
+      state: { active: true, activeAgent: "sheet", questionId: 1 },
+    });
+
+    expect(discover.question?.id).toBe(1);
     expect(discover.agentQuestionOf("sheet")?.id).toBe(1);
+    expect(discover.answerDraft).toBe("Aurora");
+  });
+
+  test("an active snapshot naming another question discards the panel and its draft", () => {
+    const { discover } = asking();
+    discover.answerDraft = "Aurora";
+
+    discover.handleEvent({
+      type: "discoverState",
+      state: { active: true, activeAgent: "sheet", questionId: 2 },
+    });
+
+    expect(discover.question).toBeNull();
+    expect(discover.agentQuestionOf("sheet")).toBeNull();
+    expect(discover.answerDraft).toBe("");
+
+    discover.handleEvent({
+      type: "discoverQuestion",
+      id: 2,
+      message: "Which conventions apply?",
+      agent: "sheet",
+      options: [{ label: "Alpha", recommended: false }],
+    });
+
+    expect(discover.question?.id).toBe(2);
+    expect(discover.agentQuestionOf("sheet")?.id).toBe(2);
+    expect(discover.answerDraft).toBe("");
   });
 });
 
@@ -124,6 +172,10 @@ describe("replayed discover frames", () => {
   test("a poll repeating the run and its question keeps the typed answer", () => {
     const discover = polling();
 
+    discover.handleEvent({
+      type: "discoverState",
+      state: { active: true, activeAgent: "sheet", runId: "run-1", questionId: 1 },
+    });
     discover.handleEvent({ type: "discoverStarted", runId: "run-1", agent: "sheet" });
     discover.handleEvent({ type: "discoverActivity", agent: "sheet", text: "Reading the sheet." });
     discover.handleEvent(question);
