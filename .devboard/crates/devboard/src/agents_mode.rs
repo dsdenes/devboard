@@ -1761,13 +1761,14 @@ impl PromptController {
             return Err(format!("there is no template for {id}"));
         }
         let directory = crate::agents_mode::mcp_optimizer_directory(&self.state_dir);
-        let settings = read_mcp_settings(&directory);
+        let settings = crate::workers::mcp_optimizer::read_settings(&directory);
         let open_issues = self
             .open_issues
             .lock()
             .ok()
-            .and_then(|issues| issues.clone());
-        Ok(mcp_optimizer_prompt_template(
+            .and_then(|issues| issues.clone())
+            .map(|rows| open_issue_rows(&rows));
+        Ok(crate::workers::mcp_optimizer::prompt_template(
             &settings,
             open_issues.as_deref(),
         ))
@@ -1837,150 +1838,24 @@ fn node_error(error: &std::io::Error, path: &Path) -> String {
 /* MCP optimizer prompt template                                             */
 /* ------------------------------------------------------------------------ */
 
-fn json_pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
-}
-
-fn mcp_catalog_json() -> String {
-    let payload = crate::mcp::tool_list_payload();
-    let tools = payload
-        .get("tools")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let rows: Vec<Value> = tools
-        .iter()
-        .filter_map(|tool| {
-            Some(json!({
-                "name": tool.get("name")?.as_str()?,
-                "title": tool.get("title")?.as_str()?,
-            }))
+/// The cached open-issue rows, parsed into the worker's issue shape so the
+/// panel's template and the synthesis prompt read one filtered, sorted list.
+fn open_issue_rows(rows: &[Value]) -> Vec<crate::workers::mcp_optimizer::OpenIssue> {
+    rows.iter()
+        .filter_map(|row| {
+            let object = row.as_object()?;
+            Some(crate::workers::mcp_optimizer::OpenIssue {
+                number: object.get("number")?.as_u64()?,
+                title: object.get("title")?.as_str()?.to_string(),
+                body: object
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                url: object.get("url")?.as_str()?.to_string(),
+            })
         })
-        .collect();
-    let mut covers: Vec<String> = tools
-        .iter()
-        .filter_map(|tool| tool.get("covers").and_then(Value::as_array))
-        .flat_map(|entries| entries.iter().filter_map(Value::as_str).map(str::to_string))
-        .collect();
-    covers.sort();
-    covers.dedup();
-    json_pretty(&json!({ "tools": rows, "covers": covers }))
-}
-
-struct PromptSections {
-    family: String,
-    fragments: String,
-    excerpts: String,
-    catalog: String,
-    issues: String,
-    allowlist: String,
-    limits: String,
-}
-
-fn prompt_text(sections: PromptSections) -> String {
-    [
-        "## Manifesto",
-        "",
-        "You are the Devboard MCP optimizer synthesizer for one family. Your goal is to remove the",
-        "recurring friction this family evidences, and your observable result is at most one proposal",
-        "issue filed through the Devboard MCP issue tool, or one recorded reason the family needs no",
-        "issue.",
-        "",
-        "Read this family's evidence, read the open MCP optimizer issues yourself, then act. Never",
-        "answer with a JSON document, fragment, diff, or summary.",
-        "",
-        "Family:",
-        &sections.family,
-        "",
-        "Fragments:",
-        &sections.fragments,
-        "",
-        "Excerpts:",
-        &sections.excerpts,
-        "",
-        "MCP catalog:",
-        &sections.catalog,
-        "",
-        "Open MCP optimizer issues:",
-        &sections.issues,
-        "",
-        "Command allowlist:",
-        &sections.allowlist,
-        "",
-        "Limits:",
-        &sections.limits,
-        "",
-        "Rules:",
-        "- Read the open issues with `issues_list` and `issue_get`. A proposal duplicates an open",
-        "  issue when that issue carries this family's tag or the same title. A duplicate files and",
-        "  comments on nothing.",
-        "- File at most one issue for this family, and only when `filingRoom` is greater than zero.",
-        "- Prefer the smaller change: \"tool\" when a stable named capability removes the recurrence,",
-        "  \"prompt\" when one instruction is enough.",
-        "- A tool proposal names a capability, not a wrapper around this one command. Never reuse a",
-        "  name from the catalog. `covers` entries are the normalized command prefixes the tool",
-        "  replaces; at least one must match the family key. The family must be covered by the",
-        "  command allowlist; the body carries the exact allowlist entry to add.",
-        "- A prompt proposal names one instruction and a target under `.devboard/prompts/` or an",
-        "  agent id.",
-        "- The issue title is exactly `[mcp-optimizer] <family key>` for a tool proposal or",
-        "  `[mcp-optimizer] prompt: <family key>` for a prompt proposal.",
-        "- The issue body has exactly these level-two sections in order: `## Family`,",
-        "  `## Evidence`, `## Proposed tool` or `## Proposed prompt`, `## Acceptance`, `## Rationale`.",
-        "  `## Family` states the key, kind, call and session counts, first and last timestamps,",
-        "  and the family tag. `## Evidence` carries the fragments and the excerpts. `## Acceptance`",
-        "  carries one to five `- [ ]` criteria checkable from the evidence.",
-        "- File with `issue_create` and no labels. Its returned number and URL are the record.",
-        "- When the family needs no change, a duplicate exists, a cap leaves no room, or filing",
-        "  fails, call `mcp_optimizer_proposal_skip` with the family key and one reason sentence.",
-        "  Call either `issue_create` or `mcp_optimizer_proposal_skip` for this family, never both.",
-        "",
-    ]
-    .join("\n")
-}
-
-fn mcp_optimizer_prompt_template(settings: &McpSettings, open_issues: Option<&[Value]>) -> String {
-    let issues = match open_issues {
-        None => "Open MCP optimizer issues could not be read.".to_string(),
-        Some(issues) => {
-            let mut rows: Vec<Value> = issues
-                .iter()
-                .filter_map(|issue| {
-                    let object = issue.as_object()?;
-                    let title = object.get("title")?.as_str()?;
-                    let body = object.get("body").and_then(Value::as_str).unwrap_or("");
-                    if !title.starts_with("[mcp-optimizer]") && !body.contains("family:") {
-                        return None;
-                    }
-                    Some(json!({
-                        "number": object.get("number")?.clone(),
-                        "title": title,
-                        "url": object.get("url")?.clone(),
-                    }))
-                })
-                .collect();
-            rows.sort_by(|left, right| {
-                let left = left.get("number").and_then(Value::as_u64).unwrap_or(0);
-                let right = right.get("number").and_then(Value::as_u64).unwrap_or(0);
-                left.cmp(&right)
-            });
-            json_pretty(&Value::Array(rows))
-        }
-    };
-    prompt_text(PromptSections {
-        family: "<family>".to_string(),
-        fragments: "<fragments>".to_string(),
-        excerpts: "<excerpts>".to_string(),
-        catalog: mcp_catalog_json(),
-        issues,
-        allowlist: json_pretty(&json!(settings.allowlist)),
-        limits: json_pretty(&json!({
-            "maxIssuesPerCycle": settings.max_issues_per_cycle,
-            "maxPerHour": settings.max_per_hour,
-            "maxPending": settings.max_pending,
-            "filingRoom": "<filingRoom>",
-        })),
-    })
+        .collect()
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2219,19 +2094,20 @@ impl McpSettings {
 }
 
 fn valid_allowlist(value: Option<&Value>) -> Option<Vec<String>> {
-    let entries = value?.as_array()?;
-    if entries.len() > 50 {
+    // The worker owns the rule: 50 entries at most, each 200 characters at
+    // most. Measuring bytes here would drop a multi-byte entry the synthesis
+    // call still sends, and a settings save would then rewrite it away.
+    if !crate::workers::mcp_optimizer::is_valid_allowlist(value) {
         return None;
     }
-    let mut result = Vec::new();
-    for entry in entries {
-        let text = entry.as_str()?;
-        if text.trim().is_empty() || text.len() > 200 {
-            return None;
-        }
-        result.push(text.to_string());
-    }
-    Some(result)
+    let entries = value?.as_array()?;
+    Some(
+        entries
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 fn parse_mcp_settings(text: &str) -> Option<McpSettings> {

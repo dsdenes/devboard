@@ -3356,10 +3356,17 @@ filing evidence, and a tool error is recorded for that family.
 
 The MCP optimizer page's Prompt disclosure shows that same prompt as one read-only template
 (`agent-prompt-template`, with the text in `agent-prompt-template-text`), not as a prompt file and
-not as an absence. `synthesize.ts` renders both the call's prompt and the template from one fixed
-text and one catalog/allowlist/limit/issue rendering, so the manifesto, the section headings, and
-the `Rules:` bullets cannot drift apart; a test builds a real prompt for a fixture family and
-asserts the fixed lines are equal. The per-family sections show `<family>`, `<fragments>`, and
+not as an absence. The dashboard serves it from the worker's own
+`workers::mcp_optimizer::prompt_template`, the renderer `synthesis_prompt` also uses: both build
+their text from one fixed manifesto, one section heading list, one `Rules:` bullet list, and one
+catalog/allowlist/limit/issue rendering, so the manifesto, the section headings, and the `Rules:`
+bullets cannot drift apart. The dashboard's cached open-issue rows are parsed into the worker's
+`OpenIssue` values and the settings come from the worker's `read_settings`, so the page and the
+synthesis call read the same allowlist and limits. An integration test asserts the frame served
+for `getAgentPrompt("mcp-optimizer")` equals `prompt_template` for the same settings and issues —
+including the `- Everything this call needs is above.` bullet — and that the allowlist rule counts
+characters rather than bytes, so a 200-character entry of more than 200 bytes survives both
+the page and a settings save. The per-family sections show `<family>`, `<fragments>`, and
 `<excerpts>`; the live sections name the current catalog, read the allowlist and limits from
 `<STATE_DIR>/coach/settings.json` on each connect, and list the dashboard's current open issues
 filtered by `[mcp-optimizer]` title or `family:` body, sorted by number, or state that the open

@@ -1357,6 +1357,106 @@ async fn a_changed_open_issue_read_republishes_the_prompt_template() {
     assert!(!template.contains("aaamarker7"), "{template}");
 }
 
+#[tokio::test]
+async fn the_prompt_page_serves_the_workers_synthesis_template() {
+    let root = scratch("prompt-shared-source");
+    let state = root.join("state");
+    let coach = state.join("coach");
+    // Exactly 200 characters but more than 200 bytes: the worker's allowlist
+    // rule counts characters, so the page must show the allowlist the
+    // synthesis call sends and a settings save must keep it.
+    let entry = "é".repeat(200);
+    std::fs::create_dir_all(&coach).expect("a coach root");
+    std::fs::write(
+        coach.join("settings.json"),
+        serde_json::to_string(&json!({
+            "intervalMinutes": 30,
+            "maxPerHour": 5,
+            "maxPending": 9,
+            "maxIssuesPerCycle": 3,
+            "allowlist": [entry],
+        }))
+        .expect("settings JSON"),
+    )
+    .expect("the settings file");
+
+    let rows = vec![
+        json!({
+            "number": 12,
+            "title": "[mcp-optimizer] later",
+            "url": "https://example.test/12",
+            "body": "family:later",
+        }),
+        json!({
+            "number": 11,
+            "title": "[mcp-optimizer] earlier",
+            "url": "https://example.test/11",
+            "body": "family:earlier",
+        }),
+        json!({
+            "number": 13,
+            "title": "an unrelated issue",
+            "url": "https://example.test/13",
+            "body": "no tag here",
+        }),
+    ];
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::publish_prompt_templates(&app, rows.clone());
+    assert!(
+        devboard::agents_mode::handle(
+            &app,
+            &conn,
+            &Command::GetAgentPrompt {
+                id: Some(json!("mcp-optimizer")),
+            }
+        )
+        .await
+    );
+    let all = frames(&mut inbox);
+    let served = find(&all, "agentPromptState")
+        .into_iter()
+        .filter(|frame| frame["id"] == "mcp-optimizer")
+        .next_back()
+        .and_then(|frame| frame["prompt"]["template"].as_str())
+        .expect("the served template");
+
+    let settings = devboard::workers::mcp_optimizer::read_settings(&coach);
+    assert_eq!(settings.allowlist, vec![entry.clone()]);
+    let issues: Vec<devboard::workers::mcp_optimizer::OpenIssue> = rows
+        .iter()
+        .map(|row| devboard::workers::mcp_optimizer::OpenIssue {
+            number: row["number"].as_u64().expect("a number"),
+            title: row["title"].as_str().expect("a title").to_string(),
+            body: row["body"].as_str().expect("a body").to_string(),
+            url: row["url"].as_str().expect("a url").to_string(),
+        })
+        .collect();
+    let expected = devboard::workers::mcp_optimizer::prompt_template(&settings, Some(&issues));
+    assert_eq!(served, expected);
+    assert!(
+        served.contains("- Everything this call needs is above. Do not read, search, list, or run"),
+        "{served}"
+    );
+
+    // A save through the page keeps the allowlist the synthesis call reads.
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::SetAgentSettings {
+            id: Some(json!("mcp-optimizer")),
+            minutes: Some(json!(30)),
+            max_per_hour: Some(json!(5)),
+            max_pending: Some(json!(9)),
+        },
+    )
+    .await;
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(coach.join("settings.json")).expect("saved"))
+            .expect("saved JSON");
+    assert_eq!(saved["allowlist"], json!([entry]));
+}
+
 /// A resolved fact stays cached; the next cycle asks only for pending and
 /// unreadable URLs, and one cycle never makes more than one reader call.
 #[tokio::test]
