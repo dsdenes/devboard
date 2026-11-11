@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -2388,6 +2388,10 @@ pub struct PeerOptions {
     pub command: String,
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
+    /// The surface that starts this peer. The shared [`default_connect`] records
+    /// it on the governor slot, so a cap deferral names the family that really
+    /// holds the cap instead of whichever family wrote this seam.
+    pub starter: String,
     pub callbacks: PeerCallbacks,
 }
 
@@ -2487,49 +2491,70 @@ impl Peer for AcpPeer {
     }
 }
 
+/// The connection options one peer starts with. The starter comes from the
+/// worker that asked for the peer: every family shares this seam, so a literal
+/// here would put one family's name on another family's slot.
+fn connection_options(options: &PeerOptions) -> AcpConnectionOptions {
+    AcpConnectionOptions::new(
+        options.command.clone(),
+        options.cwd.to_string_lossy().into_owned(),
+    )
+    .with_starter(options.starter.clone())
+    .with_env(options.env.clone())
+    .with_permission_policy(PermissionPolicy::Allow)
+}
+
 /// The production connection: one ACP peer with its event pump.
 pub fn default_connect(options: PeerOptions) -> PeerConnectFuture {
     Box::pin(async move {
-        let connection_options = AcpConnectionOptions::new(
-            options.command.clone(),
-            options.cwd.to_string_lossy().into_owned(),
-        )
-        .with_starter("API Standards")
-        .with_env(options.env.clone())
-        .with_permission_policy(PermissionPolicy::Allow);
-        let (connection, mut events) = AcpConnection::connect(connection_options)
+        let (connection, events) = AcpConnection::connect(connection_options(&options))
             .await
             .map_err(|error| error.message)?;
         let connection = Arc::new(connection);
-        let pump = Arc::clone(&connection);
-        let callbacks = options.callbacks;
-        tokio::spawn(async move {
-            while let Some(event) = events.recv().await {
-                match event {
-                    AcpEvent::Activity(activity) => {
-                        if let Some(callback) = &callbacks.on_activity {
-                            callback(activity);
-                        }
-                    }
-                    AcpEvent::Question(question) => {
-                        answer_question(&pump, &callbacks, &question).await;
-                    }
-                    AcpEvent::Stderr(text) => {
-                        if let Some(callback) = &callbacks.on_stderr {
-                            callback(text);
-                        }
-                    }
-                    AcpEvent::SessionUpdate => {
-                        if let Some(callback) = &callbacks.on_session_update {
-                            callback();
-                        }
-                    }
-                    AcpEvent::Text(_) => {}
-                }
-            }
-        });
+        spawn_event_pump(Arc::downgrade(&connection), events, options.callbacks);
         Ok(Arc::new(AcpPeer { connection }) as Arc<dyn Peer>)
     })
+}
+
+/// Drains one peer's events into its callbacks.
+///
+/// The pump holds only a weak connection. A strong handle here would pair with
+/// the sender the connection owns and form an arc cycle that outlives the peer:
+/// the pump would wait for an event that never comes, and the governor slot the
+/// connection holds would never be dropped, so the cap would stay full after
+/// every cycle.
+fn spawn_event_pump(
+    connection: Weak<AcpConnection>,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<AcpEvent>,
+    callbacks: PeerCallbacks,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            match event {
+                AcpEvent::Activity(activity) => {
+                    if let Some(callback) = &callbacks.on_activity {
+                        callback(activity);
+                    }
+                }
+                AcpEvent::Question(question) => {
+                    if let Some(connection) = connection.upgrade() {
+                        answer_question(&connection, &callbacks, &question).await;
+                    }
+                }
+                AcpEvent::Stderr(text) => {
+                    if let Some(callback) = &callbacks.on_stderr {
+                        callback(text);
+                    }
+                }
+                AcpEvent::SessionUpdate => {
+                    if let Some(callback) = &callbacks.on_session_update {
+                        callback();
+                    }
+                }
+                AcpEvent::Text(_) => {}
+            }
+        }
+    });
 }
 
 async fn answer_question(
@@ -3411,6 +3436,7 @@ impl Worker {
                 command: self.agent_command.clone(),
                 cwd: directory.clone(),
                 env,
+                starter: "API Standards".to_string(),
                 callbacks,
             })
             .await
@@ -4438,5 +4464,110 @@ mod tick_bounds {
         // poll.
         let tick = super::TICK_MS;
         assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}
+
+#[cfg(test)]
+mod peer_tests {
+    //! The shared peer seam belongs to four audit families. These tests hold
+    //! its two invariants: the slot names the family that asked for the peer,
+    //! and the slot returns to the pool when that peer ends.
+
+    use super::*;
+    use crate::resources::{Governor, GovernorOptions, MemoryReader};
+
+    struct FlatMemory;
+
+    impl MemoryReader for FlatMemory {
+        fn total_mb(&self) -> u64 {
+            65_536
+        }
+
+        fn available_mb(&self) -> Option<u64> {
+            Some(60_000)
+        }
+
+        fn cpu_count(&self) -> u32 {
+            8
+        }
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("peer-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a test root");
+        root
+    }
+
+    fn slot_files(state_dir: &Path) -> usize {
+        std::fs::read_dir(state_dir.join("resources").join("slots"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+
+    fn options(starter: &str, cwd: &Path) -> PeerOptions {
+        PeerOptions {
+            command: "/bin/true".to_string(),
+            cwd: cwd.to_path_buf(),
+            env: HashMap::new(),
+            starter: starter.to_string(),
+            callbacks: PeerCallbacks::default(),
+        }
+    }
+
+    #[test]
+    fn the_shared_seam_records_the_family_that_asked_for_the_peer() {
+        // A literal in the seam labeled every audit family's slot "API
+        // Standards", so a deferral credited one family for another's peers.
+        let dead_code = options("Dead Code", Path::new("/"));
+        assert_eq!(connection_options(&dead_code).starter, "Dead Code");
+        let naming = options("Consistent Naming", Path::new("/"));
+        assert_eq!(connection_options(&naming).starter, "Consistent Naming");
+    }
+
+    #[tokio::test]
+    async fn an_ended_peer_returns_its_slot_while_its_pump_still_waits() {
+        // The pump used to own a strong connection handle while the connection
+        // owned the event sender: the pump could never see the channel close,
+        // and the slot stayed on disk after every cycle. Four finished
+        // dead-code cycles filled the cap.
+        let root = test_root("slot-release");
+        let state = root.join("state");
+        let governor = Governor::new(
+            &state,
+            GovernorOptions::in_memory(
+                Arc::new(FlatMemory),
+                std::collections::BTreeMap::from([(
+                    "DEVBOARD_MAX_AGENT_PEERS".to_string(),
+                    "2".to_string(),
+                )]),
+            ),
+        );
+        let slot = governor
+            .try_acquire("peer", "Dead Code", "omp acp (test)")
+            .expect("a free slot");
+        assert_eq!(slot_files(&state), 1);
+        let (connection, events) = AcpConnection::connect(
+            AcpConnectionOptions::new("/bin/true", root.to_string_lossy())
+                .with_starter("Dead Code")
+                .with_permit(slot),
+        )
+        .await
+        .expect("a peer");
+        let connection = Arc::new(connection);
+        spawn_event_pump(
+            Arc::downgrade(&connection),
+            events,
+            PeerCallbacks::default(),
+        );
+        drop(connection);
+        assert_eq!(
+            slot_files(&state),
+            0,
+            "the ended peer still holds a cap slot"
+        );
     }
 }
