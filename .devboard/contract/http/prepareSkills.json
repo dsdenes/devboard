@@ -125,7 +125,7 @@
           "error": null,
           "remoteAvailable": false,
           "retained": [],
-          "repository": "dsdenes/devboard",
+          "repository": "fixture/repo",
           "target": {
             "kind": "host"
           },

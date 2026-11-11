@@ -1,9 +1,10 @@
 //! One in-process dashboard over the contract fixture.
 //!
 //! The corpus describes the answers this fixture dashboard gives: a copied
-//! repository fixture, an empty state directory, and the fixture static root.
-//! Every recording is produced and replayed here, so no replayed request ever
-//! touches a real checkout, a real state directory, or a real forge.
+//! repository fixture that is its own git repository with a fixed origin, an
+//! empty state directory, and the fixture static root. Every recording is
+//! produced and replayed here, so no replayed request ever touches a real
+//! checkout, a real state directory, or a real forge.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,6 +39,55 @@ pub fn allowlist_path() -> PathBuf {
     contract_dir().join("allowlist.json")
 }
 
+/// The origin every copied repository fixture carries: a fixture fact, never
+/// the origin of the checkout that holds the harness.
+const FIXTURE_ORIGIN: &str = "https://example.test/fixture/repo.git";
+
+/// Copies the repository fixture to `target` and makes it a git repository of
+/// its own: one commit and a fixed origin. Every git fact the fixture
+/// dashboard reads therefore comes from the fixture, so no `git -C` call can
+/// walk up into the enclosing checkout and record that checkout's answer.
+pub fn prepare_repository(target: &Path) -> Result<(), String> {
+    copy_tree(&contract_dir().join("fixtures/repo"), target)?;
+    git(target, &["init", "--quiet"])?;
+    git(target, &["add", "--all"])?;
+    git(
+        target,
+        &[
+            "-c",
+            "user.name=Contract Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--quiet",
+            "--message",
+            "fixture",
+        ],
+    )?;
+    git(target, &["remote", "add", "origin", FIXTURE_ORIGIN])
+}
+
+/// Runs one git command in the fixture repository, naming the command and its
+/// stderr when it fails.
+fn git(repo: &Path, args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("{}: git: {error}", repo.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{}: git {}: {}",
+            repo.display(),
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
 /// One fixture dashboard over a copied repository, removed when it is dropped.
 ///
 /// The dashboard runs on a runtime of its own, so dropping the fixture ends
@@ -68,7 +118,7 @@ impl Fixture {
         let repo = root.join("repo");
         let state = root.join("state");
         std::fs::create_dir_all(&state).map_err(|error| format!("a state directory: {error}"))?;
-        if let Err(error) = copy_tree(&contract_dir().join("fixtures/repo"), &repo) {
+        if let Err(error) = prepare_repository(&repo) {
             let _ = std::fs::remove_dir_all(&root);
             return Err(error);
         }

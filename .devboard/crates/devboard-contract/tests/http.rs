@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use devboard_contract::fixture::{allowlist_path, contract_dir, repository_root, Fixture};
+use devboard_contract::fixture::{
+    allowlist_path, contract_dir, prepare_repository, repository_root, Fixture,
+};
 use devboard_contract::http_table::{self, Allowlist, Corpus, Recording};
 use serde_json::Value;
 
@@ -160,6 +162,63 @@ async fn a_dropped_fixture_removes_its_root() {
         !root.exists(),
         "the dropped fixture removed its root: {}",
         root.display()
+    );
+}
+
+#[tokio::test]
+async fn the_fixture_repository_names_its_own_origin_inside_a_foreign_checkout() {
+    // The enclosing directory is a checkout whose origin names another
+    // repository: a git command that walks up from the copied fixture
+    // repository would answer with it.
+    let root = scratch("foreign-checkout");
+    for arguments in [
+        ["init", "--quiet"].as_slice(),
+        [
+            "remote",
+            "add",
+            "origin",
+            "https://git.example.test/other/host.git",
+        ]
+        .as_slice(),
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(arguments)
+            .status()
+            .expect("the enclosing checkout's git");
+        assert!(status.success(), "git {}: {status}", arguments.join(" "));
+    }
+    let repo = root.join("repo");
+    prepare_repository(&repo).expect("the fixture repository");
+    let config = devboard::config::Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: root.join("state"),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let fixture = Fixture::start_with(root, config)
+        .await
+        .expect("a dashboard");
+    let case = http_table::all_cases()
+        .into_iter()
+        .find(|case| case.name == "getDiscover")
+        .expect("the getDiscover row");
+    let observed = http_table::send(&http_table::client(), &fixture.base, &case)
+        .await
+        .expect("the Discover answer");
+    let body: Value = serde_json::from_str(&observed.body).expect("a JSON answer");
+    let repository = body["frames"][0]["state"]["repository"].clone();
+    assert_eq!(
+        repository,
+        Value::String("fixture/repo".to_string()),
+        "the Discover state names the fixture's own repository"
     );
 }
 
