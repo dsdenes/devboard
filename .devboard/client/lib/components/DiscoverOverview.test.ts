@@ -175,6 +175,39 @@ test("a remote target renders no path link and keeps its text", () => {
   expect(view.container.textContent).toContain("package.json");
 });
 
+test("an in-flight clone keeps the selected row and its option", () => {
+  const retained = "https://github.com/acme/retained";
+  const fresh = "https://github.com/acme/fresh";
+  discover.state = {
+    ...state({}),
+    remoteAvailable: true,
+    retained: [
+      { url: retained, owner: "acme", repo: "retained", completedAt: "2026-05-01T00:00:00.000Z" },
+    ],
+    target: { kind: "remote", url: retained, owner: "acme", repo: "retained", checkout: false },
+    cloning: { url: fresh },
+    repository: "acme/fresh",
+  };
+  const view = render(DiscoverOverview);
+
+  const rows = view.container.querySelectorAll(".discover-remote__item--active");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent).toContain(retained);
+  const select = view.container.querySelector<HTMLSelectElement>(
+    '[data-testid="discover-remote-select"]',
+  );
+  expect(select?.value).toBe(retained);
+  expect(select?.selectedIndex).toBe(0);
+  expect(view.container.querySelector('[data-testid="discover-remote-clear"]')).not.toBeNull();
+  expect(view.container.querySelector('[data-testid="discover-remote-cloning"]')?.textContent).toContain(
+    fresh,
+  );
+  // The header keeps naming the project being discovered.
+  const title = view.container.querySelector("h1");
+  expect(title?.textContent?.trim()).toBe("acme/fresh");
+  expect(title?.getAttribute("title")).toBe(fresh);
+});
+
 function contextsValue(value: Array<Record<string, unknown>>): void {
   const payload = discover.state as DiscoverStatePayload;
   const architecture = payload.sheet?.architecture as {

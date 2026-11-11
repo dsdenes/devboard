@@ -607,6 +607,154 @@ async fn remote_targets_clone_switch_and_refuse() {
     );
 }
 
+/// Every string in `value` with its dotted path, so a test can prove where one
+/// URL is named.
+fn string_paths(value: &Value, path: &str, out: &mut Vec<(String, String)>) {
+    match value {
+        Value::String(text) => out.push((path.to_string(), text.clone())),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                string_paths(item, &format!("{path}[{index}]"), out);
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                let next = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                string_paths(item, &next, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The strip shows the selected target alone: a clone of another project names
+/// itself in `cloning`, and the header's `repository` follows it, while
+/// `target` keeps the retained selection the dropdown and rows compare against.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_in_flight_clone_keeps_the_selected_strip_target() {
+    let _clone_guard = CLONE_LOCK.lock().await;
+    let scratch = Scratch::new("in-flight");
+    let repo = fixture_repo(&scratch, "repo", true);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let scratch_root = state.join("discover-remote");
+    std::fs::create_dir_all(&scratch_root).expect("a scratch root");
+    retained_project(
+        &scratch_root,
+        "acme",
+        "retained",
+        "https://github.com/acme/retained",
+    );
+    let log = scratch.path().join("agent.log");
+    let command = format!("{} --discover --log={}", stub_agent(), log.display());
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+
+    // The runner parks the clone until the test releases it, so the payload is
+    // read while the clone is in flight.
+    let release = Arc::new(tokio::sync::Notify::new());
+    let parked = Arc::clone(&release);
+    devboard::discover_mode::set_clone_runner(Some(Arc::new(
+        move |request| -> devboard::discover_mode::CloneFuture {
+            let parked = Arc::clone(&parked);
+            let cwd = request.cwd.clone();
+            let name = request.argv.last().cloned().unwrap_or_default();
+            Box::pin(async move {
+                parked.notified().await;
+                clone_checkout(&cwd.join(name));
+                devboard::discover_mode::CloneResult {
+                    code: 0,
+                    stderr: String::new(),
+                    timed_out: false,
+                }
+            })
+        },
+    )));
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(
+        &conn,
+        Command::SwitchDiscoverRemote {
+            url: "https://github.com/acme/retained".to_string(),
+        },
+    )
+    .await;
+    let switched = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    assert_eq!(
+        state_of(&switched)["target"]["url"],
+        json!("https://github.com/acme/retained")
+    );
+
+    app.command(
+        &conn,
+        Command::DiscoverRemote {
+            url: "https://github.com/acme/fresh".to_string(),
+        },
+    )
+    .await;
+    frames_until(
+        &mut inbox,
+        |frame| {
+            frame.get("type").and_then(Value::as_str) == Some("discoverState")
+                && frame["state"]["cloning"]["url"] == json!("https://github.com/acme/fresh")
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+
+    app.command(&conn, Command::GetDiscover).await;
+    let read = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    let payload = state_of(&read);
+    assert_eq!(payload["target"]["kind"], json!("remote"));
+    assert_eq!(
+        payload["target"]["url"],
+        json!("https://github.com/acme/retained")
+    );
+    assert_eq!(payload["target"]["checkout"], json!(false));
+    let retained = payload["retained"].as_array().expect("the retained rows");
+    assert_eq!(retained.len(), 1);
+    assert_eq!(
+        retained[0]["url"],
+        json!("https://github.com/acme/retained")
+    );
+    assert_eq!(
+        payload["cloning"]["url"],
+        json!("https://github.com/acme/fresh")
+    );
+    assert_eq!(payload["running"], Value::Null);
+    // The page header keeps naming the project being discovered.
+    assert_eq!(payload["repository"], json!("acme/fresh"));
+
+    // The parked URL appears only where the in-flight project is named.
+    let mut strings = Vec::new();
+    string_paths(payload, "", &mut strings);
+    let mut parked_paths: Vec<String> = strings
+        .into_iter()
+        .filter(|(_, text)| text.contains("https://github.com/acme/fresh"))
+        .map(|(path, _)| path)
+        .collect();
+    parked_paths.sort();
+    assert_eq!(parked_paths, vec!["cloning.url".to_string()]);
+
+    release.notify_one();
+    frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(120),
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn discover_refusals_report_the_exact_messages() {
     let scratch = Scratch::new("refusals");
@@ -985,12 +1133,13 @@ async fn a_remote_run_shows_the_prompt_its_live_checkout_holds() {
     )
     .await;
     // The clone becomes the live checkout before its first turn starts, and the
-    // stub's delay holds that checkout while the page reads its prompts.
+    // stub's delay holds that checkout while the page reads its prompts. The
+    // `running` field names it while the strip keeps the host target.
     frames_until(
         &mut inbox,
         |frame| {
             frame.get("type").and_then(Value::as_str) == Some("discoverState")
-                && frame["state"]["target"]["checkout"] == json!(true)
+                && frame["state"]["running"]["url"] == json!("https://github.com/acme/fresh")
         },
         Duration::from_secs(60),
     )

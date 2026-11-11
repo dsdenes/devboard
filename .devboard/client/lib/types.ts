@@ -570,6 +570,12 @@ export interface DiscoverStatePayload {
   repository: string | null;
   target: DiscoverTarget;
   cloning: { url: string } | null;
+  /**
+   * The live checkout's project while it differs from the selected target. The
+   * header names it; the strip keeps the selected target. Additive: an older
+   * server sends neither field, so the header falls back to the target.
+   */
+  running?: { url: string } | null;
   manifest: unknown;
   freshness: Freshness | null;
   sheet: Record<string, unknown> | null;

@@ -64,6 +64,9 @@ carries a filled primary.
   badge renders; the footer is absent because the target is the host.
 - Retained, remote target: exactly one row takes the accent treatment and one `Active` badge; the
   dropdown selects that URL; the footer renders.
+- Another project cloning or running: the dropdown keeps the selected target's option, that row
+  keeps the accent treatment and its `Active` badge, and the footer keeps `Clear remote target`; the
+  cloning line and the page header name the project being discovered.
 - Busy or cloning: dropdown and remove controls take `remoteChangeDisabled`; the submit control's
   `title` names the reason; the cloning line names the URL.
 - Long URL: one line with ellipsis and the full URL as its tooltip.

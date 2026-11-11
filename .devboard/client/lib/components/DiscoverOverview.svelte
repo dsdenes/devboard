@@ -72,7 +72,7 @@
       : scalarText(definition.value).trim(),
   );
   const projectPath = $derived(
-    discover.remoteTarget?.url ??
+    discover.shownUrl ??
       (freshness?.project ?? (connection.projectPath.trim().length > 0 ? connection.projectPath : "")),
   );
   const projectName = $derived(discover.repository ?? (baseName(projectPath) || "Discover"));

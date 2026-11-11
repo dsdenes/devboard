@@ -7694,8 +7694,9 @@ fn in_flight_target(state: &ModeState) -> Option<&RemoteRepository> {
         .or_else(|| state.checkout.as_ref().map(|checkout| &checkout.target))
 }
 
-/// The target the page shows: a live clone of another project wins over the
-/// selected target.
+/// The target the page's header, prompts, and sheet follow: a live clone of
+/// another project wins over the selected target. The remote strip never reads
+/// it, because that strip shows the selected target alone.
 fn shown_remote(state: &ModeState) -> Option<&RemoteRepository> {
     let in_flight = in_flight_target(state);
     if in_flight.is_some() && !same_remote_target(in_flight, state.target.as_ref()) {
@@ -7839,7 +7840,11 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
         Vec::new()
     };
 
-    let target = match shown_remote {
+    // The strip's target is the selected project alone: its URL always names a
+    // retained row, so one selected option and one `Active` row stay rendered
+    // while another project clones or runs. `repository`, the header, and the
+    // sheet follow `shown_remote` instead.
+    let target = match state.target.as_ref() {
         None => json!({"kind": "host"}),
         Some(remote) => json!({
             "kind": "remote",
@@ -7994,6 +7999,20 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
             .as_ref()
             .map(|cloning| json!({"url": cloning.url}))
             .unwrap_or(Value::Null),
+    );
+    // The live checkout's project while it differs from the selected target:
+    // the header names it, and the strip keeps its own selection.
+    payload.insert(
+        "running".to_string(),
+        if showing_in_flight {
+            state
+                .checkout
+                .as_ref()
+                .map(|checkout| json!({"url": checkout.target.url}))
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
     );
     payload.insert("manifest".to_string(), manifest);
     payload.insert("freshness".to_string(), freshness);

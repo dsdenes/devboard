@@ -155,6 +155,20 @@ export class DiscoverStore {
     return this.state?.cloning ?? null;
   }
 
+  /** The live checkout's project while it differs from the selected target. */
+  get running(): { url: string } | null {
+    return this.state?.running ?? null;
+  }
+
+  /**
+   * The URL of the project the page shows: an in-flight clone wins, then the
+   * live checkout, then the selected target. The remote strip never reads it;
+   * that strip shows the selected target alone.
+   */
+  get shownUrl(): string | null {
+    return this.running?.url ?? this.cloning?.url ?? this.remoteTarget?.url ?? null;
+  }
+
   /** The remote start control's disabled state; its title names the reason. */
   get remoteStartDisabled(): boolean {
     return this.remoteStartTitle !== undefined;
