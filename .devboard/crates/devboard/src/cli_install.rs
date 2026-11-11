@@ -450,11 +450,9 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
             drift.push(label);
             continue;
         }
-        let wrapper = relative.starts_with("commands/") || relative.starts_with("extensions/");
-        if wrapper && !force && fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_dir())
-        {
+        if !force && fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_dir()) {
             bail!(
-                "install: {label} differs from the shipped wrapper; rerun with --force to replace it"
+                "install: {label} differs from the shipped file; rerun with --force to replace it"
             );
         }
         if let Ok(meta) = fs::symlink_metadata(&destination) {

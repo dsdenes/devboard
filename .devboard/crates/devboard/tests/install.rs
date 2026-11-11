@@ -386,14 +386,22 @@ fn an_unmarked_host_skill_is_never_read_or_deleted() {
 }
 
 #[test]
-fn a_changed_untracked_package_file_is_overwritten_and_a_tracked_one_is_preserved() {
+fn a_changed_untracked_package_file_is_refused_and_a_tracked_one_is_preserved() {
     let scratch = Scratch::new("conflict");
     let host = scratch.host();
     let target = host.join(".omp/mcp.json");
     fs::create_dir_all(target.parent().unwrap()).unwrap();
     fs::write(&target, b"host: config\n").unwrap();
 
-    let report = cli_install::install(Some(host), false).unwrap();
+    let error = cli_install::install(Some(host), false).expect_err("a differing file is refused");
+    assert!(error.to_string().contains(".omp/mcp.json"), "{error}");
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        b"host: config\n",
+        "a refused install changes no byte"
+    );
+
+    let report = cli_install::install(Some(host), true).unwrap();
     assert!(report.installed_files > 0);
     let shipped = fs::read(package_dir().join("omp/mcp.json")).unwrap();
     assert_eq!(fs::read(&target).unwrap(), shipped);
@@ -539,6 +547,44 @@ fn install_sh_produces_the_same_host_tree_as_the_binary() {
     assert_eq!(left, right);
     left.clear();
     right.clear();
+}
+
+#[test]
+fn both_installers_refuse_a_differing_untracked_file() {
+    let binary = Scratch::new("refuse-binary");
+    let scripted = Scratch::new("refuse-script");
+    for host in [binary.host(), scripted.host()] {
+        let target = host.join(".omp/mcp.json");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, b"host: config\n").unwrap();
+    }
+
+    let error = cli_install::install(Some(binary.host()), false).expect_err("the binary refuses");
+    assert!(error.to_string().contains(".omp/mcp.json"), "{error}");
+
+    let output = std::process::Command::new("bash")
+        .arg(package_dir().join("install.sh"))
+        .arg(scripted.host())
+        .output()
+        .expect("the installer runs");
+    assert!(
+        !output.status.success(),
+        "install.sh accepted a differing file"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("mcp.json"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for host in [binary.host(), scripted.host()] {
+        assert_eq!(
+            fs::read(host.join(".omp/mcp.json")).unwrap(),
+            b"host: config\n",
+            "{} kept the host file",
+            host.display()
+        );
+    }
 }
 
 #[test]
