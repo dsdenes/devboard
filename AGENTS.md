@@ -202,9 +202,11 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   the rest of the run skips it, and the report names the file and the exact test. Quarantining
   never rewrites a tracked file, so `git status --porcelain` stays empty and the tree stays
   byte-identical. One deduplicated issue per skipped test records the file, the exact test name,
-  and the failed attempt output; a filing failure never blocks the release. A suite that cannot
-  compile, or that yields no per-test result, exits nonzero, files nothing, and prints the first
-  concrete error line.
+  and the failed attempt output; a filing failure never blocks the release. An attempt that ran no
+  test because the kernel refused to start a freshly built binary, or because the target directory
+  left while the build ran, is retried whole and reported only once the attempt budget is spent. A
+  suite that cannot compile, or that yields no per-test result, exits nonzero, files nothing, and
+  prints the first concrete error line.
 - **No other releaser.** `.github/workflows/release.yml` runs only on
   `workflow_dispatch`. The implementing agent closes its issue after the push proof and never
   publishes. The Design System pushes its documentation commit and reports without waiting for a

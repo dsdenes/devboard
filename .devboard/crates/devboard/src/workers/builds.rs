@@ -7,6 +7,18 @@
 //! whole directory leaves. Neither step runs while a `cargo` or `rustc`
 //! process builds inside that checkout.
 //!
+//! The destructive phase holds cargo's own build lock,
+//! `<target>/<profile>/.cargo-lock`. The process-table gate samples once, and
+//! a pass then walks a tree that can hold hundreds of gigabytes; a build that
+//! starts during that walk would lose the files under it. Cargo creates a
+//! unit's fingerprint directory once and never recreates it, so an unlink
+//! under a running build fails every in-flight unit with
+//! `No such file or directory` while writing its dep info, and the release
+//! suite reports that as a compile failure. Cargo holds this lock for a whole
+//! build and every build blocks on it, so a held lock is the only proof that
+//! no build runs; a pass that cannot take it leaves the directory to the next
+//! cycle.
+//!
 //! Every checked-out worktree under `.worktree/` loses its whole
 //! `target/debug` in the same pass unless a live process works inside it. A
 //! worktree is removed only once its branch is merged, so an abandoned
@@ -258,6 +270,80 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// A held cargo build lock for one profile directory.
+///
+/// Cargo takes an exclusive `flock` on `<target>/<profile>/.cargo-lock` for the
+/// whole of a build, and a build that finds it held prints
+/// `Blocking waiting for file lock on build directory` and waits. Holding the
+/// same lock is therefore the only proof that no build touches this tree, which
+/// the process-table scan cannot give: it samples once, matches only an
+/// unwrapped `cargo` or `rustc`, and a killed `cargo` leaves live `rustc`
+/// children that hold nothing.
+///
+/// The lock releases when the value drops.
+pub struct TargetLock {
+    /// Held only to keep the open file description, and with it the lock,
+    /// alive; closing it releases the lock.
+    _file: std::fs::File,
+}
+
+/// What one attempt at cargo's build lock found.
+enum TargetLockTry {
+    /// The lock is ours until it drops.
+    Acquired(TargetLock),
+    /// A build or another pass holds it.
+    Busy,
+    /// The profile directory has no lock file, so no build ever started there.
+    Absent,
+}
+
+impl TargetLock {
+    /// Takes `profile_dir`'s cargo build lock without waiting.
+    ///
+    /// `None` means a build holds it. The lock file is created when absent, so
+    /// a build that starts after this returns blocks on the lock instead of
+    /// racing the caller's removals.
+    pub fn acquire(profile_dir: &Path) -> std::io::Result<Option<Self>> {
+        match Self::try_acquire(profile_dir, true)? {
+            TargetLockTry::Acquired(lock) => Ok(Some(lock)),
+            _ => Ok(None),
+        }
+    }
+
+    /// `create` makes the lock file when absent. Without it, a missing file
+    /// means no build ever started in this directory and nothing needs holding.
+    fn try_acquire(profile_dir: &Path, create: bool) -> std::io::Result<TargetLockTry> {
+        use std::os::fd::AsRawFd;
+
+        let path = profile_dir.join(".cargo-lock");
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(create)
+            .create(create)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(TargetLockTry::Absent)
+            }
+            Err(error) => return Err(error),
+        };
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if locked {
+            return Ok(TargetLockTry::Acquired(TargetLock { _file: file }));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(TargetLockTry::Busy)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+/// The skip reason a pass records when a build holds the target lock.
+const TARGET_LOCK_BUSY: &str = "a cargo build holds the target directory lock";
+
 /// Applies the dedup rule and the cap to the canonical checkout's
 /// `target/debug`, and returns the bytes it holds afterwards.
 fn sweep_canonical_debug(
@@ -277,6 +363,20 @@ fn sweep_canonical_debug(
     let duplicates = duplicate_candidates(&deps, report);
     let freed: u64 = duplicates.iter().map(|candidate| candidate.bytes).sum();
     let mut remaining = before.saturating_sub(freed);
+    // Every removal below runs with cargo's build lock held, so no build can be
+    // writing this tree while it happens.
+    let _lock = match TargetLock::try_acquire(debug, !dry_run) {
+        Ok(TargetLockTry::Acquired(lock)) => Some(lock),
+        Ok(TargetLockTry::Absent) => None,
+        Ok(TargetLockTry::Busy) => {
+            report.skipped = Some(TARGET_LOCK_BUSY.to_string());
+            return before;
+        }
+        Err(error) => {
+            report.errors.push(format!("{}: {error}", debug.display()));
+            return before;
+        }
+    };
     report.candidates.extend(duplicates.iter().cloned());
     if !dry_run {
         for candidate in &duplicates {
@@ -320,6 +420,10 @@ fn sweep_canonical_debug(
 /// `busy_directories` names every directory a live process is working in or a
 /// running dashboard serves: a worktree holding one keeps its build output. A
 /// dry run reports the same candidates and removes nothing.
+///
+/// Both loops also take the swept directory's cargo build lock and leave a
+/// directory whose lock is held, so the gate that runs before the pass and the
+/// removals inside it are separated by no window a build can slip through.
 pub fn run_build_cleanup_with(
     root: &Path,
     dry_run: bool,
@@ -361,6 +465,24 @@ pub fn run_build_cleanup_with(
             path: worktree_debug.clone(),
             bytes,
             kind: BuildCandidateKind::WorktreeTargetDebug,
+        };
+        // A build in this worktree holds its own lock, which the busy-directory
+        // list can miss between two samples. Take the lock first: the removal
+        // below then cannot unlink a running build's files.
+        let _lock = match TargetLock::try_acquire(&worktree_debug, !dry_run) {
+            Ok(TargetLockTry::Acquired(lock)) => Some(lock),
+            Ok(TargetLockTry::Absent) => None,
+            Ok(TargetLockTry::Busy) => {
+                worktree_after += bytes;
+                continue;
+            }
+            Err(error) => {
+                worktree_after += bytes;
+                report
+                    .errors
+                    .push(format!("{}: {error}", worktree_debug.display()));
+                continue;
+            }
         };
         report.candidates.push(candidate.clone());
         if dry_run {

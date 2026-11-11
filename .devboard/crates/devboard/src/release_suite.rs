@@ -25,12 +25,16 @@
 //! and the harness neither owns nor cleans the files it leaves behind. The
 //! run removes its directory when the suite ends.
 //!
-//! One condition is retried instead of ending the run: the kernel refusing to
-//! start a freshly built test binary, which is what another build writing the
-//! same target directory does while that binary's executable bit is not yet
-//! set. The attempt ran no test at all, so nothing about it is quarantined; the
-//! run retries the whole suite and reports the condition, with the binary and
-//! the errno, only once the attempt budget is spent.
+//! Two conditions are retried instead of ending the run. One is the kernel
+//! refusing to start a freshly built test binary, which is what another build
+//! writing the same target directory does while that binary's executable bit
+//! is not yet set. The other is a target directory that left while the build
+//! ran: cargo creates a unit's fingerprint directory once and never recreates
+//! it, so unlinking it under a running build fails every in-flight unit with
+//! `No such file or directory` while writing its dep info. Neither attempt ran
+//! a test, so nothing about it is quarantined; the run retries the whole suite
+//! and reports the condition, with the file or directory and the errno, only
+//! once the attempt budget is spent.
 //!
 //! Every skipped test files one deduplicated issue in the origin forge.
 //! Filing is best effort: an unreachable forge prints one failure line and
@@ -76,6 +80,12 @@ const STORAGE_FAILURE_MARKERS: [&str; 2] = ["No space left on device", "ENOSPC"]
 const EXEC_BLOCKED_MARKER: &str = "could not execute process";
 /// The errnos a binary still being written by another build raises.
 const EXEC_BLOCKED_ERRNOS: [&str; 2] = ["Permission denied", "Text file busy"];
+/// What cargo prints when it translates a freshly compiled unit's dep info.
+const DEP_INFO_MARKER: &str = "could not parse/generate dep info at:";
+/// The directory cargo writes that translation into, one per compiled unit.
+const FINGERPRINT_MARKER: &str = ".fingerprint/";
+/// What a target directory that left under a running build raises.
+const MISSING_TREE_MARKERS: [&str; 2] = ["No such file or directory", "ENOENT"];
 
 // ---------------------------------------------------------------------------
 // One test result
@@ -175,6 +185,38 @@ fn exec_blocked(output: &str) -> Option<String> {
         Some(errno) => format!("{line}: {errno}"),
         None => line.to_string(),
     })
+}
+
+/// The line that names a build whose target directory left while it ran, or
+/// `None`.
+///
+/// Cargo creates `<target>/<profile>/.fingerprint/<pkg>-<hash>` once when a
+/// unit starts and never recreates it, then translates that unit's dep info
+/// into the directory. A sweep or a hand-run `rm -rf target` that unlinks the
+/// directory under a running build therefore fails every in-flight unit with
+/// `No such file or directory` while writing there. Nothing about the sources
+/// is wrong, so the run retries whole: the next attempt rebuilds the tree
+/// instead of ending as a compile failure.
+fn target_tree_vanished(output: &str) -> Option<String> {
+    if !output.contains(FINGERPRINT_MARKER)
+        || !MISSING_TREE_MARKERS
+            .iter()
+            .any(|marker| output.contains(marker))
+    {
+        return None;
+    }
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    lines
+        .iter()
+        .copied()
+        .find(|line| line.starts_with("error") && line.contains(DEP_INFO_MARKER))
+        .or_else(|| {
+            lines
+                .iter()
+                .copied()
+                .find(|line| line.starts_with("error") && line.contains(FINGERPRINT_MARKER))
+        })
+        .map(str::to_string)
 }
 
 /// The file a `Running …` header names, or `None` for an unrelated line.
@@ -344,9 +386,10 @@ pub struct AttemptRecord {
     pub names: Vec<String>,
     /// Set when the attempt failed for a reason no test's skip can address.
     pub structural: Option<String>,
-    /// Set when the kernel refused to start a freshly built test binary, the
-    /// signature of another build writing the same target directory. The
-    /// attempt ran no test, so the run retries it whole.
+    /// Set when the attempt failed on a transient host condition: the kernel
+    /// refused to start a freshly built binary, or the target directory left
+    /// while the build ran. The attempt ran no test, so the run retries it
+    /// whole.
     pub transient: Option<String>,
     /// The first concrete failure the structural reason names, carried so the
     /// release gate can refuse with it without parsing the reason's prose.
@@ -373,8 +416,10 @@ fn bound(text: &str, limit: usize) -> String {
 /// artifacts because the host filesystem is full are structural: none of them
 /// is a test that failed, so none of them may be retried or skipped into a
 /// pass. The full filesystem is reported as that host condition, never as a
-/// compile error. A binary the kernel refused to start is the one retryable
-/// case: another build was writing it, and the retry reads the finished file.
+/// compile error. Two conditions are retried whole instead: a binary the kernel
+/// refused to start because another build was still writing it, and a target
+/// directory that left while the build ran. Both ran no test, and the next
+/// attempt rebuilds the file or the tree.
 pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> AttemptRecord {
     let parsed = parse_suite_output(stdout, stderr);
     let output = format!(
@@ -408,6 +453,7 @@ pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> At
     let exec_line = exec_blocked(stderr).or_else(|| exec_blocked(stdout));
     let compile_line = first_error_line(stderr).or_else(|| first_error_line(stdout));
     let storage_line = host_storage_failure(stderr).or_else(|| host_storage_failure(stdout));
+    let vanished_line = target_tree_vanished(stderr).or_else(|| target_tree_vanished(stdout));
     let could_not_compile =
         stderr.contains("could not compile") || stdout.contains("could not compile");
     let mut error_line: Option<String> = None;
@@ -420,6 +466,10 @@ pub fn classify_attempt(index: u32, code: i32, stdout: &str, stderr: &str) -> At
         let reason = format!("the host filesystem is full: {line}");
         error_line = Some(reason.clone());
         structural.push(reason);
+    } else if let Some(line) = vanished_line {
+        let reason = format!("the target directory left while the suite built: {line}");
+        error_line = Some(reason.clone());
+        transient = Some(reason);
     } else if could_not_compile {
         match &compile_line {
             Some(line) => {
@@ -1771,6 +1821,27 @@ Permission denied (os error 13)";
         }
     }
 
+    /// What a retained target tree that lost a unit's fingerprint directory
+    /// under a running build leaves behind.
+    const VANISHED_TREE: &str = "the target directory left while the suite built: \
+error: could not parse/generate dep info at: \
+/repo/.devboard/target/debug/build/zerocopy-0b98911506e12cd7/build_script_build-0b98911506e12cd7.d";
+
+    fn vanished(index: u32) -> AttemptRecord {
+        AttemptRecord {
+            index,
+            code: 101,
+            pass: 0,
+            skip: 0,
+            failures: Vec::new(),
+            names: Vec::new(),
+            structural: None,
+            transient: Some(VANISHED_TREE.to_string()),
+            error_line: Some(VANISHED_TREE.to_string()),
+            output: String::new(),
+        }
+    }
+
     async fn drive(records: Vec<AttemptRecord>, max_attempts: u32) -> SuiteOutcome {
         let mut attempts = FakeAttempts {
             records: records.into(),
@@ -1997,6 +2068,74 @@ could not execute process"
         assert_eq!(outcome.attempts, 2);
         assert_eq!(outcome.structural.as_deref(), Some(UNEXECUTED));
         assert_eq!(outcome.error_line.as_deref(), Some(UNEXECUTED));
+    }
+
+    #[test]
+    fn release_suite_classifies_a_vanished_target_tree_as_retryable() {
+        let stderr = "\
+error: could not parse/generate dep info at: /repo/.devboard/target/debug/build/zerocopy-0b98911506e12cd7/build_script_build-0b98911506e12cd7.d
+
+Caused by:
+  failed to write `/repo/.devboard/target/debug/.fingerprint/zerocopy-0b98911506e12cd7/dep-build-script-build-script-build`
+
+Caused by:
+  No such file or directory (os error 2)
+warning: build failed, waiting for other jobs to finish...
+";
+        let record = classify_attempt(1, 101, "", stderr);
+        let transient = record.transient.expect("a retryable tree loss");
+        assert!(
+            transient.starts_with(
+                "the target directory left while the suite built: \
+error: could not parse/generate dep info at:"
+            ),
+            "{transient}"
+        );
+        assert!(
+            transient.ends_with("build_script_build-0b98911506e12cd7.d"),
+            "{transient}"
+        );
+        assert_eq!(record.structural, None);
+        assert_eq!(record.error_line.as_deref(), Some(transient.as_str()));
+        assert!(record.failures.is_empty());
+    }
+
+    #[test]
+    fn release_suite_keeps_a_full_filesystem_structural() {
+        let stderr = "\
+error: could not parse/generate dep info at: /repo/.devboard/target/debug/deps/ryu-88888919f90a49ef.d
+
+Caused by:
+  failed to write `/repo/.devboard/target/debug/.fingerprint/ryu-88888919f90a49ef/dep-lib-ryu`
+
+Caused by:
+  No space left on device (os error 28)
+";
+        let record = classify_attempt(1, 101, "", stderr);
+        assert_eq!(record.transient, None);
+        let structural = record.structural.expect("a structural failure");
+        assert!(
+            structural.starts_with("the host filesystem is full:"),
+            "{structural}"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_suite_retries_a_vanished_target_tree_and_then_passes() {
+        let outcome = drive(vec![vanished(1), clean(2, &["passes"])], 9).await;
+        assert_eq!(outcome.code, 0);
+        assert_eq!(outcome.attempts, 2);
+        assert!(outcome.quarantined.is_empty());
+        assert_eq!(outcome.structural, None);
+    }
+
+    #[tokio::test]
+    async fn release_suite_reports_a_vanished_target_tree_once_the_budget_is_spent() {
+        let outcome = drive(vec![vanished(1), vanished(2)], 2).await;
+        assert_eq!(outcome.code, 1);
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.structural.as_deref(), Some(VANISHED_TREE));
+        assert_eq!(outcome.error_line.as_deref(), Some(VANISHED_TREE));
     }
 
     #[tokio::test]

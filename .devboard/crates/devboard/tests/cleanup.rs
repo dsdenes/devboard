@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use devboard::providers::{agent_directory, ProviderId};
-use devboard::workers::builds::{run_build_cleanup_with, BuildCandidateKind};
+use devboard::workers::builds::{run_build_cleanup_with, BuildCandidateKind, TargetLock};
 use devboard::workers::watchdog::{
     apparent_tree_bytes, covered_state_dirs, epoch_ms, run_cleanup, run_cleanup_with,
     sweep_state_dir_with, CleanupSource, CoveredStateDir, Instance, ProviderRetention,
@@ -1033,6 +1033,90 @@ fn a_build_elsewhere_never_holds_the_canonical_retention_back() {
     let local = run_build_cleanup_with(&repo, false, u64::MAX, &|_| true, &|| Vec::new());
     assert!(local.skipped.is_some());
     assert!(busy_old.exists() && busy_new.exists());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_held_build_lock_keeps_the_canonical_tree() {
+    let directory = root("target-lock");
+    let repo = directory.join("repo");
+    let debug = repo.join(".devboard/target/debug");
+    let deps = debug.join("deps");
+    std::fs::create_dir_all(&deps).expect("a deps directory");
+    let now = epoch_ms();
+    let old = deps.join("libfoo-aaaaaaaaaaaaaaaa.rlib");
+    let new = deps.join("libfoo-bbbbbbbbbbbbbbbb.rlib");
+    write_bytes(&old, 100);
+    write_bytes(&new, 100);
+    set_mtime(&old, now - 2 * HOUR_MS);
+    set_mtime(&new, now - HOUR_MS);
+
+    // Cargo holds this lock for a whole build and creates each unit's
+    // fingerprint directory once, so a pass that unlinked a file under it would
+    // fail the build instead of freeing space.
+    let held = TargetLock::acquire(&debug)
+        .expect("the lock file")
+        .expect("the lock");
+
+    let dry = run_build_cleanup_with(&repo, true, 0, &|_| false, &|| Vec::new());
+    assert_eq!(
+        dry.skipped.as_deref(),
+        Some("a cargo build holds the target directory lock")
+    );
+    assert!(dry.candidates.is_empty(), "{:?}", dry.candidates);
+    assert!(old.exists() && new.exists(), "a dry run removes nothing");
+
+    let busy = run_build_cleanup_with(&repo, false, 0, &|_| false, &|| Vec::new());
+    assert!(busy.removed.is_empty(), "{:?}", busy.removed);
+    assert!(!busy.cap_removed);
+    assert!(old.exists() && new.exists(), "a held lock keeps every artifact");
+
+    drop(held);
+
+    let after = run_build_cleanup_with(&repo, false, 0, &|_| false, &|| Vec::new());
+    assert!(after.skipped.is_none(), "{:?}", after.skipped);
+    assert!(!old.exists(), "the duplicate leaves once the lock is free");
+    assert!(after.cap_removed, "the cap removes the tree once the lock is free");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_held_worktree_build_lock_keeps_its_build_output() {
+    let directory = root("worktree-target-lock");
+    let repo = directory.join("repo");
+    init_repo(&repo);
+    let worktree = add_worktree(&repo, "building-too", "building-too-branch");
+    let debug = worktree.join(".devboard/target/debug");
+    let deps = debug.join("deps");
+    std::fs::create_dir_all(&deps).expect("a deps directory");
+    write_bytes(&deps.join("libfoo-aaaaaaaaaaaaaaaa.rlib"), 100);
+    let held = TargetLock::acquire(&debug)
+        .expect("the lock file")
+        .expect("the lock");
+
+    let busy = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| Vec::new());
+    assert!(debug.exists(), "a build in the worktree keeps its output");
+    assert!(
+        !busy
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind == BuildCandidateKind::WorktreeTargetDebug),
+        "{:?}",
+        busy.candidates
+    );
+    assert!(busy.removed.is_empty());
+
+    drop(held);
+
+    let after = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| Vec::new());
+    assert!(
+        !debug.exists(),
+        "the abandoned worktree's output leaves once the lock is free"
+    );
+    assert!(after
+        .removed
+        .iter()
+        .any(|candidate| candidate.kind == BuildCandidateKind::WorktreeTargetDebug));
     let _ = std::fs::remove_dir_all(&directory);
 }
 
