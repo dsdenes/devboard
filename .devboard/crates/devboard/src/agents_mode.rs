@@ -5686,9 +5686,6 @@ impl RepoFamily {
 
     async fn preflight_api_standards(&self, budget: PreflightBudget) -> Result<String, String> {
         let source_dir = crate::workers::api_standards::DEFAULT_API_SOURCE_DIRECTORY;
-        let skill_dir = ".omp/skills/devboard-restful-api-implementation";
-        let skill_document = format!("{skill_dir}/SKILL.md");
-        let rules_document = format!("{skill_dir}/references/zalando-rest-rules.md");
         let source_root = self.repo_dir.join(source_dir);
         if !source_root.exists() {
             return Err(format!(
@@ -5708,7 +5705,13 @@ impl RepoFamily {
                 ))
             }
         }
-        read_rest_skill(&self.repo_dir, &skill_document, &rules_document)?;
+        // The worker's own preflight reads the same two documents; one parser
+        // answers both, so a rule table this Start accepts is one the worker
+        // accepts.
+        crate::workers::api_standards::read_rest_skill(
+            &self.repo_dir,
+            &crate::workers::api_standards::api_standards_config(),
+        )?;
         if !inside(&self.repo_dir, &self.state_dir) {
             return Err(format!(
                 "STATE_DIR {} is not inside REPO_DIR {}; the api-standards worker keeps its state beside the checkout",
@@ -6225,68 +6228,6 @@ async fn gitea_labels_within(
         }
         tokio::time::sleep(Duration::from_millis(delay)).await;
     }
-}
-
-fn read_rest_skill(
-    repo_dir: &Path,
-    skill_document: &str,
-    rules_document: &str,
-) -> Result<(), String> {
-    let read = |relative: &str| -> Result<String, String> {
-        std::fs::read_to_string(repo_dir.join(relative))
-            .map_err(|_| format!("{relative} is not readable"))
-    };
-    let skill_text = read(skill_document)?;
-    if skill_text.trim().is_empty() {
-        return Err(format!("{skill_document} is empty"));
-    }
-    let rules_text = read(rules_document)?;
-    let mut chapter: Option<String> = None;
-    let mut rows = 0usize;
-    let mut seen = HashSet::new();
-    for line in rules_text.split('\n') {
-        let line = line.trim_end_matches('\r');
-        if let Some(heading) = line.strip_prefix("## ") {
-            let heading = heading.trim();
-            chapter = if heading.is_empty() {
-                None
-            } else {
-                Some(heading.to_string())
-            };
-            continue;
-        }
-        if chapter.is_none() {
-            continue;
-        }
-        let trimmed = line.trim();
-        if !trimmed.starts_with('|') || !trimmed.ends_with('|') {
-            continue;
-        }
-        let cells: Vec<String> = trimmed[1..trimmed.len() - 1]
-            .split('|')
-            .map(|cell| cell.trim().to_string())
-            .collect();
-        if cells.len() != 3 {
-            continue;
-        }
-        let id = &cells[0];
-        if !id.chars().all(|character| character.is_ascii_digit()) || id.is_empty() {
-            continue;
-        }
-        if !matches!(cells[1].as_str(), "MUST" | "SHOULD" | "MAY") {
-            continue;
-        }
-        if cells[2].is_empty() || !seen.insert(id.clone()) {
-            continue;
-        }
-        rows += 1;
-    }
-    if rows == 0 {
-        return Err(format!(
-            "{rules_document} has no rule table; the skill must list | <rule id> | <MUST|SHOULD|MAY> | <directive> | rows under its chapter headings"
-        ));
-    }
-    Ok(())
 }
 
 fn read_skill_directives(repo_dir: &Path, skill_document: &str) -> Result<(), String> {

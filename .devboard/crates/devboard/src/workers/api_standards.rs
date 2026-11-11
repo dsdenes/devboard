@@ -1094,7 +1094,13 @@ pub fn parse_rules(text: &str, path: &str) -> Result<(Vec<RestRule>, Vec<String>
     for line in text.split('\n') {
         if let Some(rest) = line.strip_prefix("## ") {
             let value = rest.trim();
-            chapter = Some(value.to_string());
+            // A heading with no name opens no chapter: a row under it is not
+            // part of a rule table, so the document is refused as empty.
+            chapter = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
             if !value.is_empty() {
                 chapters.push(value.to_string());
             }

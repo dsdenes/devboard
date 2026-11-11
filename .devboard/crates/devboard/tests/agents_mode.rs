@@ -1120,6 +1120,51 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
     }
 }
 
+#[tokio::test]
+async fn api_standards_start_refuses_an_unusable_rule_table_instead_of_panicking() {
+    let root = scratch("api-standards-rule-table");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join(".devboard/crates/devboard/src")).expect("a source root");
+    let skill_dir = repo.join(".omp/skills/devboard-restful-api-implementation");
+    std::fs::create_dir_all(skill_dir.join("references")).expect("a skill root");
+    std::fs::write(skill_dir.join("SKILL.md"), "# REST\n\nBytes.\n").expect("a skill file");
+    let app = app_at(&root);
+
+    let documents = [
+        // A line that trims to one `|`: the shared scan refuses it, while a
+        // hand-rolled first-and-last-byte check would slice `[1..0]`.
+        ("## URLs\n\n|\n", "a lone pipe"),
+        // A heading with no name opens no chapter, so its row table is no
+        // rule table for the preflight or for the worker's parser.
+        ("## \n\n| 1 | MUST | Use a URL |\n", "a blank heading"),
+    ];
+    for (rules, label) in documents {
+        std::fs::write(skill_dir.join("references/zalando-rest-rules.md"), rules)
+            .expect("a rules file");
+        let (conn, mut inbox) = connection_for(&app).await;
+        devboard::agents_mode::handle(
+            &app,
+            &conn,
+            &Command::StartAgent {
+                id: Some(json!("api-standards")),
+            },
+        )
+        .await;
+        let all = frames(&mut inbox);
+        let snapshot = agent(&all, "api-standards").expect("a family snapshot");
+        let error = snapshot["error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{label}: no refusal in {all:?}"));
+        assert!(error.contains("no rule table"), "{label}: {error}");
+        assert!(
+            error.contains("zalando-rest-rules.md has no rule table"),
+            "{label}: {error}"
+        );
+        assert_ne!(snapshot["lifecycle"], json!("starting"), "{label}");
+        assert_eq!(find(&all, "error").len(), 1, "{label}: {all:?}");
+    }
+}
+
 // The budget is wall clock, so a loaded host can spend it before the first
 // step starts. A paused clock makes the two steps and the deadline advance
 // together and the assertion independent of how busy the machine is.

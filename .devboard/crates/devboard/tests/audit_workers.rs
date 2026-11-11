@@ -815,6 +815,25 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
 }
 
 #[test]
+fn api_standards_rule_parser_refuses_an_unusable_table() {
+    let lone_pipe = api::parse_rules("## URLs\n\n|\n", "rules.md").expect_err("a lone pipe");
+    assert!(
+        lone_pipe.contains("rules.md has no rule table"),
+        "{lone_pipe}"
+    );
+    let blank_heading = api::parse_rules("## \n\n| 1 | MUST | Use a URL |\n", "rules.md")
+        .expect_err("a blank heading");
+    assert!(
+        blank_heading.contains("rules.md has no rule table"),
+        "{blank_heading}"
+    );
+    let (rules, chapters) = api::parse_rules("## URLs\n\n| 1 | MUST | Use a URL |\n", "rules.md")
+        .expect("a rule table");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(chapters, vec!["URLs".to_string()]);
+}
+
+#[test]
 fn api_standards_inventory_reads_the_rust_http_surface() {
     let fixture = Fixture::new("api-inventory");
     fixture.api_inputs();
