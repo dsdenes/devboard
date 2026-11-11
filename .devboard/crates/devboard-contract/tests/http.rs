@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use devboard_contract::fixture::{allowlist_path, contract_dir};
+use devboard_contract::fixture::{allowlist_path, contract_dir, Fixture};
 use devboard_contract::http_table::{self, Allowlist, Corpus, Recording};
 use serde_json::Value;
 
@@ -85,6 +85,23 @@ fn every_http_table_row_has_a_recording() {
 fn the_allowlist_names_every_field_it_excludes() {
     let allowlist = allowlist();
     assert!(!allowlist.is_empty(), "the allowlist is read");
+}
+
+#[tokio::test]
+async fn a_dropped_fixture_removes_its_root() {
+    let fixture = Fixture::start("dropped").await.expect("a fixture");
+    let root = fixture.root().to_path_buf();
+    assert!(
+        root.is_dir(),
+        "the fixture root exists while the fixture lives: {}",
+        root.display()
+    );
+    drop(fixture);
+    assert!(
+        !root.exists(),
+        "the dropped fixture removed its root: {}",
+        root.display()
+    );
 }
 
 #[tokio::test]

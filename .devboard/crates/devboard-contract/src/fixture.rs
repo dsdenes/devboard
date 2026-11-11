@@ -31,13 +31,25 @@ pub fn allowlist_path() -> PathBuf {
     contract_dir().join("allowlist.json")
 }
 
-/// One fixture dashboard, alive until it is dropped.
+/// One fixture dashboard over a copied repository, removed when it is dropped.
+///
+/// The dashboard runs on a runtime of its own, so dropping the fixture ends
+/// every task it started — its lease heartbeat included — before the copied
+/// repository and state directory go away.
 pub struct Fixture {
     pub base: String,
-    server: Arc<Server>,
+    root: PathBuf,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    served: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Fixture {
+    /// The root this fixture created: its copied repository and state
+    /// directory, removed when the fixture is dropped.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Starts one dashboard over a fresh copy of the repository fixture.
     pub async fn start(label: &str) -> Result<Self, String> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -49,7 +61,10 @@ impl Fixture {
         let repo = root.join("repo");
         let state = root.join("state");
         std::fs::create_dir_all(&state).map_err(|error| format!("a state directory: {error}"))?;
-        copy_tree(&contract_dir().join("fixtures/repo"), &repo)?;
+        if let Err(error) = copy_tree(&contract_dir().join("fixtures/repo"), &repo) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(error);
+        }
         let config = Config {
             hostname: "127.0.0.1".to_string(),
             port: 0,
@@ -62,37 +77,83 @@ impl Fixture {
             allowed_hosts: Vec::new(),
             feedback: None,
         };
-        let listener = devboard::http::bind(&config.hostname, 0)
-            .await
-            .map_err(|error| format!("a listener: {error}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| format!("an address: {error}"))?
-            .port();
-        let mut config = config;
-        config.port = port;
-        let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
-        let server = Server::new(config, journal);
-        let served = Arc::clone(&server);
-        tokio::spawn(async move {
-            let _ = devboard::http::serve_on(listener, served).await;
+        let (started, bound) = std::sync::mpsc::channel::<Result<u16, String>>();
+        let (shutdown, stop) = tokio::sync::oneshot::channel::<()>();
+        let served = std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = started.send(Err(format!("a fixture runtime: {error}")));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let listener = match devboard::http::bind(&config.hostname, 0).await {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        let _ = started.send(Err(format!("a listener: {error}")));
+                        return;
+                    }
+                };
+                let port = match listener.local_addr() {
+                    Ok(address) => address.port(),
+                    Err(error) => {
+                        let _ = started.send(Err(format!("an address: {error}")));
+                        return;
+                    }
+                };
+                let mut config = config;
+                config.port = port;
+                let journal = Journal::open(&config.state_dir, &config.repo_dir, config.port);
+                let server = Server::new(config, journal);
+                let app = Arc::clone(&server.app);
+                let shared = server.app.shared.clone();
+                let serving =
+                    tokio::spawn(async move { devboard::http::serve_on(listener, server).await });
+                let _ = started.send(Ok(port));
+                // The dashboard's own tasks wait on the same notification, so
+                // every waiter is woken and the server ends before the root
+                // this fixture created goes away.
+                let _ = stop.await;
+                shared.shutdown.notify_waiters();
+                let _ = serving.await;
+                devboard::app::graceful_shutdown(&app).await;
+            });
         });
+        let port = match bound.recv() {
+            Ok(Ok(port)) => port,
+            Ok(Err(error)) => {
+                let _ = std::fs::remove_dir_all(&root);
+                let _ = served.join();
+                return Err(error);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&root);
+                let _ = served.join();
+                return Err(format!("a fixture thread: {error}"));
+            }
+        };
         Ok(Self {
             base: format!("http://127.0.0.1:{port}"),
-            server,
+            root,
+            shutdown: Some(shutdown),
+            served: Some(served),
         })
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        self.server.app.shared.shutdown.notify_waiters();
-        if tokio::runtime::Handle::try_current().is_ok() {
-            let app = Arc::clone(&self.server.app);
-            tokio::spawn(async move {
-                devboard::app::graceful_shutdown(&app).await;
-            });
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
+        if let Some(served) = self.served.take() {
+            let _ = served.join();
+        }
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
