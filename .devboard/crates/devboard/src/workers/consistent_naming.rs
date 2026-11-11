@@ -2867,6 +2867,7 @@ impl Worker {
                 command: self.agent_command.clone(),
                 cwd: directory.clone(),
                 env,
+                starter: "Consistent Naming".to_string(),
                 callbacks,
             })
             .await

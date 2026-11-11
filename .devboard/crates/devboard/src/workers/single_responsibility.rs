@@ -2286,6 +2286,7 @@ impl Worker {
                 command: self.agent_command.clone(),
                 cwd: directory.clone(),
                 env,
+                starter: "Single Responsibility".to_string(),
                 callbacks,
             })
             .await
