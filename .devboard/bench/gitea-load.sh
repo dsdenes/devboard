@@ -38,8 +38,9 @@ Usage: bash bench/gitea-load.sh [options]
   --clients <n>          concurrent clients (default 8)
   --duration <s>         seconds of load (default 30)
   --out <path>           JSON report path (default .devboard/.tmp/gitea-load.json)
-  --writers <n>          clients that also write (default clients/8, at least 1)
-  --think-ms <n>         pause between a client's cycles (default 500)
+  --writers <n>          clients that also write (default clients/16, at least 1)
+  --think-ms <n>         base pause between a client's cycles (default 2000,
+                         jittered 0.5x-1.5x so clients never burst together)
   --gitea <url>          forge origin; defaults to DEVBOARD_GITEA_URL, GITEA_URL,
                          then the checkout's HTTP(S) origin
   --dashboard <url>      dashboard origin (default http://127.0.0.1:8080)
@@ -60,7 +61,7 @@ clients=8
 duration=30
 out="$harness/.tmp/gitea-load.json"
 writers=""
-think_ms=500
+think_ms=2000
 gitea_url=""
 dashboard_url=""
 project=""
@@ -99,7 +100,7 @@ case "$clients" in '' | *[!0-9]* | 0) die "--clients must be a positive whole nu
 case "$duration" in '' | *[!0-9]* | 0) die "--duration must be a positive whole number" ;; esac
 case "$think_ms" in '' | *[!0-9]*) die "--think-ms must be a whole number" ;; esac
 if [ -z "$writers" ]; then
-  writers=$((clients / 8))
+  writers=$((clients / 16))
   [ "$writers" -ge 1 ] || writers=1
 fi
 case "$writers" in '' | *[!0-9]*) die "--writers must be a whole number" ;; esac
@@ -257,8 +258,9 @@ probe() {  # probe <surface> <path> <read|write> [method] [json]
 
 run_client() {
   local client=$1 deadline=$2 number title
+  sleep "$(awk -v ms="$think_ms" 'BEGIN { srand(); printf "%.3f", ms / 1000 * (0.5 + rand()) }')"
   while [ "$(date +%s)" -le "$deadline" ]; do
-    probe gitea "repos/$project/issues?state=all&limit=50" read
+    probe gitea "repos/$project/issues?state=open&limit=50" read
     probe dashboard issues read
     if [ "$client" -lt "$writers" ]; then
       title="load $(date +%s%N) $client"
@@ -271,7 +273,7 @@ run_client() {
         probe gitea "repos/$load_repo/issues/$number" write PATCH '{"state":"closed"}'
       fi
     fi
-    sleep "$(awk -v ms="$think_ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
+    sleep "$(awk -v ms="$think_ms" 'BEGIN { srand(); printf "%.3f", ms / 1000 * (0.5 + rand()) }')"
   done
 }
 
