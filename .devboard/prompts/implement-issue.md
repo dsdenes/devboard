@@ -376,8 +376,14 @@ the prerequisite in another agent's place.
   it shows `[behind N]`, rebase the run's task branch onto `origin/main`. When it shows `[ahead N,
   behind M]`, `git merge --ff-only origin/main` cannot apply: rebase instead. Resolve every
   conflict yourself and rerun every check the integration invalidates. The task branch is
-  unpublished until it lands, so rebasing it is safe. Never answer "Not possible to fast-forward"
-  by repeating the same `git merge --ff-only <task-branch>`.
+  unpublished until it lands, so rebasing it is safe. That status line measures the task branch
+  against `origin/main`, so it never decides the merge into the canonical checkout's `main`:
+  `main` advances every time a concurrent landing publishes, including while the post-rebase
+  checks run. Immediately before `git merge --ff-only <task-branch>`, prove containment with one
+  `git merge-base --is-ancestor main <task-branch>`: exit 0 is the only state in which that merge
+  may run, and exit 1 means `main` moved again, so rebase the task branch onto `main` inside its
+  worktree, rerun the checks that rebase invalidates, and probe once more. Never answer
+  "Not possible to fast-forward" by repeating the same `git merge --ff-only <task-branch>`.
 - Land through the one sequence below. Never create a pull request or merge request, never
   force-push, and never rewrite published history.
 - When a push is rejected, run the fetch budget's single fetch for the new tip as that attempt's
@@ -495,6 +501,8 @@ git status --short --branch
 git merge --ff-only origin/main
 # task worktree
 git rebase main
+# task worktree, once the rebase's checks passed
+git merge-base --is-ancestor main HEAD
 # canonical checkout, on main
 git merge --ff-only <task-branch>
 ```
@@ -509,10 +517,13 @@ the sequence from the status read.
 
 The rebase line is unconditional and runs in the task worktree: it rebases the task branch onto the
 canonical checkout's `main` — not `origin/main` — which is a no-op when `main` is already
-contained and is required when a concurrent landing published into `main` after the task start,
-so the last merge always fast-forwards. Rerun the checks the rebase invalidates before that last
-line. A canonical `## main...origin/main [ahead N]` line is a concurrent landing's unpublished
-commits, so the task branch must contain that tip for the second merge to fast-forward;
+contained and is required when a concurrent landing published into `main` after the task start.
+Rerun the checks the rebase invalidates after it and before that last line. Those checks take
+minutes, and a concurrent landing can advance `main` again while they run, so the last merge is
+preceded by `git merge-base --is-ancestor main <task-branch>`: exit 1 rebases the task branch
+onto `main` once more and reruns the invalidated checks instead of merging, and the probe repeats
+until it exits 0. A canonical `## main...origin/main [ahead N]` line is a concurrent landing's
+unpublished commits, so the task branch must contain that tip for the second merge to fast-forward;
 `origin/main` cannot supply it and the fetch budget allows no second fetch. Run the sequence once
 per landing attempt: no `&&` chain between its lines, no `tail` pipe, and no `PIPESTATUS` probe.
 Never create a pull request or merge request.
