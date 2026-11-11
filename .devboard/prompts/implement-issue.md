@@ -387,8 +387,14 @@ the prerequisite in another agent's place.
   checks run. Immediately before `git merge --ff-only <task-branch>`, prove containment with one
   `git merge-base --is-ancestor main <task-branch>`: exit 0 is the only state in which that merge
   may run, and exit 1 means `main` moved again, so rebase the task branch onto `main` inside its
-  worktree, rerun the checks that rebase invalidates, and probe once more. Never answer
-  "Not possible to fast-forward" by repeating the same `git merge --ff-only <task-branch>`.
+  worktree, rerun the checks that rebase invalidates, and probe once more.
+- Merge into the integration checkout with exactly one command,
+  `git merge --ff-only <task-branch>`: never `--no-ff`, never a forced merge, and never a merge
+  that writes a merge commit. When it refuses with `fatal: Not possible to fast-forward,
+  aborting.` or `hint: Diverging branches can't be fast-forwarded`, do not repeat it unchanged:
+  rebase the task branch onto the integration tip inside its worktree, resolve every conflict
+  there, rerun the checks the rebase invalidates, and only then retry the same
+  `git merge --ff-only <task-branch>`. Name the refusal and the retry in the final response.
 - Land through the one sequence below. Never create a pull request or merge request, never
   force-push, and never rewrite published history.
 - When a push is rejected, run the fetch budget's single fetch for the new tip as that attempt's
@@ -475,12 +481,12 @@ already proves the integration tip is contained, so the merge there only prints
 marker the merge fails with `Diverging branches can't be fast-forwarded` — so integrate with
 `git rebase origin/main` instead, resolve every conflict, and rerun the checks the rebase
 invalidates. The `Diverging branches can't be fast-forwarded` hint means the branch is
-diverged: rebase it, and never answer it with a fetch, a second `--ff-only` merge, or a `--no-ff`
-merge. Never repeat a refused `--ff-only` merge. When the line carries `[ahead N]`,
-one `git merge-base --is-ancestor <integration-ref> HEAD` confirms containment: exit 0 means the
-integration tip is already contained in `HEAD`, exit 1 means it is not. Never substitute an issue
-branch (`issue-N`) for the integration ref, and in the canonical checkout never substitute `main`
-for the branch's upstream, which is `origin/main`.
+diverged: rebase it, and never answer it with a fetch, an unchanged second `--ff-only` merge, or
+a `--no-ff` merge. Never repeat a refused `--ff-only` merge without that rebase. When the line
+carries `[ahead N]`, one `git merge-base --is-ancestor <integration-ref> HEAD` confirms
+containment: exit 0 means the integration tip is already contained in `HEAD`, exit 1 means it is
+not. Never substitute an issue branch (`issue-N`) for the integration ref, and in the canonical
+checkout never substitute `main` for the branch's upstream, which is `origin/main`.
 
 Never chain a bare `git rev-parse --short=12 <branch>` with a following count or log for the same
 question. Guard any optional branch that may not exist yet with `git rev-parse --verify --quiet
@@ -597,15 +603,16 @@ stays in place. A local-only merge or a deleted worktree before that equality is
 
 `Diverging branches can't be fast-forwarded` or "Not possible to fast-forward" is a diagnosis,
 not an instruction to repeat the merge. Never rerun the same `--ff-only` command, and never fall
-back to `--no-ff` silently. Name which side is ahead with the `git status --short --branch` line
-the landing sequence already printed — `[ahead N]` counts the commits only `HEAD` has and
-`[behind N]` the commits only the upstream ref has — and never chain that read with `&&`.
-When the refused merge is `git merge --ff-only <task-branch>`, the task branch lacks the
-canonical checkout's `main` tip, not only a tip `origin/main` carries: rebase the task branch
-onto that local `main` inside the worktree and rerun the checks the rebase invalidates. When the
-refused merge is the first one, integrate `origin/main` into the task branch — rebase it inside
-the worktree onto `origin/main` and rerun the checks the rebase invalidates. Then repeat the
-sequence and the push block from the start.
+back to `--no-ff`, `--force`, or a merge that writes a merge commit. Name which side is ahead with
+the `git status --short --branch` line the landing sequence already printed — `[ahead N]` counts
+the commits only `HEAD` has and `[behind N]` the commits only the upstream ref has — and never
+chain that read with `&&`. When the refused merge is `git merge --ff-only <task-branch>`, the task
+branch lacks the canonical checkout's `main` tip, not only a tip `origin/main` carries: rebase the
+task branch onto that local `main` inside the worktree and rerun the checks the rebase invalidates.
+When the refused merge is the first one, integrate `origin/main` into the task branch — rebase it
+inside the worktree onto `origin/main` and rerun the checks the rebase invalidates. Then retry the
+same `git merge --ff-only <task-branch>` through the sequence from the status read — the landing
+attempt's fetch already named its tip, so no second fetch runs — and the push block.
 
 A `CONFLICT (content)` is resolved in the merge that raised it: edit the conflicted files, stage
 them, commit the result, and rerun the checks the conflict invalidates. `git merge --abort`
