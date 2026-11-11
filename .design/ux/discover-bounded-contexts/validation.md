@@ -41,6 +41,12 @@ The Discover stage of `verify:interface` drives the stub sheet and asserts, amon
 - `Shared kernels` is a card of its own with one chip per kernel;
 - no Discover panel or table scrolls inside the page, and no card clips its own rows.
 
+The chips' link handoff is asserted by the component suite, not the interface stage:
+`DiscoverOverview.test.ts` renders an entry-point file, an entry-point directory, and a manifest as
+anchors carrying the `vscode://file/` href, keeps a missing path, an absolute or escaping value, and
+every external-boundary chip a plain `code` element, and renders no path link while a remote target
+is shown.
+
 ## State coverage
 
 |State|Structure|Evidence|
