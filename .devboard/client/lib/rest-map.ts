@@ -95,5 +95,3 @@ export const REST_OPERATIONS: Record<string, RestOperation> = {
   "setProviderEnabled": { method: "PATCH", path: "/providers/{id}", pathParams: [["id", "id"]] },
   "refreshProviders": { method: "POST", path: "/provider-refreshes", pathParams: [] },
 };
-
-export const REST_PATHS: readonly string[] = Object.values(REST_OPERATIONS).map((operation) => operation.path);

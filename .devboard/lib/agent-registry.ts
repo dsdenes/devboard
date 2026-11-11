@@ -1126,11 +1126,6 @@ const DISCOVER_AGENTS_BY_ID = new Map<string, DiscoverAgentDescriptor>(
   DISCOVER_AGENTS.map((descriptor) => [descriptor.id, descriptor] as const),
 );
 
-/** True for one of the seven ids; never for another string. */
-export function isDiscoverAgentId(value: unknown): value is DiscoverAgentId {
-  return typeof value === "string" && DISCOVER_AGENTS_BY_ID.has(value);
-}
-
 export function discoverAgent(id: string): DiscoverAgentDescriptor | undefined {
   return DISCOVER_AGENTS_BY_ID.get(id);
 }
