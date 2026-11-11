@@ -5,6 +5,7 @@
 //! and starts no HTTP listener.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2090,6 +2091,49 @@ fn dedup_run_directory(context: &McpContext) -> Option<PathBuf> {
     target.starts_with(&root).then_some(target)
 }
 
+/// How long one deduplication turn's forge read may run before it answers with
+/// its own latency, comfortably inside the 30,000 ms request deadline the
+/// peer's MCP client enforces.
+///
+/// A read the client abandons outlived the deadline: the server records its
+/// read after the turn has already answered, so the cycle holds reads it never
+/// delivered and no decision or cause the client ever reported. That is the
+/// state it could only describe as "the deduplication turn recorded no
+/// decision". Answered here, the same read is recorded as a slow forge and the
+/// cycle defers the candidate until the forge answers.
+const DEDUP_READ_DEADLINE_MS: u64 = 25_000;
+
+/// The deadline one deduplication read answers within; `None` outside a
+/// deduplication turn, whose reads keep the forge's own bounds.
+fn dedup_read_deadline_ms(context: &McpContext) -> Option<u64> {
+    dedup_run_directory(context)?;
+    Some(
+        environment_value(context, "DEVBOARD_DEDUP_READ_DEADLINE_MS")
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEDUP_READ_DEADLINE_MS),
+    )
+}
+
+/// Answers one deduplication forge read inside the deadline the peer's client
+/// enforces, naming the operation whose latency exceeded it.
+async fn bounded_dedup_read<T, F>(
+    context: &McpContext,
+    pending: F,
+    operation: &str,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, crate::forge::ForgeIssueError>>,
+{
+    match dedup_read_deadline_ms(context) {
+        Some(bound) => crate::forge::with_forge_deadline(pending, bound, operation)
+            .await
+            .map_err(|error| error.message)
+            .and_then(|result| result.map_err(|error| error.message)),
+        None => pending.await.map_err(|error| error.message),
+    }
+}
+
 /// The tools a deduplication turn decides with. Their failure is what leaves
 /// a turn with no read and no decision.
 fn dedup_tool(name: &str) -> bool {
@@ -2281,10 +2325,13 @@ async fn list_issues(context: &McpContext, args: &Map<String, Value>) -> Result<
         _ => ISSUE_LIST_MAX,
     };
     let forge = issues_client(context)?;
-    let issues = forge
-        .list(query_state(state), Some(limit + 1))
-        .await
-        .map_err(|error| tracker_failure(&forge, "list issues", error.message))?;
+    let issues = bounded_dedup_read(
+        context,
+        forge.list(query_state(state), Some(limit + 1)),
+        "reading the issue list",
+    )
+    .await
+    .map_err(|cause| tracker_failure(&forge, "list issues", cause))?;
     let truncated = issues.len() > limit;
     let rows: Vec<Value> = issues.iter().take(limit).map(issue_row).collect();
     if let Some(directory) = dedup_run_directory(context) {
@@ -2300,10 +2347,13 @@ async fn get_issue(context: &McpContext, args: &Map<String, Value>) -> Result<Va
     let number = positive_issue_number(args.get("number"))?;
     let forge = issues_client(context)?;
     let operation = format!("read issue {number}");
-    let issue = forge
-        .get(number)
-        .await
-        .map_err(|error| tracker_failure(&forge, &operation, error.message))?;
+    let issue = bounded_dedup_read(
+        context,
+        forge.get(number),
+        &format!("reading issue {number}"),
+    )
+    .await
+    .map_err(|cause| tracker_failure(&forge, &operation, cause))?;
     let bounded = bound_bytes(&issue.body, ISSUE_BODY_MAX_BYTES, "...");
     Ok(issue_document(&issue, &bounded.text, bounded.truncated))
 }

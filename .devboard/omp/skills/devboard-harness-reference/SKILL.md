@@ -3119,7 +3119,10 @@ an open issue is suppressed silently: no issue, no comment. Its ledger entry rec
 `duplicate:<url>` with no `filed:` disposition, so it is never treated as filed and never takes a
 24-hour recurrence comment. `issues_list` reads every open issue page by page and reports
 `truncated: true` when an explicit `limit` or a forge read ceiling kept the older rows back, so an
-open issue below one `list` page is never invisible by silence.
+open issue below one `list` page is never invisible by silence. Each read answers within the peer's
+30-second MCP request deadline; one that outlives it answers with its own latency instead, so a
+slow forge is recorded and deferred rather than abandoned by the client with no cause the cycle can
+report.
 
 A deduplication tool call that fails records its failure in `<run-dir>/dedup-errors.jsonl` beside
 the read and decision files, naming the tool and the forge's own refusal. The cycle never reads

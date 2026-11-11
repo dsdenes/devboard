@@ -654,6 +654,124 @@ async fn a_refused_dedup_read_is_recorded_for_the_cycle() {
     server.abort();
 }
 
+/// Delays the issue read past a deduplication deadline, so the read answers
+/// with its own latency instead of the peer's client abandoning it.
+async fn stub_gitea_slow_read(request: axum::extract::Request) -> axum::response::Response {
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    if method == "GET" && path == "/api/v1/repos/owner/name/issues" {
+        tokio::time::sleep(std::time::Duration::from_millis(3_000)).await;
+        return axum::response::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("[]"))
+            .expect("a stub response");
+    }
+    let (status, body) = match (method.as_str(), path.as_str()) {
+        ("GET", "/api/v1/user") => (200, json!({"login": "alice"}).to_string()),
+        ("GET", "/api/v1/repos/owner/name") => (
+            200,
+            json!({"permissions": {"pull": true, "push": false, "admin": false}}).to_string(),
+        ),
+        _ => (
+            401,
+            json!({"message": "invalid username, password or token"}).to_string(),
+        ),
+    };
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+#[tokio::test]
+async fn a_dedup_read_that_outlives_its_deadline_answers_with_its_latency() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new().fallback(stub_gitea_slow_read);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut context = fixture("dedup-slow-read");
+    let remote = format!("http://127.0.0.1:{port}/owner/name.git");
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&context.repo_dir)
+        .args(["remote", "add", "origin", &remote])
+        .status()
+        .expect("git runs");
+    assert!(added.success(), "the fixture origin is added");
+    let run_dir = context
+        .state_dir
+        .join("watchdog")
+        .join("runs")
+        .join("cycle")
+        .join("dedup");
+    std::fs::create_dir_all(&run_dir).expect("the dedup run directory");
+    context.environment = HashMap::from([
+        ("GITEA_TOKEN".to_string(), "secret".to_string()),
+        (
+            "DEVBOARD_DEDUP_RUN_DIR".to_string(),
+            run_dir.to_string_lossy().into_owned(),
+        ),
+        (
+            "DEVBOARD_DEDUP_READ_DEADLINE_MS".to_string(),
+            "1000".to_string(),
+        ),
+    ]);
+
+    let frames = drive(
+        &context,
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "issues_list",
+                "arguments": {"state": "open"}
+            }
+        })],
+    )
+    .await;
+
+    let slow = reply(&frames, 51);
+    assert_eq!(slow["result"]["isError"], true);
+    let text = slow["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text")
+        .to_string();
+    assert!(
+        text.contains("Gitea list issues for owner/name failed: "),
+        "the tool names the forge and the operation: {text}"
+    );
+    assert!(
+        text.contains("reading the issue list timed out after 1000 ms"),
+        "the read answers with the deadline it exceeded: {text}"
+    );
+
+    let errors = devboard::workers::watchdog::read_dedup_errors(&run_dir);
+    assert_eq!(errors.len(), 1, "the slow read is recorded once");
+    assert!(
+        errors[0].starts_with("issues_list: Gitea list issues for owner/name failed: "),
+        "the record names the tool, the forge, and the operation: {}",
+        errors[0]
+    );
+    assert!(
+        devboard::forge::is_forge_read_latency(&errors[0]),
+        "the cycle reads this record as a slow forge, not a refusal: {}",
+        errors[0]
+    );
+    assert!(
+        devboard::workers::watchdog::read_dedup_reads(&run_dir).is_empty(),
+        "a read that never answered records no open set"
+    );
+    server.abort();
+}
+
 /// How many issues the paged tracker below holds.
 const PAGED_TRACKER_ISSUES: i64 = 260;
 
