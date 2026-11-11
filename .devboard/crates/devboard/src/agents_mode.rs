@@ -6388,8 +6388,13 @@ fn read_watchdog_settings(directory: &Path) -> BasicSettings {
     })
 }
 
-fn watchdog_issue_rows(directory: &Path) -> Vec<Value> {
-    let ledger = read_json(&directory.join("state.json")).unwrap_or(Value::Null);
+/// The watchdog ledger, sampled once per snapshot so every row and every
+/// finding fingerprint resolves from one document.
+fn watchdog_ledger(directory: &Path) -> Arc<Value> {
+    crate::sampling::json(&directory.join("state.json")).unwrap_or_else(|| Arc::new(Value::Null))
+}
+
+fn watchdog_issue_rows(ledger: &Value) -> Vec<Value> {
     let Some(findings) = ledger.get("findings").and_then(Value::as_object) else {
         return Vec::new();
     };
@@ -6426,27 +6431,38 @@ fn watchdog_issue_rows(directory: &Path) -> Vec<Value> {
     rows
 }
 
-fn watchdog_pending(directory: &Path) -> u64 {
-    read_json(&directory.join("state.json"))
-        .and_then(|ledger| {
-            ledger
-                .get("pendingFiling")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-        })
+fn watchdog_pending(ledger: &Value) -> u64 {
+    ledger
+        .get("pendingFiling")
+        .and_then(Value::as_array)
+        .map(Vec::len)
         .unwrap_or(0) as u64
 }
 
-fn ledger_url_for(directory: &Path, fingerprint: &str) -> Option<String> {
-    read_json(&directory.join("state.json")).and_then(|ledger| {
-        ledger
-            .get("findings")
-            .and_then(Value::as_object)
-            .and_then(|findings| findings.get(fingerprint))
-            .and_then(|entry| entry.get("url"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    })
+fn watchdog_forge_urls(ledger: &Value) -> Vec<String> {
+    watchdog_issue_rows(ledger)
+        .into_iter()
+        .filter_map(|issue| issue.get("url").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+/// Every finding fingerprint's issue URL, borrowed from the one ledger read.
+fn ledger_urls(ledger: &Value) -> HashMap<&str, &str> {
+    ledger
+        .get("findings")
+        .and_then(Value::as_object)
+        .map(|findings| {
+            findings
+                .iter()
+                .filter_map(|(fingerprint, entry)| {
+                    entry
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .map(|url| (fingerprint.as_str(), url))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn cycle_from_report(report: &Value, resolve: &dyn Fn(&str) -> Option<String>) -> Option<Value> {
@@ -6563,6 +6579,7 @@ fn latest_cycle_document(directory: &Path) -> Value {
 
 fn watchdog_status(
     directory: &Path,
+    ledger: &Value,
 ) -> (
     Option<String>,
     String,
@@ -6588,9 +6605,10 @@ fn watchdog_status(
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0) as u64;
-    let issues = watchdog_issue_rows(directory);
-    let pending = watchdog_pending(directory);
-    let resolve = |fingerprint: &str| ledger_url_for(directory, fingerprint);
+    let issues = watchdog_issue_rows(ledger);
+    let pending = watchdog_pending(ledger);
+    let urls = ledger_urls(ledger);
+    let resolve = |fingerprint: &str| urls.get(fingerprint).map(|url| (*url).to_string());
     let latest_cycle = cycle_from_report(&latest, &resolve);
     let cycles = read_cycles(directory, latest_cycle, &resolve);
     let mut status_rows = Vec::new();
@@ -6774,10 +6792,7 @@ impl WatchdogFamily {
     }
 
     fn forge_urls(&self) -> Vec<String> {
-        watchdog_issue_rows(&self.directory)
-            .into_iter()
-            .filter_map(|issue| issue.get("url").and_then(Value::as_str).map(str::to_string))
-            .collect()
+        watchdog_forge_urls(&watchdog_ledger(&self.directory))
     }
 
     fn poll_signature(&self) -> u64 {
@@ -6810,7 +6825,10 @@ impl WatchdogFamily {
 
     fn snapshot(&self) -> Value {
         let now = (self.now)();
-        if self.forge_urls().is_empty() {
+        // One ledger read answers the forge-URL check, the issue rows, the
+        // pending count, and every cycle row's finding fingerprint.
+        let ledger = watchdog_ledger(&self.directory);
+        if watchdog_forge_urls(ledger.as_ref()).is_empty() {
             self.forge.note_empty_read(now);
         }
         let owners = self.owners();
@@ -6943,7 +6961,7 @@ impl WatchdogFamily {
         };
         let settings = read_watchdog_settings(&self.directory);
         let (status_cycle, _action, _findings, rows, pending, cycles, _issues) =
-            watchdog_status(&self.directory);
+            watchdog_status(&self.directory, ledger.as_ref());
         let mut last_run_candidates: Vec<String> = states
             .iter()
             .filter_map(|state| state.last_run_at.clone())
@@ -9840,6 +9858,21 @@ mod cycle_projections {
         })
     }
 
+    fn family_at(repo_dir: &Path, state_dir: &Path) -> WatchdogFamily {
+        let spawn: SpawnFn =
+            Arc::new(|_argv: &[String], _environment: HashMap<String, String>| None);
+        WatchdogFamily::new(
+            repo_dir,
+            state_dir,
+            &HashMap::new(),
+            None,
+            Arc::new(Mutex::new(spawn)),
+            Arc::new(Mutex::new(None)),
+            None,
+            Arc::new(|| 0),
+        )
+    }
+
     /// One watchdog family whose state tree retains `runs` cycle reports.
     fn family_with_runs(label: &str, runs: usize) -> (WatchdogFamily, PathBuf) {
         let root = fixture_root(label);
@@ -9855,19 +9888,7 @@ mod cycle_projections {
             )
             .expect("a run report");
         }
-        let spawn: SpawnFn =
-            Arc::new(|_argv: &[String], _environment: HashMap<String, String>| None);
-        let family = WatchdogFamily::new(
-            &repo_dir,
-            &state_dir,
-            &HashMap::new(),
-            None,
-            Arc::new(Mutex::new(spawn)),
-            Arc::new(Mutex::new(None)),
-            None,
-            Arc::new(|| 0),
-        );
-        (family, runs_directory)
+        (family_at(&repo_dir, &state_dir), runs_directory)
     }
 
     #[test]
@@ -9910,6 +9931,67 @@ mod cycle_projections {
             "a projection re-parsed {parsed} run reports that already record a summary"
         );
         assert_eq!(second["detail"], first["detail"]);
+    }
+
+    #[test]
+    fn a_snapshot_resolves_cycle_urls_from_one_ledger_read() {
+        let root = fixture_root("ledger");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let directory = watchdog_directory(&repo_dir);
+        let runs_directory = directory.join("runs");
+        for (index, fingerprint) in ["alpha", "beta"].iter().enumerate() {
+            let run = runs_directory.join(stamp(index));
+            std::fs::create_dir_all(&run).expect("a run directory");
+            std::fs::write(
+                run.join("report.json"),
+                json!({
+                    "cycle": format!("2026-11-09T10:1{index}:00.000Z"),
+                    "window": {
+                        "start": format!("2026-11-09T10:0{index}:00.000Z"),
+                        "end": format!("2026-11-09T10:1{index}:00.000Z"),
+                    },
+                    "action": "filed",
+                    "findings": [{"fingerprint": fingerprint, "line": fingerprint}],
+                    "issues": [],
+                })
+                .to_string(),
+            )
+            .expect("a run report");
+        }
+        let ledger_path = directory.join("state.json");
+        std::fs::write(
+            &ledger_path,
+            json!({
+                "findings": {
+                    "alpha": {
+                        "disposition": "filed:alpha",
+                        "url": "http://forge.invalid/issues/1",
+                    },
+                    "beta": {
+                        "disposition": "filed:beta",
+                        "url": "http://forge.invalid/issues/2",
+                    },
+                },
+                "pendingFiling": [],
+            })
+            .to_string(),
+        )
+        .expect("a ledger");
+
+        let snapshot = family_at(&repo_dir, &state_dir).snapshot();
+        let cycles = snapshot["detail"]["cycles"]
+            .as_array()
+            .expect("a cycle history");
+        assert_eq!(cycles.len(), 2);
+        assert_eq!(
+            cycles[0]["issues"],
+            json!(["http://forge.invalid/issues/2"])
+        );
+        assert_eq!(
+            cycles[1]["issues"],
+            json!(["http://forge.invalid/issues/1"])
+        );
     }
 }
 
