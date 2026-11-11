@@ -62,14 +62,15 @@
 
   /**
    * The agent whose work the open page reports: its own card, the Glossary
-   * page's Glossary Agent, or the agent that owns a skill page. The Overview
-   * and the warnings page report the seven-agent suite instead, and only the
-   * Overview runs it.
+   * page's Glossary Agent, the Contribution page's Contribution Agent, or the
+   * agent that owns a skill page. The Overview and the warnings page report the
+   * seven-agent suite instead, and only the Overview runs it.
    */
   const ownerAgent = $derived.by((): string | null => {
     if (tab === null) return null;
     if (tab.kind === "agent") return tab.resourceId;
     if (tab.kind === "glossary") return "discover-glossary";
+    if (tab.kind === "contribution") return "discover-contribution";
     if (tab.kind === "skill") {
       return DISCOVER_AGENTS.find((descriptor) => descriptor.skill === tab.resourceId)?.id ?? null;
     }
@@ -379,7 +380,8 @@
 {/snippet}
 
 <div class="mode-body discover-body">
-  {#if tab !== null && ["overview", "glossary", "skill", "warnings", "agent"].includes(tab.kind)}
+  {#if tab !== null &&
+    ["overview", "glossary", "contribution", "skill", "warnings", "agent"].includes(tab.kind)}
     <AgentActivityBar
       identity={`${layout.mode}:${tab.id}`}
       label={barLabel}

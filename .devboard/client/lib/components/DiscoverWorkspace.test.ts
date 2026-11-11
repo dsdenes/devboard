@@ -187,6 +187,63 @@ test("a skill page stops only its own running agent", async () => {
   expect(controlCommand()).toBe("discover.agent.stop.discover-contribution");
 });
 
+test("the Contribution page starts the Contribution Agent only", async () => {
+  await show(
+    {
+      id: "contribution",
+      kind: "contribution",
+      resourceId: "contribution",
+      title: "Contribution",
+    },
+    payload(),
+  );
+  expect(bar().getAttribute("aria-label")).toBe("Contribution Agent activity");
+  expect(controlTestId()).toBe("discover-agent-start");
+  expect(controlCommand()).toBe("discover.agent.start.discover-contribution");
+});
+
+test("the Contribution page stops only its own running agent", async () => {
+  await show(
+    {
+      id: "contribution",
+      kind: "contribution",
+      resourceId: "contribution",
+      title: "Contribution",
+    },
+    payload({
+      states: { "discover-contribution": "running" },
+      activeAgent: "discover-contribution",
+    }),
+  );
+  expect(controlTestId()).toBe("discover-agent-stop");
+  expect(controlCommand()).toBe("discover.agent.stop.discover-contribution");
+});
+
+test("another agent's live run never marks the Contribution page", async () => {
+  await show(
+    {
+      id: "contribution",
+      kind: "contribution",
+      resourceId: "contribution",
+      title: "Contribution",
+    },
+    payload({ states: { sheet: "running" }, activeAgent: "sheet" }),
+  );
+  discover.handleEvent({
+    type: "discoverActivity",
+    agent: "sheet",
+    text: "- branching: defaultBranch main observed.",
+  });
+  await tick();
+  const dot = bar().querySelector('[data-testid="agent-activity-dot"]');
+  expect(dot?.getAttribute("data-state")).toBe("idle");
+  expect(bar().querySelector('[data-testid="agent-activity-last"]')?.textContent?.trim()).toBe(
+    "No activity yet.",
+  );
+  expect(controlTestId()).toBe("discover-agent-start");
+  expect(controlCommand()).toBe("discover.agent.start.discover-contribution");
+});
+
 test("the Glossary page starts the Glossary Agent only", async () => {
   await show(
     { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" },
