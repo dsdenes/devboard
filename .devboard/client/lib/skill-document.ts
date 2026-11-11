@@ -23,10 +23,20 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
-/** Links may leave the console, but never into a script or data URL. */
-function safeHref(href: string): boolean {
-  if (/^\s*(?:javascript|data|vbscript):/i.test(href)) return false;
-  return true;
+/** Schemes a skill link may use. Everything else, including a bare scheme guess, is refused. */
+const allowedSchemes: Record<string, true> = { http: true, https: true, mailto: true };
+
+/**
+ * The destination an anchor may emit, or null when it must not become one.
+ * A browser strips ASCII whitespace and control characters anywhere in a URL
+ * before resolving its scheme, so the check runs on the stripped form and that
+ * same form is what the anchor receives.
+ */
+function safeHref(href: string): string | null {
+  const normalized = href.replace(/[\u0000-\u0020\u007f]/g, "");
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(normalized)?.[1]?.toLowerCase();
+  if (scheme !== undefined && allowedSchemes[scheme] !== true) return null;
+  return normalized;
 }
 
 const marked = new Marked({ gfm: true });
@@ -39,9 +49,10 @@ marked.use({
     },
     link({ href, title, tokens }: Tokens.Link) {
       const label = this.parser.parseInline(tokens);
-      if (!safeHref(href)) return label;
+      const destination = safeHref(href);
+      if (destination === null) return label;
       const titleAttribute = title == null ? "" : ` title="${escapeHtml(title)}"`;
-      return `<a href="${escapeHtml(href)}"${titleAttribute} target="_blank" rel="noreferrer noopener">${label}</a>`;
+      return `<a href="${escapeHtml(destination)}"${titleAttribute} target="_blank" rel="noreferrer noopener">${label}</a>`;
     },
     image({ text }: Tokens.Image) {
       return escapeHtml(text);

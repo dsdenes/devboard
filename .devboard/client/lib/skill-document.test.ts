@@ -71,6 +71,31 @@ describe("renderSkillDocument", () => {
     expect(script).toContain("click");
   });
 
+  test("strips a script link whose scheme hides a control character", () => {
+    const obfuscated = [
+      "[click](<java\tscript:alert(1)>)",
+      "[click](<java\u000bscript:alert(1)>)",
+      "[click](<java\u001fscript:alert(1)>)",
+      "[click](<java\u007fscript:alert(1)>)",
+      "[click](<\u0001javascript:alert(1)>)",
+    ];
+    for (const source of obfuscated) {
+      const html = renderSkillDocument(source);
+      expect(html).not.toContain("<a ");
+      expect(html).not.toContain("script:");
+      expect(html).toContain("click");
+    }
+  });
+
+  test("normalizes a destination before emitting it and allows relative links", () => {
+    expect(renderSkillDocument("[docs](<https://exa\tmple.com/x>)")).toContain(
+      'href="https://example.com/x"',
+    );
+    expect(renderSkillDocument("[rel](../x.md)")).toContain('href="../x.md"');
+    expect(renderSkillDocument("[mail](mailto:a@b.c)")).toContain('href="mailto:a@b.c"');
+    expect(renderSkillDocument("[data](data:text/html,<b>x</b>)")).not.toContain("<a ");
+  });
+
   test("returns no markup for a frontmatter-only skill", () => {
     expect(renderSkillDocument("---\nname: empty\n---\n")).toBe("");
   });
