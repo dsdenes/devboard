@@ -202,18 +202,6 @@ fn hex_regex() -> &'static regex::Regex {
     &VALUE
 }
 
-/// The first non-empty line of a text, normalized and bounded.
-pub fn first_normalized_line(text: &str, repo_dir: Option<&Path>) -> String {
-    let line = text
-        .split('\n')
-        .map(str::trim)
-        .find(|entry| !entry.is_empty());
-    let Some(line) = line else {
-        return String::new();
-    };
-    normalize_session_line(&take_chars(line, 400), repo_dir)
-}
-
 fn take_chars(text: &str, count: usize) -> String {
     text.chars().take(count).collect()
 }
