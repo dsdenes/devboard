@@ -573,8 +573,6 @@
             bare
             class="sidebar-item"
             aria-current={isActive(tab.id)}
-            role="tab"
-            aria-selected={isActive(tab.id)}
             data-testid="discover-tab"
             data-tab={tab.id}
             data-run-state={runState}
@@ -615,8 +613,6 @@
             bare
             class="sidebar-item"
             aria-current={isActive(agent.id)}
-            role="tab"
-            aria-selected={isActive(agent.id)}
             data-testid="discover-agent-tab"
             data-agent={agent.id}
             data-state={status}
@@ -651,8 +647,6 @@
             bare
             class="sidebar-item"
             aria-current={isActive(tab.id)}
-            role="tab"
-            aria-selected={isActive(tab.id)}
             data-testid="discover-tab"
             data-tab={tab.id}
             data-skill={tab.skill ?? undefined}

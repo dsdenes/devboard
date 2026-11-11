@@ -133,6 +133,13 @@ function resetStores(): void {
   flow.checkpoints = [];
   flow.question = null;
   agents.snapshots = {};
+  layout.activeTab = {
+    goal: "overview",
+    issues: "overview",
+    flow: "overview",
+    discover: "overview",
+    devboard: "tools",
+  };
   layout.mode = "goal";
 }
 
@@ -336,6 +343,65 @@ test("idle entries render no run badge and the skill's missing meta survives", a
   const contributionSkill = document.querySelector('[data-tab="contribution-skill"]');
   expect(contributionSkill?.getAttribute("data-state")).toBe("missing");
   expect(contributionSkill?.querySelector(".sidebar-item__meta")?.textContent?.trim()).toBe("missing");
+});
+
+test("no Discover entry is a tab outside a tablist and the open page stays current", async () => {
+  await showDiscover(discoverPayload());
+  const sidebar = document.querySelector('[data-testid="sidebar"]');
+  expect(sidebar).not.toBeNull();
+  const orphaned = [...sidebar!.querySelectorAll('[role="tab"]')].filter(
+    (element) => element.closest('[role="tablist"]') === null,
+  );
+  expect(orphaned.map((element) => element.getAttribute("data-testid"))).toEqual([]);
+
+  for (const label of ["Discover sections", "Discovery", "Skills"]) {
+    const group = sidebar!.querySelector(`section[aria-label="${label}"]`);
+    expect(group).not.toBeNull();
+    expect(group!.querySelectorAll('[role="tab"], [aria-selected]').length).toBe(0);
+    const entries = [...group!.querySelectorAll<HTMLButtonElement>(".sidebar-item")];
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry.tagName).toBe("BUTTON");
+      expect(entry.hasAttribute("aria-current")).toBe(true);
+    }
+  }
+
+  expect(document.querySelector('[data-tab="overview"]')?.getAttribute("aria-current")).toBe("true");
+  layout.activeTab.discover = "glossary-skill";
+  await tick();
+  expect(document.querySelector('[data-tab="overview"]')?.getAttribute("aria-current")).not.toBe("true");
+  expect(document.querySelector('[data-tab="glossary-skill"]')?.getAttribute("aria-current")).toBe(
+    "true",
+  );
+});
+
+test("the Goal lanes group keeps its lane tabs owned by one tablist", async () => {
+  goal.lanes = [
+    {
+      id: "lane-a",
+      kind: "implementation",
+      epic: { number: 7, title: "Epic", url: "" },
+      record: null,
+      attempt: 1,
+      status: "running",
+      activity: [],
+      question: null,
+    },
+  ];
+  layout.mode = "goal";
+  mount();
+  await tick();
+  const tablist = document.querySelector('[role="tablist"][aria-label="Agent lanes"]');
+  expect(tablist).not.toBeNull();
+  const tabs = [...tablist!.querySelectorAll('[role="tab"]')];
+  expect(tabs.length).toBe(1);
+  expect(tabs[0]?.closest('[role="tablist"]')).toBe(tablist);
+  expect(tabs[0]?.getAttribute("aria-selected")).toBe("false");
+  layout.activeTab.goal = "lane:lane-a";
+  await tick();
+  expect(document.querySelector('[data-testid="lane-tab"]')?.getAttribute("aria-selected")).toBe(
+    "true",
+  );
 });
 
 test("the Goal entries read only the Goal store", async () => {
