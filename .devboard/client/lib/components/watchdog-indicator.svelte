@@ -28,8 +28,19 @@
     return `${Math.floor(hours / 24)}d ago`;
   });
 
+  /** Cycle actions that leave nothing pending and nothing unsent. */
+  const HEALTHY_ACTIONS = new Set(["none", "filed", "commented", "duplicate"]);
+
   const dot = $derived(
-    action === "failed" ? "closed" : action === "none" || snapshot === null ? "connecting" : "open",
+    snapshot === null
+      ? "connecting"
+      : action === "failed"
+        ? "closed"
+        : HEALTHY_ACTIONS.has(action)
+          ? "open"
+          : // capped, deferred, skipped, and any unrecognized action leave
+            // findings pending or unsent, so they never paint healthy green.
+            "connecting",
   );
 
   function toggle(): void {
