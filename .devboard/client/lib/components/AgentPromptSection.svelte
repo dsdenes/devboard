@@ -20,13 +20,10 @@
   );
 
   // The agents snapshot carries no prompt document, so the section asks for
-  // its own: once on mount, again whenever `agentId` changes, and once the
-  // socket opens if it was still connecting. The registration is dropped on
-  // unmount so no page keeps polling a prompt it no longer shows.
+  // its own: once on mount, and again whenever `agentId` changes. The document
+  // is static, so no poll repeats it.
   $effect(() => {
-    const id = agentId;
-    agents.readPrompt(id);
-    return () => agents.forgetPrompt(id);
+    agents.readPrompt(agentId);
   });
 </script>
 

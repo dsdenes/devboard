@@ -1,7 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { agentRegistry } from "../../../lib/agent-registry.ts";
-  import { connection } from "../connection.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
   import { mcpTools } from "../mcp-tools.svelte";
   import AgentPage from "./AgentPage.svelte";
@@ -18,15 +16,6 @@
 
   const agentDescriptor = $derived(tab === null ? undefined : agentRegistry.get(tab.kind));
   const count = $derived(mcpTools.tools.length);
-
-  // Counts change while a peer runs, so the page re-reads them on the same
-  // cadence as the version poll instead of waiting for a reload.
-  onMount(() => {
-    const timer = setInterval(() => {
-      if (connection.open) mcpTools.request();
-    }, 5000);
-    return () => clearInterval(timer);
-  });
 </script>
 
 {#if agentDescriptor !== undefined}

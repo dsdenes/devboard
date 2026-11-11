@@ -13,6 +13,7 @@
   import IssuesWorkspace from "./lib/components/IssuesWorkspace.svelte";
   import NotificationRegion from "./lib/components/NotificationRegion.svelte";
   import PaneHandle from "./lib/components/PaneHandle.svelte";
+  import PollScheduler from "./lib/components/PollScheduler.svelte";
   import ProvidersDialog from "./lib/components/ProvidersDialog.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
@@ -271,18 +272,6 @@
 
   let previousMode = layout.mode;
   let lastFlowConversation: string | null = null;
-  let draftsRequested = false;
-
-  // The sidebar's Drafts count needs the list before the page is opened; the
-  // page itself refreshes while mounted.
-  $effect(() => {
-    if (connection.open && !draftsRequested) {
-      draftsRequested = true;
-      goalDrafts.refreshDrafts();
-    } else if (!connection.open) {
-      draftsRequested = false;
-    }
-  });
 
   $effect(() => {
     const mode = layout.mode;
@@ -345,17 +334,7 @@
       discover.resetActiveOperations();
       providers.resetActiveOperations();
       issues.resetActiveOperations();
-      mcpTools.request();
-      providers.request();
-      flow.request();
-      issues.request();
-      agents.request();
-      discover.request();
       goalDrafts.resetActiveOperations();
-      goalDrafts.refreshDrafts();
-      complexity.requestComplexity();
-      resources.request();
-      devboardSkills.requestSkills();
     });
     connection.onMessage((message) => {
       const record = message as Record<string, unknown>;
@@ -385,7 +364,6 @@
       file: (report, key) => fileSlowUiAction(report, key),
     });
     connection.connect();
-    connection.startPolling();
 
     return () => {
       window.removeEventListener("resize", onResize);
@@ -519,6 +497,8 @@
 {/if}
 
 <CommandPalette open={paletteOpen} {commands} onclose={closePalette} />
+
+<PollScheduler />
 
 <Tooltip.Provider>
   <NotificationRegion feedbackenabled={connection.feedbackEnabled} />

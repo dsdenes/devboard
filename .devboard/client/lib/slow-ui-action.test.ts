@@ -99,17 +99,10 @@ test("operator and initial dispatches start an action; refresh and reconnect do 
   if (socket === undefined) throw new Error("no socket created");
   socket.open();
 
-  // Six first-paint reads on the first open.
+  // The open's own reads are the scheduler's background reads: they complete
+  // without starting an action, so no ticket is latched for them.
   jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
-  expect(sink.notices).toHaveLength(6);
-  expect(sink.notices.map((notice) => notice.command)).toEqual([
-    "listRecords",
-    "getGoal",
-    "getSkills",
-    "getProject",
-    "getVersion",
-    "getProviders",
-  ]);
+  expect(sink.notices).toHaveLength(0);
 
   connection.send({ type: "startAgent", id: "scout" });
   connection.send({ type: "getMcpTools" });
@@ -119,7 +112,7 @@ test("operator and initial dispatches start an action; refresh and reconnect do 
   connection.send({ type: "getResources" }, "initial");
   jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
 
-  const commands = sink.notices.slice(6).map((notice) => notice.command);
+  const commands = sink.notices.map((notice) => notice.command);
   expect(commands).toEqual(["startAgent", "getResources"]);
 
   socket.close();
@@ -128,7 +121,7 @@ test("operator and initial dispatches start an action; refresh and reconnect do 
   if (replacement === undefined) throw new Error("no replacement socket created");
   replacement.open();
   jest.advanceTimersByTime(SLOW_UI_ACTION_BUDGET_MS);
-  expect(sink.notices).toHaveLength(8);
+  expect(sink.notices).toHaveLength(2);
 });
 
 test("a confirming frame at 999 ms files nothing and completes the action", () => {

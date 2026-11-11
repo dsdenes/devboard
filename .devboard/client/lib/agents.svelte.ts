@@ -52,11 +52,6 @@ function settingsSignature(
  * changed snapshot, while controls only send commands carrying the agent id.
  */
 export class AgentsStore {
-  /** Reads the agents resource; the poll repeats it once a second. */
-  request(): void {
-    connection.send({ type: "getAgents" }, "refresh");
-  }
-
   snapshots = $state<Record<string, AgentSnapshot>>({});
   activity = $state<Record<string, string[]>>({});
   activityScan = $state<Record<string, string | null>>({});
@@ -178,17 +173,12 @@ export class AgentsStore {
 
   /**
    * The prompt section opened for this agent: ask for its document. The
-   * store's snapshot read carries no prompt, and a section mounted before the
-   * socket settles sends this when it opens.
+   * store's snapshot read carries no prompt, so the section reads it once as
+   * it opens — the document is static, and nothing polls it.
    */
   readPrompt(id: string): void {
     if (!connection.open) return;
     connection.send({ type: "getAgentPrompt", id });
-  }
-
-  /** The section closed: stop polling a prompt no page shows. */
-  forgetPrompt(id: string): void {
-    connection.forget({ type: "getAgentPrompt", id });
   }
 
   handleEvent(message: Record<string, unknown>): void {

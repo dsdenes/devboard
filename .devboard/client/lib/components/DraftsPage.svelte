@@ -14,9 +14,10 @@
   import IssuesQuestion from "./IssuesQuestion.svelte";
 
   /**
-   * The Draft goals surface. It mounts only while the Draft goals tab is active, so its
-   * refresh loop stops with the page. Opening the page restores the stored
-   * draft path; a path whose file vanished resolves to the list.
+   * The Draft goals surface. It mounts only while the Draft goals tab is
+   * active: the scheduler plans the drafts list at its body cadence, and this
+   * page restores the stored draft path on mount. A path whose file vanished
+   * resolves to the list.
    */
   const proposal = $derived(draftProposal(goalDrafts.draft?.text ?? ""));
   const hasDrafts = $derived(goalDrafts.drafts.length > 0);
@@ -57,14 +58,8 @@
 
   onMount(() => {
     markDraftsPage(true);
-    goalDrafts.refreshDrafts();
     goalDrafts.restoreDraft();
-    const timer = setInterval(() => {
-      goalDrafts.refreshDrafts();
-      goalDrafts.restoreDraft();
-    }, 2000);
     return () => {
-      clearInterval(timer);
       markDraftsPage(false);
     };
   });

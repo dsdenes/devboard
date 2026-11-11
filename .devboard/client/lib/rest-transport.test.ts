@@ -66,53 +66,6 @@ afterEach(() => {
   restore();
 });
 
-test("polling_pauses_when_hidden", async () => {
-  const requests: string[] = [];
-  setGlobal("fetch", async (input: RequestInfo | URL) => {
-    requests.push(String(input));
-    return new Response(JSON.stringify({ frames: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  });
-  setGlobal(
-    "WebSocket",
-    class Untracked {
-      constructor() {
-        throw new Error("no command socket may be constructed");
-      }
-    },
-  );
-  setGlobal("window", {
-    setInterval: () => 1,
-    clearInterval: () => undefined,
-    setTimeout: () => 1,
-    clearTimeout: () => undefined,
-  });
-  setGlobal("document", fakeDocument("visible"));
-  setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
-
-  const store = new ConnectionStore();
-  store.state = "open";
-  store.send({ type: "getVersion" }, "initial");
-  await settle();
-  const afterFirst = requests.length;
-  expect(afterFirst).toBeGreaterThan(0);
-
-  setGlobal("document", fakeDocument("hidden"));
-  for (let tick = 0; tick < 20; tick += 1) {
-    (store as unknown as { pollTick(): void }).pollTick();
-  }
-  await settle();
-  expect(requests.length).toBe(afterFirst);
-
-  setGlobal("document", fakeDocument("visible"));
-  (store as unknown as { pollTick(): void }).pollTick();
-  await settle();
-  expect(requests.length).toBeGreaterThan(afterFirst);
-  store.dispose();
-});
-
 test("no_command_frames", async () => {
   const clientRoot = new URL("../", import.meta.url).pathname;
   const files = new Bun.Glob("**/*.{ts,svelte}").scanSync({
@@ -216,62 +169,10 @@ test("provider creates post to the collection and edits put to the item", async 
   store.dispose();
 });
 
-test("first_paint_reads_precede_surface_reads", async () => {
-  // A browser opens six connections to one origin and queues the rest. The
-  // six first-paint reads must take those six, because a read that queues
-  // behind a slow mode read breaches its 1000 ms budget even when its own
-  // handler answers in milliseconds.
-  const requests: string[] = [];
-  setGlobal("fetch", async (input: RequestInfo | URL) => {
-    requests.push(String(input));
-    return new Response(JSON.stringify({ frames: [] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  });
-  setGlobal(
-    "WebSocket",
-    class Untracked {
-      constructor() {
-        throw new Error("no command socket may be constructed");
-      }
-    },
-  );
-  setGlobal("window", {
-    setInterval: () => 1,
-    clearInterval: () => undefined,
-    setTimeout: () => 1,
-    clearTimeout: () => undefined,
-  });
-  setGlobal("document", fakeDocument("visible"));
-  setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
-
-  const store = new ConnectionStore();
-  store.onOpen(() => {
-    store.send({ type: "getIssues" }, "refresh");
-    store.send({ type: "getAgents" }, "refresh");
-  });
-  store.connect();
-  await settle();
-  expect(requests).toEqual([
-    "/records",
-    "/goal",
-    "/skills",
-    "/project",
-    "/version",
-    "/providers",
-    "/issues",
-    "/agents",
-  ]);
-  store.dispose();
-});
-
-test("a read dispatched before the open waits for the six first-paint reads", async () => {
-  // A surface subscribes as it mounts, before `connect` dispatches the six
-  // first-paint reads. A browser opens six connections per origin, so a read
-  // dispatched there holds a first-paint slot: on one live load /issues took
-  // 970 ms and /goal-drafts 4469 ms while /records answers in 2 ms, and the
-  // records read breached its 1000 ms first-paint budget behind them.
+test("an open reads the project path and every planned resource once", async () => {
+  // The page reads what its surfaces show, in one pass: the once-per-connect
+  // project path and one read per planned resource. Nothing else is read, and
+  // a read dispatched before the connect waits for the open.
   const issued: string[] = [];
   installHttpTransport(async (input) => {
     issued.push(String(input));
@@ -282,26 +183,22 @@ test("a read dispatched before the open waits for the six first-paint reads", as
   });
 
   const store = new ConnectionStore();
+  store.setSurfaceClaims([
+    { command: { type: "getIssues" }, scope: "body" },
+    { command: { type: "getAgents" }, scope: "background" },
+  ]);
   store.send({ type: "getIssues" }, "refresh");
   await settle();
   expect(issued).toEqual([]);
 
   store.connect();
   await settle();
-  expect(issued).toEqual([
-    "/records",
-    "/goal",
-    "/skills",
-    "/project",
-    "/version",
-    "/providers",
-    "/issues",
-  ]);
+  expect([...issued].sort()).toEqual(["/agents", "/issues", "/project"]);
   store.dispose();
 });
 
-/** The seven aggregate reads a mounted page registers and refreshes. */
-const POLLED_COMMANDS = [
+/** The body-scoped reads the plan below claims. */
+const PLANNED_COMMANDS = [
   "getIssues",
   "getAgents",
   "getComplexity",
@@ -310,7 +207,7 @@ const POLLED_COMMANDS = [
   "getGoalDrafts",
   "getResources",
 ];
-const POLLED_PATHS = [
+const PLANNED_PATHS = [
   "/issues",
   "/agents",
   "/complexity",
@@ -377,21 +274,24 @@ async function drainPool(pool: OriginPool): Promise<void> {
   await settle();
 }
 
-test("a poll cycle never holds every origin connection", async () => {
-  // A browser queues every request past its six connections. A poll that
-  // dispatches its whole registry at once takes all six, so the read the
-  // operator waits on queues behind the page's own refreshes: the server
-  // answered /providers in 5 ms while the page waited 842 ms.
+test("a planned poll cycle never holds every origin connection", async () => {
+  // A browser queues every request past its six connections. A tick that
+  // dispatches its whole plan at once takes all six, so the read the operator
+  // waits on queues behind the page's own refreshes: the server answered
+  // /providers in 5 ms while the page waited 842 ms. The plan drains through
+  // the page's reserved three, so the foreground read starts at once.
   const pool = originPool(6);
   installHttpTransport((input) => pool.request(input));
 
   const store = new ConnectionStore();
+  store.setSurfaceClaims(
+    PLANNED_COMMANDS.map((type) => ({ command: { type }, scope: "body" as const })),
+  );
   store.state = "open";
-  for (const type of POLLED_COMMANDS) store.send({ type }, "refresh");
   await settle();
-  await drainPool(pool);
-
   const before = pool.started.length;
+  expect(before).toBe(0);
+
   (store as unknown as { pollTick(): void }).pollTick();
   await settle();
   const refreshing = pool.started.length - before;
@@ -403,39 +303,20 @@ test("a poll cycle never holds every origin connection", async () => {
   await settle();
   expect(pool.started).toContain("/providers");
 
-  // Every queued refresh still runs as its slot frees.
+  // Every planned read still runs as its slot frees.
   await drainPool(pool);
-  expect(pool.started.slice(before)).toEqual(expect.arrayContaining(POLLED_PATHS));
+  expect(pool.started.slice(before)).toEqual(expect.arrayContaining(PLANNED_PATHS));
   store.dispose();
 });
 
-/** The surface reads an open replays after the page's six first-paint reads. */
-const REPLAY_COMMANDS = [
-  "getMcpTools",
-  "getIssues",
-  "getAgents",
-  "getComplexity",
-  "getInstalledSkills",
-  "getGoalDrafts",
-];
-const REPLAY_PATHS = [
-  "/mcp-tools",
-  "/issues",
-  "/agents",
-  "/complexity",
-  "/installed-skills",
-  "/goal-drafts",
-];
-
-test("a page's own read is not queued behind the whole open replay", async () => {
-  // A page load replays every surface read right after the six first-paint
-  // reads, and the six connections a browser opens are then all busy. A read
-  // the page dispatches at mount — the Resources tab asks for its budget as it
-  // mounts — joined the back of that queue: /issues measured 970 ms and
-  // /goal-drafts 4469 ms on one live load, so getResources waited more than a
-  // second for a connection the server answers in 2 ms. The replay now waits
-  // for the six first-paint answers and then holds at most three connections,
-  // so the page's own read starts on the first freed one.
+test("a page's own read is not queued behind the open's planned reads", async () => {
+  // A page load reads every planned resource at once, and the six connections
+  // a browser opens are then all busy. A read the page dispatches at mount —
+  // the Resources tab asks for its budget as it mounts — joined the back of
+  // that queue: /issues measured 970 ms and /goal-drafts 4469 ms on one live
+  // load, so getResources waited more than a second for a connection the
+  // server answers in 2 ms. The open holds at most three connections, so the
+  // page's own read starts on the first freed one.
   const pool = originPool(6);
   const issued: string[] = [];
   installHttpTransport((input) => {
@@ -444,67 +325,24 @@ test("a page's own read is not queued behind the whole open replay", async () =>
   });
 
   const store = new ConnectionStore();
-  store.onOpen(() => {
-    for (const type of REPLAY_COMMANDS) store.send({ type });
-  });
+  store.setSurfaceClaims(
+    PLANNED_COMMANDS.map((type) => ({ command: { type }, scope: "body" as const })),
+  );
   store.connect();
   store.send({ type: "getResources" });
   await settle();
 
-  expect(issued).toEqual([
-    "/records",
-    "/goal",
-    "/skills",
-    "/project",
-    "/version",
-    "/providers",
-    "/resources",
-  ]);
+  // The project read leads, the page's own read starts before the planned
+  // queue drains, and the open holds at most its reserved three plus it.
+  expect(issued[0]).toBe("/project");
+  expect(issued).toContain("/resources");
+  expect(issued.length).toBeLessThanOrEqual(4);
 
-  // The replay still runs once those first reads answer, and it never holds
-  // more connections than the poll already may.
+  // The planned reads still run once slots free, and the open never holds more
+  // connections than a tick already may.
   await drainPool(pool);
   expect(pool.inFlight()).toBe(0);
-  expect(issued).toEqual(expect.arrayContaining(REPLAY_PATHS));
-  store.dispose();
-});
-
-test("a first-paint read that never answers holds the replay one cadence", async () => {
-  // The replay waits for the page's first-paint reads so its own read is not
-  // queued behind them. A read that never answers must not keep the modes
-  // unread for the session: one cadence lets the replay start anyway.
-  const issued: string[] = [];
-  const timers: Array<() => void> = [];
-  installHttpTransport((input) => {
-    issued.push(String(input));
-    return new Promise<Response>(() => undefined);
-  });
-  setGlobal("window", {
-    setInterval: () => 1,
-    clearInterval: () => undefined,
-    setTimeout: (handler: () => void) => {
-      timers.push(handler);
-      return timers.length;
-    },
-    clearTimeout: () => undefined,
-  });
-
-  const store = new ConnectionStore();
-  store.onOpen(() => store.send({ type: "getIssues" }));
-  store.connect();
-  await settle();
-  expect(issued).toEqual([
-    "/records",
-    "/goal",
-    "/skills",
-    "/project",
-    "/version",
-    "/providers",
-  ]);
-  expect(timers).toHaveLength(1);
-  for (const timer of timers) timer();
-  await settle();
-  expect(issued).toContain("/issues");
+  expect(issued).toEqual(expect.arrayContaining(PLANNED_PATHS));
   store.dispose();
 });
 

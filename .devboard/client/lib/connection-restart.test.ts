@@ -216,6 +216,7 @@ test("a reported replacement failure clears the restart latch and resumes pollin
   }) as typeof fetch);
   const timers = deferredTimers();
   const store = new ConnectionStore();
+  store.setSurfaceClaims([{ command: { type: "getVersion" }, scope: "background" }]);
   store.state = "open";
   store.send({ type: "getVersion" }, "initial");
   await settle();

@@ -126,15 +126,6 @@ function opened(store: ResourcesStore): FakeSocket {
   return socket;
 }
 
-test("request asks for one resources frame", () => {
-  const store = new ResourcesStore();
-  const socket = opened(store);
-
-  store.request();
-
-  expect(socket.sent).toContain(JSON.stringify({ type: "getResources" }));
-});
-
 test("save sends one setResources frame with every field", () => {
   const store = new ResourcesStore();
   const socket = opened(store);

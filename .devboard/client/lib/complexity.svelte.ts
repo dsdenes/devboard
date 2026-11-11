@@ -1,4 +1,3 @@
-import { connection } from "./connection.svelte";
 
 /** One project-level measurement as the complexity page renders it. */
 export interface ComplexityProjectRow {
@@ -164,18 +163,14 @@ export function complexityView(value: unknown): ComplexityFrame {
 
 /**
  * Holds the project complexity history the dashboard server computes daily.
- * The page asks once per connection and renders the reply whenever a new
- * snapshot frame arrives. A frame that cannot be read leaves the last known
- * view in place and reports `unreadable`, so the page never claims a recorded
- * history is empty because its shape changed.
+ * The scheduler reads it at the Complexity page's cadence and renders each
+ * reply whenever a new snapshot frame arrives. A frame that cannot be read
+ * leaves the last known view in place and reports `unreadable`, so the page
+ * never claims a recorded history is empty because its shape changed.
  */
 export class ComplexityStore {
   complexity = $state<ComplexityView>(EMPTY_COMPLEXITY_VIEW);
   complexityStatus = $state<ComplexityStatus>("loading");
-
-  requestComplexity(): void {
-    connection.send({ type: "getComplexity" });
-  }
 
   handleEvent(message: Record<string, unknown>): void {
     if (message.type !== "complexityState") return;

@@ -49,11 +49,6 @@ export class DiscoverStore {
     this.socket = socket;
   }
 
-  /** Reads the Discover workspace; the poll repeats it once a second. */
-  request(): void {
-    this.socket.send({ type: "getDiscover" }, "refresh");
-  }
-
   /**
    * Clears the operation flags before a reconnect's state requests are sent.
    * A stop frame missed during the disconnect otherwise leaves the tab busy,

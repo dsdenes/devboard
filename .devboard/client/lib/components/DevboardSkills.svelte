@@ -15,10 +15,6 @@
 
   // The page reads when it opens and after a reconnect; the server pushes a
   // frame after every toggle. No watcher, poll, or start trigger is involved.
-  $effect(() => {
-    if (connection.open) devboardSkills.requestSkills();
-  });
-
   function toggle(name: string, event: Event): void {
     const input = event.currentTarget;
     if (!(input instanceof HTMLInputElement)) return;

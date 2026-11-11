@@ -97,18 +97,14 @@ export function parseResourcesState(value: unknown): ResourcesState | undefined 
 }
 
 /**
- * Holds the resource governor's budget. The page asks once per connection and
- * renders each frame the server pushes; a save only reports success once the
- * server broadcasts the frame that follows it.
+ * Holds the resource governor's budget. The scheduler reads it at the
+ * Resources page's cadence and renders each frame the server pushes; a save
+ * only reports success once the server broadcasts the frame that follows it.
  */
 export class ResourcesStore {
   state = $state<ResourcesState | null>(null);
   /** The Save control waiting for the next frame, if any. */
   private pendingScope: string | null = null;
-
-  request(): void {
-    connection.send({ type: "getResources" });
-  }
 
   save(settings: ResourceSettings, scope: string): void {
     if (connection.send({ type: "setResources", ...settings })) {

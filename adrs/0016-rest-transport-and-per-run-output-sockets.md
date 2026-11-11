@@ -40,9 +40,34 @@ Replace the command socket with a resource-oriented REST API at root paths.
 - `.devboard/openapi.yaml` is the OpenAPI 3.1 contract, and `contract/command-map.json` maps every
   retired command to one `METHOD /path`. No route starts with `/api`, ends with `/`, or names a
   verb; query parameters are snake_case.
-- Reads are page-scoped conditional polls at 1000 ms while the document is visible. Every resource
-  GET supports `ETag`, `If-None-Match`/304, gzip negotiation, and `HEAD`; a hidden document issues
-  no request.
+- Reads are page-scoped and per-resource: one client scheduler reads a resource only from a
+  surface that shows it, at a cadence proportional to how fast that resource changes. Amended
+  2026-11-11.
+
+  | Resource | Background | Open body | Live run |
+  |---|---|---|---|
+  | `GET /version` | 30 s | 30 s | — |
+  | `GET /project` | once per connect | once per connect | — |
+  | `GET /goal` | 10 s | 2 s | — |
+  | `GET /issues` | 10 s | 2 s | — |
+  | `GET /flow` | 10 s | 2 s | 1 s |
+  | `GET /discover` | 10 s | 2 s | 1 s |
+  | `GET /goal-drafts` | 10 s | 2 s | — |
+  | `GET /records` | 10 s while Goal mode is visible, else 0 | 10 s | — |
+  | `GET /skills` | 10 s while Goal mode is visible, else 0 | 10 s | — |
+  | `GET /agents` | 60 s | 5 s | 1 s |
+  | `GET /providers` | 60 s | 60 s (dialog) | — |
+  | `GET /mcp-tools` | 0 | 60 s | — |
+  | `GET /resources` | 0 | 30 s | — |
+  | `GET /installed-skills` | 0 | 30 s | — |
+  | `GET /complexity` | 0 | 30 s | — |
+  | `GET /issues/runs/{run_id}` | 0 | 0 | 1 s |
+
+  "Background" is the always-mounted status bar, activity bar, and sidebar; "open body" is the
+  workspace tab the active mode renders; "live run" applies only while the open page shows a run
+  that reports itself running or paused. A closed surface issues nothing, and a hidden document
+  issues no request. Every resource GET supports `ETag`, `If-None-Match`/304, gzip negotiation,
+  and `HEAD`.
 - Every 4xx and 5xx is `application/problem+json`. A creation answers `201` with `Location` and
   honors `Idempotency-Key`. A collection that can exceed 200 entries accepts `cursor` and `limit`
   and answers a page object with `self`, `next`, and `prev`.

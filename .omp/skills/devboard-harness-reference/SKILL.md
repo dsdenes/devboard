@@ -480,18 +480,43 @@ busy state, clear a control's timer, or abort a request. An operator `POST /repo
 at the accepted record: the wait for the issue is the background delivery the server owns, and
 the page reads that record again until it settles.
 
-A page refreshes every registered resource once a second, and every read the page issues for
-itself — a poll tick's refresh and an open's replay alike — keeps at most three of the
-browser's six origin connections in flight, starting the next one as an answer frees its slot.
-A poll that dispatched its whole registry at once took all six, so the read the operator waited
-on queued behind the page's own refreshes: the server answered `GET /providers` in 5 ms while the
-page measured 842 ms. Three connections stay free for an operator action, a first-paint read,
-and the bundle's own requests, and the queue drains as each refresh answers, so a cycle still
-reads every registered resource. The replay itself starts once the six first-paint reads answer,
-or one cadence later when one of them never answers, so the modes are never left unread.
+Reads are page-scoped and per-resource: one client scheduler owns every recurring read, and a
+resource is read only from a surface that shows it, at the cadence that surface earns. The
+always-mounted chrome — the status bar, the activity bar, and the sidebar — keeps the slow
+background poll; the workspace body the active mode renders polls its own tab's resource at its
+page cadence; a run the open page shows polls at one second while it reports itself running or
+paused; a closed surface issues nothing; a hidden document issues nothing; and opening a surface
+reads it at once instead of waiting for a tick.
 
-The `getVersion` 1000 ms poll, the `getMcpTools` 1000 ms poll, the goal-drafts 1000 ms
-refresh, poll, a polling surface's repeat request, and every send issued while the connection is
+| Resource | Background | Open body | Live run |
+|---|---|---|---|
+| `GET /version` | 30 s | 30 s | — |
+| `GET /project` | once per connect | once per connect | — |
+| `GET /goal` | 10 s | 2 s | — |
+| `GET /issues` | 10 s | 2 s | — |
+| `GET /flow` | 10 s | 2 s | 1 s |
+| `GET /discover` | 10 s | 2 s | 1 s |
+| `GET /goal-drafts` | 10 s | 2 s | — |
+| `GET /records` | 10 s while Goal mode is visible, else 0 | 10 s | — |
+| `GET /skills` | 10 s while Goal mode is visible, else 0 | 10 s | — |
+| `GET /agents` | 60 s | 5 s | 1 s |
+| `GET /providers` | 60 s | 60 s (dialog) | — |
+| `GET /mcp-tools` | 0 | 60 s | — |
+| `GET /resources` | 0 | 30 s | — |
+| `GET /installed-skills` | 0 | 30 s | — |
+| `GET /complexity` | 0 | 30 s | — |
+| `GET /issues/runs/{run_id}` | 0 | 0 | 1 s |
+
+The table is the client's `RESOURCE_CADENCE_MS` in `.devboard/client/lib/cadence.ts`: every GET
+the client registers has a row, and no resource falls back to a default cadence. Every read the
+page issues for itself — a scheduler tick's read, an open's read, and a surface's own read alike —
+keeps at most three of the browser's six origin connections in flight, starting the next one as
+an answer frees its slot. A tick that dispatched its whole registry at once took all six, so the
+read the operator waited on queued behind the page's own refreshes: the server answered
+`GET /providers` in 5 ms while the page measured 842 ms. Three connections stay free for an
+operator action and the bundle's own requests.
+
+A scheduled refresh, a surface's repeat read, and every send issued while the connection is
 restarting, awaiting a replacement, or reconnecting are excluded; a reconnect clears every
 pending action without filing. A send a surface repeats on a timer is a refresh, not an operator
 action.
@@ -3659,8 +3684,8 @@ the origin's open issues. While a page is reading this resource, or a socket cli
 it re-reads every 30 seconds (`DEVBOARD_ISSUES_SYNC_INTERVAL_MS`) and immediately on the first
 read, and publishes the result in the snapshot's `sync` field. A page's own poll is what makes it
 a reading client: the REST transport keeps no command socket, so a read within one sync interval
-plus one page poll is the demand, and the reads a page sends once a second share one tracker read
-per interval. That read is the only source of a row: no worker state file, stopped
+plus one page poll is the demand, and the reads a page sends for the issue queue share one
+tracker read per interval. That read is the only source of a row: no worker state file, stopped
 worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
 one forge state that marks a run in progress: a running worker ensures the label exists, adds it
 to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
@@ -4460,9 +4485,10 @@ a resource-oriented HTTP API served at the root. `.devboard/openapi.yaml` is the
 OpenAPI 3.1 document; `contract/command-map.json` maps every one of the 80 retired command names
 to the `METHOD /path` that replaced it.
 
-- A GET answers its representation as `{"frames": [...]}`. The client polls each state view's own
-  resource at 1000 ms while the document is visible, issues at most one in-flight request per
-  resource, pauses while the document is hidden, and resumes on `visibilitychange`.
+- A GET answers its representation as `{"frames": [...]}`. The client's one scheduler reads each
+  resource at the cadence its claiming surface earns (the cadence table above), issues at most one
+  in-flight request per resource, pauses while the document is hidden, and resumes on
+  `visibilitychange`.
 - Every resource GET supports `ETag` and answers `304` with no body for a matching
   `If-None-Match`, negotiates gzip through `Accept-Encoding`, and answers `HEAD` with the same
   headers and no body. A wrong method answers `405` with `Allow`.

@@ -5,7 +5,6 @@
     type ComplexityPoint,
     type ComplexityProjectRow,
   } from "../complexity.svelte";
-  import { connection } from "../connection.svelte";
   import Button from "./ui/button.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
@@ -69,12 +68,6 @@
 
   let sortKey = $state<SortKey>("path");
   let sortDirection = $state<"asc" | "desc">("asc");
-
-  // The page reads when it opens and after a reconnect; the server pushes a
-  // frame when a new daily snapshot is recorded.
-  $effect(() => {
-    if (connection.open) complexity.requestComplexity();
-  });
 
   const rows = $derived.by(() => {
     const files = latest?.files ?? [];

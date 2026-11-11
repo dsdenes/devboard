@@ -1,4 +1,3 @@
-import { connection } from "./connection.svelte";
 
 /** One catalog tool as the page renders it: no schema, no `covers`. */
 export interface McpToolRow {
@@ -49,16 +48,12 @@ export function toolRows(
 
 /**
  * Holds the catalog the dashboard server reads from its one MCP catalog. The
- * client never carries its own list: it asks once per connection and renders
- * the reply in arrival order.
+ * client never carries its own list: the scheduler reads it at the MCP tools
+ * page's cadence, and the reply renders in arrival order.
  */
 export class McpToolsStore {
   tools = $state<McpToolRow[]>([]);
   loaded = $state(false);
-
-  request(): void {
-    connection.send({ type: "getMcpTools" });
-  }
 
   handleEvent(message: Record<string, unknown>): void {
     if (message.type !== "mcpTools") return;

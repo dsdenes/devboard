@@ -42,16 +42,12 @@ export function skillRows(value: unknown): DevboardSkillRow[] {
 
 /**
  * Holds every skill installed under the repository's `.omp/skills` root. The
- * page asks once per connection and after every reconnect; the server pushes
- * the authoritative frame after each toggle and delete.
+ * scheduler reads it at the Skills page's cadence; the server pushes the
+ * authoritative frame after each toggle and delete.
  */
 export class DevboardSkillsStore {
   skills = $state<DevboardSkillRow[]>([]);
   skillsLoaded = $state(false);
-
-  requestSkills(): void {
-    connection.send({ type: "getInstalledSkills" });
-  }
 
   /**
    * Flips one row immediately and asks the server to persist the same state.

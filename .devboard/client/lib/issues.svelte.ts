@@ -60,11 +60,6 @@ function applyActivity(lines: string[], entries: IssuesActivityEntry[], replay: 
  * persists them. Controls only send commands.
  */
 export class IssuesStore {
-  /** Reads the issues resource; the poll repeats it once a second. */
-  request(): void {
-    connection.send({ type: "getIssues" }, "refresh");
-  }
-
   snapshot = $state<IssuesSnapshot | null>(null);
   agentActivity = $state<Record<string, string[]>>({});
   run = $state<IssuesRunDetail | null>(null);

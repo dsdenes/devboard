@@ -85,8 +85,10 @@
   let transcript = $state<AskTurn[]>([]);
   let askPending = $state(false);
   let askError = $state<string | null>(null);
-  /** True while this panel polls the conversation the server accepted. */
+  /** True while this panel follows the conversation the server accepted. */
   let following = false;
+  /** The scheduler owner of this panel's own conversation follow. */
+  const INQUIRY_OWNER = "feedback-inquiry";
   /** The turn in flight; a failed turn returns it to the composer. */
   let askedQuestion = $state("");
   /** Counts each server answer to an Ask turn: the busy word's evidence. */
@@ -339,20 +341,23 @@
   /**
    * Follows the conversation the server accepted. The creation's own answer is
    * the first frame, so the read never names a conversation the server has not
-   * stored yet, and the one registration survives every later turn.
+   * stored yet, and the one claim survives every later turn: the scheduler
+   * reads the conversation at the Ask cadence until the turn settles, then
+   * nothing reads it again.
    */
   function followInquiry(): void {
     if (following || conversationId === null) return;
     following = true;
-    connection.send({ type: "getInquiry", conversationId }, "refresh");
+    // One owner, one conversation: a claim left for a replaced conversation
+    // would keep reading a document nothing shows.
+    connection.release(INQUIRY_OWNER);
+    connection.claim(INQUIRY_OWNER, { type: "getInquiry", conversationId }, "body");
   }
 
   /** Stops following a conversation whose turn settled or is gone. */
   function forgetInquiry(): void {
     following = false;
-    if (conversationId !== null) {
-      connection.forget({ type: "getInquiry", conversationId });
-    }
+    connection.release(INQUIRY_OWNER);
   }
 
   /** Events for a closed or replaced conversation never reach the transcript. */
@@ -437,7 +442,7 @@
     askError = null;
     askedQuestion = "";
     if (id === null) return;
-    connection.forget({ type: "getInquiry", conversationId: id });
+    connection.release(INQUIRY_OWNER);
     if (connection.open) {
       connection.send({ type: "closeAsk", conversationId: id });
     }

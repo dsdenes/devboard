@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { connection } from "../connection.svelte";
   import { resources, type ResourceSettings } from "../resources.svelte";
   import CommandButton from "./CommandButton.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
@@ -16,12 +15,6 @@
   let memoryMaxText = $state("");
   let reserveText = $state("");
   let error = $state<string | null>(null);
-
-  // The page reads when it opens and after a reconnect; the server pushes a
-  // frame after every save.
-  $effect(() => {
-    if (connection.open) resources.request();
-  });
 
   /** The effective values the inputs were last seeded from. */
   let seeded: ResourceSettings | null = null;
