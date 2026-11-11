@@ -33,6 +33,20 @@
 
   let answer = $state("");
 
+  // The draft belongs to the question it answers. The Overview pane and the
+  // Focus tab reuse one instance as the selected agent changes, so a switch to
+  // another run or question clears the text instead of carrying the previous
+  // agent's draft to the new subject.
+  const subject = $derived(`${runId ?? ""}\u0000${question.id}`);
+  let shownSubject = $state<string | undefined>(undefined);
+
+  $effect(() => {
+    const next = subject;
+    if (next === shownSubject) return;
+    shownSubject = next;
+    answer = "";
+  });
+
   /** One answer at a time; the question this control answers is the evidence. */
   const answerPending = createCommandBusy({ label: "Answer", evidence: () => question });
 
