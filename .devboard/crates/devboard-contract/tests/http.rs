@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use devboard_contract::fixture::{
     allowlist_path, contract_dir, prepare_repository, repository_root, Fixture,
 };
-use devboard_contract::http_table::{self, Allowlist, Corpus, Recording};
+use devboard_contract::http_table::{self, Allowlist, Case, Corpus, Recording};
 use serde_json::Value;
 
 fn corpus() -> Corpus {
@@ -75,6 +75,33 @@ fn port_of(base: &str) -> u16 {
         .expect("the listener port")
 }
 
+/// True when the table's replay of this route cannot name a live request: its
+/// template resolved a placeholder to a fixture identity the installation does
+/// not serve, or its command requires a value the body-less replay omits. Such
+/// a row reaches the handler's own refusal, so its recording may be a 4xx.
+fn names_no_live_request(case: &Case) -> bool {
+    if case.request_path != case.path {
+        return true;
+    }
+    let command = serde_json::json!({ "type": case.name });
+    devboard::command::command_from_json(&command.to_string()).is_none()
+}
+
+/// Asserts a route row's recording is the route's answer. Only a row that
+/// names no live request may record a refusal; a row that names a served path
+/// with a complete request must record exactly its expected status, so a
+/// re-record of a route that stopped matching cannot bless the 404.
+fn assert_route_status(case: &Case, recording: &Recording) {
+    assert!(
+        recording.status == case.expect_status
+            || ((400..500).contains(&recording.status) && names_no_live_request(case)),
+        "{} records the route's {} or a refusal of a request that names no live resource, got {}",
+        case.name,
+        case.expect_status,
+        recording.status
+    );
+}
+
 /// The recorded answer of a served operation: the frames envelope of a
 /// success, or the Problem document of a refusal.
 fn assert_operation_answer(name: &str, recording: &Recording) {
@@ -121,13 +148,7 @@ fn every_http_table_row_has_a_recording() {
         );
         if routes.contains(case.name) {
             assert_operation_answer(case.name, recording);
-            assert!(
-                recording.status == case.expect_status || (400..500).contains(&recording.status),
-                "{} records the route's {} or a refusal, got {}",
-                case.name,
-                case.expect_status,
-                recording.status
-            );
+            assert_route_status(case, recording);
         } else {
             assert_eq!(
                 recording.status, case.expect_status,
@@ -140,6 +161,41 @@ fn every_http_table_row_has_a_recording() {
     for name in corpus.names() {
         assert!(names.contains(name), "{name} has a table row");
     }
+}
+
+#[test]
+fn a_recorded_refusal_fails_only_the_row_that_names_a_live_request() {
+    let cases = http_table::all_cases();
+    let case = |name: &str| {
+        cases
+            .iter()
+            .find(|case| case.name == name)
+            .unwrap_or_else(|| panic!("{name} has a row"))
+    };
+    let refusal = |case: &Case| Recording {
+        name: case.name.to_string(),
+        method: case.method.as_str().to_string(),
+        path: case.path.to_string(),
+        status: 404,
+        body: serde_json::json!({ "type": "about:blank", "status": 404 }),
+    };
+    assert!(!names_no_live_request(case("getVersion")));
+    assert!(names_no_live_request(case("acceptFlowWidget")));
+    assert!(names_no_live_request(case("discoverRemote")));
+
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_route_status(case("getVersion"), &refusal(case("getVersion")))
+    }))
+    .expect_err("a refusal of a served path diverges");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(message.contains("getVersion"), "{message}");
+    assert!(message.contains("records the route's 200"), "{message}");
+
+    assert_route_status(case("acceptFlowWidget"), &refusal(case("acceptFlowWidget")));
+    assert_route_status(case("discoverRemote"), &refusal(case("discoverRemote")));
 }
 
 #[test]
