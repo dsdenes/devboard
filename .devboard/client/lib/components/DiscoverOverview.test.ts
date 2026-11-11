@@ -9,10 +9,14 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { default: DiscoverOverview } = await import("./DiscoverOverview.svelte");
 const { discover } = await import("../discover.svelte");
+const { connection } = await import("../connection.svelte");
 
 afterEach(() => {
   cleanup();
   discover.state = null;
+  discover.active = false;
+  discover.starting = false;
+  discover.runningAll = false;
 });
 
 function leaf(value: unknown): Record<string, unknown> {
@@ -241,4 +245,50 @@ test("a sheet that records no command reads zero of every slot", () => {
   const view = render(DiscoverOverview);
 
   expect(coverageText(view.container)).toBe("0 of 8 found");
+});
+
+function remoteState(): DiscoverStatePayload {
+  const payload = state({});
+  payload.remoteAvailable = true;
+  payload.retained = [
+    {
+      url: "https://github.com/acme/retained",
+      owner: "acme",
+      repo: "retained",
+      completedAt: "2026-01-01T00:00:00.000Z",
+    },
+  ];
+  payload.target = {
+    kind: "remote",
+    url: "https://github.com/acme/retained",
+    owner: "acme",
+    repo: "retained",
+    checkout: false,
+  };
+  return payload;
+}
+
+test("Run all disables the remote strip's switch, remove, and clear", () => {
+  const previous = connection.state;
+  connection.state = "open";
+  try {
+    discover.state = remoteState();
+    discover.active = false;
+    discover.starting = false;
+    discover.runningAll = true;
+    const view = render(DiscoverOverview);
+
+    for (const testid of [
+      "discover-remote-select",
+      "discover-remote-remove",
+      "discover-remote-clear",
+    ]) {
+      const control = view.container.querySelector(`[data-testid="${testid}"]`);
+      expect(control).not.toBeNull();
+      expect(control?.hasAttribute("disabled")).toBe(true);
+      expect(control?.getAttribute("title")).toBe("Run all is running");
+    }
+  } finally {
+    connection.state = previous;
+  }
 });

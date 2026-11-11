@@ -7905,6 +7905,9 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
 
     let mut payload = Map::new();
     payload.insert("active".to_string(), Value::Bool(state.run.is_some()));
+    // `discover_active` also holds through the clone-to-first-run handoff, so
+    // the page needs that phase to disable what the server would refuse.
+    payload.insert("starting".to_string(), Value::Bool(state.starting));
     payload.insert(
         "runId".to_string(),
         state

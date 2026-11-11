@@ -732,6 +732,59 @@ async fn discover_refusals_report_the_exact_messages() {
     assert_eq!(payload["manifest"], Value::Null);
 }
 
+/// Run all pushes its state before any agent's run exists; the remote strip's
+/// disabled reason reads `runningAll` and the clone-to-first-run `starting` flag
+/// from that very frame, so both must ship while `active` is still false.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_all_pushes_the_remote_strip_flag_before_any_run_exists() {
+    let scratch = Scratch::new("run-all-first-state");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let state = scratch.path().join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    provider(&state);
+    let log = scratch.path().join("agent.log");
+    let command = format!(
+        "{} --discover --discover-delay-ms=20000 --log={}",
+        stub_agent(),
+        log.display()
+    );
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(&conn, Command::DiscoverProject).await;
+    let first = next_frame(&mut inbox, Duration::from_secs(30)).await;
+    assert_eq!(first["type"], json!("discoverState"));
+    let payload = state_of(&first);
+    assert_eq!(payload["active"], json!(false), "no agent's run exists yet");
+    assert_eq!(payload["runId"], Value::Null);
+    assert_eq!(payload["runningAll"], json!(true));
+    assert_eq!(
+        payload["starting"],
+        json!(false),
+        "the handoff phase ships as a boolean"
+    );
+
+    app.command(&conn, Command::StopDiscover).await;
+    let stopped = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(60),
+    )
+    .await;
+    assert_eq!(
+        by_type(&stopped, "discoverStopped")[0]["completed"],
+        json!(false)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_state_section_round_trips_a_target() {
     let scratch = Scratch::new("section");

@@ -539,6 +539,11 @@ export interface DiscoverAgentState {
 
 export interface DiscoverStatePayload {
   active: boolean;
+  /**
+   * The server's clone-to-first-run phase: `discover_active` holds while no
+   * run exists yet. Additive: an older server sends no field, so it reads idle.
+   */
+  starting?: boolean;
   runId: string | null;
   startedAt: string | null;
   /** The agent the active run belongs to, or null when nothing runs. */

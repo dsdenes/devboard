@@ -61,6 +61,7 @@ export class DiscoverStore {
    */
   resetActiveOperations(): void {
     this.active = false;
+    this.starting = false;
     this.activeAgent = null;
     this.runningAll = false;
     this.allFailed = null;
@@ -74,6 +75,8 @@ export class DiscoverStore {
 
   state = $state<DiscoverStatePayload | null>(null);
   active = $state(false);
+  /** The server's clone-to-first-run phase; the server refuses changes then. */
+  starting = $state(false);
   /** The agent the active run belongs to. */
   activeAgent = $state<string | null>(null);
   runningAll = $state(false);
@@ -143,7 +146,8 @@ export class DiscoverStore {
   get remoteChangeTitle(): string | undefined {
     if (!this.socket.open) return "Not connected";
     if (this.cloning !== null) return "A repository clone is running";
-    if (this.active) return "A Discover run is active";
+    if (this.runningAll) return "Run all is running";
+    if (this.active || this.starting) return "A Discover run is active";
     return this.busy ?? undefined;
   }
 
@@ -430,6 +434,7 @@ export class DiscoverStore {
     this.state = payload;
     this.glossaryThreshold = Math.min(100, Math.max(0, Math.round(this.glossaryThreshold)));
     this.active = payload.active === true;
+    this.starting = payload.starting === true;
     this.activeAgent =
       typeof payload.activeAgent === "string" ? payload.activeAgent : null;
     this.runningAll = payload.runningAll === true;

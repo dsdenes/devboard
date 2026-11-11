@@ -12,6 +12,7 @@
         "type": "discoverState",
         "state": {
           "active": false,
+          "starting": false,
           "runId": null,
           "startedAt": null,
           "activeAgent": null,
