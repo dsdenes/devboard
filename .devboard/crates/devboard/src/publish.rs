@@ -2113,6 +2113,8 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     // between the derivation and the push settles a range this attempt derived
     // and tested at the older tip, so a refused push integrates that landing
     // and derives again instead of failing a release nothing is wrong with.
+    // The window those retries share starts here, before the first fetch.
+    let race_started = clock.now_millis();
     let mut attempt: u32 = 0;
     let (version, tag, commit, existing_at_head) = loop {
         attempt += 1;
@@ -2291,15 +2293,21 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             if let Some(suite_dir) = args.release_suite_dir.clone() {
                 run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
             }
-            if head_moved_after_proof(
-                &git,
-                &published_head,
-                &preflight.remote,
-                attempt,
-                log.as_ref(),
-            )
-            .await?
-            {
+            if let Some(head) = head_moved_after_proof(&git, &published_head).await? {
+                if race_spent(race_started, &clock) {
+                    bail!(
+                        "the checkout kept moving for {} minutes across {attempt} attempts; \
+                         nothing was tagged or pushed to {}/main",
+                        race_minutes(race_started, &clock),
+                        preflight.remote
+                    );
+                }
+                (log)(&format!(
+                    "integrating the landing at {} and deriving again (attempt {})",
+                    short_sha(&head),
+                    attempt + 1
+                ));
+                sleeper.sleep(RACE_INTEGRATION_PAUSE).await;
                 continue;
             }
 
@@ -2413,13 +2421,14 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
                         "could not integrate the landing",
                     )
                     .await?;
-                    if attempt >= RACE_INTEGRATION_ATTEMPTS {
+                    if race_spent(race_started, &clock) {
                         bail!(
-                            "could not push main to {}: {}; {}/main moved during all {attempt} \
-                             attempts",
+                            "could not push main to {}: {}; {}/main kept moving for {} minutes \
+                             across {attempt} attempts",
                             preflight.remote,
                             failure_detail(&pushed),
-                            preflight.remote
+                            preflight.remote,
+                            race_minutes(race_started, &clock)
                         );
                     }
                     (log)(&format!(
@@ -2427,6 +2436,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
                         short_sha(&tip),
                         attempt + 1
                     ));
+                    sleeper.sleep(RACE_INTEGRATION_PAUSE).await;
                     continue;
                 }
                 None => bail!(
@@ -2724,14 +2734,24 @@ const MAIN_SETTLE_ATTEMPTS: u32 = 12;
 /// The pause between those reads.
 const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(5);
 
-/// How many times one publish derives, tests, and pushes a release before it
-/// gives up on a `main` that keeps moving underneath it.
+/// How long one publish keeps integrating landings that move the checkout
+/// underneath it before it leaves the range to the next tick.
 ///
-/// A landing that publishes between the derivation and the push settles a
-/// range the attempt derived and tested at the older tip, so the run integrates
-/// the landing and derives again rather than failing a release nothing is wrong
-/// with. Every retry re-runs the release suite, so the bound stays small.
-const RACE_INTEGRATION_ATTEMPTS: u32 = 3;
+/// A landing that publishes while the release suite runs, or between the
+/// derivation and the push, settles a range the attempt derived and tested at
+/// the older tip, so the run integrates the landing and derives again rather
+/// than failing a release nothing is wrong with. The bound is time, not a
+/// count of attempts: the suite takes longer than the gap between landings
+/// whenever the integration checkout is busy, so a handful of attempts is
+/// spent inside one landing burst — the observed failure integrated three
+/// landings in twelve minutes and gave up with a quiet window a few minutes
+/// away. This budget rides out a burst and still leaves the run's own bound
+/// room for the last suite, the CI gate, and the asset propagation.
+const RACE_INTEGRATION_BUDGET: Duration = Duration::from_secs(90 * 60);
+
+/// The pause before an attempt derives again, so a landing's in-flight push
+/// settles before the next suite starts.
+const RACE_INTEGRATION_PAUSE: Duration = Duration::from_secs(5);
 
 /// Fetches the canonical `main` and fast-forwards without discarding work.
 ///
@@ -4587,39 +4607,30 @@ fn dist_is_stale(harness_root: &Path) -> Result<bool> {
     Ok(embedded.is_dir() && newest_source > newest_mtime(&embedded))
 }
 
-/// Whether another landing advanced the checkout after this attempt proved its
-/// bundle.
+/// The head a landing moved the checkout to, when it no longer names the
+/// commit this attempt proved.
 ///
 /// The integration checkout is shared, so an agent's landing can fast-forward
 /// it while the suite runs; tagging the new head would then ship sources this
 /// attempt never proved. The caller derives again from the landed tip instead.
-async fn head_moved_after_proof(
-    git: &Git<'_>,
-    proven: &str,
-    remote: &str,
-    attempt: u32,
-    log: &(dyn Fn(&str) + Send + Sync),
-) -> Result<bool> {
+async fn head_moved_after_proof(git: &Git<'_>, proven: &str) -> Result<Option<String>> {
     let head = git
         .must(
             &["rev-parse", "HEAD"],
             "could not read HEAD after the release suite",
         )
         .await?;
-    if head == proven {
-        return Ok(false);
-    }
-    if attempt >= RACE_INTEGRATION_ATTEMPTS {
-        bail!(
-            "the checkout moved during all {attempt} attempts; nothing was tagged or pushed to {remote}/main"
-        );
-    }
-    (log)(&format!(
-        "integrating the landing at {} and deriving again (attempt {})",
-        short_sha(&head),
-        attempt + 1
-    ));
-    Ok(true)
+    Ok((head != proven).then_some(head))
+}
+
+/// Whether the publish has spent its window for integrating landings.
+fn race_spent(started: i64, clock: &Arc<dyn Clock>) -> bool {
+    clock.now_millis() - started >= RACE_INTEGRATION_BUDGET.as_millis() as i64
+}
+
+/// How long that window has been running, in whole minutes.
+fn race_minutes(started: i64, clock: &Arc<dyn Clock>) -> u64 {
+    (clock.now_millis() - started).max(0) as u64 / 60_000
 }
 
 /// Rebuilds the client bundle from the released sources and embeds the result

@@ -1219,6 +1219,53 @@ impl ReleaseSuiteGate for RacingSuiteGate {
     }
 }
 
+/// A suite gate that lands into `origin/main` and fast-forwards the canonical
+/// checkout under the running attempt, the way a concurrent landing does, for
+/// the first `moves` suite runs.
+struct MovingCheckoutGate {
+    /// The second checkout whose commits the gate pushes.
+    landing: PathBuf,
+    /// The integration checkout the release is cut from.
+    checkout: PathBuf,
+    runs: AtomicUsize,
+    moves: usize,
+}
+
+impl ReleaseSuiteGate for MovingCheckoutGate {
+    fn run<'a>(
+        &'a self,
+        options: ReleaseSuiteOptions,
+    ) -> BoxFuture<'a, anyhow::Result<ReleaseSuiteReport>> {
+        assert!(
+            options.dir.ends_with(".devboard"),
+            "the gate runs the harness workspace, got {}",
+            options.dir.display()
+        );
+        let run = self.runs.fetch_add(1, Ordering::SeqCst);
+        if run < self.moves {
+            commit_file(
+                &self.landing,
+                "LANDING.md",
+                &format!("landing {}\n", run + 1),
+                &format!("fix: a landing during suite run {}", run + 1),
+            );
+            git_output(&self.landing, &["push", "-q", "origin", "main"]);
+            // A landing agent fast-forwards the shared checkout before it
+            // merges its own branch, which moves the head this attempt proved.
+            git_output(&self.checkout, &["fetch", "-q", "origin"]);
+            git_output(&self.checkout, &["merge", "--ff-only", "origin/main"]);
+        }
+        let report = ReleaseSuiteReport {
+            code: 0,
+            attempts: 1,
+            quarantined: Vec::new(),
+            structural: None,
+            error_line: None,
+        };
+        Box::pin(async move { Ok(report) })
+    }
+}
+
 /// One path named relative to another, without requiring either to be canonical.
 fn relative_to(path: &Path, base: &Path) -> PathBuf {
     let path: Vec<_> = path.components().collect();
@@ -1529,15 +1576,24 @@ async fn a_landing_that_never_settles_leaves_no_tag_behind() {
         runs: AtomicUsize::new(0),
         every_run: true,
     });
+    let clock = FakeClock::new(0);
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.release_suite = Some(gate.clone());
+    args.clock = Some(clock.clone());
+    // Each retry pause spends 46 minutes of the integration window, so the
+    // second one exhausts it without waiting in real time.
+    args.sleeper = Some(Arc::new(FakeSleeper {
+        clock,
+        step: 46 * 60_000,
+    }));
 
     let error = publish(args)
         .await
         .expect_err("a main that never settles stops the release");
     let message = format!("{error:#}");
     assert!(message.contains("could not push main"), "{message}");
-    assert!(message.contains("moved during all 3 attempts"), "{message}");
+    assert!(message.contains("kept moving for 92 minutes"), "{message}");
+    assert!(message.contains("across 3 attempts"), "{message}");
     assert_eq!(gate.runs.load(Ordering::SeqCst), 3);
     // No tag survives the failed attempts on either remote or in the checkout,
     // and the checkout is back at the tip the landings published.
@@ -1561,6 +1617,56 @@ async fn a_landing_that_never_settles_leaves_no_tag_behind() {
         .gitea_stub
         .release_bytes("v1.1.0", "devboard-manifest.json")
         .is_none());
+}
+
+#[tokio::test]
+async fn a_landing_burst_beyond_three_attempts_still_releases() {
+    let live = live("landing-burst", release_assets()).await;
+    let landing = landing_checkout(&live);
+    // Four landings move the checkout under four attempts, one more than the
+    // attempt count an earlier bound gave up after.
+    let gate = Arc::new(MovingCheckoutGate {
+        landing: landing.clone(),
+        checkout: live.seed.clone(),
+        runs: AtomicUsize::new(0),
+        moves: 4,
+    });
+    let clock = FakeClock::new(0);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.release_suite = Some(gate.clone());
+    args.clock = Some(clock.clone());
+    args.sleeper = Some(Arc::new(FakeSleeper { clock, step: 1_000 }));
+
+    let report = publish(args)
+        .await
+        .expect("a landing burst that ends releases the range");
+
+    assert_eq!(
+        gate.runs.load(Ordering::SeqCst),
+        5,
+        "every landing invalidates the proof and the fifth attempt settles"
+    );
+    assert!(report.published);
+    assert_eq!(report.tag, "v1.1.0");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        report.commit
+    );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit
+    );
+    // The released range carries the last landing of the burst.
+    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
+    git_output(
+        &live.origin,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &landing_commit,
+            &report.commit,
+        ],
+    );
 }
 
 #[tokio::test]
