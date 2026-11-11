@@ -47,3 +47,12 @@ test("a field at its bound is carried whole", () => {
   });
   expect(truncate("  a \t b  ", 20)).toBe("a b");
 });
+
+test("a cut inside a surrogate pair keeps whole code points", () => {
+  const limit = 4000;
+  const cut = truncate("😀".repeat(5000), limit);
+
+  expect(cut.length).toBeLessThanOrEqual(limit);
+  expect(cut).toBe(`${"😀".repeat(1999)}…`);
+  expect(JSON.stringify(cut)).not.toMatch(/\\ud[89ab]/i);
+});
