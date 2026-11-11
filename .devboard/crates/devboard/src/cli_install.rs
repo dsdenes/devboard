@@ -157,6 +157,11 @@ fn write_discover_files(
         if is_identical_file(&destination, file.contents())? {
             continue;
         }
+        if let Ok(meta) = fs::symlink_metadata(&destination) {
+            if meta.file_type().is_symlink() || meta.is_dir() {
+                remove_entry(&destination)?;
+            }
+        }
         let parent = destination.parent().unwrap_or(root);
         ensure_real_dir(parent)?;
         fs::write(&destination, file.contents())

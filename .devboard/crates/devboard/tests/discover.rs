@@ -1180,6 +1180,63 @@ async fn a_remote_run_shows_the_prompt_its_live_checkout_holds() {
     );
 }
 
+/// A cloned repository can commit a shipped path as a symlink, and the support
+/// install must replace it instead of writing through it.
+#[test]
+fn install_discover_support_replaces_symlinks_in_the_cloned_checkout() {
+    let scratch = Scratch::new("discover-symlink");
+    let checkout = scratch.path().join("checkout");
+    std::fs::create_dir_all(&checkout).expect("the checkout directory");
+    let sentinel = scratch.path().join("sentinel.txt");
+    write(&sentinel, "the operator's own file");
+    let links = [
+        ".omp/commands/discover-sheet.md",
+        ".devboard/prompts/discover-sheet.md",
+    ];
+    for link in links {
+        let destination = checkout.join(link);
+        std::fs::create_dir_all(destination.parent().expect("a link parent"))
+            .expect("the link parent directory");
+        std::os::unix::fs::symlink(&sentinel, &destination).expect("the committed link");
+    }
+
+    let written = devboard::cli_install::install_discover_support(&checkout)
+        .expect("the discover support files install");
+
+    assert_eq!(
+        std::fs::read_to_string(&sentinel).expect("the sentinel is still readable"),
+        "the operator's own file",
+        "the write never follows a committed link"
+    );
+    let shipped = [
+        (
+            ".omp/commands/discover-sheet.md",
+            devboard_root().join("omp/commands/discover-sheet.md"),
+        ),
+        (
+            ".devboard/prompts/discover-sheet.md",
+            devboard_root().join("prompts/discover-sheet.md"),
+        ),
+    ];
+    for (link, source) in shipped {
+        assert!(
+            written.iter().any(|path| path == link),
+            "the install names {link}: {written:?}"
+        );
+        let destination = checkout.join(link);
+        let meta = std::fs::symlink_metadata(&destination).expect("the installed file");
+        assert!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            "{link} is a regular file"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("the installed bytes"),
+            std::fs::read(&source).expect("the shipped bytes"),
+            "{link} holds the shipped bytes"
+        );
+    }
+}
+
 fn write_state_file(state: &Path, repo: &Path, discover: Value) {
     let mut value = devboard::state::default_state();
     value["discover"] = discover.clone();
