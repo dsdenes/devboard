@@ -1197,8 +1197,10 @@ fn number_value(value: Option<f64>) -> Value {
 /// The original script used `Bun.YAML.parse`. The harness carries no YAML
 /// dependency, so this reader covers block mappings and sequences (a sequence
 /// may sit at its key's own indent), plain, quoted, and block scalars, flow
-/// `[]`/`{}` empties, and the YAML 1.2 core scalars. Anchors, aliases, tags,
-/// merge keys, and non-empty flow collections are not supported.
+/// `[]`/`{}` empties, the YAML 1.2 core scalars, and the document framing a
+/// serializer emits: a `%YAML`/`%TAG` directive, a `---` start marker, and a
+/// `...` end marker. Anchors, aliases, tags, merge keys, and non-empty flow
+/// collections are not supported.
 struct YamlLine {
     indent: usize,
     content: String,
@@ -1212,9 +1214,26 @@ fn yaml_lines(text: &str) -> Vec<YamlLine> {
             continue;
         }
         let indent = trimmed_end.len() - trimmed_end.trim_start().len();
+        let content = trimmed_end.trim_start();
+        if indent == 0 {
+            if content.starts_with("%YAML") || content.starts_with("%TAG") {
+                continue;
+            }
+            if content == "..." {
+                break;
+            }
+            if content == "---" {
+                if lines.is_empty() {
+                    continue;
+                }
+                // A second start marker opens another document; this reader
+                // parses only the first.
+                break;
+            }
+        }
         lines.push(YamlLine {
             indent,
-            content: trimmed_end.trim_start().to_string(),
+            content: content.to_string(),
         });
     }
     lines

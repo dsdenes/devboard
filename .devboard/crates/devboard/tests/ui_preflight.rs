@@ -548,6 +548,122 @@ components:
 }
 
 #[test]
+fn an_openui_yaml_catalog_with_a_document_start_marker_passes() {
+    let fixture = Fixture::new("openui-yaml-document-start");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+---
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props: {}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_yaml_directive_and_marker_passes() {
+    let fixture = Fixture::new("openui-yaml-directive");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+%YAML 1.2
+%TAG ! tag:example.com,2000:
+---
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props: {}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_document_end_marker_passes() {
+    let fixture = Fixture::new("openui-yaml-document-end");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props: {}
+...
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_an_unparseable_line_is_invalid() {
+    let fixture = Fixture::new("openui-yaml-unparseable-line");
+    fixture.write(
+        "openui.yaml",
+        "\
+---
+name: Kit
+version: \"1.0\"
+description: Components
+this line has no key
+components:
+  Button:
+    description: A button
+    props: {}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["openui"]["status"], json!("invalid"));
+    assert_eq!(
+        result["checks"]["openui"]["reason"],
+        json!("invalid YAML line: this line has no key")
+    );
+}
+
+#[test]
 fn openui_problems_match_the_catalog_schema() {
     let fixture = Fixture::new("openui-problems");
     fixture.write(
