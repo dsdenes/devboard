@@ -692,6 +692,24 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
             })),
             ("PATCH", "/api/v1/repos/owner/name/pulls/9") => json_response(json!({})),
             ("POST", "/api/v1/repos/owner/name/pulls/9/merge") => json_response(json!({})),
+            ("GET", "/api/v1/repos/owner/name/pulls/10") => json_response(json!({
+                "number": 10,
+                "html_url": "https://gitea.test/owner/name/pulls/10",
+                "state": "open",
+                "merged": false,
+                "merged_at": null,
+                "title": "[wip] Ready",
+            })),
+            ("PATCH", "/api/v1/repos/owner/name/pulls/10") => json_response(json!({})),
+            ("GET", "/api/v1/repos/owner/name/pulls/11") => json_response(json!({
+                "number": 11,
+                "html_url": "https://gitea.test/owner/name/pulls/11",
+                "state": "open",
+                "merged": false,
+                "merged_at": null,
+                "title": "WIP: wip: goal",
+            })),
+            ("PATCH", "/api/v1/repos/owner/name/pulls/11") => json_response(json!({})),
             ("GET", "/api/v1/repos/owner/name/bad") => text_response(200, "not json"),
             ("GET", "/api/v1/repos/owner/name/outage") => text_response(
                 500,
@@ -887,6 +905,38 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
     assert_eq!(
         String::from_utf8(edit.body).expect("utf8"),
         r#"{"title":"Ready"}"#
+    );
+
+    let bracketed = gitea_pull(&target, 10, &transport, &options)
+        .await
+        .expect("bracketed draft pull");
+    assert!(bracketed.draft);
+    gitea_ready_pull(&target, 10, &transport, &options)
+        .await
+        .expect("ready bracketed");
+    let bracketed_edit = server
+        .find("PATCH", "/api/v1/repos/owner/name/pulls/10")
+        .expect("bracketed ready request");
+    assert_eq!(
+        String::from_utf8(bracketed_edit.body).expect("utf8"),
+        r#"{"title":"Ready"}"#
+    );
+
+    // A goal whose own text starts with a marker: Devboard prepended its own,
+    // so Mark ready strips both or Gitea keeps the pull request a draft.
+    let doubled = gitea_pull(&target, 11, &transport, &options)
+        .await
+        .expect("doubled draft pull");
+    assert!(doubled.draft);
+    gitea_ready_pull(&target, 11, &transport, &options)
+        .await
+        .expect("ready doubled");
+    let doubled_edit = server
+        .find("PATCH", "/api/v1/repos/owner/name/pulls/11")
+        .expect("doubled ready request");
+    assert_eq!(
+        String::from_utf8(doubled_edit.body).expect("utf8"),
+        r#"{"title":"goal"}"#
     );
 
     let missing = gitea_issue(&target, 404, &transport, &options)
@@ -1986,6 +2036,39 @@ fn processing_labels_and_titles_normalize_for_duplicate_comparison() {
     assert_eq!(draft_title("WIP: Ready"), "WIP: Ready");
     assert_eq!(ready_title("WIP: Ready"), "Ready");
     assert_eq!(ready_title("Ready"), "Ready");
+}
+
+#[test]
+fn draft_state_follows_every_gitea_wip_prefix_case_insensitively() {
+    for title in [
+        "WIP: x", "WIP:x", "wip: x", "WiP:x", "[WIP] x", "[wip] x", "[WiP]x",
+    ] {
+        assert!(is_draft_title(title), "{title} is a draft");
+    }
+    for title in ["Ready", "wip x", "[wip x", "WIP"] {
+        assert!(!is_draft_title(title), "{title} is not a draft");
+    }
+
+    assert_eq!(ready_title("[wip] x"), "x");
+    assert_eq!(ready_title("[WIP] x"), "x");
+    assert_eq!(ready_title("wip: x"), "x");
+    assert_eq!(ready_title("WIP:x"), "x");
+
+    assert_eq!(draft_title("[WIP] x"), "[WIP] x");
+    assert_eq!(draft_title("wip: x"), "wip: x");
+    assert_eq!(draft_title("Ready"), "WIP: Ready");
+
+    // A goal whose own text starts with a marker: it already is a draft, so
+    // Devboard adds no second marker, and ready must still clear it.
+    let created = draft_title("wip: goal");
+    assert_eq!(created, "wip: goal");
+    let ready = ready_title(&created);
+    assert_eq!(ready, "goal");
+    assert!(!is_draft_title(&ready));
+
+    // A title an earlier Devboard prefixed twice must clear both markers.
+    assert_eq!(ready_title("WIP: wip: goal"), "goal");
+    assert_eq!(ready_title("WIP: [WIP] goal"), "goal");
 }
 
 // ---------------------------------------------------------------------------

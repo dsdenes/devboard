@@ -1040,7 +1040,7 @@ impl FlowForge for CommandFlowForge {
                 )
                 .await
                 .map_err(|error| error.message)?;
-                let title = if current.title.starts_with(crate::forge::DRAFT_PREFIX) {
+                let title = if crate::forge::is_draft_title(&current.title) {
                     crate::forge::ready_title(&current.title)
                 } else {
                     current.title.clone()

@@ -2077,22 +2077,48 @@ pub async fn gitea_remove_issue_label(
     Ok(())
 }
 
-/// Gitea marks a draft by the `WIP:` title prefix.
+/// The marker Devboard puts on a new draft title.
 pub const DRAFT_PREFIX: &str = "WIP: ";
 
+/// Gitea's default `WORK_IN_PROGRESS_PREFIXES` (`WIP:,[WIP]`), the markers it
+/// matches case-insensitively against a pull request title.
+const DRAFT_PREFIXES: [&str; 2] = ["WIP:", "[WIP]"];
+
+/// Byte length of one leading draft marker and the whitespace after it.
+fn draft_prefix_len(title: &str) -> Option<usize> {
+    DRAFT_PREFIXES.iter().find_map(|prefix| {
+        let bytes = title.as_bytes();
+        if bytes.len() < prefix.len()
+            || !bytes[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+        {
+            return None;
+        }
+        let rest = &title[prefix.len()..];
+        Some(title.len() - rest.trim_start().len())
+    })
+}
+
+/// Whether Gitea keeps `title` a draft, by its own prefix rule.
+pub fn is_draft_title(title: &str) -> bool {
+    draft_prefix_len(title).is_some()
+}
+
 pub fn draft_title(title: &str) -> String {
-    if title.starts_with(DRAFT_PREFIX) {
+    if is_draft_title(title) {
         title.to_string()
     } else {
         format!("{DRAFT_PREFIX}{title}")
     }
 }
 
+/// Removes every leading draft marker, so a title whose own text starts with
+/// one still stops matching at Gitea.
 pub fn ready_title(title: &str) -> String {
-    title
-        .strip_prefix(DRAFT_PREFIX)
-        .unwrap_or(title)
-        .to_string()
+    let mut rest = title;
+    while let Some(len) = draft_prefix_len(rest) {
+        rest = &rest[len..];
+    }
+    rest.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2138,7 +2164,7 @@ fn pull_from_document(value: &Value) -> Option<GiteaPullDocument> {
         number,
         url: url.to_string(),
         state,
-        draft: title.starts_with(DRAFT_PREFIX),
+        draft: is_draft_title(title),
         title: title.to_string(),
     })
 }
