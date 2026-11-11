@@ -899,12 +899,6 @@ kbd {
   pointer-events: none;
 }
 
-.status-divider {
-  background: var(--border);
-  flex: 0 0 1px;
-  height: 12px;
-}
-
 .status-metric__label {
   color: var(--muted-foreground);
   font-size: 10px;
