@@ -2,6 +2,7 @@ import { notifications } from "./notifications.svelte";
 import { slowUiAction, type SlowUiActionOrigin, type SlowUiActionTicket } from "./slow-ui-action";
 import { isStaleBundleProblem, reloadOnceForStaleBundle } from "./stale-bundle";
 import { REST_OPERATIONS, type RestOperation } from "./rest-map";
+import { READY_ENDPOINT } from "../../lib/endpoints.ts";
 import type { VersionState } from "./types";
 
 type ConnectionState = "connecting" | "open" | "closed";
@@ -626,7 +627,7 @@ export class ConnectionStore {
   /** The pid `/ready` names, or `null` when no process answered it. */
   private async answeringPid(): Promise<number | null> {
     try {
-      const response = await fetch("/ready", {
+      const response = await fetch(READY_ENDPOINT, {
         cache: "no-store",
         method: "GET",
         headers: { accept: "application/json" },
@@ -677,7 +678,7 @@ export class ConnectionStore {
   /** True when the process answering `/ready` is not the one being replaced. */
   private async replacementAnswers(before: number | null): Promise<boolean> {
     try {
-      const response = await fetch("/ready", { cache: "no-store", method: "HEAD" });
+      const response = await fetch(READY_ENDPOINT, { cache: "no-store", method: "HEAD" });
       if (!response.ok) return false;
     } catch {
       return false;

@@ -1,27 +1,27 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
-import { MUTATION_ENDPOINTS } from "./lib/endpoints.ts";
+import { BACKEND_ENDPOINTS } from "./lib/endpoints.ts";
 import { REST_OPERATIONS } from "./client/lib/rest-map.ts";
 
 /**
- * The backend owns every mutating browser endpoint, so a Vite dev page must
- * reach them through the backend rather than answering them itself. A missed
- * `/reports` or `/goal-proposals` would 404 the issue report. Both endpoints
- * come from the client's own constants, so a moved path cannot be proxied
- * under its old name. Reads are same-origin REST requests the dev server
- * forwards under the same rule.
+ * The backend owns every browser endpoint the client calls directly, so a Vite
+ * dev page must reach them through the backend rather than answering them
+ * itself. A missed `/reports` or `/goal-proposals` would 404 the issue report,
+ * and a missed `/ready` would send the restart watch the dev server's document
+ * instead of the dashboard's pid. Every path comes from the client's own
+ * constants, so a moved path cannot be proxied under its old name. Reads are
+ * same-origin REST requests the dev server forwards under the same rule.
  */
 const backend = process.env.DEVBOARD_BACKEND ?? "http://127.0.0.1:8080";
 
 /** Forwarded without `changeOrigin`: the backend's Origin check compares the
  * browser's origin with the Host it receives, and both name the dev server. */
-const restRoots = new Set<string>([
-  "/agent-runs",
-  ...Object.values(REST_OPERATIONS).map((operation) => `/${operation.path.split("/")[1] ?? ""}`),
-]);
+const restRoots = new Set<string>(
+  Object.values(REST_OPERATIONS).map((operation) => `/${operation.path.split("/")[1] ?? ""}`),
+);
 const backendProxy = Object.fromEntries(
-  [...new Set([...MUTATION_ENDPOINTS, ...restRoots])].map((endpoint) => [
+  [...new Set([...BACKEND_ENDPOINTS, ...restRoots])].map((endpoint) => [
     endpoint,
     { target: backend },
   ]),
