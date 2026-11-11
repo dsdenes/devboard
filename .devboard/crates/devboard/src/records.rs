@@ -62,13 +62,14 @@ pub fn read_records(directory: &Path) -> Result<(Vec<Value>, Value), String> {
 fn record_from_document(path: &Path, source: &str) -> Option<AdrRecord> {
     let (frontmatter, body) = split_frontmatter(source)?;
     let title = frontmatter_value(frontmatter, "title")?;
-    let status = frontmatter_value(frontmatter, "status")?;
+    let status = frontmatter_value(frontmatter, "status").unwrap_or_default();
+    let normalized = status.trim().to_lowercase();
     let file = path.file_name()?.to_string_lossy().into_owned();
     Some(AdrRecord {
         file,
         title,
         status: capitalize(&status),
-        pending: status == "draft" || status == "proposed",
+        pending: normalized.is_empty() || normalized == "draft" || normalized == "proposed",
         summary: read_decision(body),
     })
 }
@@ -257,6 +258,65 @@ mod tests {
         assert_eq!(record.status, "Accepted");
         assert!(!record.pending);
         assert_eq!(record.summary, "Use TypeScript on Bun.");
+    }
+
+    #[test]
+    fn a_pending_status_in_any_case_is_pending_and_named_next() {
+        let root = records_fixture_dir("mixed-case");
+        write_record(
+            &root,
+            "0001-proposed.md",
+            "Proposed record",
+            Some("Proposed"),
+        );
+        write_record(&root, "0002-draft.md", "Draft record", Some("Draft"));
+        write_record(
+            &root,
+            "0003-accepted.md",
+            "Accepted record",
+            Some("Accepted"),
+        );
+        let (records, next) = read_records(&root).expect("records");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0]["status"], "Proposed");
+        assert_eq!(records[0]["pending"], true);
+        assert_eq!(records[1]["status"], "Draft");
+        assert_eq!(records[1]["pending"], true);
+        assert_eq!(records[2]["status"], "Accepted");
+        assert_eq!(records[2]["pending"], false);
+        assert_eq!(next, Value::String("0001-proposed.md".to_string()));
+    }
+
+    #[test]
+    fn a_record_without_a_status_is_listed_as_pending() {
+        let root = records_fixture_dir("no-status");
+        write_record(&root, "0001-unset.md", "Unset record", None);
+        let (records, next) = read_records(&root).expect("records");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["status"], "");
+        assert_eq!(records[0]["pending"], true);
+        assert_eq!(next, Value::String("0001-unset.md".to_string()));
+    }
+
+    fn records_fixture_dir(label: &str) -> std::path::PathBuf {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("records-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a fixture root");
+        root
+    }
+
+    fn write_record(directory: &Path, file: &str, title: &str, status: Option<&str>) {
+        let status = status
+            .map(|value| format!("status: {value}\n"))
+            .unwrap_or_default();
+        let source =
+            format!("---\ntitle: {title}\n{status}---\n# {title}\n\n## Decision\n\nDecide.\n");
+        std::fs::write(directory.join(file), source).expect("a fixture record");
     }
 
     #[test]
