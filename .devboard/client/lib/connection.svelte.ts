@@ -129,6 +129,10 @@ export class ConnectionStore {
   /** Wakes the replay when a first-paint read never answers. */
   private replayTimer: number | undefined;
   private etags = new Map<string, string>();
+  /** True while one replacement watch runs; a later frame joins it. */
+  private restartWatch = false;
+  /** The pid that answered before the restart; the replacement's differs. */
+  private restartPid: number | null = null;
   /** First open registers first-paint reads; later opens are reconnects. */
   private hasOpened = false;
   /** The origin the current open's six first-paint sends register under. */
@@ -247,7 +251,7 @@ export class ConnectionStore {
         this.state = "closed";
         slowUiAction.reset();
         if (this.awaitingRestart) {
-          void this.waitForRestart();
+          this.startRestartWatch();
           return;
         }
         if (!this.disposed) this.retryTimer = window.setTimeout(() => this.connect(), POLL_INTERVAL_MS);
@@ -536,13 +540,17 @@ export class ConnectionStore {
       this.feedbackResolved = true;
       if (message.upgradePending === true) this.upgradePending = true;
       if (message.restarting === true || message.serverRestarting === true) {
-        if (!this.awaitingRestart) {
-          this.awaitingRestart = true;
-          this.restarting = true;
-          this.upgradePending = false;
-          this.lastError = null;
-          void this.waitForRestart();
-        }
+        this.awaitingRestart = true;
+        this.restarting = true;
+        this.upgradePending = false;
+        this.lastError = null;
+        this.startRestartWatch();
+      } else if (this.awaitingRestart && replacement !== null) {
+        // The failure frame is the restart's other outcome: clearing the flags
+        // ends the wait and lets a later poll read the version again.
+        this.awaitingRestart = false;
+        this.restarting = false;
+        this.report(replacement.error);
       }
       return;
     }
@@ -552,6 +560,7 @@ export class ConnectionStore {
       this.restarting = true;
       this.upgradePending = false;
       this.lastError = null;
+      this.startRestartWatch();
       return;
     }
     if (message.type === "upgradePending") {
@@ -577,47 +586,105 @@ export class ConnectionStore {
     slowUiAction.reset();
     this.restarting = true;
     this.awaitingRestart = true;
+    this.restartPid = null;
     const operation = REST_OPERATIONS.restartServer;
     if (operation === undefined) {
       this.restarting = false;
       this.awaitingRestart = false;
       return;
     }
-    fetch(operation.path, {
-      method: operation.method,
-      headers: { accept: "application/json" },
-    })
-      .then((response) => {
-        if (!response.ok) {
-          this.restarting = false;
-          this.awaitingRestart = false;
-          this.report(`The server answered HTTP ${response.status}.`);
-        }
-      })
-      .catch(() => {
-        this.restarting = false;
-        this.awaitingRestart = false;
-        this.lost();
-      });
+    void this.performRestart(operation);
   }
 
-  private async waitForRestart(): Promise<void> {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      try {
-        const response = await fetch("/ready", { cache: "no-store", method: "HEAD" });
-        if (response.ok) {
-          location.reload();
-          return;
-        }
-      } catch {
-        // The replacement is still starting.
+  /**
+   * One operator restart: record the pid that answered, ask the server for the
+   * replacement, and watch for the handoff. The accepted answer starts the
+   * watch, so the outcome never depends on a frame the process being replaced
+   * may stop serving mid-handoff, and the `/version` poll keeps running so a
+   * refusal or a replacement failure still reaches the page.
+   */
+  private async performRestart(operation: RestOperation): Promise<void> {
+    this.restartPid = await this.answeringPid();
+    if (!this.restarting) return;
+    try {
+      const response = await fetch(operation.path, {
+        method: operation.method,
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) {
+        this.report(`The server answered HTTP ${response.status}.`);
+        return;
       }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      this.startRestartWatch();
+    } catch {
+      this.restarting = false;
+      this.awaitingRestart = false;
+      this.lost();
     }
-    this.awaitingRestart = false;
-    this.restarting = false;
+  }
+
+  /** The pid `/ready` names, or `null` when no process answered it. */
+  private async answeringPid(): Promise<number | null> {
+    try {
+      const response = await fetch("/ready", {
+        cache: "no-store",
+        method: "GET",
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) return null;
+      const body = (await response.json()) as Record<string, unknown>;
+      return typeof body.pid === "number" ? body.pid : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Starts the handoff watch once; every later frame joins the running one. */
+  private startRestartWatch(): void {
+    if (this.restartWatch) return;
+    this.restartWatch = true;
+    void this.waitForRestart().finally(() => {
+      this.restartWatch = false;
+    });
+  }
+
+  /**
+   * Waits for the replacement to answer `/ready` under a pid other than the
+   * pre-restart one. `/ready` answers from whichever process holds the port,
+   * so an answer from the process being replaced is not the handoff: the watch
+   * reloads only once the answering pid changes. A version frame naming a
+   * replacement failure clears `restarting`, which ends the watch with no
+   * reload and reports the failure through the frame handler.
+   */
+  private async waitForRestart(): Promise<void> {
+    const before = this.restartPid ?? (await this.answeringPid());
+    this.restartPid = before;
+    const deadline = Date.now() + 30_000;
+    while (this.restarting && Date.now() < deadline) {
+      if (await this.replacementAnswers(before)) {
+        location.reload();
+        return;
+      }
+      const retry = Promise.withResolvers<void>();
+      setTimeout(retry.resolve, 250);
+      await retry.promise;
+    }
+    if (!this.restarting) return;
+    this.report("The replacement did not answer within 30 seconds.");
     this.connect();
+  }
+
+  /** True when the process answering `/ready` is not the one being replaced. */
+  private async replacementAnswers(before: number | null): Promise<boolean> {
+    try {
+      const response = await fetch("/ready", { cache: "no-store", method: "HEAD" });
+      if (!response.ok) return false;
+    } catch {
+      return false;
+    }
+    const pid = await this.answeringPid();
+    if (pid === null) return before === null;
+    return before === null || pid !== before;
   }
 
   startPolling(): void {
@@ -638,7 +705,7 @@ export class ConnectionStore {
    * flight so a foreground read always finds a free origin connection.
    */
   private pollTick(): void {
-    if (!documentVisible() || this.awaitingRestart) return;
+    if (!documentVisible()) return;
     for (const resource of this.polled.values()) {
       const operation = REST_OPERATIONS[resource.command.type];
       if (operation !== undefined) this.enqueue(resource.command, operation, "refresh");
