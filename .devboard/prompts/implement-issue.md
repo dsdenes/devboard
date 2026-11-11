@@ -41,6 +41,11 @@ comment on, close, or reopen another issue.
   `agent_sessions_list` — never by spawning the harness's `call-tool` bridge or any other
   subprocess that wraps them: the bridge starts a second Bun process and duplicates a capability
   the session already has. Never reach for that bridge for a Devboard state read.
+- Address every Devboard tool through its mounted route, and write that route exactly
+  `xd://mcp__devboard_<catalog name>` with the name the MCP catalog lists. Before the first write
+  of a turn, resolve each route from that catalog: `xd://devboard_status` and
+  `xd://mcp__devboard_devboard_status` are not routes, and a `write` whose `path` is not a device
+  route — `conflict://1`, for example — is never a probe. Fix the route and issue the call once.
 - Never orient the session with a shell probe, and never chain orientation probes: no
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
