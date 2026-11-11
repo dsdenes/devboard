@@ -6379,11 +6379,11 @@ fn live_skill_warnings(repo_dir: &Path, manifest: &Value) -> Vec<String> {
     let Some(skills) = manifest.get("skills").and_then(Value::as_array) else {
         return Vec::new();
     };
+    // Every skill with a live body is compared, edited or freshly generated:
+    // a regeneration can contradict an edit that was made against the old
+    // baseline, and an edited-versus-generated pair is exactly that case.
     let mut bodies = Vec::new();
     for entry in skills {
-        if entry.get("state").and_then(Value::as_str) != Some("edited") {
-            continue;
-        }
         let Some(name) = entry.get("name").and_then(Value::as_str) else {
             continue;
         };
@@ -6771,17 +6771,18 @@ pub fn read_artifacts(repo_dir: &Path) -> ArtifactsRead {
 }
 
 pub fn live_warnings(repo_dir: &Path, artifacts: &Artifacts) -> Vec<String> {
-    let edited: Vec<(String, String)> = artifacts
+    // Compare every skill whose live body exists, so an edited skill is still
+    // compared with one a publication just regenerated.
+    let bodies: Vec<(String, String)> = artifacts
         .skills
         .iter()
-        .filter(|skill| skill.state == "edited" && skill.live.is_some())
-        .map(|skill| (skill.name.clone(), skill.live.clone().unwrap_or_default()))
+        .filter_map(|skill| skill.live.clone().map(|live| (skill.name.clone(), live)))
         .collect();
-    if edited.is_empty() {
+    if bodies.is_empty() {
         return Vec::new();
     }
     let _ = repo_dir;
-    skill_contradictions(&edited)
+    skill_contradictions(&bodies)
         .into_iter()
         .map(|(left, right, subject)| format!("{left} and {right} disagree about {subject}"))
         .collect()
@@ -9934,6 +9935,98 @@ mod prompt_tests {
                     .to_string()
             ),
             "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    const GENERATED: &str = "discover-testing-strategy";
+    const EDITED: &str = "discover-naming-conventions";
+
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("discover-warning-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root");
+        root
+    }
+
+    fn write_file(path: PathBuf, text: &str) {
+        std::fs::create_dir_all(path.parent().expect("a parent directory"))
+            .expect("the parent directory");
+        std::fs::write(path, text).expect("a skill body");
+    }
+
+    /// One publication rewrote `GENERATED` to its new baseline while `EDITED`
+    /// keeps a live body that says the opposite thing about the same subject.
+    fn published_pair(label: &str) -> (PathBuf, Value) {
+        let root = scratch(label);
+        let baseline = "- Never write tests first.\n";
+        write_file(baseline_path(&root, GENERATED), baseline);
+        write_file(live_skill_path(&root, GENERATED), baseline);
+        write_file(
+            baseline_path(&root, EDITED),
+            "- Prefer tables for examples.\n",
+        );
+        write_file(
+            live_skill_path(&root, EDITED),
+            "- Always write tests first.\n",
+        );
+        let manifest = json!({
+            "schemaVersion": 1,
+            "skills": [
+                {"name": GENERATED, "state": "generated"},
+                {"name": EDITED, "state": "edited"},
+            ],
+            "paths": {
+                "manifest": ".omp/discover/manifest.json",
+                "sheet": ".omp/discover/sheet.json",
+                "decisions": ".omp/discover/decisions.json",
+                "glossaries": [],
+            },
+        });
+        write_file(
+            discover_root(&root).join("manifest.json"),
+            &render_json(&manifest),
+        );
+        (root, manifest)
+    }
+
+    fn warning(left: &str, right: &str) -> String {
+        format!("{left} and {right} disagree about write tests first")
+    }
+
+    #[test]
+    fn publication_warns_about_an_edited_skill_against_a_regenerated_one() {
+        let (root, manifest) = published_pair("publish");
+        assert_eq!(
+            live_skill_warnings(&root, &manifest),
+            vec![warning(GENERATED, EDITED)]
+        );
+    }
+
+    #[test]
+    fn the_live_state_warns_about_an_edited_skill_against_a_regenerated_one() {
+        let (root, _) = published_pair("state");
+        let artifacts = read_artifacts(&root)
+            .artifacts
+            .expect("published artifacts");
+        assert_eq!(
+            artifacts
+                .skills
+                .iter()
+                .map(|skill| (skill.name.as_str(), skill.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(GENERATED, "generated"), (EDITED, "edited")]
+        );
+        assert_eq!(
+            live_warnings(&root, &artifacts),
+            vec![warning(GENERATED, EDITED)]
         );
     }
 }
