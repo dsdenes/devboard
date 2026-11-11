@@ -811,7 +811,10 @@ impl App {
                     Err(error) => {
                         conn.send(json!({
                             "type": "error",
-                            "message": format!("Could not read the goal: {error}"),
+                            "message": format!(
+                                "Could not read the goal at {}: {error}",
+                                self.config().goal_file.display()
+                            ),
                         }));
                     }
                 }

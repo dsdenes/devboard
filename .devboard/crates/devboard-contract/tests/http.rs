@@ -449,3 +449,30 @@ async fn the_live_table_fails_when_the_served_goal_changed_by_one_byte() {
     assert!(stderr.contains("differs from"), "{stderr}");
     assert!(stderr.contains("GOAL.md"), "{stderr}");
 }
+
+/// The `getGoal` row derives the goal text from the installation's own
+/// document. A document that exists but cannot be read fails that row, and is
+/// never compared as the empty document a missing one derives.
+#[tokio::test]
+async fn the_live_goal_row_fails_when_the_document_exists_but_cannot_be_read() {
+    let goal_file = scratch("unreadable").join("GOAL.md");
+    std::fs::create_dir(&goal_file).expect("a goal path that cannot be read");
+    let fixture = checkout_dashboard("unreadable", &goal_file).await;
+    let installation = http_table::Installation {
+        goal_file: goal_file.clone(),
+        adrs_dir: repository_root().join("adrs"),
+    };
+    let results = http_table::run(&fixture.base, &corpus(), &allowlist(), &installation).await;
+    let failures: Vec<&String> = results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .collect();
+    let goal_failure = failures
+        .iter()
+        .find(|error| error.starts_with("getGoal:"))
+        .unwrap_or_else(|| panic!("the getGoal row failed: {failures:?}"));
+    assert!(
+        goal_failure.contains(&goal_file.display().to_string()),
+        "{goal_failure}"
+    );
+}

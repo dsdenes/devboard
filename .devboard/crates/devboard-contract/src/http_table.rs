@@ -777,7 +777,15 @@ async fn run_live(
             let goal = match devboard::goal::read_goal(&installation.goal_file).await {
                 Ok(text) => text,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(error) => return Err(format!("{}: {error}", installation.goal_file.display())),
+                // The document exists, so an unreadable one is this row's
+                // failure and never an empty document to compare with.
+                Err(error) => {
+                    return Err(format!(
+                        "{}: {}: {error}",
+                        case.name,
+                        installation.goal_file.display()
+                    ))
+                }
             };
             compare_goal(
                 case,

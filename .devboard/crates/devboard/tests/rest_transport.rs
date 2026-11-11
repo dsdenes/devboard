@@ -967,6 +967,38 @@ async fn rest_route_inventory_matches_openapi() {
     }
 }
 
+/// A goal document that exists but cannot be read answers the error frame the
+/// dispatcher already carries for it, never the empty-goal state a missing
+/// document answers.
+#[tokio::test]
+async fn an_unreadable_goal_document_answers_an_error_frame() {
+    let instance = start("goal-unreadable").await;
+
+    let (status, _, body) = send(&instance.base, Method::GET, "/goal", HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let missing = frames(&body);
+    assert_eq!(missing[0]["type"], "goal", "{missing:?}");
+    assert_eq!(missing[0]["text"], "", "a missing document is no goal yet");
+    assert!(
+        !missing.iter().any(|frame| frame["type"] == "error"),
+        "a missing document is not an error: {missing:?}"
+    );
+
+    let goal = instance.repo.join("GOAL.md");
+    std::fs::create_dir(&goal).expect("a goal path that cannot be read");
+    let (status, _, body) = send(&instance.base, Method::GET, "/goal", HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let answered = frames(&body);
+    assert_eq!(
+        frame_types(&body),
+        vec!["error".to_string()],
+        "an unreadable document answers one error: {answered:?}"
+    );
+    let message = answered[0]["message"].as_str().expect("a message");
+    assert!(message.contains("Could not read the goal at"), "{message}");
+    assert!(message.contains(&goal.display().to_string()), "{message}");
+}
+
 /// Every GET answers only the frames of the command it names, even while a
 /// fixture keeps publishing `issuesState` and `issuesActivity` through the
 /// shared broadcast. A mutation whose answer travels through that same
