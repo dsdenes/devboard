@@ -2681,7 +2681,9 @@ pub fn default_release_agent_runner(
 /// verification's tag phase reads that absence back as a missing tag. The
 /// run's own failure is the cause, and naming the tag phase beside it would
 /// report a phantom second failure. A GitHub or Gitea phase failure still says
-/// something the run's report did not, so it always stands beside it.
+/// something the run's report did not, so it always stands beside it. A part
+/// that repeats one already present is dropped: a stop during the agent run is
+/// also that run's own error, and naming it twice reports one failure as two.
 fn failed_release_detail(
     stopped: bool,
     cause: Option<&str>,
@@ -2690,18 +2692,24 @@ fn failed_release_detail(
     detail: &str,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
+    let mut add = |part: &str| {
+        let part = part.trim();
+        if !part.is_empty() && !parts.iter().any(|existing| existing == part) {
+            parts.push(part.to_string());
+        }
+    };
     if stopped {
-        parts.push("stopped during the release run".to_string());
+        add("stopped during the release run");
     }
     let tag_withdrawn = cause.is_some() || reported.is_some();
     if let Some(cause) = cause {
-        parts.push(cause.to_string());
+        add(cause);
     }
     if let Some(report) = reported {
-        parts.push(report.to_string());
+        add(report);
     }
     if phase != ReleaseVerificationPhase::Tag || !tag_withdrawn {
-        parts.push(detail.to_string());
+        add(detail);
     }
     parts.join("; ")
 }
@@ -4280,6 +4288,23 @@ mod tests {
                 "tag binding: no release tag names or contains a9a3f33 for v1.39.0",
             ),
             "stopped during the release run; tag binding: no release tag names or contains a9a3f33 for v1.39.0"
+        );
+    }
+
+    #[test]
+    fn a_stop_that_is_also_the_agent_error_is_named_once() {
+        // The agent loop records a stop as its own error, so the stop marker
+        // and the cause carry the same sentence and the notification read as
+        // two identical failures.
+        assert_eq!(
+            failed_release_detail(
+                true,
+                Some("stopped during the release run"),
+                None,
+                ReleaseVerificationPhase::Tag,
+                "tag binding: no release tag names or contains a9a3f33 for v1.39.0",
+            ),
+            "stopped during the release run"
         );
     }
 }
