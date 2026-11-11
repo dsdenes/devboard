@@ -569,6 +569,27 @@ fn matching_open(tokens: &[Token], index: usize, open: &str, close: &str) -> Opt
     None
 }
 
+/// The index of the `<` matching the `>` at `index`, searched only inside the
+/// current statement. `;`, `{`, and `}` end the search, so a comparison `>` is
+/// never paired with a generic from an earlier function.
+fn matching_angle_open(tokens: &[Token], index: usize) -> Option<usize> {
+    let mut depth = 0i64;
+    for cursor in (0..=index).rev() {
+        let text = tokens[cursor].text.as_str();
+        if text == ">" {
+            depth += 1;
+        } else if text == "<" {
+            depth -= 1;
+            if depth == 0 {
+                return Some(cursor);
+            }
+        } else if text == ";" || text == "{" || text == "}" {
+            return None;
+        }
+    }
+    None
+}
+
 /// Counts the top-level comma-separated entries between `open` and `close`.
 fn parameter_count(tokens: &[Token], open: usize, close: usize) -> u64 {
     let mut entries = 0u64;
@@ -804,7 +825,10 @@ fn signature_for(tokens: &[Token], brace_index: usize, language: Language) -> Op
             continue;
         }
         if language == Language::Rust && token.text == ">" {
-            let angle = matching_open(tokens, index, "<", ">")?;
+            // The `>` of a signature's own return type pairs with a `<` in the
+            // same statement; a comparison `>` has none behind it before the
+            // statement boundary, so the brace is not a function body.
+            let angle = matching_angle_open(tokens, index)?;
             cursor = angle as isize - 1;
             continue;
         }

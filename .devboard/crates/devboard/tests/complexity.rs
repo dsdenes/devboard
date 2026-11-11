@@ -348,6 +348,47 @@ fn an_optional_marker_is_not_a_ternary_branch() {
 }
 
 #[test]
+fn a_comparison_never_lends_an_earlier_generic_to_a_nested_block() {
+    let measured = measure_source(
+        &[
+            "pub fn process_argv(pid: u32) -> Option<Vec<String>> {",
+            "    let owner = pid.to_string();",
+            "    Some(vec![owner])",
+            "}",
+            "",
+            "fn parse_record(value: &Value) -> Option<Record> {",
+            "    if pid <= 0 || pid > i64::from(u32::MAX) {",
+            "        return None;",
+            "    }",
+            "    None",
+            "}",
+        ]
+        .join("\n"),
+        Language::Rust,
+    );
+    let rows: Vec<(&str, usize, u64, u64)> = measured
+        .functions
+        .iter()
+        .map(|entry| {
+            (
+                entry.name.as_str(),
+                entry.line,
+                entry.cyclomatic,
+                entry.nesting,
+            )
+        })
+        .collect();
+    // The nested `if` block is not a second function: the comparison `>` finds
+    // no `<` before the statement boundary, so it never reaches the earlier
+    // signature's `Option<Vec<String>>`.
+    assert_eq!(
+        rows,
+        vec![("process_argv", 1, 1, 0), ("parse_record", 6, 3, 1)]
+    );
+    assert_eq!(measured.functions[1].lines, 6);
+}
+
+#[test]
 fn measures_application_source_only() {
     let root = fixture("discovery");
     let analysis = analyze_complexity(&root);
