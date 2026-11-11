@@ -208,6 +208,80 @@ test("an in-flight clone keeps the selected row and its option", () => {
   expect(title?.getAttribute("title")).toBe(fresh);
 });
 
+function card(container: HTMLElement, field: string): HTMLElement | null {
+  return container.querySelector(`[data-field="${field}"]`);
+}
+
+function architectureSection(): Record<string, unknown> {
+  return (discover.state!.sheet as Record<string, unknown>).architecture as Record<string, unknown>;
+}
+
+test("an unknown shared-kernels leaf renders its reason instead of the empty line", () => {
+  discover.state = state({});
+  architectureSection().sharedKernels = {
+    value: null,
+    evidence: ["."],
+    confidence: "unknown",
+    reason: "The crawl could not read the workspace layout.",
+  };
+  const view = render(DiscoverOverview);
+  const kernels = card(view.container, "shared-kernels");
+  const text = kernels?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+
+  expect(kernels).not.toBeNull();
+  expect(text).toContain("unknown — The crawl could not read the workspace layout.");
+  expect(text).not.toContain("No shared kernel was detected.");
+  expect(kernels?.querySelector('[data-testid="discover-shared-kernels"]')).toBeNull();
+});
+
+test("an observed empty shared-kernels leaf renders the empty line", () => {
+  discover.state = state({});
+  architectureSection().sharedKernels = leaf([]);
+  const view = render(DiscoverOverview);
+  const kernels = card(view.container, "shared-kernels");
+
+  expect(kernels?.textContent).toContain("No shared kernel was detected.");
+  expect(kernels?.querySelector(".panel__subtitle")).toBeNull();
+  expect(kernels?.querySelector('[data-testid="discover-shared-kernels"]')).toBeNull();
+});
+
+test("one shared kernel links to VS Code and counts one kernel", () => {
+  discover.state = state({ "src/shared": DIRECTORY });
+  const view = render(DiscoverOverview);
+  const kernels = card(view.container, "shared-kernels");
+  const link = kernels === null ? null : anchor(kernels, "src/shared");
+
+  expect(link?.getAttribute("href")).toBe(DIRECTORY);
+  expect(link?.getAttribute("title")).toBe("Open in VS Code");
+  expect(
+    kernels?.querySelector(".panel__subtitle")?.textContent?.trim().replace(/\s+/g, " "),
+  ).toBe("1 kernel");
+});
+
+test("two shared kernels stay plain and count two kernels", () => {
+  discover.state = state({});
+  architectureSection().sharedKernels = leaf(["src/shared", "src/orders"]);
+  const view = render(DiscoverOverview);
+  const kernels = card(view.container, "shared-kernels");
+
+  expect(
+    kernels?.querySelector(".panel__subtitle")?.textContent?.trim().replace(/\s+/g, " "),
+  ).toBe("2 kernels");
+  expect(kernels === null ? null : chip(kernels, "src/shared")?.tagName).toBe("CODE");
+  expect(kernels === null ? null : chip(kernels, "src/orders")?.tagName).toBe("CODE");
+  expect(view.container.querySelectorAll('a[href^="vscode://"]')).toHaveLength(0);
+});
+
+test("a missing shared-kernels leaf drops only that card", () => {
+  discover.state = state({});
+  delete architectureSection().sharedKernels;
+  const view = render(DiscoverOverview);
+
+  expect(card(view.container, "shared-kernels")).toBeNull();
+  expect(card(view.container, "external-boundaries")).not.toBeNull();
+  expect(chip(view.container, "PostgreSQL")).not.toBeNull();
+});
+
 function contextsValue(value: Array<Record<string, unknown>>): void {
   const payload = discover.state as DiscoverStatePayload;
   const architecture = payload.sheet?.architecture as {
