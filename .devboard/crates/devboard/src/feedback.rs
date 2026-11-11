@@ -58,9 +58,13 @@ pub struct RequestError {
     /// The failure's own text. The client reads `message`; only the journal
     /// records this, and it is `None` when `message` already names the cause.
     pub diagnostic: Option<String>,
-    /// True when the forge answered nothing at all, so the failure is a
-    /// delayed delivery rather than an error this server produced.
+    /// True when the forge answered nothing at all, so the failure is a delayed
+    /// delivery rather than an error this server produced.
     pub transient: bool,
+    /// True when the forge answered its own transient refusal — a rate limit or
+    /// a server-side failure such as a busy database — so the failure is
+    /// upstream state the operator owns, never a defect this server produced.
+    pub forge_failed: bool,
     /// True when the forge rejected the dashboard's configured credential, so
     /// reporting is misconfigured rather than this server failing.
     pub rejected_credential: bool,
@@ -73,6 +77,7 @@ impl RequestError {
             message: message.into(),
             diagnostic: None,
             transient: false,
+            forge_failed: false,
             rejected_credential: false,
         }
     }
@@ -85,6 +90,7 @@ impl RequestError {
             message: message.into(),
             diagnostic: None,
             transient: false,
+            forge_failed: false,
             rejected_credential: false,
         }
     }
@@ -97,6 +103,7 @@ impl RequestError {
             message: error.message,
             diagnostic: Some(error.diagnostic),
             transient: error.transient,
+            forge_failed: error.forge_failed,
             rejected_credential: error.rejected_credential,
         }
     }
@@ -705,7 +712,8 @@ pub const REJECTED_CREDENTIAL_DETAIL: &str = "Harness reporting is unavailable: 
      the dashboard.";
 
 /// A delivery failure: the API refused the request, answered nothing, ran past
-/// its deadline, or rejected the credential the dashboard was started with.
+/// its deadline, rejected the credential the dashboard was started with, or
+/// answered its own transient refusal.
 #[derive(Debug, Clone)]
 pub struct DeliveryError {
     pub status: u16,
@@ -714,6 +722,11 @@ pub struct DeliveryError {
     /// True when the forge answered nothing at all — an unreachable or slow
     /// upstream, never a failure this server produced.
     pub transient: bool,
+    /// True when the forge answered its own transient refusal — a rate limit or
+    /// a server-side failure such as its busy database — so the failure is
+    /// upstream state the operator owns, never one this server produced. The
+    /// request is not retried: the forge may have applied it before failing.
+    pub forge_failed: bool,
     /// True when the forge answered with an authentication failure: the
     /// dashboard's configured credential is refused, so no retry of this
     /// request can succeed and the operator owns the fix.
@@ -784,6 +797,7 @@ fn delivery_error(error: crate::gitea::GiteaError, timeout_ms: u64) -> DeliveryE
                 },
                 diagnostic: format!("Issue creation failed: {}", first_line(&error.message)),
                 transient: transport.is_some_and(crate::gitea::TransportFailure::answered_nothing),
+                forge_failed: forge_unavailable(error.status),
                 rejected_credential,
             }
         }
@@ -796,6 +810,14 @@ fn delivery_error(error: crate::gitea::GiteaError, timeout_ms: u64) -> DeliveryE
 /// retry away.
 fn credential_rejected(status: Option<u16>) -> bool {
     matches!(status, Some(401) | Some(403))
+}
+
+/// True for the forge answers that say the forge itself could not serve the
+/// request: a rate limit and a server-side failure. Gitea answers a busy
+/// database as HTTP 500 `database is locked (5) (SQLITE_BUSY)`, so this is the
+/// forge's own contention, never a defect the request body caused.
+fn forge_unavailable(status: Option<u16>) -> bool {
+    matches!(status, Some(429)) || status.is_some_and(|status| (500..600).contains(&status))
 }
 
 /// One missed delivery deadline: the client reads the bound, the journal also
@@ -811,6 +833,7 @@ fn timed_out(timeout_ms: u64, cause: Option<&str>) -> DeliveryError {
         message: detail,
         diagnostic,
         transient: true,
+        forge_failed: false,
         rejected_credential: false,
     }
 }

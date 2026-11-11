@@ -143,7 +143,11 @@ report controls are not rendered and `POST /reports` answers HTTP 503 naming tha
 GitHub request is made. An accepted report answers HTTP 202 with the record the dashboard files,
 and a forge that rejects the reporting credential settles that record as failed with the
 credential named, journaled as activity, never as a server error, because the operator owns that
-fix. Host-forge behavior for GitHub and GitLab origins is unchanged.
+fix. A forge that could not serve the creation — an unreachable upstream, a rate limit, or its
+own busy database — settles that record as failed with the fixed detail, journaled as activity
+and never as a server error. An answer this server could not use — a creation the forge refused
+outright, other than a rejected credential, or a document missing its issue — is journaled as a
+server error. Host-forge behavior for GitHub and GitLab origins is unchanged.
 
 Every tracker read and credential selection resolves the forge from the checkout's `origin`:
 `github.com` is GitHub, a GitLab host is GitLab, `DEVBOARD_FORGE` pins a self-hosted instance,

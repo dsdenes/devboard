@@ -57,9 +57,16 @@ async fn start(label: &str) -> Fixture {
     start_with(label, None).await
 }
 
-/// One fixture whose stub Gitea answers `500` instead of filing an issue.
+/// One fixture whose stub Gitea answers `500` with its busy database instead of
+/// filing an issue.
 async fn start_failing(label: &str) -> Fixture {
     start_with(label, Some(StatusCode::INTERNAL_SERVER_ERROR)).await
+}
+
+/// One fixture whose stub Gitea refuses the creation itself, with a status that
+/// is neither a transient refusal nor a credential rejection.
+async fn start_refusing(label: &str) -> Fixture {
+    start_with(label, Some(StatusCode::BAD_REQUEST)).await
 }
 
 /// One fixture whose stub Gitea rejects the dashboard's credential.
@@ -110,10 +117,12 @@ async fn start_against(
                             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         }
                         if let Some(status) = failure {
-                            let message = if status == StatusCode::UNAUTHORIZED {
-                                "invalid username, password or token"
-                            } else {
-                                "gitea is offline"
+                            let message = match status {
+                                StatusCode::UNAUTHORIZED => "invalid username, password or token",
+                                StatusCode::INTERNAL_SERVER_ERROR => {
+                                    "database is locked (5) (SQLITE_BUSY)"
+                                }
+                                _ => "the issue title is invalid",
                             };
                             return (status, message).into_response();
                         }
@@ -485,8 +494,56 @@ async fn an_accepted_report_answers_before_the_forge_finishes_filing_it() {
 }
 
 #[tokio::test]
-async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
-    let fixture = start_failing("feedback-failure").await;
+async fn a_busy_forge_is_an_upstream_failure_not_a_server_error() {
+    let fixture = start_failing("feedback-busy").await;
+    let response = client()
+        .post(format!("{}/reports", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header", "route": "/"}))
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 202);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FAILED");
+    assert_eq!(record["detail"], "The issue could not be filed.");
+    assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
+
+    let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
+    let text = std::fs::read_to_string(&journal).expect("the journal");
+    assert!(
+        text.contains("\"kind\":\"activity\""),
+        "a forge busy on its own database is an upstream failure: {text}"
+    );
+    assert!(
+        text.contains(
+            "feedback delivery failed: POST /reports: Issue creation failed: \
+             POST /repos/dsdenes/devboard/issues failed (HTTP 500): \
+             database is locked (5) (SQLITE_BUSY)"
+        ),
+        "the journal names the delivery's own diagnostic: {text}"
+    );
+    assert!(
+        !text.contains("\"kind\":\"server-error\""),
+        "the forge failed on its own side, so it is no server error: {text}"
+    );
+    assert!(
+        !text.contains("POST /reports: The issue could not be filed."),
+        "the journal never repeats the client-facing detail: {text}"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
+#[tokio::test]
+async fn a_refused_delivery_journals_its_diagnostic_as_a_server_error() {
+    let fixture = start_refusing("feedback-refused").await;
     let response = client()
         .post(format!("{}/reports", fixture.base))
         .headers(bearer())
@@ -510,15 +567,19 @@ async fn a_failed_delivery_keeps_its_detail_and_journals_the_diagnostic() {
     let text = std::fs::read_to_string(&journal).expect("the journal");
     assert!(
         text.contains("\"kind\":\"server-error\""),
-        "the failed delivery is journaled: {text}"
+        "a request the forge refuses is this server's own fault: {text}"
     );
     assert!(
-        text.contains("POST /reports: Issue creation failed: POST /repos/dsdenes/devboard/issues failed (HTTP 500): gitea is offline"),
+        text.contains(
+            "POST /reports: Issue creation failed: \
+             POST /repos/dsdenes/devboard/issues failed (HTTP 400): \
+             the issue title is invalid"
+        ),
         "the journal names the delivery's own diagnostic: {text}"
     );
     assert!(
-        !text.contains("POST /reports: The issue could not be filed."),
-        "the journal never repeats the client-facing detail: {text}"
+        !text.contains("\"kind\":\"activity\""),
+        "a refusal the forge answered is no upstream activity: {text}"
     );
     fixture.handle.abort();
     fixture.stub.abort();

@@ -4457,9 +4457,14 @@ second issue; every attempt and every pause stays inside the same bound. The ups
 which names the Gitea request path, carries the socket answer beneath it — `Connection refused` or
 `operation timed out` — and the first line of an upstream response, reaches only the journal,
 prefixed with the endpoint, so no stack trace or other implementation internal is ever returned. A
-forge that answers nothing at all is a transient delivery delay: it is recorded as an `activity`
-record naming the delay and never as a `server-error`. A refused payload keeps its own `400`
-detail.
+forge that answered nothing at all is a transient delivery delay: it is recorded as an `activity`
+record naming the delay and never as a `server-error`. A forge that answered its own transient
+refusal — a rate limit, or a server-side failure such as its own busy database — settles the report
+as failed and is recorded as an `activity` record naming the failure and never as a `server-error`;
+the request is not retried, because the forge may have applied it before failing. An answer this
+server could not use — a creation the forge refused outright, other than a rejected credential, or
+a document missing its issue — is this server's own fault and is recorded as a `server-error`. A
+refused payload keeps its own `400` detail.
 
 ## Container
 

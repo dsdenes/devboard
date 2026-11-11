@@ -1444,6 +1444,18 @@ impl App {
                             &format!("feedback delivery rejected: {detail}"),
                             owned_flow.as_deref(),
                         );
+                    } else if refusal.forge_failed {
+                        // The forge answered its own transient refusal — a rate
+                        // limit or a busy database. Nothing this server did
+                        // caused it and no retry runs, because the forge may
+                        // have applied the request, so it is recorded as
+                        // activity and never as a server error the watchdog
+                        // files.
+                        app.shared.journal.write(
+                            "activity",
+                            &format!("feedback delivery failed: {detail}"),
+                            owned_flow.as_deref(),
+                        );
                     } else if refusal.status == 502 || refusal.status == 504 {
                         app.shared
                             .journal
