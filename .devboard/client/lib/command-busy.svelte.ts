@@ -4,8 +4,10 @@
  * A control that dispatches a WebSocket command shows the present-participle
  * busy word of its own verb until the server confirms the command. Evidence is
  * the store value the confirming frame changes: `start()` captures it, and the
- * control leaves busy the moment the value differs. A value that never arrives
- * within the ceiling releases the label and surfaces a `role="status"` notice.
+ * control leaves busy the moment the value differs. A server refusal is an
+ * answer too: a control that supplies a `refusal` revision leaves busy when it
+ * changes, without the ceiling notice. A value that never arrives within the
+ * ceiling releases the label and surfaces a `role="status"` notice.
  *
  * A confirmation is permanent for its dispatch. Reading the control's state is
  * how a render observes the confirming frame, so that first differing value
@@ -58,6 +60,13 @@ export interface CommandBusyOptions<E> {
    * by every agent page — and the previous subject's latch must not follow it.
    */
   scope?: () => unknown;
+  /**
+   * Reactive read of the server's refusal revision for this command. A
+   * refusal is an answer: a value that differs from the dispatch baseline ends
+   * the latch at once, so the control neither waits out the ceiling nor shows
+   * the ceiling notice beside the refusal's own message.
+   */
+  refusal?: () => unknown;
   /** Overrides the 10-second ceiling; tests use a short bound. */
   ceilingMs?: number;
 }
@@ -74,10 +83,13 @@ export class CommandBusy<E> {
   #baseline: E | undefined = $state.raw(undefined);
   /** The subject captured at activation; a reused control has no claim on another. */
   #scopeBaseline: unknown = $state.raw(undefined);
+  /** The refusal revision captured at activation. */
+  #refusalBaseline: unknown = $state.raw(undefined);
   #timer: ReturnType<typeof setTimeout> | null = null;
   readonly #label: () => string;
   readonly #evidence: () => E;
   readonly #scope: (() => unknown) | undefined;
+  readonly #refusal: (() => unknown) | undefined;
   readonly #ceilingMs: number;
 
   constructor(options: CommandBusyOptions<E>) {
@@ -85,6 +97,7 @@ export class CommandBusy<E> {
       typeof options.label === "function" ? options.label : () => options.label as string;
     this.#evidence = options.evidence;
     this.#scope = options.scope;
+    this.#refusal = options.refusal;
     this.#ceilingMs = options.ceilingMs ?? COMMAND_CEILING_MS;
   }
 
@@ -115,6 +128,7 @@ export class CommandBusy<E> {
     this.#clearTimer();
     this.#baseline = this.#evidence();
     this.#scopeBaseline = this.#scope?.();
+    this.#refusalBaseline = this.#refusal?.();
     this.#active = true;
     this.#expired = false;
     this.#dismissed = false;
@@ -154,6 +168,11 @@ export class CommandBusy<E> {
    */
   #awaiting(): boolean {
     if (!this.#active || !this.#sameSubject()) return false;
+    if (this.#refusal !== undefined && !Object.is(this.#refusal(), this.#refusalBaseline)) {
+      this.#clearTimer();
+      this.#active = false;
+      return false;
+    }
     if (!Object.is(this.#evidence(), this.#baseline)) {
       this.#clearTimer();
       this.#active = false;

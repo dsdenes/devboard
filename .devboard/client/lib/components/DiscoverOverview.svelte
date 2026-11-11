@@ -57,10 +57,11 @@
     evidence: () => discover.activity.length,
   });
 
-  /** The remote start form's in-flight state; the server's clone answer confirms it. */
+  /** The remote start form's in-flight state; the clone or a refusal answers it. */
   const remoteStartPending = createCommandBusy({
     label: "Discover from URL",
     evidence: () => discover.cloning,
+    refusal: () => discover.errorRevision,
   });
 
   const sheet = $derived(discover.sheet);
@@ -611,9 +612,10 @@
             class="discover-remote__form"
             onsubmit={(event) => {
               event.preventDefault();
-              if (discover.remoteUrl.trim().length === 0 || discover.remoteStartDisabled) return;
+              // The baseline is captured before dispatch so an immediate answer
+              // is never missed; a refused dispatch releases the latch at once.
               remoteStartPending.start();
-              discover.startRemote();
+              if (discover.startRemote() === false) remoteStartPending.refuse();
             }}
           >
             <label class="discover-remote__label" for="discover-remote-url">

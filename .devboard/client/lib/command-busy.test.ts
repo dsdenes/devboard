@@ -84,6 +84,55 @@ test("a refused dispatch never waits for an answer or shows the ceiling notice",
   }
 });
 
+test("a server refusal answers the latch and never shows the ceiling notice", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const refusals = { value: 0 };
+    const command = createCommandBusy({
+      label: "Discover from URL",
+      evidence: () => box.value,
+      refusal: () => refusals.value,
+      ceilingMs: 5,
+    });
+    command.start();
+    expect(command.busy).toBe(true);
+    refusals.value += 1;
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+    jest.advanceTimersByTime(5);
+    expect(command.busy).toBe(false);
+    expect(command.notice).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a repeated refusal still answers the next dispatch", () => {
+  jest.useFakeTimers();
+  try {
+    const box = { value: 1 };
+    const refusals = { value: 0 };
+    const command = createCommandBusy({
+      label: "Discover from URL",
+      evidence: () => box.value,
+      refusal: () => refusals.value,
+      ceilingMs: 5,
+    });
+    command.start();
+    refusals.value += 1;
+    expect(command.busy).toBe(false);
+    command.start();
+    expect(command.busy).toBe(true);
+    refusals.value += 1;
+    expect(command.busy).toBe(false);
+    jest.advanceTimersByTime(5);
+    expect(command.notice).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("a new dispatch clears the previous ceiling notice", () => {
   jest.useFakeTimers();
   try {
