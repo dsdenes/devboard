@@ -1073,7 +1073,19 @@ fn a_held_build_lock_keeps_the_canonical_tree() {
 
     drop(held);
 
-    let after = run_build_cleanup_with(&repo, false, 0, &|_| false, &|| Vec::new());
+    // A child process that another test spawns while this lock is open
+    // inherits its open file description until the child's `exec` closes it, so
+    // the first sample after the drop can still see the lock held — exactly the
+    // skip a live build's lock produces. Retry briefly, as the next cleanup
+    // cycle would.
+    let mut after = run_build_cleanup_with(&repo, false, 0, &|_| false, &|| Vec::new());
+    for _ in 0..50 {
+        if after.skipped.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        after = run_build_cleanup_with(&repo, false, 0, &|_| false, &|| Vec::new());
+    }
     assert!(after.skipped.is_none(), "{:?}", after.skipped);
     assert!(!old.exists(), "the duplicate leaves once the lock is free");
     assert!(after.cap_removed, "the cap removes the tree once the lock is free");
@@ -1108,7 +1120,17 @@ fn a_held_worktree_build_lock_keeps_its_build_output() {
 
     drop(held);
 
-    let after = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| Vec::new());
+    // Same inherited-description window as the canonical lock: retry briefly
+    // before requiring the reclaim.
+    let mut after = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| Vec::new());
+    for _ in 0..50 {
+        if debug.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            after = run_build_cleanup_with(&repo, false, u64::MAX, &|_| false, &|| Vec::new());
+        } else {
+            break;
+        }
+    }
     assert!(
         !debug.exists(),
         "the abandoned worktree's output leaves once the lock is free"
