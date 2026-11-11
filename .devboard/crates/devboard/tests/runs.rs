@@ -643,34 +643,47 @@ async fn discover_runs_survive_a_replacement_and_stop() {
         .copied()
         .expect("a question")
         .clone();
-    let question_id = question["question"]["id"].clone();
     for frame in &retained {
         assert_eq!(frame["run"], id, "only this run's frames");
     }
+    // The replacement re-learns the pending question on the surface a page
+    // answers, and only then can an answer route to the owner: the restored run
+    // is attached asynchronously, so an answer sent before the attach completes
+    // has no pending question to reach.
+    let asking = poll_frames(
+        &base,
+        json!({"type": "getDiscover"}),
+        |frame| frame["type"] == "discoverQuestion",
+        Duration::from_secs(30),
+        "the replacement reported the pending question",
+    )
+    .await;
+    let question_id = asking
+        .iter()
+        .find(|frame| frame["type"] == "discoverQuestion")
+        .map(|frame| frame["id"].clone())
+        .expect("a pending question");
+    assert_eq!(
+        question_id, question["question"]["id"],
+        "the replacement reports the question the run waits on"
+    );
 
-    // The answer reaches the same run, and the operator's Stop ends it.
-    //
-    // A restored run is marked active before the replacement finishes
-    // attaching its peer, and the dashboard refuses an answer it cannot
-    // deliver with a `discoverError` frame rather than dropping it silently.
-    // Send the same answer until the replacement owns the run's peer.
-    let answer = json!({"type": "answerDiscover", "id": question_id, "value": "yes"});
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let frames = rest(&base, answer.clone()).await;
-        if !frames.iter().any(|frame| frame["type"] == "discoverError") {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the replacement accepted the answer: {frames:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    // The peer acknowledges the answer by logging it, and the operator's Stop
-    // is the next action. A stop sent in the same breath races the answer
-    // against the peer's teardown: the owner writes the answer to the peer's
-    // pipe and then ends it, so the peer may never read the line.
+    // The answer reaches the same run, and the operator's Stop ends it. The
+    // answer is accepted asynchronously and forwarded to the owner on its next
+    // tick, while Stop ends the peer at once, so delivery is proven before the
+    // Stop is issued: an answer still in flight when the run is stopped is
+    // discarded, never delivered.
+    let answered = rest(
+        &base,
+        json!({"type": "answerDiscover", "id": question_id, "value": "yes"}),
+    )
+    .await;
+    assert!(
+        !answered
+            .iter()
+            .any(|frame| frame["type"] == "discoverError"),
+        "the pending question accepts its answer: {answered:?}"
+    );
     wait_until(
         || {
             std::fs::read_to_string(&log)

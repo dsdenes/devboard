@@ -1597,18 +1597,13 @@ impl DetachedPeer {
     }
 
     /// Adopts the state a live owner already published.
+    ///
+    /// A pending question is not marked as already delivered: this handle's
+    /// callbacks have never reported it, and `poll_once` below emits it once.
+    /// Marking it delivered would leave a replacement's page without the
+    /// question whenever the caller seeded its own copy before adoption, and
+    /// that page could never answer it.
     fn adopt(&self, state: DetachedRunState) {
-        {
-            let mut last_question = self
-                .inner
-                .last_question
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *last_question = state
-                .question
-                .as_ref()
-                .and_then(|question| serde_json::to_string(question).ok());
-        }
         {
             let mut last_turn = self
                 .inner
@@ -2135,4 +2130,94 @@ pub async fn terminate_recorded_children(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     proven
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::*;
+
+    /// A replacement adopts a live owner whose question is already pending: the
+    /// question reaches the adopter's callback once, so the replacement's page
+    /// offers it and an operator's answer is not refused as "no pending
+    /// question".
+    #[tokio::test]
+    async fn an_adopted_pending_question_reaches_the_callback() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("detached-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        let state_dir = root.join("state");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let directory = detached_run_directory(&state_dir, &repo, "discover", "adopted");
+        let question = AcpQuestion {
+            id: AcpId::Number(7),
+            message: "Which name applies?".to_string(),
+            options: Vec::new(),
+            properties: Map::new(),
+            required: None,
+        };
+        let state = DetachedRunState {
+            version: DETACHED_RUN_VERSION,
+            kind: "discover".to_string(),
+            key: "adopted".to_string(),
+            repo: repo.display().to_string(),
+            state_dir: state_dir.display().to_string(),
+            harness_version: None,
+            instance: "previous".to_string(),
+            launcher_pid: Some(std::process::id()),
+            generation: "generation".to_string(),
+            multi: false,
+            turn_seq: None,
+            turn_status: None,
+            turn_error: None,
+            status: DetachedRunStatus::Running,
+            started_at: "2026-01-01T00:00:00.000Z".to_string(),
+            finished_at: None,
+            error: None,
+            question: Some(question.clone()),
+            owner: Some(RecordedChild {
+                pid: std::process::id(),
+                argv: Vec::new(),
+                cwd: repo.display().to_string(),
+            }),
+            peer: None,
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        write_detached_run_state(&directory, &state).expect("a state");
+
+        let seen: Arc<Mutex<Vec<AcpQuestion>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&seen);
+        let options = DetachedPeerOptions::new(
+            repo.clone(),
+            state_dir.clone(),
+            "discover",
+            "adopted",
+            "replacement",
+            "stub",
+            repo.display().to_string(),
+        )
+        .attach_only(true)
+        .question(Arc::new(move |question: AcpQuestion| {
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(question);
+        }));
+        let peer = DetachedPeer::new(options);
+        peer.adopt(state);
+
+        let seen = seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(
+            seen,
+            vec![question],
+            "the adopted question reaches the callback once"
+        );
+        peer.close();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -7429,7 +7429,6 @@ struct StoredDiscover {
     started_at: String,
     agent: String,
     activity: Vec<String>,
-    question: Option<AcpQuestion>,
     remote: Option<RemoteRepository>,
 }
 
@@ -8089,7 +8088,10 @@ impl StateSection for ModeSection {
                 if let Some(stored) = &stored {
                     // Build the run the reconnecting page owes before the
                     // asynchronous attach runs; its owner's journals then
-                    // extend the same activity stream.
+                    // extend the same activity stream. The question is not
+                    // carried over: only an attached peer can route an answer,
+                    // and the attach reports the pending question it finds, so
+                    // a page never offers a question this process cannot answer.
                     state.run = Some(Run {
                         run_id: stored.run_id.clone(),
                         staging_dir: PathBuf::from(&stored.staging_dir),
@@ -8103,7 +8105,7 @@ impl StateSection for ModeSection {
                         agent: stored.agent.clone(),
                         mode: "single",
                         activity: stored.activity.clone(),
-                        question: stored.question.clone(),
+                        question: None,
                         remote: stored.remote.clone(),
                         resumed: true,
                         peer: None,
@@ -8197,23 +8199,6 @@ fn remote_target_json(target: &RemoteRepository) -> Value {
     json!({"url": target.url, "owner": target.owner, "repo": target.repo})
 }
 
-fn parse_question(value: &Value) -> Option<AcpQuestion> {
-    let id = AcpId::from_value(value.get("id")?)?;
-    let message = value.get("message")?.as_str()?.to_string();
-    let options = value
-        .get("options")
-        .cloned()
-        .and_then(|options| serde_json::from_value(options).ok())
-        .unwrap_or_default();
-    Some(AcpQuestion {
-        id,
-        message,
-        options,
-        properties: serde_json::Map::new(),
-        required: None,
-    })
-}
-
 fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
     let run_id = value.get("runId")?.as_str()?.to_string();
     let staging_dir = value.get("stagingDir")?.as_str()?.to_string();
@@ -8235,17 +8220,12 @@ fn parse_stored_discover(value: &Value) -> Option<StoredDiscover> {
         }
         Some(remote) => Some(parse_stored_target(remote)?),
     };
-    let question = match value.get("question") {
-        None | Some(Value::Null) => None,
-        Some(question) => Some(parse_question(question)?),
-    };
     Some(StoredDiscover {
         run_id,
         staging_dir,
         started_at,
         agent,
         activity,
-        question,
         remote,
     })
 }
