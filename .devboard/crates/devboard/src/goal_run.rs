@@ -516,6 +516,27 @@ impl ManualRun {
     }
 }
 
+/// A manual run's terminal state. The interface opens no socket, so a
+/// stopped broadcast reaches no page: the polled `/goal` read replays this
+/// instead, and a page that missed the end learns it on its next poll.
+struct FinishedManualRun {
+    file: String,
+    title: String,
+    activity: Vec<String>,
+    resolved: bool,
+    status: String,
+}
+
+fn finished_manual_run(run: &ManualRun, resolved: bool, status: &str) -> Arc<FinishedManualRun> {
+    Arc::new(FinishedManualRun {
+        file: run.file.clone(),
+        title: run.title.clone(),
+        activity: run.activity(),
+        resolved,
+        status: status.to_string(),
+    })
+}
+
 /// Every mutable field this mode owns.
 struct Inner {
     lifecycle: Lifecycle,
@@ -532,6 +553,7 @@ struct Inner {
     generation_queued: bool,
     generation_attempted: bool,
     manual_run: Option<Arc<ManualRun>>,
+    last_manual_run: Option<Arc<FinishedManualRun>>,
     manual_sequencing: bool,
     resume_after_manual_sequence: bool,
     manual_start_request: u64,
@@ -562,6 +584,7 @@ impl Default for Inner {
             generation_queued: false,
             generation_attempted: false,
             manual_run: None,
+            last_manual_run: None,
             manual_sequencing: false,
             resume_after_manual_sequence: false,
             manual_start_request: 0,
@@ -719,7 +742,7 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
     let Some(this) = state_for(app) else {
         return;
     };
-    let (notices, reset, replayed, manual, lanes) = {
+    let (notices, reset, replayed, manual, finished, lanes) = {
         let mut inner = lock(&this.inner);
         let notices = std::mem::take(&mut inner.startup_notices);
         let replayed = if inner.lifecycle_running {
@@ -737,11 +760,20 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
             } else {
                 None
             };
+        let manual = inner.manual_run.as_ref().map(ManualView::from);
+        // A sequence between runs owns no manual run, so its last terminal
+        // frame would report a stop the sequence has not reached.
+        let finished = if manual.is_none() && !inner.manual_sequencing {
+            inner.last_manual_run.clone()
+        } else {
+            None
+        };
         (
             notices,
             inner.reset_active,
             replayed,
-            inner.manual_run.as_ref().map(ManualView::from),
+            manual,
+            finished,
             lanes,
         )
     };
@@ -761,6 +793,8 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
     }
     if let Some(manual) = manual {
         send_run_conversation(conn, &manual);
+    } else if let Some(finished) = finished {
+        send_finished_run(conn, &finished);
     }
     if let Some(lanes) = lanes {
         conn.send(lanes);
@@ -1360,6 +1394,17 @@ fn send_run_conversation(target: &Conn, run: &ManualView) {
             "options": question.options,
         }));
     }
+}
+
+fn send_finished_run(target: &Conn, run: &FinishedManualRun) {
+    target.send(json!({
+        "type": "runStopped",
+        "file": run.file,
+        "title": run.title,
+        "resolved": run.resolved,
+        "status": run.status,
+        "activity": run.activity,
+    }));
 }
 
 fn lane_snapshot(inner: &Inner) -> Value {
@@ -3405,17 +3450,6 @@ impl GoalRun {
         resolved: bool,
         status: &str,
     ) -> bool {
-        {
-            let mut inner = lock(&self.inner);
-            match &inner.manual_run {
-                Some(current) if Arc::ptr_eq(current, run) => {
-                    inner.manual_run = None;
-                }
-                _ => return false,
-            }
-        }
-        *lock(&run.question) = None;
-        run.close_peer();
         let outcome = if !status.is_empty() {
             status.to_string()
         } else if resolved {
@@ -3423,6 +3457,18 @@ impl GoalRun {
         } else {
             "stopped".to_string()
         };
+        {
+            let mut inner = lock(&self.inner);
+            match &inner.manual_run {
+                Some(current) if Arc::ptr_eq(current, run) => {
+                    inner.manual_run = None;
+                    inner.last_manual_run = Some(finished_manual_run(run, resolved, status));
+                }
+                _ => return false,
+            }
+        }
+        *lock(&run.question) = None;
+        run.close_peer();
         app.shared
             .journal
             .write("run-stop", &format!("{}: {outcome}", run.file), None);
@@ -3640,7 +3686,14 @@ impl GoalRun {
             inner.resume_after_manual_sequence = false;
         }
         self.abort_tracker_reads();
-        let run = lock(&self.inner).manual_run.take();
+        let run = {
+            let mut inner = lock(&self.inner);
+            let run = inner.manual_run.take();
+            if let Some(run) = &run {
+                inner.last_manual_run = Some(finished_manual_run(run, false, ""));
+            }
+            run
+        };
         if let Some(run) = &run {
             *lock(&run.question) = None;
             run.close_peer();

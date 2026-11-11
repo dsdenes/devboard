@@ -757,6 +757,31 @@ async fn a_manual_run_resolves_a_pending_record_with_an_answer() {
         5_000,
     )
     .await;
+
+    // The interface opens no socket, so the stop broadcast reached no page.
+    // The next polled read has to carry the terminal state and the last
+    // activity lines, or the page keeps a finished run live.
+    let (conn2, mut inbox2) = connected(&app).await;
+    app.command(&conn2, Command::GetGoal).await;
+    let replayed = frame_matching(&mut inbox2, |frame| frame["type"] == "runStopped", 5_000).await;
+    assert_eq!(replayed["file"], "a.md");
+    assert_eq!(replayed["title"], "Adopt the fixture decision");
+    assert_eq!(replayed["resolved"], true);
+    assert_eq!(replayed["status"], "Accepted");
+    let activity: String = replayed["activity"]
+        .as_array()
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("|")
+        })
+        .unwrap_or_default();
+    assert!(
+        activity.contains("Answer received: Alpha"),
+        "the finished run's activity is replayed: {replayed:?}"
+    );
 }
 
 #[tokio::test]

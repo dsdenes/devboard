@@ -21,6 +21,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isText(value: unknown): value is string {
+  return typeof value === "string";
+}
+
 function isRecord(value: unknown): value is AdrRecord {
   return (
     isObject(value) &&
@@ -100,7 +104,7 @@ function isLane(value: unknown): value is Lane {
         typeof value.record.file === "string" &&
         typeof value.record.title === "string")) &&
     Array.isArray(value.activity) &&
-    value.activity.every((line) => typeof line === "string") &&
+    value.activity.every(isText) &&
     (value.question === null || isQuestion(value.question))
   );
 }
@@ -170,12 +174,19 @@ export class GoalStore {
    * Clears the operation flags before a reconnect's state requests are sent.
    * A stop frame missed during the disconnect otherwise leaves the tab busy.
    * The server replays the started frame of an operation that is still active
-   * before answering getGoal and getSkills, so a live operation returns.
+   * before answering getGoal and getSkills, so a live operation returns, and
+   * it replays a finished run's terminal frame, so that one returns stopped.
    */
   resetActiveOperations(): void {
     this.creationActive = false;
     this.revisionActive = false;
     this.skillsPrepActive = false;
+    this.runFile = null;
+    this.runTitle = null;
+    this.runState = "idle";
+    this.runStartedAt = null;
+    this.manualRunActive = false;
+    this.activity = [];
     this.question = null;
     this.draft = "";
   }
@@ -591,6 +602,12 @@ export class GoalStore {
       this.manualRunActive = false;
       this.question = null;
       this.draft = "";
+      // The polled replay of a finished run carries its last activity lines,
+      // because the stop broadcast that would have shown them reaches no page.
+      // Assigning them whole keeps every poll from appending a second copy.
+      if (Array.isArray(message.activity) && message.activity.every(isText)) {
+        this.activity = message.activity;
+      }
       return;
     }
 
