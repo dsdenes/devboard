@@ -74,9 +74,11 @@ fn a_server_error_status_is_a_transient_check_failure() {
 // ---------------------------------------------------------------------------
 // The manifest check reads the tag first
 
+type RecordedRequests = std::sync::Arc<Mutex<Vec<(String, HashMap<String, String>)>>>;
+
 #[derive(Clone)]
 struct StubState {
-    requests: std::sync::Arc<Mutex<Vec<(String, HashMap<String, String>)>>>,
+    requests: RecordedRequests,
     release: String,
     manifest_url: String,
 }
@@ -135,7 +137,7 @@ async fn stub_entry(
 
 struct StubServer {
     base: String,
-    requests: std::sync::Arc<Mutex<Vec<(String, HashMap<String, String>)>>>,
+    requests: RecordedRequests,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -150,7 +152,9 @@ impl StubServer {
         let state = StubState {
             requests: std::sync::Arc::clone(&requests),
             release: release.to_string(),
-            manifest_url: format!("{base}/dsdenes/devboard/releases/download/{release}/devboard-manifest.json"),
+            manifest_url: format!(
+                "{base}/dsdenes/devboard/releases/download/{release}/devboard-manifest.json"
+            ),
         };
         let app = axum::Router::new().fallback(stub_entry).with_state(state);
         let handle = tokio::spawn(async move {
@@ -217,7 +221,10 @@ async fn a_newer_tag_downloads_exactly_one_manifest() {
 #[test]
 fn the_gitea_update_source_is_anonymous() {
     let environment = HashMap::from([
-        ("DEVBOARD_GITEA_URL".to_string(), "http://localhost:3001".to_string()),
+        (
+            "DEVBOARD_GITEA_URL".to_string(),
+            "http://localhost:3001".to_string(),
+        ),
         ("GITEA_TOKEN".to_string(), "secret".to_string()),
     ]);
     let source = devboard::updates::manifest_source(&environment).expect("a source");

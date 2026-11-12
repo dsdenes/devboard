@@ -1672,7 +1672,7 @@ async fn one_tracker_read_per_interval_serves_the_worker_and_the_bridge() {
         );
         assert_eq!(
             snapshot["sync"]["lastSyncAt"],
-            json!(format!("2026-01-01T00:00:{:02}.000Z", interval)),
+            json!(format!("2026-01-01T00:00:{interval:02}.000Z")),
             "the bridge states when the one read happened"
         );
     }

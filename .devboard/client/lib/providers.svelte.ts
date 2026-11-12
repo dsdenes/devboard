@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { queryClient } from "./query-client";
 import { notifications } from "./notifications.svelte";
 import { saveFeedback } from "./save-feedback.svelte";
 import type {
@@ -142,7 +143,7 @@ export class ProviderStore {
   }
 
   request(): void {
-    connection.send({ type: "getProviders" });
+    void queryClient.invalidateQueries({ queryKey: ["getProviders"] });
   }
 
   refresh(): void {

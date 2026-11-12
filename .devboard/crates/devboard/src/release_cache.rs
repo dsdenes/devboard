@@ -100,12 +100,10 @@ pub async fn release_by_tag(
             }
         }
     }
-    Ok(
-        gitea_release_by_tag(target, tag, transport, options)
-            .await?
-            .as_ref()
-            .and_then(crate::forge::release_from_document),
-    )
+    Ok(gitea_release_by_tag(target, tag, transport, options)
+        .await?
+        .as_ref()
+        .and_then(crate::forge::release_from_document))
 }
 
 /// Drops every cached walk; a test starts from the forge's live answer.

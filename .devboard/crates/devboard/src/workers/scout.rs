@@ -22,10 +22,10 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent};
 use crate::forge::{
     classify_forge_read_failure, git, gitea_closing_commits, gitea_json, gitea_list_issues,
-    gitea_list_labelled_issues, is_forge_read_latency, is_forge_read_outage,
-    origin_forge_with, resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge,
-    ForgeReadFailureKind, ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState,
-    RepositoryGitHub, RepositoryGitHubOptions, VersionResolution,
+    gitea_list_labelled_issues, is_forge_read_latency, is_forge_read_outage, origin_forge_with,
+    resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge, ForgeReadFailureKind,
+    ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState, RepositoryGitHub,
+    RepositoryGitHubOptions, VersionResolution,
 };
 use crate::journal::repo_key;
 use crate::providers::{create_worker_provider_environment, ProviderOptions};
@@ -2400,13 +2400,7 @@ async fn scout_read_target(
     if environment.is_empty() {
         return Ok(target.clone());
     }
-    crate::forge::gitea_read_target(
-        &target.base_url,
-        &target.project,
-        environment,
-        transport,
-    )
-    .await
+    crate::forge::gitea_read_target(&target.base_url, &target.project, environment, transport).await
 }
 
 fn encode_uri_component(value: &str) -> String {

@@ -95,3 +95,43 @@ export const REST_OPERATIONS: Record<string, RestOperation> = {
   "setProviderEnabled": { method: "PATCH", path: "/providers/{id}", pathParams: [["id", "id"]] },
   "refreshProviders": { method: "POST", path: "/provider-refreshes", pathParams: [] },
 };
+
+/** One operation's path with its path parameters from the command object. */
+export function resourcePath(
+  command: Record<string, unknown>,
+  operation: RestOperation,
+): string {
+  let path = operation.path;
+  for (const [wire, field] of operation.pathParams) {
+    const value = command[field];
+    path = path.replace(`{${wire}}`, encodeURIComponent(String(value ?? "")));
+  }
+  return path;
+}
+
+/** The JSON body a mutation sends: the command fields that are not in the path. */
+export function requestBody(
+  command: Record<string, unknown>,
+  operation: RestOperation,
+): Record<string, unknown> {
+  const pathFields = new Set(operation.pathParams.map(([, field]) => field));
+  const body: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(command)) {
+    if (key === "type" || pathFields.has(key)) continue;
+    body[key] = value;
+  }
+  return body;
+}
+
+/** The first path field a command leaves out, or `null` when it carries all. */
+export function missingPathField(
+  command: Record<string, unknown>,
+  operation: RestOperation,
+): string | null {
+  for (const [, field] of operation.pathParams) {
+    const value = command[field];
+    if (typeof value === "number") continue;
+    if (typeof value !== "string" || value.length === 0) return field;
+  }
+  return null;
+}

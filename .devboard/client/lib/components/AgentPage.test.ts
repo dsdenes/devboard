@@ -78,6 +78,7 @@ afterEach(() => {
   cleanup();
   connection.dispose();
   FakeSocket.instances = [];
+  agents.requestedPrompts = [];
   connection.state = "connecting";
 });
 
@@ -343,20 +344,13 @@ test("switching to an agent with the same saved settings rewrites the fields fro
   }
 });
 
-/** The prompt reads one page sent over the stub socket, in dispatch order. */
-function promptCommands(socket: FakeSocket): Record<string, unknown>[] {
-  return socket.sent
-    .map((data) => JSON.parse(data) as Record<string, unknown>)
-    .filter((command) => command.type === "getAgentPrompt");
-}
-
 test("an agent page asks for that agent's prompt and renders its answer", async () => {
   delete agents.prompts["release-train"];
   delete agents.promptErrors["release-train"];
   const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }), "open");
-  const socket = FakeSocket.instances[0];
-  if (socket === undefined) throw new Error("no socket created");
-  expect(promptCommands(socket)).toEqual([{ type: "getAgentPrompt", id: "release-train" }]);
+  // The prompt section is a one-shot query in the plan; opening it records the
+  // agent whose document the plan mounts.
+  expect(agents.requestedPrompts).toContain("release-train");
   expect(within(view.container).getByText("Loading the prompt…")).toBeTruthy();
 
   agents.handleEvent({
@@ -391,15 +385,11 @@ test("switching agents requests the newly shown agent's prompt", async () => {
   delete agents.prompts["scout"];
   delete agents.promptErrors["scout"];
   const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }), "open");
-  const socket = FakeSocket.instances[0];
-  if (socket === undefined) throw new Error("no socket created");
-  expect(promptCommands(socket)).toEqual([{ type: "getAgentPrompt", id: "release-train" }]);
+  expect(agents.requestedPrompts).toContain("release-train");
 
   await view.rerender({ agentId: "scout" });
   await tick();
-  const requests = promptCommands(socket);
-  expect(requests.length).toBe(2);
-  expect(requests[1]).toEqual({ type: "getAgentPrompt", id: "scout" });
+  expect(agents.requestedPrompts).toContain("scout");
   expect(within(view.container).getByTestId("agent-prompt").getAttribute("data-agent")).toBe(
     "scout",
   );

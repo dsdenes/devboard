@@ -3,7 +3,11 @@
   import Check from "lucide-svelte/icons/check";
   import TriangleAlert from "lucide-svelte/icons/alert-triangle";
   import X from "lucide-svelte/icons/x";
+  import { createQuery } from "@tanstack/svelte-query";
   import { connection } from "./lib/connection.svelte";
+  import { applyFrames } from "./lib/frames";
+  import { queryClient } from "./lib/query-client";
+  import { readResource } from "./lib/rest-transport";
   import { goalDrafts } from "./lib/goal-drafts.svelte";
   import Button from "./lib/components/ui/button.svelte";
   import CommandButton from "./lib/components/CommandButton.svelte";
@@ -86,9 +90,8 @@
   let askPending = $state(false);
   let askError = $state<string | null>(null);
   /** True while this panel follows the conversation the server accepted. */
-  let following = false;
+  let following = $state(false);
   /** The scheduler owner of this panel's own conversation follow. */
-  const INQUIRY_OWNER = "feedback-inquiry";
   /** The turn in flight; a failed turn returns it to the composer. */
   let askedQuestion = $state("");
   /** Counts each server answer to an Ask turn: the busy word's evidence. */
@@ -346,19 +349,37 @@
    * nothing reads it again.
    */
   function followInquiry(): void {
-    if (following || conversationId === null) return;
+    if (conversationId === null) return;
     following = true;
-    // One owner, one conversation: a claim left for a replaced conversation
-    // would keep reading a document nothing shows.
-    connection.release(INQUIRY_OWNER);
-    connection.claim(INQUIRY_OWNER, { type: "getInquiry", conversationId }, "body");
+    // One conversation at a time: the Ask query below is keyed by it, and a
+    // replaced conversation's entry is never read again.
+    void queryClient.invalidateQueries({ queryKey: ["getInquiry", conversationId] });
   }
 
   /** Stops following a conversation whose turn settled or is gone. */
   function forgetInquiry(): void {
     following = false;
-    connection.release(INQUIRY_OWNER);
   }
+
+  // The open Ask conversation is one query at the Ask cadence: it reads the
+  // stored turns while the panel follows them and stops the moment the turn
+  // settles or the conversation closes.
+  const inquiry = createQuery(() => {
+    const id = conversationId;
+    const enabled = following && id !== null;
+    return {
+      queryKey: ["getInquiry", id ?? ""],
+      queryFn: async () => {
+        const frames = await readResource({ type: "getInquiry", conversationId: id ?? "" });
+        applyFrames(frames);
+        return frames;
+      },
+      enabled,
+      refetchInterval: enabled ? 1000 : false,
+      staleTime: 0,
+    };
+  });
+  void inquiry;
 
   /** Events for a closed or replaced conversation never reach the transcript. */
   function onConnectionMessage(message: Record<string, unknown>): void {
@@ -442,7 +463,6 @@
     askError = null;
     askedQuestion = "";
     if (id === null) return;
-    connection.release(INQUIRY_OWNER);
     if (connection.open) {
       connection.send({ type: "closeAsk", conversationId: id });
     }

@@ -865,9 +865,17 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
         .find("POST", "/api/v1/repos/owner/name/labels")
         .is_none());
     assert_eq!(
-        gitea_ensure_label(&target, &target, "new", "color", "description", &transport, &options)
-            .await
-            .expect("created label"),
+        gitea_ensure_label(
+            &target,
+            &target,
+            "new",
+            "color",
+            "description",
+            &transport,
+            &options
+        )
+        .await
+        .expect("created label"),
         12
     );
     let label_create = server
@@ -1045,9 +1053,10 @@ async fn gitea_auth_resolves_through_the_api_and_refuses_with_the_contract_text(
         1,
         "the anonymous view is the read"
     );
-    assert!(!server.requests().iter().any(|request| request
-        .headers
-        .contains_key("authorization")));
+    assert!(!server
+        .requests()
+        .iter()
+        .any(|request| request.headers.contains_key("authorization")));
 
     let mut write = options.clone();
     write.required = RequiredAccess::Write;
@@ -1243,38 +1252,58 @@ fn pull_permissions() -> Value {
 
 #[tokio::test]
 async fn public_reads_present_no_credential_and_every_write_presents_it() {
-    let server = StubServer::start(|request| match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/api/v1/repos/owner/name") => json_response(repository_document(pull_permissions())),
-        ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
-        ("GET", "/api/v1/repos/owner/name/issues") => json_response(json!([])),
-        ("GET", "/api/v1/repos/owner/name/issues/1") => json_response(issue_value(1, "One", "open")),
-        ("GET", "/api/v1/repos/owner/name/issues/1/timeline") => json_response(json!([])),
-        ("GET", "/api/v1/repos/owner/name/issues/1/comments") => json_response(json!([])),
-        ("GET", "/api/v1/repos/owner/name/labels") => json_response(json!([{"id": 7, "name": "bug"}])),
-        ("GET", "/api/v1/repos/owner/name/releases") => json_response(json!([])),
-        ("GET", "/api/v1/repos/owner/name/releases/latest") => json_response(json!({
-            "tag_name": "v9.9.9",
-            "draft": false,
-            "published_at": "2026-01-01T00:00:00Z",
-        })),
-        ("POST", "/api/v1/repos/owner/name/issues") => json_response(issue_value(2, "Two", "open")),
-        ("PATCH", "/api/v1/repos/owner/name/issues/1") => json_response(issue_value(1, "One", "closed")),
-        ("POST", "/api/v1/repos/owner/name/labels") => json_response(json!({"id": 8, "name": "goal"})),
-        ("POST", "/api/v1/repos/owner/name/issues/1/labels") => json_response(json!([])),
-        ("POST", "/api/v1/repos/owner/name/releases") => json_response(json!({
-            "tag_name": "v1.0.0",
-            "published_at": "2026-01-01T00:00:00Z",
-        })),
-        _ => text_response(500, "unexpected"),
-    })
-    .await;
+    let server =
+        StubServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => {
+                    json_response(repository_document(pull_permissions()))
+                }
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => json_response(json!([])),
+                ("GET", "/api/v1/repos/owner/name/issues/1") => {
+                    json_response(issue_value(1, "One", "open"))
+                }
+                ("GET", "/api/v1/repos/owner/name/issues/1/timeline") => json_response(json!([])),
+                ("GET", "/api/v1/repos/owner/name/issues/1/comments") => json_response(json!([])),
+                ("GET", "/api/v1/repos/owner/name/labels") => {
+                    json_response(json!([{"id": 7, "name": "bug"}]))
+                }
+                ("GET", "/api/v1/repos/owner/name/releases") => json_response(json!([])),
+                ("GET", "/api/v1/repos/owner/name/releases/latest") => json_response(json!({
+                    "tag_name": "v9.9.9",
+                    "draft": false,
+                    "published_at": "2026-01-01T00:00:00Z",
+                })),
+                ("POST", "/api/v1/repos/owner/name/issues") => {
+                    json_response(issue_value(2, "Two", "open"))
+                }
+                ("PATCH", "/api/v1/repos/owner/name/issues/1") => {
+                    json_response(issue_value(1, "One", "closed"))
+                }
+                ("POST", "/api/v1/repos/owner/name/labels") => {
+                    json_response(json!({"id": 8, "name": "goal"}))
+                }
+                ("POST", "/api/v1/repos/owner/name/issues/1/labels") => json_response(json!([])),
+                ("POST", "/api/v1/repos/owner/name/releases") => json_response(json!({
+                    "tag_name": "v1.0.0",
+                    "published_at": "2026-01-01T00:00:00Z",
+                })),
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
     let transport = default_transport(5_000);
     let options = GiteaCallOptions::default();
     let environment = environment(&[
         ("GITEA_TOKEN", "secret"),
         ("DEVBOARD_GITEA_URL", server.base.as_str()),
     ]);
-    let mut resolve = ResolveOptions::new(Forge::Gitea, "localhost", "owner/name", temp_dir("public-read"));
+    let mut resolve = ResolveOptions::new(
+        Forge::Gitea,
+        "localhost",
+        "owner/name",
+        temp_dir("public-read"),
+    );
     resolve.env = environment.clone();
     resolve.base_url = Some(server.base.clone());
     resolve.gitea_transport = Some(transport.clone());
@@ -1298,9 +1327,15 @@ async fn public_reads_present_no_credential_and_every_write_presents_it() {
     gitea_list_issues(&read_target, IssueQueryState::All, &transport, &options)
         .await
         .expect("list issues");
-    gitea_list_labelled_issues(&read_target, IssueQueryState::All, "bug", &transport, &options)
-        .await
-        .expect("list labelled");
+    gitea_list_labelled_issues(
+        &read_target,
+        IssueQueryState::All,
+        "bug",
+        &transport,
+        &options,
+    )
+    .await
+    .expect("list labelled");
     gitea_issue(&read_target, 1, &transport, &options)
         .await
         .expect("one issue");
@@ -2393,11 +2428,7 @@ async fn list_labelled_asks_the_gitea_forge_for_the_label() {
         .into_iter()
         .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
         .collect();
-    assert_eq!(
-        listed.len(),
-        1,
-        "one short page ends the labelled walk"
-    );
+    assert_eq!(listed.len(), 1, "one short page ends the labelled walk");
     for request in &listed {
         assert!(request.query.contains("state=all"), "{}", request.query);
         assert!(
@@ -2470,11 +2501,7 @@ async fn the_design_forge_asks_the_gitea_forge_for_the_design_label() {
         .into_iter()
         .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
         .collect();
-    assert_eq!(
-        listed.len(),
-        1,
-        "one short page ends the labelled walk"
-    );
+    assert_eq!(listed.len(), 1, "one short page ends the labelled walk");
     for request in &listed {
         assert!(request.query.contains("state=all"), "{}", request.query);
         assert!(request.query.contains("labels=design"), "{}", request.query);
@@ -2601,11 +2628,7 @@ async fn auto_scout_reads_only_the_scout_labelled_set() {
         .into_iter()
         .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
         .collect();
-    assert_eq!(
-        listed.len(),
-        1,
-        "one short page ends the labelled walk"
-    );
+    assert_eq!(listed.len(), 1, "one short page ends the labelled walk");
     for request in &listed {
         assert!(request.query.contains("state=all"), "{}", request.query);
         assert!(request.query.contains("labels=scout"), "{}", request.query);
@@ -3424,7 +3447,10 @@ async fn a_short_page_ends_every_gitea_walk() {
 #[tokio::test]
 async fn release_reads_share_one_walk_per_ttl_and_a_known_tag_never_walks() {
     let server = StubServer::start(|request| {
-        if let Some(tag) = request.path.strip_prefix("/api/v1/repos/owner/name/releases/tags/") {
+        if let Some(tag) = request
+            .path
+            .strip_prefix("/api/v1/repos/owner/name/releases/tags/")
+        {
             return json_response(json!({
                 "tag_name": tag,
                 "draft": false,
@@ -3497,15 +3523,10 @@ async fn release_reads_share_one_walk_per_ttl_and_a_known_tag_never_walks() {
         project: "owner/name".to_string(),
         token: None,
     };
-    let release = devboard::release_cache::release_by_tag(
-        &tagged,
-        "v1.2.3",
-        &transport,
-        &options,
-    )
-    .await
-    .expect("the known tag")
-    .expect("a release");
+    let release = devboard::release_cache::release_by_tag(&tagged, "v1.2.3", &transport, &options)
+        .await
+        .expect("the known tag")
+        .expect("a release");
     assert_eq!(release.tag, "v1.2.3");
     let requests = fresh.requests();
     assert_eq!(requests.len(), 1);

@@ -1,4 +1,5 @@
 import { REPORTS_ENDPOINT } from "../../lib/endpoints.ts";
+import { queryClient } from "./query-client";
 
 /**
  * The client side of the report resource. `POST /reports` answers as soon as
@@ -163,10 +164,20 @@ export async function delivered(
     await cadence.promise;
     let response: Response;
     try {
-      response = await fetchImpl(href, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        cache: "no-store",
+      // The report record is a backend resource like any other: it is read
+      // through the query cache, keyed by its own href, and never fetched by
+      // the caller.
+      response = await queryClient.fetchQuery({
+        queryKey: ["report", href],
+        queryFn: () =>
+          fetchImpl(href, {
+            method: "GET",
+            headers: { accept: "application/json" },
+            cache: "no-store",
+          }),
+        staleTime: 0,
+        gcTime: 0,
+        retry: false,
       });
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };

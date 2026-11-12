@@ -1433,8 +1433,7 @@ pub async fn gitea_repository(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<GiteaRepository, GiteaError> {
-    let document =
-        gitea_json(target, &repo_path(target), None, transport, options).await?;
+    let document = gitea_json(target, &repo_path(target), None, transport, options).await?;
     Ok(GiteaRepository { document })
 }
 

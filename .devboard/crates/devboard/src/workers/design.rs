@@ -1979,17 +1979,15 @@ async fn gitea_releases(
         flow_id: None,
         timeout_ms: Some(timeout_ms),
     };
-    Ok(
-        crate::release_cache::list(&target, &transport, &options)
-            .await
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(|release| ForgeRelease {
-                tag: release.tag,
-                published_at: release.published_at,
-            })
-            .collect(),
-    )
+    Ok(crate::release_cache::list(&target, &transport, &options)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|release| ForgeRelease {
+            tag: release.tag,
+            published_at: release.published_at,
+        })
+        .collect())
 }
 
 impl DesignForge for LiveDesignForge {

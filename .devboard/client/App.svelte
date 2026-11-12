@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { QueryClientProvider } from "@tanstack/svelte-query";
   import { Pane, PaneGroup } from "paneforge";
   import { Tooltip } from "bits-ui";
   import ActivityBar from "./lib/components/ActivityBar.svelte";
@@ -13,7 +14,8 @@
   import IssuesWorkspace from "./lib/components/IssuesWorkspace.svelte";
   import NotificationRegion from "./lib/components/NotificationRegion.svelte";
   import PaneHandle from "./lib/components/PaneHandle.svelte";
-  import PollScheduler from "./lib/components/PollScheduler.svelte";
+  import CommandMutations from "./lib/components/CommandMutations.svelte";
+  import QueryPlan from "./lib/components/QueryPlan.svelte";
   import ProvidersDialog from "./lib/components/ProvidersDialog.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
@@ -34,6 +36,7 @@
   import { fileSlowUiAction } from "./lib/notification-issue";
   import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
+  import { installVisibilityCadence, queryClient } from "./lib/query-client";
   import { resources } from "./lib/resources.svelte";
   import { slowUiAction, type SlowUiActionContext } from "./lib/slow-ui-action";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
@@ -325,6 +328,7 @@
       });
     }
     viewport.update();
+    const stopCadence = installVisibilityCadence();
     const onResize = () => viewport.update();
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", handleKeydown, true);
@@ -368,6 +372,7 @@
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", handleKeydown, true);
+      stopCadence();
       slowUiAction.reset();
       connection.dispose();
     };
@@ -418,6 +423,8 @@
 <svelte:head>
   <title>{connection.projectPath.trim().length > 0 ? connection.projectPath : "Devboard"}</title>
 </svelte:head>
+
+<QueryClientProvider client={queryClient}>
 
 {#if !viewport.supported}
   <div class="unsupported" data-testid="unsupported-viewport" role="alert">
@@ -498,7 +505,8 @@
 
 <CommandPalette open={paletteOpen} {commands} onclose={closePalette} />
 
-<PollScheduler />
+<QueryPlan />
+<CommandMutations />
 
 <Tooltip.Provider>
   <NotificationRegion feedbackenabled={connection.feedbackEnabled} />
@@ -511,3 +519,4 @@
   bind:phase={reportPhase}
   bind:action={reportAction}
 />
+</QueryClientProvider>

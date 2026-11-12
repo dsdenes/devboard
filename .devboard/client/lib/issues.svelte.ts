@@ -1,4 +1,5 @@
 import { connection } from "./connection.svelte";
+import { queryClient } from "./query-client";
 import { queueCounts } from "./issues-queue";
 import { notifications } from "./notifications.svelte";
 import type {
@@ -340,11 +341,14 @@ export class IssuesStore {
    * free to retry instead of claiming a request that never happened.
    */
   openRun(runId: string): void {
-    if (!connection.send({ type: "getIssuesRun", runId })) return;
+    if (!connection.open) return;
     this.selectedRun = runId;
     this.requestedRun = runId;
     this.run = null;
     this.runError = null;
+    // The selected run is a query in the plan; opening it re-reads the stored
+    // history instead of sending a per-feature request.
+    void queryClient.invalidateQueries({ queryKey: ["getIssuesRun", runId] });
   }
 
   /**

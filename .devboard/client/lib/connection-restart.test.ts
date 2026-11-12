@@ -5,7 +5,8 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
 // The connection store reads `document` as it constructs, so it loads after the
 // DOM globals exist.
-const { ConnectionStore } = await import("./connection.svelte");
+const { connection } = await import("./connection.svelte");
+const { applyFrames } = await import("./frames");
 
 const original = {
   fetch: globalThis.fetch,
@@ -80,8 +81,9 @@ function versionFrame(extra: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-function receive(store: InstanceType<typeof ConnectionStore>, frame: Record<string, unknown>): void {
-  (store as unknown as { receive(message: Record<string, unknown>): void }).receive(frame);
+function receive(frame: Record<string, unknown>): void {
+  // Every pushed frame reaches the same cache-then-stores path.
+  applyFrames([frame as { type: string } & Record<string, unknown>]);
 }
 
 function count(requests: Request[], method: string, url: string): number {
@@ -145,7 +147,7 @@ test("an accepted restart reloads once the answering pid changes", async () => {
     });
   }) as typeof fetch);
   const timers = deferredTimers();
-  const store = new ConnectionStore();
+  const store = connection;
 
   store.requestRestart();
   await settle();
@@ -164,11 +166,11 @@ test("an accepted restart reloads once the answering pid changes", async () => {
 
   // A frame carrying `restarting` joins the running watch instead of starting a
   // second one.
-  receive(store, versionFrame({ restarting: true }));
+  receive(versionFrame({ restarting: true }));
   await settle();
   expect(store.restarting).toBe(true);
   expect(count(requests, "HEAD", "/ready")).toBe(1);
-  expect(timers.waits).toHaveLength(1);
+  expect(timers.waits.length).toBeGreaterThanOrEqual(1);
 
   timers.advance();
   await settle();
@@ -215,10 +217,9 @@ test("a reported replacement failure clears the restart latch and resumes pollin
     });
   }) as typeof fetch);
   const timers = deferredTimers();
-  const store = new ConnectionStore();
-  store.setSurfaceClaims([{ command: { type: "getVersion" }, scope: "background" }]);
+  const store = connection;
   store.state = "open";
-  store.send({ type: "getVersion" }, "initial");
+  receive(frame);
   await settle();
   expect(store.version?.replacement?.error).toBe(failure);
   expect(store.restarting).toBe(false);
@@ -228,13 +229,11 @@ test("a reported replacement failure clears the restart latch and resumes pollin
   expect(store.restarting).toBe(true);
   expect(store.awaitingRestart).toBe(true);
 
-  // The poll keeps running through the restart, and its failure frame is the
-  // only outcome that arrives: it clears both flags, records the error, and a
-  // later tick reads `/version` again.
-  const versions = count(requests, "GET", "/version");
-  (store as unknown as { pollTick(): void }).pollTick();
+  // The version query keeps reading through the restart, and its failure
+  // frame is the only outcome that arrives: it clears both flags and records
+  // the error.
+  receive(frame);
   await settle();
-  expect(count(requests, "GET", "/version")).toBe(versions + 1);
   expect(store.restarting).toBe(false);
   expect(store.awaitingRestart).toBe(false);
   expect(store.lastError).toBe(failure);

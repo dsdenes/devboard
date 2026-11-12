@@ -1,4 +1,6 @@
 import { connection } from "./connection.svelte";
+import { queryClient } from "./query-client";
+import { postJson } from "./rest-transport";
 import { slowUiAction } from "./slow-ui-action";
 import { GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
 import { draftPathFromHref } from "../../lib/goal-proposals.ts";
@@ -141,8 +143,7 @@ export class GoalDraftsStore {
   }
 
   refreshDrafts(): void {
-    if (!connection.open) return;
-    connection.send({ type: "getGoalDrafts" });
+    void queryClient.invalidateQueries({ queryKey: ["getGoalDrafts"] });
   }
 
   openDraft(path: string): void {
@@ -151,10 +152,10 @@ export class GoalDraftsStore {
     this.draft = null;
     delete this.draftErrors[path];
     writeDraftPath(path);
-    if (connection.open) {
-      this.draftReading = path;
-      connection.send({ type: "getGoalDraft", path });
-    }
+    this.draftReading = path;
+    // The selected draft is a one-shot query in the plan; opening it asks for
+    // the stored document instead of a per-feature request path.
+    void queryClient.invalidateQueries({ queryKey: ["getGoalDraft", path] });
   }
 
   /**
@@ -233,23 +234,19 @@ export class GoalDraftsStore {
     this.draftCreateError = null;
     const action = slowUiAction.dispatchHttp(`POST ${GOAL_PROPOSALS_ENDPOINT}`);
     try {
-      const response = await fetch(GOAL_PROPOSALS_ENDPOINT, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ report }),
-      });
+      const reply = await postJson(GOAL_PROPOSALS_ENDPOINT, { report });
       action?.complete();
-      const body = (await response.json().catch(() => null)) as {
+      const body = reply.body as {
         links?: { draft?: { href?: unknown } };
         detail?: unknown;
       } | null;
       const href = body?.links?.draft?.href;
       const path = typeof href === "string" ? draftPathFromHref(href) : null;
-      if (!response.ok || path === null) {
+      if (!reply.ok || path === null) {
         this.draftCreateError =
           typeof body?.detail === "string"
             ? body.detail
-            : `The server refused the draft (${response.status}).`;
+            : `The server refused the draft (${reply.status}).`;
         return false;
       }
       this.draftCreateOpen = false;

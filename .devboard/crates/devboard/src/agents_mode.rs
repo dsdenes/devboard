@@ -10030,20 +10030,20 @@ mod gitea_preflight_tests {
                 &json!({"message": "service unavailable"}),
             )),
             Ok(json_response(200, &json!([{"id": 7, "name": "dead-code"}]))),
-            Ok(json_response(200, &json!([]))),
         ]);
         let labels = gitea_labels_within(PreflightBudget::new(5_000), &target(), &transport)
             .await
             .expect("the second attempt reads the labels");
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].name, "dead-code");
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // The retried page is short, so it is the last page: the walk ends
+        // without asking for an empty one.
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(
             urls.lock().expect("urls").as_slice(),
             [
                 "http://forge.test/api/v1/repos/acme/fixture/labels?limit=50&page=1",
                 "http://forge.test/api/v1/repos/acme/fixture/labels?limit=50&page=1",
-                "http://forge.test/api/v1/repos/acme/fixture/labels?limit=50&page=2",
             ]
         );
     }

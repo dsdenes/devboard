@@ -392,9 +392,11 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
 
 #[tokio::test]
 async fn forge_gitea_defaults_the_host_to_the_configured_gitea_address() {
-    let server =
-        StubServer::start(private_gitea_handler(json!({"pull": true, "push": true}), "alice"))
-            .await;
+    let server = StubServer::start(private_gitea_handler(
+        json!({"pull": true, "push": true}),
+        "alice",
+    ))
+    .await;
     let root = git_repo("configured-host", None);
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "configured-secret"),
@@ -484,9 +486,11 @@ async fn a_foreign_explicit_host_is_refused_without_contacting_the_configured_gi
 
 #[tokio::test]
 async fn gitea_token_precedence_follows_the_configured_order() {
-    let server =
-        StubServer::start(private_gitea_handler(json!({"pull": true, "push": true}), "alice"))
-            .await;
+    let server = StubServer::start(private_gitea_handler(
+        json!({"pull": true, "push": true}),
+        "alice",
+    ))
+    .await;
     let root = git_repo("token-order", None);
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "preferred-token"),
@@ -513,17 +517,25 @@ async fn gitea_token_precedence_follows_the_configured_order() {
     );
     let outcome = forge_auth::execute(&parsed, &context).await;
     assert_eq!(outcome.exit_code, 0);
-    assert_eq!(
-        server.authorization("/api/v1/repos/owner/name").as_deref(),
-        Some("token preferred-token")
-    );
+    // The read first asks the anonymous view, which a private repository
+    // refuses, then presents the configured credential in its documented
+    // order. Both tokens never reach the wire at once.
+    let presented: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name")
+        .filter_map(|request| request.headers.get("authorization").cloned())
+        .collect();
+    assert_eq!(presented, vec!["token preferred-token".to_string()]);
     assert_eq!(json_of(&outcome)["source"], json!("GITEA_TOKEN"));
     assert_no_token(&outcome, "preferred-token");
     assert_no_token(&outcome, "fallback-token");
 
-    let fallback_server =
-        StubServer::start(private_gitea_handler(json!({"pull": true, "push": true}), "alice"))
-            .await;
+    let fallback_server = StubServer::start(private_gitea_handler(
+        json!({"pull": true, "push": true}),
+        "alice",
+    ))
+    .await;
     let fallback_environment = forge::environment(&[
         ("DEVBOARD_GITEA_TOKEN", "fallback-token"),
         ("DEVBOARD_GITEA_URL", fallback_server.base.as_str()),
@@ -552,9 +564,13 @@ async fn gitea_token_precedence_follows_the_configured_order() {
     assert_eq!(fallback.exit_code, 0);
     assert_eq!(
         fallback_server
-            .authorization("/api/v1/repos/owner/name")
-            .as_deref(),
-        Some("token fallback-token")
+            .requests()
+            .iter()
+            .filter(|request| request.path == "/api/v1/repos/owner/name")
+            .filter_map(|request| request.headers.get("authorization"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["token fallback-token"]
     );
     assert_no_token(&fallback, "fallback-token");
 }

@@ -46,6 +46,7 @@
   },
   "dependencies": {
     "@adrkit/core": "0.20.0",
+    "@tanstack/svelte-query": "^6.4.1",
     "diff2html": "^3.4.56",
     "dompurify": "^3.4.17",
     "marked": "^18.1.1"

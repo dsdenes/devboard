@@ -8,8 +8,16 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // static import would load the rune modules first and capture the wrong
 // document.
 const { cleanup, render } = await import("@testing-library/svelte");
-const { default: PollScheduler } = await import("./components/PollScheduler.svelte");
+const { default: QueryHarness } = await import("./components/QueryHarness.svelte");
 const { connection } = await import("./connection.svelte");
+const { queryClient } = await import("./query-client");
+const { installVisibilityCadence } = await import("./query-client");
+const { plannedQueries } = await import("./poll-plan");
+const { goalDrafts } = await import("./goal-drafts.svelte");
+
+// The app root installs the visibility cadence; the plan tests read the same
+// focus state the page uses to stop while hidden.
+installVisibilityCadence();
 const { layout } = await import("./layout.svelte");
 const { agents } = await import("./agents.svelte");
 const { issues } = await import("./issues.svelte");
@@ -50,6 +58,15 @@ class Clock {
     clearTimeout: (id: number): boolean => this.timers.delete(id),
   };
 
+  /** Installs the clock as the platform timers too: the query core schedules
+   * its own intervals through the global functions. */
+  installGlobals(): void {
+    setGlobal("setInterval", this.window.setInterval);
+    setGlobal("clearInterval", this.window.clearInterval);
+    setGlobal("setTimeout", this.window.setTimeout);
+    setGlobal("clearTimeout", this.window.clearTimeout);
+  }
+
   private add(handler: () => void, ms: number, every: number): number {
     const id = this.next;
     this.next += 1;
@@ -85,6 +102,12 @@ class Clock {
 const realWindow = (globalThis as unknown as Record<string, unknown>).window;
 const realFetch = globalThis.fetch;
 const realNow = Date.now;
+const realTimers = {
+  setInterval: globalThis.setInterval,
+  clearInterval: globalThis.clearInterval,
+  setTimeout: globalThis.setTimeout,
+  clearTimeout: globalThis.clearTimeout,
+};
 
 function setGlobal(key: string, value: unknown): void {
   Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -94,6 +117,7 @@ function setGlobal(key: string, value: unknown): void {
 function recordPaths(): string[] {
   const paths: string[] = [];
   setGlobal("fetch", async (input: RequestInfo | URL) => {
+    if (process.env.DEVBOARD_TRACE_READS) console.trace("fetch", String(input));
     paths.push(String(input));
     return new Response(JSON.stringify({ frames: [] }), {
       status: 200,
@@ -149,13 +173,15 @@ async function openPage(
 ): Promise<Page> {
   const clock = new Clock();
   setGlobal("window", clock.window);
+  clock.installGlobals();
   Date.now = () => clock.now;
+  queryClient.clear();
   const held = transport === "held" ? holdReads() : null;
   const paths = held === null ? recordPaths() : null;
   layout.reset();
   layout.setMode(mode);
   if (tab !== undefined) layout.openTab(mode, tab);
-  render(PollScheduler);
+  render(QueryHarness);
   await settle();
   connection.connect();
   await settle();
@@ -258,10 +284,18 @@ function hideDocument(hidden: boolean): void {
 
 afterEach(() => {
   cleanup();
+  queryClient.clear();
   connection.dispose();
+  connection.state = "closed";
   layout.reset();
   agents.snapshots = {};
+  agents.requestedPrompts = [];
+  goalDrafts.clearDraft();
   issues.snapshot = null;
+  issues.selectedRun = null;
+  issues.run = null;
+  issues.runError = null;
+  issues.resetActiveOperations();
   flow.status = "none";
   flow.goalCreation = null;
   discover.active = false;
@@ -270,6 +304,10 @@ afterEach(() => {
   Date.now = realNow;
   setGlobal("window", realWindow);
   setGlobal("fetch", realFetch);
+  setGlobal("setInterval", realTimers.setInterval);
+  setGlobal("clearInterval", realTimers.clearInterval);
+  setGlobal("setTimeout", realTimers.setTimeout);
+  setGlobal("clearTimeout", realTimers.clearTimeout);
   Reflect.deleteProperty(document, "visibilityState");
   Reflect.deleteProperty(document, "hidden");
 });
@@ -471,22 +509,20 @@ test("cadence reads a newly opened tab at once and stops it when it closes", asy
   expect(reads(page.paths, "/mcp-tools")).toBe(1);
 });
 
-test("cadence drops a read queued when its surface closed", async () => {
-  const page = await openPage("goal", GOAL_IMPLEMENTATION, "held");
-  // The page's reserved three connections are busy, so the rest of the plan
-  // waits in the queue.
-  expect(page.paths.length).toBe(3);
-
-  layout.setMode("devboard");
-  layout.openTab("devboard", DEVBOARD_MCP);
-  await settle();
-  expect(page.paths).not.toContain("/mcp-tools");
+test("cadence stops reading a resource whose surface closed", async () => {
+  const page = await openPage("devboard", DEVBOARD_MCP);
+  await page.clock.advance(2_000);
+  expect(reads(page.paths, "/mcp-tools")).toBe(1);
 
   layout.setMode("goal");
+  layout.openTab("goal", GOAL_IMPLEMENTATION);
   await settle();
-  await page.release?.();
-  await page.clock.advance(60_000);
-  expect(page.paths).not.toContain("/mcp-tools");
+  expect(
+    plannedQueries().some((query) => query.command.type === "getMcpTools"),
+  ).toBe(false);
+
+  await page.clock.advance(120_000);
+  expect(reads(page.paths, "/mcp-tools")).toBe(1);
 });
 
 test("cadence issues nothing while the document is hidden", async () => {
@@ -495,6 +531,8 @@ test("cadence issues nothing while the document is hidden", async () => {
   const recorded = page.paths.length;
 
   hideDocument(true);
+  document.dispatchEvent(new DomEvent("visibilitychange") as unknown as Event);
+  await settle();
   await page.clock.advance(60_000);
   expect(page.paths.length).toBe(recorded);
 

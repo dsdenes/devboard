@@ -14,11 +14,14 @@
 import { agentRegistry } from "../../lib/agent-registry.ts";
 import type { AgentSnapshot } from "./types";
 import { agents } from "./agents.svelte";
+import { connection } from "./connection.svelte";
 import { discover } from "./discover.svelte";
 import { flow } from "./flow.svelte";
+import { goalDrafts } from "./goal-drafts.svelte";
 import { issues } from "./issues.svelte";
 import { layout } from "./layout.svelte";
-import type { PollScope } from "./cadence";
+import { ONE_SHOT_READS, cadenceFor, type PollScope } from "./cadence";
+import { REST_OPERATIONS, resourcePath } from "./rest-map";
 
 /** One resource one surface shows, and the scope that surface earns. */
 export interface PollClaim {
@@ -150,4 +153,90 @@ function agentLive(id: string): boolean {
   if (snapshot === null) return false;
   if (snapshot.paused === true) return true;
   return LIVE_AGENT_LIFECYCLES[snapshot.lifecycle] === true;
+}
+
+/**
+ * The one-shot reads: a surface that shows a document once as it opens.
+ *
+ * A document is not a cadence: the project path is read on an open, a draft's
+ * text when its page opens, a run's history when its tab opens, and an agent's
+ * prompt when its section opens. Each is still a query, enabled while the
+ * surface shows it and reading nothing after it closes.
+ */
+export function oneShotClaims(): PollClaim[] {
+  const claims: PollClaim[] = [{ command: { type: "getProject" }, scope: "background" }];
+  if (goalDrafts.draftPath !== null) {
+    claims.push({
+      command: { type: "getGoalDraft", path: goalDrafts.draftPath },
+      scope: "background",
+    });
+  }
+  if (issues.selectedRun !== null) {
+    claims.push({ command: { type: "getIssuesRun", runId: issues.selectedRun }, scope: "body" });
+  }
+  for (const id of agents.requestedPrompts) {
+    claims.push({ command: { type: "getAgentPrompt", id }, scope: "background" });
+  }
+  return claims;
+}
+
+/** One query the mounted surfaces need, with its effective cadence. */
+export interface PlannedQuery {
+  /** The cache key: the operation and its path parameters. */
+  key: string;
+  command: PollClaim["command"];
+  /** The finest nonzero cadence among the claiming surfaces; 0 for a one-shot. */
+  interval: number;
+  /** True while the connection is open and a surface shows the resource. */
+  enabled: boolean;
+  /** True when the resource is a document read once, not a cadence. */
+  once: boolean;
+}
+
+/**
+ * The queries the surfaces on screen need, one per resource.
+ *
+ * Two surfaces showing one resource share one query: the entry's cadence is
+ * the smallest nonzero cadence among them, so the finer cadence wins and the
+ * resource is read once per interval rather than once per surface. A resource
+ * no surface shows is absent, and a resource that is only a one-shot document
+ * carries no interval.
+ */
+export function plannedQueries(): PlannedQuery[] {
+  const grouped = new Map<
+    string,
+    { command: PollClaim["command"]; scopes: PollScope[]; once: boolean }
+  >();
+  for (const claim of [...pollClaims(), ...oneShotClaims()]) {
+    const operation = REST_OPERATIONS[claim.command.type];
+    if (operation === undefined || operation.method !== "GET") continue;
+    const key = `${claim.command.type}:${resourcePath(claim.command, operation)}`;
+    const entry = grouped.get(key);
+    const oneShot = ONE_SHOT_READS[claim.command.type] === true;
+    if (entry === undefined) {
+      grouped.set(key, { command: claim.command, scopes: [claim.scope], once: oneShot });
+    } else {
+      entry.command = claim.command;
+      if (!entry.scopes.includes(claim.scope)) entry.scopes.push(claim.scope);
+      entry.once = entry.once && oneShot;
+    }
+  }
+  const open = connection.open;
+  const queries: PlannedQuery[] = [];
+  for (const [key, entry] of grouped) {
+    let interval = 0;
+    for (const scope of entry.scopes) {
+      const cadence = cadenceFor(entry.command.type, scope);
+      if (cadence === 0) continue;
+      if (interval === 0 || cadence < interval) interval = cadence;
+    }
+    queries.push({
+      key,
+      command: entry.command,
+      interval,
+      enabled: open && (interval > 0 || entry.once),
+      once: entry.once,
+    });
+  }
+  return queries;
 }

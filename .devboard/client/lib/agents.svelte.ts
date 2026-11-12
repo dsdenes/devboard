@@ -12,6 +12,7 @@ import type {
   RunQuestion,
 } from "./types";
 import { connection } from "./connection.svelte";
+import { queryClient } from "./query-client";
 import { notifications } from "./notifications.svelte";
 import { saveFeedback } from "./save-feedback.svelte";
 
@@ -56,6 +57,8 @@ export class AgentsStore {
   activity = $state<Record<string, string[]>>({});
   activityScan = $state<Record<string, string | null>>({});
   prompts = $state<Record<string, AgentPromptState>>({});
+  /** Agents whose prompt section is open: one document read per agent. */
+  requestedPrompts = $state<string[]>([]);
   /** A refused prompt read's text, cleared when that agent's prompt arrives. */
   promptErrors = $state<Record<string, string>>({});
   private readonly seen = new Set<string>();
@@ -177,8 +180,17 @@ export class AgentsStore {
    * it opens — the document is static, and nothing polls it.
    */
   readPrompt(id: string): void {
-    if (!connection.open) return;
-    connection.send({ type: "getAgentPrompt", id });
+    if (!this.requestedPrompts.includes(id)) {
+      this.requestedPrompts = [...this.requestedPrompts, id];
+    }
+    // The prompt is static, but opening the section again asks for its current
+    // document: the query's cached copy is invalidated, not re-read by a store.
+    void queryClient.invalidateQueries({ queryKey: ["getAgentPrompt", id] });
+  }
+
+  /** The prompt section closed; nothing shows that document any more. */
+  forgetPrompt(id: string): void {
+    this.requestedPrompts = this.requestedPrompts.filter((agent) => agent !== id);
   }
 
   handleEvent(message: Record<string, unknown>): void {

@@ -1,6 +1,7 @@
 import { GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
 import { draftPathFromHref } from "../../lib/goal-proposals.ts";
 import { beginReport, type Filing } from "./report-resource.ts";
+import { postJson } from "./rest-transport";
 import { slowUiAction } from "./slow-ui-action";
 
 /**
@@ -24,14 +25,12 @@ type Reply = { response: Response; body: ReplyBody } | { error: string };
 async function post(payload: object): Promise<Reply> {
   const action = slowUiAction.dispatchHttp(`POST ${GOAL_PROPOSALS_ENDPOINT}`);
   try {
-    const response = await fetch(GOAL_PROPOSALS_ENDPOINT, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const reply = await postJson(GOAL_PROPOSALS_ENDPOINT, payload);
     action?.complete();
-    const body = (await response.json().catch(() => null)) as ReplyBody;
-    return { response, body };
+    return {
+      response: { ok: reply.ok, status: reply.status } as Response,
+      body: reply.body as ReplyBody,
+    };
   } catch (error) {
     action?.complete();
     return { error: error instanceof Error ? error.message : String(error) };

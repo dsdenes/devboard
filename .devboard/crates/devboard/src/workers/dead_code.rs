@@ -1669,17 +1669,15 @@ impl ReleaseClient {
                     crate::forge::gitea_read_target(base_url, project, environment, transport)
                         .await
                         .map_err(|error| error.message)?;
-                Ok(
-                    crate::release_cache::list(&target, transport, options)
-                        .await
-                        .map_err(|error| error.message)?
-                        .into_iter()
-                        .map(|release| Release {
-                            tag: release.tag,
-                            published_at: release.published_at,
-                        })
-                        .collect(),
-                )
+                Ok(crate::release_cache::list(&target, transport, options)
+                    .await
+                    .map_err(|error| error.message)?
+                    .into_iter()
+                    .map(|release| Release {
+                        tag: release.tag,
+                        published_at: release.published_at,
+                    })
+                    .collect())
             }
         }
     }

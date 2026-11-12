@@ -57,6 +57,7 @@ export const ONE_SHOT_READS: Readonly<Record<string, true>> = {
   getGoalDraft: true,
   getAgent: true,
   getAgentPrompt: true,
+  getIssuesRun: true,
 };
 
 /** The table's cadence for one operation shown by one scope; 0 means never. */

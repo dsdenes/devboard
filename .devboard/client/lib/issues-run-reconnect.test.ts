@@ -1,122 +1,48 @@
 import { afterEach, expect, test } from "bun:test";
-import { connection } from "./connection.svelte";
-import { IssuesStore } from "./issues.svelte";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
-interface FakeEnvelope {
-  data: string;
+if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+
+const { cleanup, render } = await import("@testing-library/svelte");
+const { default: QueryHarness } = await import("./components/QueryHarness.svelte");
+const { connection } = await import("./connection.svelte");
+const { applyFrames } = await import("./frames");
+const { issues } = await import("./issues.svelte");
+const { queryClient } = await import("./query-client");
+
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 60; turn += 1) await Promise.resolve();
 }
 
-/** Stands in for the browser socket so a reopen is an explicit event. */
-class FakeSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-  static instances: FakeSocket[] = [];
+const realWindow = (globalThis as unknown as Record<string, unknown>).window;
 
-  readyState = FakeSocket.CONNECTING;
-  onopen: (() => void) | null = null;
-  onmessage: ((event: FakeEnvelope) => void) | null = null;
-  onerror: (() => void) | null = null;
-  onclose: (() => void) | null = null;
-  sent: string[] = [];
-
-  constructor(readonly url: string) {
-    FakeSocket.instances.push(this);
-  }
-
-  send(data: string): void {
-    this.sent.push(data);
-  }
-
-  close(): void {
-    this.readyState = FakeSocket.CLOSED;
-    this.onclose?.();
-  }
-
-  open(): void {
-    this.readyState = FakeSocket.OPEN;
-    this.onopen?.();
-  }
-
-  deliver(message: Record<string, unknown>): void {
-    this.onmessage?.({ data: JSON.stringify(message) });
-  }
-
-  get runRequests(): string[] {
-    return this.sent.filter((frame) => frame.includes('"getIssuesRun"'));
-  }
+function setGlobal(key: string, value: unknown): void {
+  Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
 }
 
-interface InstalledGlobals {
-  WebSocket?: unknown;
-  window: unknown;
-  location?: unknown;
-}
-
-const originalGlobals: InstalledGlobals = {
-  WebSocket: (globalThis as unknown as Record<string, unknown>).WebSocket,
-  window: (globalThis as unknown as Record<string, unknown>).window,
-  location: (globalThis as unknown as Record<string, unknown>).location,
-};
-
-function installGlobals(values: InstalledGlobals): void {
-  const target = globalThis as unknown as Record<string, unknown>;
-  if (values.WebSocket !== undefined) target.WebSocket = values.WebSocket;
-  target.window = values.window;
-  if (values.location !== undefined) target.location = values.location;
-}
-
-function restoreGlobals(): void {
-  const target = globalThis as unknown as Record<string, unknown>;
-  for (const [key, value] of Object.entries(originalGlobals)) {
-    if (value === undefined) delete target[key];
-    else target[key] = value;
-  }
-}
-
-/** A window whose retry timer never reconnects on its own. */
-function fakeWindow(): Record<string, unknown> {
-  return {
-    setTimeout: () => 0,
-    clearTimeout: () => undefined,
-    setInterval: () => 0,
-    clearInterval: () => undefined,
-  };
-}
-
-/** One store per test, wired to the socket singleton the store sends on. */
-let store: IssuesStore;
-
-function wire(): void {
-  FakeSocket.instances = [];
-  installGlobals({
-    WebSocket: FakeSocket as unknown as typeof WebSocket,
-    window: fakeWindow(),
-    location: { protocol: "http:", host: "test.invalid" },
+/** The page the plan mounts; every run read is one fetch of its path. */
+function installFetch(): string[] {
+  const reads: string[] = [];
+  setGlobal("fetch", async (input: RequestInfo | URL) => {
+    reads.push(String(input));
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   });
-  store = new IssuesStore();
+  setGlobal("window", {
+    setInterval: () => 1,
+    clearInterval: () => undefined,
+    setTimeout: () => 1,
+    clearTimeout: () => undefined,
+  });
+  setGlobal("location", { protocol: "http:", host: "test.invalid", reload: () => undefined });
+  return reads;
 }
 
-// The open handler is the reconnect reset App.svelte installs.
-connection.onOpen(() => store.resetActiveOperations());
-connection.onMessage((message) => {
-  store.handleEvent(message as Record<string, unknown>);
-});
-
-function reconnect(): FakeSocket {
-  connection.connect();
-  const socket = FakeSocket.instances[FakeSocket.instances.length - 1];
-  if (socket === undefined) throw new Error("no socket created");
-  socket.open();
-  return socket;
+function runReads(reads: readonly string[], runId: string): number {
+  return reads.filter((path) => path === `/issues/runs/${runId}`).length;
 }
-
-afterEach(() => {
-  connection.dispose();
-  FakeSocket.instances = [];
-  restoreGlobals();
-});
 
 /** A run that already ended: its snapshot lists it as history, not a live agent. */
 function finishedState(): Record<string, unknown> {
@@ -164,81 +90,107 @@ function finishedRun(): Record<string, unknown> {
   };
 }
 
-test("a reconnect re-requests a run whose history answer was lost", () => {
-  wire();
-  const first = reconnect();
-  first.deliver(finishedState());
+// The reconnect reset App.svelte installs: a lost answer is asked for again.
+connection.onOpen(() => issues.resetActiveOperations());
+connection.onMessage((message) => issues.handleEvent(message as Record<string, unknown>));
 
-  // The focus tab's effect reads the history, and the answer never lands.
-  store.loadRun("run-42");
-  expect(first.runRequests.length).toBe(1);
-  expect(store.run).toBeNull();
+async function openPage(): Promise<string[]> {
+  const reads = installFetch();
+  render(QueryHarness);
+  connection.connect();
+  await settle();
+  applyFrames([finishedState() as { type: string } & Record<string, unknown>]);
+  await settle();
+  return reads;
+}
 
-  first.close();
-  const second = reconnect();
+/** A reconnect revalidates every shown resource, once. */
+async function reconnect(): Promise<void> {
+  connection.connect();
+  await settle();
+}
 
-  store.loadRun("run-42");
-  expect(second.runRequests.length).toBe(1);
+afterEach(() => {
+  cleanup();
+  queryClient.clear();
+  connection.dispose();
+  issues.selectedRun = null;
+  issues.run = null;
+  issues.runError = null;
+  issues.resetActiveOperations();
+  setGlobal("window", realWindow);
+});
 
-  second.deliver({ type: "issuesRun", run: finishedRun() });
-  expect(store.run?.activityLines).toEqual(["$ cargo test", "2 passed"]);
-  expect(store.runError).toBeNull();
+test("a reconnect re-requests a run whose history answer was lost", async () => {
+  const reads = await openPage();
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(1);
+  expect(issues.run).toBeNull();
+
+  await reconnect();
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(2);
+
+  applyFrames([{ type: "issuesRun", run: finishedRun() }]);
+  expect(issues.run?.activityLines).toEqual(["$ cargo test", "2 passed"]);
+  expect(issues.runError).toBeNull();
 
   // The answered detail is what the next effect pass reads; it asks again
   // only after another reconnect.
-  store.loadRun("run-42");
-  expect(second.runRequests.length).toBe(1);
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(2);
 });
 
-test("an unanswered run asks once per open transition, never per render", () => {
-  wire();
-  const first = reconnect();
-  first.deliver(finishedState());
+test("an unanswered run asks once per open transition, never per render", async () => {
+  const reads = await openPage();
 
   // The effect re-runs on every snapshot poll while the answer is missing.
-  store.loadRun("run-42");
-  store.loadRun("run-42");
-  store.loadRun("run-42");
-  expect(first.runRequests.length).toBe(1);
+  issues.loadRun("run-42");
+  issues.loadRun("run-42");
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(1);
 
-  first.close();
-  const second = reconnect();
-  store.loadRun("run-42");
-  store.loadRun("run-42");
-  expect(second.runRequests.length).toBe(1);
+  await reconnect();
+  issues.loadRun("run-42");
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(2);
 });
 
-test("a missing run asks once per open transition and then stays unavailable", () => {
-  wire();
-  const first = reconnect();
-  first.deliver(finishedState());
+test("a missing run asks once per open transition and then stays unavailable", async () => {
+  const reads = await openPage();
 
-  store.loadRun("run-gone");
-  first.deliver({ type: "issuesRunMissing", runId: "run-gone", message: "No such issues run." });
-  expect(store.runError).toBe("No such issues run.");
+  issues.loadRun("run-gone");
+  await settle();
+  applyFrames([
+    { type: "issuesRunMissing", runId: "run-gone", message: "No such issues run." },
+  ]);
+  expect(issues.runError).toBe("No such issues run.");
 
-  store.loadRun("run-gone");
-  store.loadRun("run-gone");
-  expect(first.runRequests.length).toBe(1);
+  issues.loadRun("run-gone");
+  await settle();
+  expect(runReads(reads, "run-gone")).toBe(1);
 
-  first.close();
-  const second = reconnect();
-  store.loadRun("run-gone");
-  expect(second.runRequests.length).toBe(1);
+  await reconnect();
+  issues.loadRun("run-gone");
+  await settle();
+  expect(runReads(reads, "run-gone")).toBe(2);
 });
 
-test("a request the closed socket refused leaves the run free to ask again", () => {
-  wire();
-  // A socket that has not opened yet answers every send as refused.
+test("a request the closed socket refused leaves the run free to ask again", async () => {
+  const reads = await openPage();
+  connection.dispose();
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(0);
+
   connection.connect();
-  const socket = FakeSocket.instances[FakeSocket.instances.length - 1];
-  if (socket === undefined) throw new Error("no socket created");
-
-  store.loadRun("run-42");
-  expect(socket.runRequests.length).toBe(0);
-  expect(store.selectedRun).toBeNull();
-
-  socket.open();
-  store.loadRun("run-42");
-  expect(socket.runRequests.length).toBe(1);
+  await settle();
+  issues.loadRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(1);
 });

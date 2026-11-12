@@ -7,6 +7,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // import would load them first and capture the wrong document.
 const { connection } = await import("./connection.svelte");
 const { goalDrafts } = await import("./goal-drafts.svelte");
+const { queryClient } = await import("./query-client");
 
 const PATH = ".devboard/goal-proposals/example.md";
 
@@ -21,39 +22,44 @@ afterEach(() => {
 });
 
 test("a stored draft is not read again while its first read is unanswered", () => {
-  const sent: unknown[] = [];
+  const reads: unknown[] = [];
+  const original = queryClient.invalidateQueries.bind(queryClient);
+  queryClient.invalidateQueries = ((filters?: { queryKey?: unknown[] }) => {
+    reads.push(filters?.queryKey);
+    return Promise.resolve();
+  }) as typeof queryClient.invalidateQueries;
   Object.defineProperty(connection, "open", { get: () => true, configurable: true });
-  connection.send = ((command: unknown) => {
-    sent.push(command);
-    return true;
-  }) as typeof connection.send;
 
-  goalDrafts.openDraft(PATH);
-  expect(sent).toEqual([{ type: "getGoalDraft", path: PATH }]);
+  try {
+    goalDrafts.openDraft(PATH);
+    expect(reads).toEqual([["getGoalDraft", PATH]]);
 
-  // The drafts page's two-second restore runs while that read is outstanding;
-  // it used to send another copy every tick.
-  goalDrafts.restoreDraft();
-  goalDrafts.restoreDraft();
-  expect(sent).toHaveLength(1);
+    // The drafts page's two-second restore runs while that read is
+    // outstanding; it must not ask for another copy every tick.
+    goalDrafts.restoreDraft();
+    goalDrafts.restoreDraft();
+    expect(reads).toHaveLength(1);
 
-  goalDrafts.handleEvent({
-    type: "issuesDraftDetail",
-    draft: { path: PATH, name: "example.md", text: "text" },
-  });
-  expect(goalDrafts.draft?.path).toBe(PATH);
+    goalDrafts.handleEvent({
+      type: "issuesDraftDetail",
+      draft: { path: PATH, name: "example.md", text: "text" },
+    });
+    expect(goalDrafts.draft?.path).toBe(PATH);
 
-  // A read the server refused is answered too, so the restore retries it.
-  goalDrafts.clearDraft();
-  goalDrafts.openDraft(PATH);
-  goalDrafts.handleEvent({
-    type: "issuesDraftError",
-    path: PATH,
-    message: "The draft is being elaborated.",
-  });
-  goalDrafts.restoreDraft();
-  expect(sent).toHaveLength(3);
-  expect(sent[2]).toEqual({ type: "getGoalDraft", path: PATH });
+    // A read the server refused is answered too, so the restore retries it.
+    goalDrafts.clearDraft();
+    goalDrafts.openDraft(PATH);
+    goalDrafts.handleEvent({
+      type: "issuesDraftError",
+      path: PATH,
+      message: "The draft is being elaborated.",
+    });
+    goalDrafts.restoreDraft();
+    expect(reads).toHaveLength(3);
+    expect(reads[2]).toEqual(["getGoalDraft", PATH]);
+  } finally {
+    queryClient.invalidateQueries = original;
+  }
 });
 
 test("a refused draft answer reports nothing sent and its refusal frame answers the control", () => {

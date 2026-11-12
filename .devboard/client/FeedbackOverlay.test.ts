@@ -7,7 +7,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // the testing library both need.
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
-const { default: FeedbackOverlay } = await import("./FeedbackOverlay.svelte");
+const { default: FeedbackOverlay } = await import("./lib/components/FeedbackHarness.svelte");
 // The connection store reads `document` as it constructs, so it loads here for
 // the same reason as the component.
 const { connection } = await import("./lib/connection.svelte");
@@ -214,6 +214,7 @@ test("Shift+Enter keeps the composer's newline and posts nothing", async () => {
 });
 
 test("an Ask renders the answer the page's conversation reports", async () => {
+  const posted = stubFetch();
   const socket = openTransport();
   const { view, composer } = await openComposerView();
   composer.value = "What does this tab do?";
@@ -232,7 +233,7 @@ test("an Ask renders the answer the page's conversation reports", async () => {
   // The read waits for the creation's own answer, so it never names a
   // conversation the server has not stored yet — an inquiry missing for that
   // id would drop the registration and leave the turn unwatched.
-  expect(socket.sent.some((frame) => JSON.parse(frame).type === "getInquiry")).toBe(false);
+  expect(posted.some((entry) => entry.url.startsWith("/inquiries/conversations/"))).toBe(false);
 
   // The creation answers with its accepted conversation, and the page follows
   // it: the turn streams in while the control still shows the busy word.
@@ -245,7 +246,9 @@ test("an Ask renders the answer the page's conversation reports", async () => {
     transcript: [{ role: "developer", text: "What does this tab do?" }],
   });
   await tick();
-  expect(socket.sent.some((frame) => JSON.parse(frame).type === "getInquiry")).toBe(true);
+  expect(
+    posted.some((entry) => entry.url === `/inquiries/conversations/${conversationId}`),
+  ).toBe(true);
   expect(view.container.textContent).toContain("The tab opens the issues");
   expect(view.container.textContent).toContain("Asking…");
 
