@@ -6017,29 +6017,33 @@ pub async fn poll_open_issues(options: &TrackerOptions) -> PollResult {
             .transport
             .clone()
             .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
-        let target = match gitea_read_target(
-            &base_url,
-            &options.repository,
-            &options.environment,
-            &transport,
-        )
-        .await
-        {
-            Ok(target) => target,
-            Err(error) => {
-                return PollResult::Error {
-                    detail: error.message,
-                };
-            }
+        let anonymous = GiteaTarget {
+            base_url,
+            project: options.repository.clone(),
+            token: None,
         };
-        return match gitea_list_issues(
-            &target,
-            IssueQueryState::Open,
-            &transport,
-            &GiteaCallOptions::default(),
-        )
-        .await
-        {
+        let call_options = GiteaCallOptions::default();
+        let mut listed =
+            gitea_list_issues(&anonymous, IssueQueryState::Open, &transport, &call_options).await;
+        if let Err(error) = &listed {
+            let refusal = matches!(error.status, Some(401) | Some(403) | Some(404));
+            if refusal {
+                if let Some(token) = configured_gitea_token(&options.environment) {
+                    let secured = GiteaTarget {
+                        token: Some(token),
+                        ..anonymous.clone()
+                    };
+                    listed = gitea_list_issues(
+                        &secured,
+                        IssueQueryState::Open,
+                        &transport,
+                        &call_options,
+                    )
+                    .await;
+                }
+            }
+        }
+        return match listed {
             Ok(issues) => PollResult::Issues {
                 issues: issues
                     .into_iter()
@@ -6155,22 +6159,26 @@ pub async fn fetch_issue_state(options: &TrackerOptions, number: i64) -> IssueSt
             .transport
             .clone()
             .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
-        let target = match gitea_read_target(
-            &base_url,
-            &options.repository,
-            &options.environment,
-            &transport,
-        )
-        .await
-        {
-            Ok(target) => target,
-            Err(error) => {
-                return IssueStateResult::Error {
-                    detail: error.message,
-                };
-            }
+        let anonymous = GiteaTarget {
+            base_url,
+            project: options.repository.clone(),
+            token: None,
         };
-        return match gitea_issue(&target, number, &transport, &GiteaCallOptions::default()).await {
+        let call_options = GiteaCallOptions::default();
+        let mut read = gitea_issue(&anonymous, number, &transport, &call_options).await;
+        if let Err(error) = &read {
+            let refusal = matches!(error.status, Some(401) | Some(403) | Some(404));
+            if refusal {
+                if let Some(token) = configured_gitea_token(&options.environment) {
+                    let secured = GiteaTarget {
+                        token: Some(token),
+                        ..anonymous.clone()
+                    };
+                    read = gitea_issue(&secured, number, &transport, &call_options).await;
+                }
+            }
+        }
+        return match read {
             Ok(issue) => IssueStateResult::State(issue.state),
             Err(error) => IssueStateResult::Error {
                 detail: error.message,
