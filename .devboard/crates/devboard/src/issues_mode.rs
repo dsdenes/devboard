@@ -5478,7 +5478,7 @@ impl IssuesWorker {
             return "stopped".into();
         }
         let now = std::time::Instant::now();
-        let unhandled = self
+        let pending: Vec<u64> = self
             .state
             .queue
             .iter()
@@ -5490,11 +5490,30 @@ impl IssuesWorker {
                     .map(|until| *until > now)
                     .unwrap_or(false)
             })
-            .count();
-        if unhandled == 0 {
-            "idle".into()
-        } else {
-            "failed".into()
+            .map(|issue| issue.number)
+            .collect();
+        if pending.is_empty() {
+            return "idle".into();
+        }
+        // A live claim another worker owns is not this worker's failure: it
+        // may start none of that work, and the pass names the owner. Reading
+        // `failed` here told the operator a healthy worker had broken.
+        if pending.iter().all(|number| self.claimed_elsewhere(*number)) {
+            return "idle".into();
+        }
+        "failed".into()
+    }
+
+    /// True when a live process outside this one holds this issue's claim, so
+    /// this worker must leave the issue alone. This process's own claim is not
+    /// another owner, and a claim whose owner has exited is reclaimable.
+    fn claimed_elsewhere(&self, number: u64) -> bool {
+        if self.claiming.contains(&number) {
+            return false;
+        }
+        match read_issue_claim(&self.repo_dir, number) {
+            None => false,
+            Some(claim) => claim.pid != std::process::id() && pid_alive(claim.pid),
         }
     }
 
@@ -5765,6 +5784,9 @@ impl IssuesWorker {
             return;
         }
         let mut deferral: Option<String> = None;
+        // How many queued issues each live owner outside this process holds,
+        // so a pass that starts none of them names who does.
+        let mut held_elsewhere: BTreeMap<u32, usize> = BTreeMap::new();
         let queue = self.state.queue.clone();
         for issue in queue {
             if self.active.len() >= MAX_CONCURRENT_PEERS {
@@ -5790,6 +5812,11 @@ impl IssuesWorker {
                 &self.claim_token,
                 self.harness_version.as_deref(),
             ) {
+                if let Some(claim) = read_issue_claim(&self.repo_dir, issue.number) {
+                    if claim.pid != std::process::id() && pid_alive(claim.pid) {
+                        *held_elsewhere.entry(claim.pid).or_insert(0) += 1;
+                    }
+                }
                 continue;
             }
             self.claiming.insert(issue.number);
@@ -5832,6 +5859,18 @@ impl IssuesWorker {
             if self.stopping || self.state.paused || !self.state.enabled {
                 break;
             }
+        }
+        if deferral.is_none() && !held_elsewhere.is_empty() {
+            let count: usize = held_elsewhere.values().sum();
+            let holders = held_elsewhere
+                .keys()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            deferral = Some(format!(
+                "{count} queued issue(s) are claimed by another live worker (pid {holders}); \
+                 the start is deferred"
+            ));
         }
         self.state.lifecycle = self.settled_lifecycle();
         self.state.deferral = deferral;
@@ -7560,6 +7599,85 @@ mod tests {
         assert!(worker.dismissed.contains_key(&10));
         let until = worker.dismissed[&10];
         assert!(until > std::time::Instant::now());
+    }
+
+    /// A claim another live worker owns must not read as this worker's
+    /// failure: nothing starts, and the pass names the owner instead of
+    /// publishing `failed` with no reason.
+    #[tokio::test]
+    async fn a_queue_claimed_by_another_live_worker_reads_idle_and_names_it() {
+        let (repo, state) = unit_root("claim-held-elsewhere");
+        let mut owner = stand_in();
+        let claim = json!({
+            "number": 7,
+            "pid": owner.id(),
+            "runId": "other-worker",
+            "harnessVersion": "1.2.2",
+        });
+        std::fs::create_dir_all(claims_directory(&repo)).expect("a claims directory");
+        std::fs::write(
+            claim_path(&repo, 7),
+            format!("{}\n", crate::jsjson::stringify(&claim)),
+        )
+        .expect("a claim");
+
+        let mut worker = worker(&repo, &state);
+        worker.agent_command = "/bin/false".to_string();
+        let queued = issue(7, &[]);
+        worker.state.queue = vec![worker.queued(&queued)];
+
+        worker.maybe_trigger().await;
+
+        assert!(worker.active.is_empty(), "the claim belongs to the owner");
+        assert_eq!(worker.state.lifecycle, "idle");
+        let line = worker
+            .state
+            .deferral
+            .clone()
+            .expect("the deferral names the owner");
+        assert!(
+            line.contains(&format!("pid {}", owner.id())),
+            "the line names the holding pid: {line}"
+        );
+        let published = read_state(&versioned_state_path(&state, &repo, Some("1.2.3")))
+            .expect("the published state");
+        assert_eq!(published.lifecycle, "idle");
+        assert_eq!(published.deferral.as_deref(), Some(line.as_str()));
+
+        let _ = owner.kill();
+        let _ = owner.wait();
+    }
+
+    /// One pending issue no live owner holds keeps the failure: the worker
+    /// could have started it and did not.
+    #[tokio::test]
+    async fn a_queue_only_partly_claimed_by_another_worker_keeps_the_failure() {
+        let (repo, state) = unit_root("claim-held-partly");
+        let mut owner = stand_in();
+        let claim = json!({
+            "number": 7,
+            "pid": owner.id(),
+            "runId": "other-worker",
+            "harnessVersion": "1.2.2",
+        });
+        std::fs::create_dir_all(claims_directory(&repo)).expect("a claims directory");
+        std::fs::write(
+            claim_path(&repo, 7),
+            format!("{}\n", crate::jsjson::stringify(&claim)),
+        )
+        .expect("a claim");
+
+        let mut worker = worker(&repo, &state);
+        let held = issue(7, &[]);
+        let free = issue(8, &[]);
+        worker.state.queue = vec![worker.queued(&held), worker.queued(&free)];
+        assert_eq!(worker.settled_lifecycle(), "failed");
+
+        worker.state.queue = vec![worker.queued(&held)];
+        assert_eq!(worker.settled_lifecycle(), "idle");
+
+        let _ = owner.kill();
+        let _ = owner.wait();
     }
 
     struct FlatMemory {
