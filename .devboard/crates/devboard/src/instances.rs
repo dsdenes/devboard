@@ -73,7 +73,7 @@ impl GuardOwner {
         })
     }
 
-    fn from_json(value: &Value) -> Option<Self> {
+    pub(crate) fn from_json(value: &Value) -> Option<Self> {
         Some(Self {
             pid: u32::try_from(value.get("pid")?.as_u64()?).ok()?,
             port: u16::try_from(value.get("port").and_then(Value::as_u64).unwrap_or(0)).ok()?,

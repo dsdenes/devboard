@@ -21,7 +21,8 @@ use sha2::{Digest, Sha256};
 
 use crate::journal::{journal_file, repo_key};
 use crate::supervision::{
-    ancestry, process_snapshot, process_table, start_orphan_supervisor, ProcessSnapshot,
+    ancestry, live_process, process_snapshot, process_table, start_orphan_supervisor,
+    ProcessSnapshot,
 };
 use crate::version::read_harness_version;
 
@@ -1645,11 +1646,76 @@ pub fn discover_instances() -> Vec<Instance> {
     instances_from_processes(&process_table(), &self_pids)
 }
 
+/// The guard record a repository's dashboard writes beside its state.
+fn read_guard_owner(host: &Path) -> Option<crate::instances::GuardOwner> {
+    let path = host
+        .join(".devboard")
+        .join(".tmp")
+        .join(crate::instances::GUARD_OWNER_FILE);
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    crate::instances::GuardOwner::from_json(&value)
+}
+
+/// The dashboard a guard record names, when the record still describes the
+/// process serving this repository.
+///
+/// A rebuild that removed the running binary leaves a process started through
+/// `/proc/<pid>/exe`, so its command line no longer names the harness. The
+/// record the dashboard wrote at startup still does, and the executable it is
+/// running proves the pid was not recycled. `exe` is `/proc/<pid>/exe`.
+pub fn marker_instance(
+    host: &Path,
+    owner: Option<&crate::instances::GuardOwner>,
+    exe: Option<&Path>,
+) -> Option<Instance> {
+    let owner = owner?;
+    if !live_process(owner.pid) || owner.port == 0 || owner.state_dir.is_empty() {
+        return None;
+    }
+    if real_path(Path::new(&owner.repo_dir)) != real_path(host) {
+        return None;
+    }
+    let harness = host.join(".devboard");
+    if exe.and_then(harness_tree)? != real_path(&harness)? {
+        return None;
+    }
+    let state_dir = PathBuf::from(&owner.state_dir);
+    let journal = journal_file(&state_dir, Path::new(&owner.repo_dir));
+    let legacy = legacy_log_path(&harness, &owner.repo_dir);
+    Some(Instance {
+        pid: owner.pid,
+        port: u32::from(owner.port),
+        repo_dir: owner.repo_dir.clone(),
+        host: "127.0.0.1".to_string(),
+        harness: harness.to_string_lossy().into_owned(),
+        state_dir: owner.state_dir.clone(),
+        journal: journal.to_string_lossy().into_owned(),
+        instrumented: state_dir.join("journal").exists(),
+        legacy_log: legacy
+            .exists()
+            .then(|| legacy.to_string_lossy().into_owned()),
+    })
+}
+
 /// Every dashboard on the machine, plus the one serving `root` even when that
 /// repository is a verification fixture.
 pub fn discover_instances_for(root: &Path) -> Vec<Instance> {
     let self_pids = HashSet::from([std::process::id()]);
-    instances_from_processes_including(&process_table(), &self_pids, Some(root))
+    let mut instances =
+        instances_from_processes_including(&process_table(), &self_pids, Some(root));
+    // The guard is the one record that survives a command line which no longer
+    // names the harness; it only fills a pid the process scan did not find.
+    let owner = read_guard_owner(root);
+    let exe = owner
+        .as_ref()
+        .and_then(|owner| std::fs::read_link(format!("/proc/{}/exe", owner.pid)).ok());
+    if let Some(marker) = marker_instance(root, owner.as_ref(), exe.as_deref()) {
+        if !instances.iter().any(|instance| instance.pid == marker.pid) {
+            instances.push(marker);
+        }
+    }
+    instances
 }
 
 // ---------------------------------------------------------------------------

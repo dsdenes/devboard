@@ -293,7 +293,7 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             };
             let _ = guard.record(&bound);
         }
-        write_version_marker(&marker_path, &running_version, port);
+        write_version_marker(&marker_path, &running_version, &guard_owner, port);
     };
     if configured_port != 0 {
         record_bound_port(configured_port);
@@ -332,13 +332,24 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         .context("serving the dashboard")
 }
 
-/// Writes the marker naming the running version, this process, and the port it
-/// serves on.
-fn write_version_marker(path: &std::path::Path, running_version: &str, port: u16) {
+/// Writes the marker naming the running version, this process, the port it
+/// serves on, and the repository it serves.
+///
+/// The repository and the start instant make the marker attributable on its
+/// own: a discovery pass can accept a dashboard whose command line no longer
+/// names the harness, and reject a record a recycled pid left behind.
+fn write_version_marker(
+    path: &std::path::Path,
+    running_version: &str,
+    owner: &devboard::instances::GuardOwner,
+    port: u16,
+) {
     let marker = serde_json::json!({
         "running": running_version,
         "pid": std::process::id(),
         "port": port,
+        "repoDir": owner.repo_dir,
+        "startedAt": owner.started_at,
     });
     let Ok(text) = serde_json::to_string(&marker) else {
         return;
