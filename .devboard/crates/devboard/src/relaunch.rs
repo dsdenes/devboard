@@ -66,18 +66,25 @@ pub fn own_program() -> PathBuf {
     live_path(&current)
 }
 
-/// The on-disk path behind an executable link a rebuild may have replaced.
+/// The path that runs the binary behind an executable link a rebuild replaced.
 ///
 /// `/proc/self/exe` reads "... (deleted)" while the old binary still runs, and
-/// starting that name fails with ENOENT. A rebuild leaves the suffixless path
-/// on disk, which is the one to start; when nothing is there, the link stands
-/// as the only name left.
+/// starting that name fails with ENOENT. A rebuild that put the suffixless path
+/// back leaves it on disk, which is the one to start. A rebuild that removed
+/// the file and wrote nothing back leaves the running image as the only
+/// executable copy: `/proc/<pid>/exe` names it, and the kernel runs it while
+/// this process lives. Returning the "(deleted)" name there makes every spawn
+/// fail, which a background family reports as a worker that never published.
 pub fn live_path(linked: &Path) -> PathBuf {
     let text = linked.to_string_lossy();
     if let Some(path) = text.strip_suffix(" (deleted)") {
         let path = PathBuf::from(path);
         if path.is_file() {
             return path;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            return PathBuf::from(format!("/proc/{}/exe", std::process::id()));
         }
     }
     linked.to_path_buf()

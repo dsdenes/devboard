@@ -72,7 +72,7 @@ fn running_harness_dir_resolves_an_installed_prefix_and_its_manifest() {
 }
 
 #[test]
-fn a_rebuilt_binary_resolves_to_the_path_the_rebuild_left() {
+fn a_rebuilt_binary_resolves_to_a_runnable_path() {
     let host = fixture("deleted");
     let path = host.join(".devboard/bin/devboard");
     let linked = PathBuf::from(format!("{} (deleted)", path.display()));
@@ -84,11 +84,30 @@ fn a_rebuilt_binary_resolves_to_the_path_the_rebuild_left() {
     );
     let absent = host.join(".devboard/bin/absent");
     let linked_absent = PathBuf::from(format!("{} (deleted)", absent.display()));
-    assert_eq!(
-        devboard::relaunch::live_path(&linked_absent),
-        linked_absent,
-        "a replaced path with nothing behind it is never renamed away"
-    );
+    let resolved = devboard::relaunch::live_path(&linked_absent);
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            resolved,
+            PathBuf::from(format!("/proc/{}/exe", std::process::id())),
+            "a removed binary is runnable through this process's own image"
+        );
+        let running = std::fs::metadata(std::env::current_exe().unwrap()).unwrap();
+        let image = std::fs::metadata(&resolved).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                (image.dev(), image.ino()),
+                (running.dev(), running.ino()),
+                "the fallback names the running image"
+            );
+        }
+    } else {
+        assert_eq!(
+            resolved, linked_absent,
+            "a replaced path with nothing behind it is never renamed away"
+        );
+    }
     let _ = std::fs::remove_dir_all(&host);
 }
 
