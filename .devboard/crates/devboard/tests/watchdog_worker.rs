@@ -288,6 +288,7 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
             cmdline: cmdline.to_string(),
             env,
             cwd: Some(cwd.to_path_buf()),
+            exe: None,
             ancestors,
         }
     };
@@ -400,6 +401,51 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
     );
     assert!(first.instrumented);
     assert_eq!(instances[1].pid, 105);
+}
+
+#[test]
+fn a_replacement_that_presents_its_parent_proc_link_is_discovered() {
+    let repo = scratch("proc-link");
+    let harness = repo.join(".devboard");
+    let state_dir = harness.join(".tmp");
+    std::fs::create_dir_all(harness.join("target").join("debug")).expect("a harness tree");
+    std::fs::create_dir_all(&state_dir).expect("a state directory");
+    let env = HashMap::from([
+        ("REPO_DIR".to_string(), repo.to_string_lossy().into_owned()),
+        ("PORT".to_string(), "8080".to_string()),
+        (
+            "STATE_DIR".to_string(),
+            state_dir.to_string_lossy().into_owned(),
+        ),
+        ("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string()),
+    ]);
+    // A rebuild removed the running binary, so the replacement was started
+    // from its parent's image and presents that transient link as its program
+    // name. Its own executable link still names the harness binary.
+    let process = ProcessSnapshot {
+        pid: 4242,
+        cmdline: "/proc/999/exe serve".to_string(),
+        env,
+        cwd: Some(repo.clone()),
+        exe: Some(
+            harness
+                .join("target")
+                .join("debug")
+                .join("devboard (deleted)"),
+        ),
+        ancestors: vec![1],
+    };
+    let instances = instances_from_processes(&[process], &HashSet::new());
+    assert_eq!(instances.len(), 1, "the dashboard stays visible");
+    assert_eq!(instances[0].pid, 4242);
+    assert_eq!(instances[0].port, 8080);
+    assert_eq!(instances[0].repo_dir, repo.to_string_lossy());
+    assert_eq!(
+        instances[0].harness,
+        std::fs::canonicalize(&harness)
+            .expect("a harness")
+            .to_string_lossy()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -821,6 +867,7 @@ fn reaper_decisions_protect_live_leases_and_report_scratch_orphans() {
         cmdline: format!("{}/server/run-owner.ts", root.join(".devboard").display()),
         env: HashMap::new(),
         cwd: Some(scratch_cwd.clone()),
+        exe: None,
         ancestors: Vec::new(),
     };
     let mut options = OrphanReaperRunOptions::new(root.clone());

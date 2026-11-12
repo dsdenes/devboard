@@ -75,6 +75,25 @@ fn running_harness_dir_resolves_an_installed_prefix_and_its_manifest() {
 }
 
 #[test]
+fn a_link_started_replacement_presents_the_path_a_rebuild_restores() {
+    let rebuilt = PathBuf::from("/srv/host/.devboard/target/debug/devboard");
+    let linked = PathBuf::from(format!("{} (deleted)", rebuilt.display()));
+    assert_eq!(devboard::relaunch::presented_program(&linked), rebuilt);
+    assert_eq!(
+        devboard::relaunch::presented_program(&rebuilt),
+        rebuilt,
+        "a live name is presented unchanged"
+    );
+    assert!(devboard::relaunch::executable_link(Path::new(
+        "/proc/4242/exe"
+    )));
+    assert!(!devboard::relaunch::executable_link(Path::new(
+        "/proc/4242/cwd"
+    )));
+    assert!(!devboard::relaunch::executable_link(&rebuilt));
+}
+
+#[test]
 fn a_rebuilt_binary_resolves_to_a_runnable_path() {
     let host = fixture("deleted");
     let path = host.join(".devboard/bin/devboard");

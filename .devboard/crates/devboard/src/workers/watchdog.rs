@@ -1447,12 +1447,25 @@ struct ServeArguments {
 
 /// The arguments of a `devboard serve` command line, or `None` when the
 /// process is not one.
-fn rust_serve_arguments(cmdline: &str) -> Option<ServeArguments> {
+///
+/// A replacement a rebuild forced through `/proc/<pid>/exe` presents that link
+/// as its program name, so the command line alone no longer names the harness.
+/// The process's own executable link still does, and it is the second proof.
+fn rust_serve_arguments(cmdline: &str, exe: Option<&Path>) -> Option<ServeArguments> {
     let tokens: Vec<&str> = cmdline.split_whitespace().collect();
-    let binary = tokens.iter().position(|token| {
-        crate::supervision::ends_with_segment(token, "devboard")
-            || crate::supervision::ends_with_segment(token, "devboard.exe")
-    })?;
+    let binary = tokens
+        .iter()
+        .position(|token| {
+            crate::supervision::ends_with_segment(token, "devboard")
+                || crate::supervision::ends_with_segment(token, "devboard.exe")
+        })
+        .or_else(|| {
+            (tokens
+                .first()
+                .is_some_and(|token| crate::relaunch::executable_link(Path::new(token)))
+                && exe.is_some_and(harness_binary_name))
+            .then_some(0)
+        })?;
     if tokens.get(binary + 1) != Some(&"serve") {
         return None;
     }
@@ -1483,10 +1496,31 @@ fn rust_serve_arguments(cmdline: &str) -> Option<ServeArguments> {
 
 /// The harness tree a `devboard` program path sits in: `<prefix>/bin/devboard`
 /// or `<checkout>/.devboard/target/<profile>/devboard`.
-fn program_harness(cmdline: &str) -> Option<PathBuf> {
-    let program = cmdline.split_whitespace().next()?;
-    let path = Path::new(program);
-    for ancestor in path.ancestors() {
+///
+/// The command line is the first proof; the executable link is the second for
+/// a process that presents a transient `/proc/<pid>/exe` link.
+fn program_harness(cmdline: &str, exe: Option<&Path>) -> Option<PathBuf> {
+    cmdline
+        .split_whitespace()
+        .next()
+        .and_then(|program| harness_tree(Path::new(program)))
+        .or_else(|| exe.and_then(harness_tree))
+}
+
+/// True when the path names the harness binary, with or without the
+/// "(deleted)" suffix a rebuild leaves on the executable link.
+fn harness_binary_name(path: &Path) -> bool {
+    let path = crate::relaunch::presented_program(path);
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("devboard" | "devboard.exe")
+    )
+}
+
+/// The `.devboard` ancestor of one executable path.
+fn harness_tree(program: &Path) -> Option<PathBuf> {
+    let program = crate::relaunch::presented_program(program);
+    for ancestor in program.ancestors() {
         if ancestor.file_name().and_then(|name| name.to_str()) == Some(".devboard") {
             return real_path(ancestor);
         }
@@ -1512,7 +1546,7 @@ pub fn instances_from_processes_including(
         // Only a dashboard counts; a worker descendant never matches the
         // `serve` command line, so a dashboard started by this process (a test
         // launcher, a replacement) is still discovered.
-        let serve = rust_serve_arguments(&process.cmdline);
+        let serve = rust_serve_arguments(&process.cmdline, process.exe.as_deref());
         if serve.is_none() && !process.cmdline.contains("server/index.ts") {
             continue;
         }
@@ -1540,8 +1574,9 @@ pub fn instances_from_processes_including(
         {
             continue;
         }
-        let Some(harness) = program_harness(&process.cmdline).or_else(|| serving_harness(process))
-        else {
+        let harness = program_harness(&process.cmdline, process.exe.as_deref())
+            .or_else(|| serving_harness(process));
+        let Some(harness) = harness else {
             continue;
         };
         let state_dir = serve

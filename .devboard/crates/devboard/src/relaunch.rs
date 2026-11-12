@@ -114,7 +114,7 @@ pub fn harness_program_for(repo_dir: &Path, linked: &Path) -> Result<PathBuf, St
     if installed.is_file() {
         return Ok(installed);
     }
-    let live = suffixless(linked);
+    let live = presented_program(linked);
     if live.is_file() {
         return Ok(live);
     }
@@ -126,11 +126,25 @@ pub fn harness_program_for(repo_dir: &Path, linked: &Path) -> Result<PathBuf, St
 }
 
 /// The executable name behind an executable link a rebuild replaced.
-fn suffixless(linked: &Path) -> PathBuf {
+///
+/// A rebuild unlinks the running binary before it writes the new one, so the
+/// kernel link reads "... (deleted)". This strips that suffix, which is the
+/// path a rebuild restores. A child presents it even while the file is still
+/// absent and only the link can be executed.
+pub fn presented_program(linked: &Path) -> PathBuf {
     match linked.to_string_lossy().strip_suffix(" (deleted)") {
         Some(path) => PathBuf::from(path),
         None => linked.to_path_buf(),
     }
+}
+
+/// True when `path` is the `/proc/<pid>/exe` link a rebuild left as the only
+/// executable copy of the running image.
+pub fn executable_link(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.strip_prefix("/proc/")
+        .and_then(|rest| rest.strip_suffix("/exe"))
+        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// The executable a replacement runs.
@@ -221,6 +235,21 @@ pub fn spawn_replacement(
     let program = replacement_program(&settings.repo_dir)?;
     let mut command = Command::new(&program);
     command.arg("serve");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        // A rebuild that removed the running binary leaves `/proc/<pid>/exe`
+        // as the only executable copy. Starting it works, but the kernel would
+        // record that link as argv[0], and the link dies with this process.
+        // Instance discovery, supervision, and the desktop launcher recognize
+        // the harness by that name, so the link stays the exec path only and
+        // the child presents the path a rebuild restores.
+        if executable_link(&program) {
+            if let Ok(current) = std::env::current_exe() {
+                command.arg0(presented_program(&current));
+            }
+        }
+    }
     drop_obsolete_credential_variables(&mut command);
     // A replacement resolves its port and its loaded version for itself.
     // Inheriting the caller's `DEVBOARD_RUNNING_VERSION` kept a source

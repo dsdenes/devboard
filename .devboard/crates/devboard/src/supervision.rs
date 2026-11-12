@@ -879,6 +879,9 @@ pub struct ProcessSnapshot {
     pub cmdline: String,
     pub env: HashMap<String, String>,
     pub cwd: Option<PathBuf>,
+    /// The target of `/proc/<pid>/exe`. It names the running harness even when
+    /// the program its command line presents is a transient link.
+    pub exe: Option<PathBuf>,
     /// Process ids from the parent upward, nearest first.
     pub ancestors: Vec<u32>,
 }
@@ -916,11 +919,13 @@ pub fn process_snapshot(pid: u32) -> Option<ProcessSnapshot> {
     let cmdline = String::from_utf8_lossy(&raw).replace('\0', " ");
     let env = read_environ(pid).unwrap_or_default();
     let cwd = std::fs::canonicalize(format!("/proc/{pid}/cwd")).ok();
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
     Some(ProcessSnapshot {
         pid,
         cmdline,
         env,
         cwd,
+        exe,
         ancestors: ancestry(pid, 64),
     })
 }

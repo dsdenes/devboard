@@ -172,12 +172,21 @@ def process_argv(pid: int) -> list[str]:
     return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
 
 
+def executable_name(pid: int) -> str:
+    """The file a pid executes, without the suffix a rebuild leaves behind."""
+    try:
+        linked = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return ""
+    return linked.rsplit("/", 1)[-1].removesuffix(" (deleted)")
+
+
 def is_dashboard(pid: int) -> bool:
     argv = process_argv(pid)
-    if not argv:
+    if not argv or not any(argument == "serve" for argument in argv[1:]):
         return False
-    name = Path(argv[0]).name
-    return "devboard" in name and any(argument == "serve" for argument in argv[1:])
+    names = (Path(argv[0]).name, executable_name(pid))
+    return any(name in ("devboard", "devboard.exe") for name in names)
 
 
 def serves_this_checkout(pid: int) -> bool:
@@ -294,9 +303,19 @@ def stop_dashboard(pid: int, timeout: float = 15.0) -> bool:
     return not process_alive(pid)
 
 
-def wait_ready(port: int, token: str, expected_pid: int | None, timeout: float) -> int | None:
+def wait_ready(
+    port: int,
+    token: str,
+    expected_pid: int | None,
+    timeout: float,
+    process: subprocess.Popen | None = None,
+) -> int | None:
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # A child that already exited never answers; reporting its exit beats
+        # waiting out the whole timeout for a readiness that cannot come.
+        if process is not None and process.poll() is not None:
+            return None
         try:
             request = Request(
                 f"http://127.0.0.1:{port}/ready",
@@ -554,11 +573,17 @@ def main() -> int:
                 f"pid {old_pid} did not stop after the refused handoff: {refusal}",
             )
         process = start(binary, tokens)
-        ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT)
+        ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT, process)
         if ready is None:
+            status = process.poll()
+            detail = (
+                f"the dashboard exited with status {status} before it became ready"
+                if status is not None
+                else f"the dashboard on port {PORT} never became ready"
+            )
             return fail(
                 "Devboard did not start",
-                f"the dashboard on port {PORT} never became ready ({refusal})",
+                f"{detail} ({refusal}); see {LOG}",
             )
         tokens = adopt_credentials(ready)
         version = version_marker().get("running") or "unknown"
@@ -570,12 +595,15 @@ def main() -> int:
 
     notify(TITLE, "Starting Devboard…")
     process = start(binary, tokens)
-    ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT)
+    ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT, process)
     if ready is None:
-        return fail(
-            "Devboard did not start",
-            f"the dashboard on port {PORT} never became ready; see {LOG}",
+        status = process.poll()
+        detail = (
+            f"the dashboard exited with status {status} before it became ready"
+            if status is not None
+            else f"the dashboard on port {PORT} never became ready"
         )
+        return fail("Devboard did not start", f"{detail}; see {LOG}")
     tokens = adopt_credentials(ready)
     version = version_marker().get("running") or "unknown"
     log(f"start: pid {ready} on port {PORT} ({version})")

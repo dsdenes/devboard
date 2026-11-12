@@ -5247,6 +5247,7 @@ mod tests {
             cmdline: format!("{}/devboard serve", root.display()),
             env,
             cwd: Some(root.clone()),
+            exe: None,
             ancestors: vec![1],
         };
         let instances = dashboard_instances_with(&[process], 999_999, |_| vec![8080]);
@@ -5273,6 +5274,7 @@ mod tests {
             cmdline: format!("{}/devboard serve --port 8204", root.display()),
             env,
             cwd: Some(root.clone()),
+            exe: None,
             ancestors: vec![1],
         };
         let instances = dashboard_instances_with(&[process], 999_999, |_| vec![8204]);
@@ -5301,6 +5303,7 @@ mod tests {
             cmdline: format!("{}/devboard serve", root.display()),
             env: environment(),
             cwd: Some(root.join(".worktree/perf/.devboard")),
+            exe: None,
             ancestors: vec![1],
         };
         let dashboard = ProcessSnapshot {
@@ -5308,6 +5311,7 @@ mod tests {
             cmdline: format!("{}/devboard serve", root.display()),
             env: environment(),
             cwd: Some(root.clone()),
+            exe: None,
             ancestors: vec![1],
         };
         let instances = dashboard_instances_with(&[shadow, dashboard], 999_999, |_| vec![8080]);
