@@ -1157,7 +1157,10 @@ pub async fn gitea_read_token(
             return Ok(None);
         }
         Ok(_) => None,
-        Err(error) => Some(error),
+        Err(error) if matches!(error.status, Some(401) | Some(403) | Some(404)) => Some(error),
+        // An outage is no proof that the repository is private: remember
+        // nothing and let the caller retry the anonymous read.
+        Err(error) => return Err(error),
     };
     let configured = configured_gitea_token(environment);
     let Some(token) = configured else {
