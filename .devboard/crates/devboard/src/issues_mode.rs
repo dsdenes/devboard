@@ -3187,6 +3187,11 @@ impl IssuesBridge {
         let Some(poll_at) = state.poll.last_poll_at.clone() else {
             return;
         };
+        // Only a fresh listing is a new result; a conditional answer repeats
+        // the issues the hook already published.
+        if state.poll.not_modified || state.poll.error.is_some() {
+            return;
+        }
         let fresh = {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             if inner.last_worker_poll.as_deref() == Some(poll_at.as_str()) {

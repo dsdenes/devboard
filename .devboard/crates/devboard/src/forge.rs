@@ -3832,7 +3832,10 @@ async fn resolve_gitea_inner(
         }
         if token.is_empty() {
             let error = match anonymous_error {
-                Some(error) => refused_read(&error),
+                Some(error) => format!(
+                    "no Gitea credential is configured for {} on {base_url}, and the repository is not public: {}",
+                    options.project, error.message
+                ),
                 None => format!(
                     "no Gitea credential is configured for {} on {base_url}, and the repository is not public",
                     options.project
