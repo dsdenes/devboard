@@ -1111,17 +1111,6 @@ export const DISCOVER_AGENTS: readonly DiscoverAgentDescriptor[] = Object.freeze
   },
 ]);
 
-/** The fixed Run all order: the sheet and glossary ground the skills that follow. */
-export const DISCOVER_RUN_ORDER: readonly DiscoverAgentId[] = Object.freeze([
-  "sheet",
-  "discover-glossary",
-  "discover-testing-strategy",
-  "discover-naming-conventions",
-  "discover-coding-conventions",
-  "discover-architecture-boundaries",
-  "discover-contribution",
-]);
-
 const DISCOVER_AGENTS_BY_ID = new Map<string, DiscoverAgentDescriptor>(
   DISCOVER_AGENTS.map((descriptor) => [descriptor.id, descriptor] as const),
 );
