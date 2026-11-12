@@ -5,11 +5,6 @@
  */
 export const PROCESSING_LABEL = "processing";
 
-export const PROCESSING_LABEL_COLOR = "FBCA04";
-
-export const PROCESSING_LABEL_DESCRIPTION =
-  "A Devboard issues run is processing this issue";
-
 /** True when a forge-listed issue carries the processing label. */
 export function hasProcessingLabel(labels: readonly string[] | undefined): boolean {
   return labels?.includes(PROCESSING_LABEL) === true;
