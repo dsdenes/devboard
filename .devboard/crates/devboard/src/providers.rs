@@ -992,9 +992,10 @@ pub fn generated_config(provider: ProviderId, model: &str) -> String {
 /// The MCP server name every peer's generated agent directory registers.
 pub const DEVBOARD_MCP_SERVER: &str = "devboard";
 
-/// The harness executable that answers this protocol's `mcp` subcommand.
-fn harness_executable() -> PathBuf {
-    crate::relaunch::own_program()
+/// The harness executable that answers this protocol's `mcp` subcommand,
+/// resolved through the same rule as every other harness child.
+fn harness_executable(repo_dir: &Path) -> Result<PathBuf, String> {
+    crate::relaunch::harness_program(repo_dir)
 }
 
 /// The generated peer's MCP registration: this harness's own stdio server.
@@ -1002,10 +1003,10 @@ fn harness_executable() -> PathBuf {
 /// The executable is absolute, so a peer whose cwd is a worktree, a temporary
 /// clone, or a host directory starts the same server with no project `.omp`
 /// directory and no bun module to resolve.
-fn devboard_mcp_entry() -> Value {
+fn devboard_mcp_entry(program: &Path) -> Value {
     json!({
         "type": "stdio",
-        "command": harness_executable().display().to_string(),
+        "command": program.display().to_string(),
         "args": ["mcp"],
     })
 }
@@ -1017,9 +1018,28 @@ pub struct AgentMcp {
     pub servers: Value,
 }
 
+/// The peer registration resolved against a known repository root.
+pub fn default_agent_mcp_for(repo_dir: &Path) -> Result<AgentMcp, String> {
+    let program = harness_executable(repo_dir)?;
+    Ok(AgentMcp {
+        servers: json!({ DEVBOARD_MCP_SERVER: devboard_mcp_entry(&program) }),
+    })
+}
+
+/// The peer registration for callers that carry no repository root. The
+/// environment or the working directory names it; a refusal is not
+/// representable here, so the running image is the last resort.
 pub fn default_agent_mcp() -> AgentMcp {
+    let repo_dir = std::env::var_os("REPO_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    let program = crate::relaunch::harness_program(&repo_dir).unwrap_or_else(|_| {
+        let current = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("devboard"));
+        crate::relaunch::live_path(&current)
+    });
     AgentMcp {
-        servers: json!({ DEVBOARD_MCP_SERVER: devboard_mcp_entry() }),
+        servers: json!({ DEVBOARD_MCP_SERVER: devboard_mcp_entry(&program) }),
     }
 }
 
@@ -2024,12 +2044,9 @@ impl ProviderService {
         let provider = subscription.provider;
         let model = provider_definition(provider).model;
         let directory = agent_directory(&self.state_dir, provider, &subscription.id);
-        write_agent_directory(
-            &directory,
-            &generated_config(provider, model),
-            &default_agent_mcp(),
-        )
-        .map_err(|error| ProviderUnavailable::new(error.to_string()))?;
+        let mcp = default_agent_mcp_for(&self.repo_dir).map_err(ProviderUnavailable::new)?;
+        write_agent_directory(&directory, &generated_config(provider, model), &mcp)
+            .map_err(|error| ProviderUnavailable::new(error.to_string()))?;
 
         let mut binding = PeerBinding {
             provider,
@@ -2416,7 +2433,10 @@ pub fn open_code_peer_bindings(
         .iter()
         .find(|entry| entry.provider == ProviderId::OpenRouter && entry.enabled)
         .cloned();
-    let mcp = options.mcp.clone().unwrap_or_else(default_agent_mcp);
+    let mcp = match options.mcp.clone() {
+        Some(mcp) => mcp,
+        None => default_agent_mcp_for(repo_dir)?,
+    };
 
     let mut bindings = Vec::new();
     for subscription in candidates {
@@ -2465,12 +2485,13 @@ mod tests {
     /// path that no longer exists leaves every peer without Devboard tools.
     #[test]
     fn a_peer_registration_launches_this_harness_stdio_server() {
-        let mcp = default_agent_mcp();
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mcp = default_agent_mcp_for(repo).expect("the harness executable");
         let entry = &mcp.servers[DEVBOARD_MCP_SERVER];
         assert_eq!(entry["type"], json!("stdio"));
         assert_eq!(
             entry["command"],
-            json!(harness_executable().display().to_string())
+            json!(harness_executable(repo).unwrap().display().to_string())
         );
         assert_eq!(entry["args"], json!(["mcp"]));
     }
@@ -2484,8 +2505,9 @@ mod tests {
             .join(format!("agent-mcp-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("scratch directory");
         std::fs::write(directory.join("devboard-mcp.ts"), "stale").expect("stale wrapper");
-        write_agent_directory(&directory, "modelRoles: {}\n", &default_agent_mcp())
-            .expect("agent directory");
+        let mcp = default_agent_mcp_for(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("the harness executable");
+        write_agent_directory(&directory, "modelRoles: {}\n", &mcp).expect("agent directory");
         assert!(!directory.join("devboard-mcp.ts").exists());
         let parsed: Value =
             serde_json::from_str(&std::fs::read_to_string(directory.join("mcp.json")).unwrap())

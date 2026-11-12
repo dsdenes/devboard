@@ -6,6 +6,8 @@
  * in flight.
  */
 
+import { readFileSync } from "node:fs";
+
 import { expect, type Page } from "@playwright/test";
 
 import {
@@ -53,14 +55,40 @@ export async function waitForLifecycle(
   let current = await familyLifecycle(page, family);
   while (!states.includes(current)) {
     if (Date.now() > deadline) {
+      const server = await readServerAgent(family);
       throw new Error(
-        `${FAMILY_LABELS[family]} stayed ${current}; expected ${states.join(" or ")} within ${timeoutMs} ms`,
+        `${FAMILY_LABELS[family]} stayed ${current}; expected ${states.join(" or ")} within ${timeoutMs} ms; server=${server}`,
       );
     }
     await sleep(200);
     current = await familyLifecycle(page, family);
   }
   return current;
+}
+
+/** The server's own snapshot for one family, for a timeout diagnostic. */
+async function readServerAgent(family: Family): Promise<string> {
+  try {
+    const response = await fetch(`${readState().baseUrl}/agents`);
+    const body = (await response.json()) as {
+      frames?: { type?: string; agents?: { id?: string }[] }[];
+    };
+    const agent = body.frames?.[0]?.agents?.find((entry) => entry.id === family) as
+      | { workers?: { pid?: number }[] }
+      | undefined;
+    const pid = agent?.workers?.[0]?.pid;
+    let stat = "";
+    if (typeof pid === "number") {
+      try {
+        stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      } catch (error) {
+        stat = `unreadable: ${String(error)}`;
+      }
+    }
+    return `${JSON.stringify(agent ?? null)} proc=${stat}`;
+  } catch (error) {
+    return `unreadable: ${String(error)}`;
+  }
 }
 
 /** The worker pids the family's page records while it runs. */
@@ -77,7 +105,11 @@ export async function recordedWorkers(page: Page, family: Family): Promise<numbe
   return pids;
 }
 
-/** Starts one family through its own page and waits for the running state. */
+/**
+ * Starts one family through its own page. Start must show `running` with a
+ * recorded worker pid within 2,000 ms of the click; the preflight runs beside
+ * the spawned worker, so a slow forge read never holds the observable start.
+ */
 export async function startFamily(page: Page, family: Family): Promise<number[]> {
   await showFamily(page, family);
   clearFamilyRuntime(family, readState());
@@ -85,10 +117,20 @@ export async function startFamily(page: Page, family: Family): Promise<number[]>
     `[data-testid="agent-page"][data-agent="${family}"] [data-testid="agent-start"]`,
   );
   await expect(start).toBeEnabled({ timeout: 30_000 });
+  const started = Date.now();
   await start.click();
-  await waitForLifecycle(page, family, ["running", "starting"], 60_000);
-  await waitForLifecycle(page, family, ["running"], 60_000);
-  return recordedWorkers(page, family);
+  const deadline = started + 2_000;
+  for (;;) {
+    const lifecycle = await familyLifecycle(page, family);
+    const pids = await recordedWorkers(page, family);
+    if (lifecycle === "running" && pids.length > 0) return pids;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${FAMILY_LABELS[family]} was ${lifecycle} with ${pids.length} worker pids 2,000 ms after Start`,
+      );
+    }
+    await sleep(100);
+  }
 }
 
 /** Stops one family through its own page and waits for the stopped state. */

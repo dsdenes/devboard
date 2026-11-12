@@ -1013,7 +1013,8 @@ struct DraftWatcher {
     repo_dir: PathBuf,
     state_dir: PathBuf,
     agent_command: String,
-    owner_executable: PathBuf,
+    /// The resolved owner program, or the refusal naming what is missing.
+    owner_executable: Result<PathBuf, String>,
     conns: Vec<Conn>,
     runs: HashMap<String, GoalDraftRun>,
     owners: HashMap<String, GoalDraftOwnerState>,
@@ -1030,13 +1031,21 @@ impl DraftWatcher {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "omp acp".to_string());
-        // The owner is this binary; the override lets a test binary spawn the
-        // harness under test, which is what the dashboard runs in production.
-        let owner_executable = std::env::var("DEVBOARD_OWNER_EXECUTABLE")
+        // The owner is the resolved harness program; the override lets a test
+        // binary spawn the harness under test, which is what the dashboard runs
+        // in production.
+        let owner_executable = match std::env::var("DEVBOARD_OWNER_EXECUTABLE")
             .ok()
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(crate::relaunch::own_program);
+        {
+            Some(path) if path.is_file() => Ok(path),
+            Some(path) => Err(format!(
+                "missing prerequisite: the owner executable {} is missing; rebuild or reinstall the harness",
+                path.display()
+            )),
+            None => crate::relaunch::harness_program(&repo_dir),
+        };
         Self {
             repo_dir,
             state_dir,
@@ -1205,12 +1214,8 @@ impl DraftWatcher {
     /// Forks one owner for one draft. The forked argv belongs to the launcher;
     /// the owner's own process publishes the identity liveness is judged by.
     fn spawn_run_owner(&self, path: &str) -> Option<u32> {
-        let argv = owner_argv(
-            &self.owner_executable,
-            &self.repo_dir,
-            &self.state_dir,
-            path,
-        );
+        let executable = self.owner_executable.as_ref().ok()?;
+        let argv = owner_argv(executable, &self.repo_dir, &self.state_dir, path);
         let mut environment: HashMap<String, String> = std::env::vars().collect();
         environment.insert("AGENT_COMMAND".into(), self.agent_command.clone());
         environment.insert("STATE_DIR".into(), self.state_dir.display().to_string());
@@ -1523,17 +1528,23 @@ impl DraftWatcher {
         self.take_lease();
 
         let Some(_) = self.spawn_run_owner(&path) else {
+            let message = self
+                .owner_executable
+                .as_ref()
+                .err()
+                .cloned()
+                .unwrap_or_else(|| "the elaboration peer could not be started".to_string());
             let failed = GoalDraftRun {
                 status: GoalDraftStatus::Failed,
                 finished_at: Some(now_iso()),
-                error: Some("the elaboration peer could not be started".to_string()),
+                error: Some(message.clone()),
                 ..run
             };
             self.store_state(&path, failed, None, None);
             self.emit_state(&path);
             self.publish_drafts();
             return StartOutcome::Refused {
-                message: "the elaboration peer could not be started".to_string(),
+                message,
                 stopped: false,
             };
         };

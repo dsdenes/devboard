@@ -752,119 +752,6 @@ async fn a_worker_that_dies_without_publishing_reports_the_proof_failure() {
 }
 
 #[tokio::test]
-async fn a_start_whose_command_was_dropped_resets_after_its_bound() {
-    let root = scratch("dropped-start");
-    let app = app_at(&root);
-    let repo = root.join("repo");
-    let state = root.join("state");
-    // The preflight never answers, and the test drops the start the moment
-    // that preflight is entered. A wall-clock race between the test's patience
-    // and the preflight bound fails on a loaded host even when the handler is
-    // correct: both timers expire, and the handler's bound is the one polled
-    // first. The callback's own signal names the drop, so the drop is what
-    // leaves the bookkeeping behind; its window (preflight, grace,
-    // abandonment) closes inside the same test.
-    let (entered, entered_rx) = tokio::sync::oneshot::channel();
-    let entered = Arc::new(Mutex::new(Some(entered)));
-    let hanging: devboard::agents_mode::PreflightCallback = Arc::new(move |_request| {
-        if let Some(entered) = entered.lock().expect("the entered signal").take() {
-            let _ = entered.send(());
-        }
-        Box::pin(std::future::pending())
-    });
-    devboard::agents_mode::set_preflight(&app, "watchdog", hanging);
-    devboard::agents_mode::set_preflight_timeout(&app, "watchdog", 150);
-
-    let (conn, _inbox) = connection_for(&app).await;
-    let start_command = Command::StartAgent {
-        id: Some(json!("watchdog")),
-    };
-    let answered = {
-        let mut start = std::pin::pin!(devboard::agents_mode::handle(&app, &conn, &start_command));
-        tokio::select! {
-            _ = entered_rx => None,
-            result = &mut start => Some(result),
-        }
-    };
-    assert!(
-        answered.is_none(),
-        "the start answered before its hanging preflight: {answered:?}"
-    );
-
-    let (conn, mut inbox) = connection_for(&app).await;
-    devboard::agents_mode::handle(
-        &app,
-        &conn,
-        &Command::GetAgent {
-            id: Some(json!("watchdog")),
-        },
-    )
-    .await;
-    let all = frames(&mut inbox);
-    let pending = agent(&all, "watchdog").expect("a watchdog snapshot");
-    assert_eq!(pending["lifecycle"], "starting", "{all:?}");
-
-    // The dropped command never ran its cleanup, so the bound the start armed
-    // is what clears it: the preflight window, its grace, and the abandonment
-    // grace.
-    tokio::time::sleep(std::time::Duration::from_millis(3_400)).await;
-    let (conn, mut inbox) = connection_for(&app).await;
-    devboard::agents_mode::handle(
-        &app,
-        &conn,
-        &Command::GetAgent {
-            id: Some(json!("watchdog")),
-        },
-    )
-    .await;
-    let all = frames(&mut inbox);
-    let abandoned = agent(&all, "watchdog").expect("a watchdog snapshot");
-    assert_eq!(abandoned["lifecycle"], "stopped", "{all:?}");
-    assert_eq!(
-        abandoned["error"],
-        json!("the Watchdog start did not finish; press Start to retry."),
-        "{all:?}"
-    );
-
-    // A reset family starts again: the same command, a preflight that answers,
-    // and a worker that publishes its lock.
-    let spawned: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
-    let spawned_for = Arc::clone(&spawned);
-    let repo_for_spawn = repo.clone();
-    let state_for_spawn = state.clone();
-    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
-        let pid = stand_in_watchdog();
-        write_watchdog_lock(&repo_for_spawn, &state_for_spawn, pid);
-        spawned_for.lock().expect("spawned pids").push(pid);
-        Some(pid)
-    });
-    let ready: devboard::agents_mode::PreflightCallback =
-        Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
-    devboard::agents_mode::set_preflight(&app, "watchdog", ready);
-
-    let (conn, mut inbox) = connection_for(&app).await;
-    devboard::agents_mode::handle(
-        &app,
-        &conn,
-        &Command::StartAgent {
-            id: Some(json!("watchdog")),
-        },
-    )
-    .await;
-    let all = frames(&mut inbox);
-    assert!(find(&all, "error").is_empty(), "start refused: {all:?}");
-    let running = agent(&all, "watchdog").expect("a watchdog snapshot");
-    assert_eq!(running["lifecycle"], "running", "{all:?}");
-    assert_eq!(running["attached"], true, "{all:?}");
-
-    for pid in spawned.lock().expect("spawned pids").iter() {
-        unsafe {
-            libc::kill(*pid as i32, libc::SIGKILL);
-        }
-    }
-}
-
-#[tokio::test]
 async fn an_attached_worker_clears_a_preview_its_own_start_still_shows() {
     let root = scratch("stale-preview");
     let app = app_at(&root);
@@ -874,6 +761,13 @@ async fn an_attached_worker_clears_a_preview_its_own_start_still_shows() {
     // attachment is the only thing that can retire the preview.
     devboard::agents_mode::set_preflight(&app, "watchdog", hanging_preflight());
     devboard::agents_mode::set_preflight_timeout(&app, "watchdog", 600_000);
+    let spawned: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&spawned);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let pid = stand_in_reapable();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
 
     // A Start that is still in flight — its preflight has not answered — while a
     // worker of this root exists, which is exactly what a second dashboard's
@@ -912,6 +806,7 @@ async fn an_attached_worker_clears_a_preview_its_own_start_still_shows() {
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
     }
+    kill_recorded(&spawned);
 }
 
 #[tokio::test]
@@ -1019,6 +914,14 @@ async fn a_hanging_start_preflight_refuses_within_the_bound() {
         Box::pin(async { std::future::pending::<Result<String, String>>().await })
     });
     devboard::agents_mode::set_preflight(&app, "scout", preflight);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&pids);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let pid = stand_in_reapable();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
     let (conn, mut inbox) = connection_for(&app).await;
 
     let started = std::time::Instant::now();
@@ -1030,25 +933,42 @@ async fn a_hanging_start_preflight_refuses_within_the_bound() {
         },
     )
     .await;
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    let all = frames(&mut inbox);
-    // A preflight that ran out of its own budget is latency: the card states it
-    // as the notice, and the command answers no error frame, so the page raises
-    // no notification and files no board issue for it.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "Start waited for its preflight"
+    );
+    // The preflight runs beside the spawned worker; its refusal lands on the
+    // card. A budget refusal is latency: the notice states it and no error
+    // frame reaches the page.
+    let (scout, all) = wait_for_snapshot(&app, &conn, &mut inbox, "scout", |snapshot| {
+        snapshot["notice"].as_str().is_some()
+    })
+    .await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
     assert!(find(&all, "error").is_empty(), "{all:?}");
-    let scout = agent(&all, "scout").expect("a scout snapshot");
     assert_eq!(
         scout["notice"],
         "the start preflight did not finish within 20 ms; press Start to retry."
     );
     assert_eq!(scout["error"], Value::Null);
     assert_ne!(scout["lifecycle"], "starting");
+    let pid = *pids.lock().expect("pids").first().expect("a pid");
+    assert!(pid_dead(pid), "the refused start left its worker alive");
+    kill_recorded(&pids);
 }
 
 #[tokio::test]
 async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_alarm() {
     let root = scratch("start-forge-latency");
     let app = app_at(&root);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&pids);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let pid = stand_in_reapable();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
     let reason = "the Gitea repository acme/fixture could not be read before Start's deadline: \
                   GET /repos/acme/fixture failed: the request timed out after 19745 ms; \
                   press Start to retry.";
@@ -1080,12 +1000,14 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
             },
         )
         .await;
-        let all = frames(&mut inbox);
-        let snapshot = agent(&all, family).expect("a family snapshot");
+        let (snapshot, all) = wait_for_snapshot(&app, &conn, &mut inbox, family, |snapshot| {
+            snapshot["notice"].as_str().is_some()
+        })
+        .await;
         // A read that ran out of time against a forge that is slow, not broken:
-        // the card states why Start spawned nothing, and no error frame reaches
-        // the page, so nothing raises an error notification or files a board
-        // issue against the same forge.
+        // the card states why the start refused, and no error frame reaches the
+        // page, so nothing raises an error notification or files a board issue
+        // against the same forge.
         assert_eq!(snapshot["notice"], json!(reason), "{family}");
         assert_eq!(snapshot["error"], Value::Null, "{family}");
         assert_ne!(snapshot["lifecycle"], json!("starting"), "{family}");
@@ -1110,14 +1032,17 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
             },
         )
         .await;
-        let all = frames(&mut inbox);
-        let snapshot = agent(&all, family).expect("a family snapshot");
+        let (snapshot, all) = wait_for_snapshot(&app, &conn, &mut inbox, family, |snapshot| {
+            snapshot["error"].as_str().is_some()
+        })
+        .await;
         assert_eq!(snapshot["error"], json!(fault), "{family}");
         assert_eq!(snapshot["notice"], Value::Null, "{family}");
         let refusals = find(&all, "error");
         assert_eq!(refusals.len(), 1, "{family}: {all:?}");
         assert_eq!(refusals[0]["message"], json!(fault), "{family}");
     }
+    kill_recorded(&pids);
 }
 
 #[tokio::test]
@@ -1129,6 +1054,14 @@ async fn api_standards_start_refuses_an_unusable_rule_table_instead_of_panicking
     std::fs::create_dir_all(skill_dir.join("references")).expect("a skill root");
     std::fs::write(skill_dir.join("SKILL.md"), "# REST\n\nBytes.\n").expect("a skill file");
     let app = app_at(&root);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&pids);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let pid = stand_in_reapable();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
 
     let documents = [
         // A line that trims to one `|`: the shared scan refuses it, while a
@@ -1150,8 +1083,11 @@ async fn api_standards_start_refuses_an_unusable_rule_table_instead_of_panicking
             },
         )
         .await;
-        let all = frames(&mut inbox);
-        let snapshot = agent(&all, "api-standards").expect("a family snapshot");
+        let (snapshot, all) =
+            wait_for_snapshot(&app, &conn, &mut inbox, "api-standards", |snapshot| {
+                snapshot["error"].as_str().is_some()
+            })
+            .await;
         let error = snapshot["error"]
             .as_str()
             .unwrap_or_else(|| panic!("{label}: no refusal in {all:?}"));
@@ -1163,6 +1099,7 @@ async fn api_standards_start_refuses_an_unusable_rule_table_instead_of_panicking
         assert_ne!(snapshot["lifecycle"], json!("starting"), "{label}");
         assert_eq!(find(&all, "error").len(), 1, "{label}: {all:?}");
     }
+    kill_recorded(&pids);
 }
 
 // The budget is wall clock, so a loaded host can spend it before the first
@@ -2086,5 +2023,379 @@ async fn a_changed_family_reaches_a_client_within_one_second() {
             "a changed family reaches the client within one second"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+const NINE_FAMILIES: [&str; 9] = [
+    "scout",
+    "watchdog",
+    "design",
+    "dead-code",
+    "mcp-optimizer",
+    "api-standards",
+    "single-responsibility",
+    "consistent-naming",
+    "release-train",
+];
+
+/// A live stand-in whose exit a waiter reaps, so killing it makes the pid
+/// observably dead instead of leaving a zombie the kernel still reports.
+fn stand_in_reapable() -> u32 {
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a stand-in worker");
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    pid
+}
+
+/// The lock each family's snapshot reads as an attached worker.
+fn family_lock_path(root: &Path, family: &str) -> PathBuf {
+    let repo = root.join("repo");
+    let state = root.join("state");
+    match family {
+        "watchdog" => repo.join(".devboard/.tmp/watchdog/lock"),
+        "mcp-optimizer" => state.join("coach/lock"),
+        "release-train" => state.join("release-train/lock"),
+        other => repo.join(".devboard/.tmp").join(other).join("lock"),
+    }
+}
+
+fn write_family_lock(root: &Path, family: &str, pid: u32, version: Option<&str>) {
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let lock = json!({
+        "pid": pid,
+        "startedAt": devboard::journal::now_iso8601(),
+        "repo": repo.to_string_lossy(),
+        "stateDir": state.to_string_lossy(),
+        "harnessVersion": version,
+        "argv": ["devboard", "worker", family],
+    });
+    if family == "release-train" {
+        // Release attachment is a published worker record, not only a lock.
+        let directory = state.join("release-train");
+        let key = version.unwrap_or("0");
+        write_json(&directory.join(format!("lock.{key}")), lock);
+        write_json(
+            &directory.join("workers").join(key).join("worker.json"),
+            release_worker_state(pid, &state),
+        );
+        return;
+    }
+    write_json(&family_lock_path(root, family), lock);
+}
+
+/// The release family refuses a root that is not a canonical git checkout.
+fn git_checkout(repo: &Path) {
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(repo)
+        .status()
+        .expect("git init");
+    assert!(status.success());
+}
+
+fn kill_recorded(recorded: &Arc<Mutex<Vec<u32>>>) {
+    for pid in recorded.lock().expect("stand-ins").iter() {
+        kill_stand_in(*pid);
+    }
+}
+
+struct FamilyHarness {
+    app: Arc<App>,
+    conn: Conn,
+    inbox: UnboundedReceiver<String>,
+    pids: Arc<Mutex<Vec<u32>>>,
+    spawns: RecordedSpawns,
+}
+
+async fn family_harness(
+    root: &Path,
+    family: &str,
+    preflight: devboard::agents_mode::PreflightCallback,
+    publishes_lock: bool,
+) -> FamilyHarness {
+    let app = app_at(root);
+    if family == "release-train" {
+        git_checkout(&root.join("repo"));
+    }
+    devboard::agents_mode::set_preflight(&app, family, preflight);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawns: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let pids_for_spawn = Arc::clone(&pids);
+    let spawns_for_spawn = Arc::clone(&spawns);
+    let root_for_spawn = root.to_path_buf();
+    let family_for_spawn = family.to_string();
+    let version_for_spawn = app.running_version.clone();
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        spawns_for_spawn
+            .lock()
+            .expect("spawns")
+            .push((argv.to_vec(), environment.clone()));
+        let pid = stand_in_reapable();
+        pids_for_spawn.lock().expect("pids").push(pid);
+        if publishes_lock {
+            write_family_lock(
+                &root_for_spawn,
+                &family_for_spawn,
+                pid,
+                version_for_spawn.as_deref(),
+            );
+        }
+        Some(pid)
+    });
+    let (conn, inbox) = connection_for(&app).await;
+    FamilyHarness {
+        app,
+        conn,
+        inbox,
+        pids,
+        spawns,
+    }
+}
+
+async fn start_family(
+    harness: &mut FamilyHarness,
+    family: &str,
+) -> (Vec<Value>, std::time::Duration) {
+    let started = std::time::Instant::now();
+    devboard::agents_mode::handle(
+        &harness.app,
+        &harness.conn,
+        &Command::StartAgent {
+            id: Some(json!(family)),
+        },
+    )
+    .await;
+    let elapsed = started.elapsed();
+    (frames(&mut harness.inbox), elapsed)
+}
+
+/// The newest snapshot a targeted read answers, draining the connection first.
+async fn read_agent(harness: &mut FamilyHarness, family: &str) -> Value {
+    let _ = frames(&mut harness.inbox);
+    devboard::agents_mode::handle(
+        &harness.app,
+        &harness.conn,
+        &Command::GetAgent {
+            id: Some(json!(family)),
+        },
+    )
+    .await;
+    agent(&frames(&mut harness.inbox), family)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn assert_spawned_program(harness: &FamilyHarness, family: &str) {
+    let spawns = harness.spawns.lock().expect("spawns");
+    assert_eq!(spawns.len(), 1, "{family}: one spawn");
+    let argv = &spawns[0].0;
+    assert!(
+        !argv[0].contains(" (deleted)"),
+        "{family}: a deleted executable reached argv: {argv:?}"
+    );
+    assert!(
+        Path::new(&argv[0]).is_file(),
+        "{family}: argv[0] is not an existing regular file: {argv:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_slow_preflight_does_not_delay_the_spawn() {
+    for family in NINE_FAMILIES {
+        let root = scratch(&format!("slow-spawn-{family}"));
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed_for = Arc::clone(&completed);
+        let preflight: devboard::agents_mode::PreflightCallback = Arc::new(move |_request| {
+            let completed = Arc::clone(&completed_for);
+            Box::pin(async move {
+                std::future::pending::<()>().await;
+                completed.store(true, Ordering::SeqCst);
+                Ok("owner/repository".to_string())
+            })
+        });
+        let mut harness = family_harness(&root, family, preflight, false).await;
+        let (all, elapsed) = start_family(&mut harness, family).await;
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "{family}: Start waited for its pending preflight ({elapsed:?})"
+        );
+        assert_spawned_program(&harness, family);
+        let snapshot = agent(&all, family).expect("a family snapshot");
+        assert_eq!(snapshot["lifecycle"], "starting", "{family}: {all:?}");
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "{family}: the preflight completed before Start answered"
+        );
+        kill_recorded(&harness.pids);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[tokio::test]
+async fn every_family_reaches_running_inside_two_seconds() {
+    for family in NINE_FAMILIES {
+        let root = scratch(&format!("running-{family}"));
+        let preflight: devboard::agents_mode::PreflightCallback =
+            Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+        let mut harness = family_harness(&root, family, preflight, true).await;
+        let started = std::time::Instant::now();
+        devboard::agents_mode::handle(
+            &harness.app,
+            &harness.conn,
+            &Command::StartAgent {
+                id: Some(json!(family)),
+            },
+        )
+        .await;
+        assert_spawned_program(&harness, family);
+        let deadline = started + std::time::Duration::from_millis(2_000);
+        let snapshot = loop {
+            let snapshot = read_agent(&mut harness, family).await;
+            let running = snapshot["lifecycle"] == json!("running");
+            let workers = snapshot["workers"]
+                .as_array()
+                .map(|workers| !workers.is_empty())
+                .unwrap_or(false);
+            if running && workers {
+                break snapshot;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{family}: never reached running with a worker: {snapshot:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        assert_eq!(snapshot["lifecycle"], json!("running"), "{family}");
+        kill_recorded(&harness.pids);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+fn refused_after_release(
+    release: tokio::sync::oneshot::Receiver<()>,
+    message: String,
+) -> devboard::agents_mode::PreflightCallback {
+    let release = Arc::new(Mutex::new(Some(release)));
+    Arc::new(move |_request| {
+        let release = Arc::clone(&release);
+        let message = message.clone();
+        Box::pin(async move {
+            let receiver = release.lock().expect("release").take();
+            if let Some(receiver) = receiver {
+                let _ = receiver.await;
+            }
+            Err(message)
+        })
+    })
+}
+
+async fn wait_for_refusal(harness: &mut FamilyHarness, family: &str, pid: u32) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2_000);
+    loop {
+        let snapshot = read_agent(harness, family).await;
+        let refused = snapshot["error"].as_str().is_some() || snapshot["notice"].as_str().is_some();
+        let workers = snapshot["workers"].as_array().cloned().unwrap_or_default();
+        if refused && pid_dead(pid) && workers.is_empty() {
+            return snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{family}: the refusal never landed with a dead worker: {snapshot:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+fn pid_dead(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) != 0 }
+}
+
+#[tokio::test]
+async fn a_failed_preflight_stops_the_spawned_worker() {
+    let fault = "missing prerequisite: the Gitea token cannot write to acme/fixture on \
+                 http://forge.test";
+    for family in NINE_FAMILIES {
+        let root = scratch(&format!("refused-{family}"));
+        let (release, held) = tokio::sync::oneshot::channel();
+        let preflight = refused_after_release(held, fault.to_string());
+        let mut harness = family_harness(&root, family, preflight, true).await;
+        let (all, _) = start_family(&mut harness, family).await;
+        assert!(find(&all, "error").is_empty(), "{family}: {all:?}");
+        assert_spawned_program(&harness, family);
+        let pid = *harness.pids.lock().expect("pids").first().expect("a pid");
+        release.send(()).expect("release the preflight");
+        let snapshot = wait_for_refusal(&mut harness, family, pid).await;
+        assert_eq!(snapshot["error"], json!(fault), "{family}: {snapshot:?}");
+        assert_eq!(snapshot["notice"], Value::Null, "{family}: {snapshot:?}");
+        kill_recorded(&harness.pids);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A latency refusal stays on the card and is never answered as a generic
+    // error frame.
+    let root = scratch("refused-latency");
+    let latency = "the Gitea repository acme/fixture could not be read before Start's deadline: \
+                   GET /repos/acme/fixture failed: the request timed out after 19745 ms; \
+                   press Start to retry.";
+    let (release, held) = tokio::sync::oneshot::channel();
+    let preflight = refused_after_release(held, latency.to_string());
+    let mut harness = family_harness(&root, "scout", preflight, true).await;
+    let (all, _) = start_family(&mut harness, "scout").await;
+    assert!(find(&all, "error").is_empty(), "{all:?}");
+    let pid = *harness.pids.lock().expect("pids").first().expect("a pid");
+    release.send(()).expect("release the preflight");
+    let snapshot = wait_for_refusal(&mut harness, "scout", pid).await;
+    assert_eq!(snapshot["notice"], json!(latency), "{snapshot:?}");
+    assert_eq!(snapshot["error"], Value::Null, "{snapshot:?}");
+    kill_recorded(&harness.pids);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Polls targeted reads until the family publishes a snapshot the caller
+/// accepts, returning it with every frame observed while waiting.
+async fn wait_for_snapshot(
+    app: &Arc<App>,
+    conn: &Conn,
+    inbox: &mut UnboundedReceiver<String>,
+    id: &str,
+    mut ready: impl FnMut(&Value) -> bool,
+) -> (Value, Vec<Value>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2_000);
+    let mut collected: Vec<Value> = Vec::new();
+    loop {
+        devboard::agents_mode::handle(
+            app,
+            conn,
+            &Command::GetAgent {
+                id: Some(json!(id)),
+            },
+        )
+        .await;
+        collected.extend(frames(inbox));
+        if let Some(snapshot) = collected
+            .iter()
+            .filter_map(|frame| frame.get("agent"))
+            .filter(|agent| agent.get("id").and_then(Value::as_str) == Some(id))
+            .next_back()
+        {
+            if ready(snapshot) {
+                return (snapshot.clone(), collected);
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{id}: no matching snapshot within two seconds"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }

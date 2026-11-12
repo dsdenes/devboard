@@ -150,6 +150,10 @@ const AGENT_FORGE_INTERVAL_MS: i64 = 60_000;
 const AGENT_FORGE_STALE_MS: i64 = 120_000;
 /// Watchdog and MCP optimizer keep a live worker's cycle grace this long.
 const STOP_CYCLE_GRACE_MS: u64 = 10 * 60_000;
+/// The shorter bound for a worker this Start spawned moments ago. It has no
+/// long-running cycle worth finishing, and the page's Stop control must answer
+/// inside its own proof window.
+const STOP_FRESH_CYCLE_GRACE_MS: u64 = 20_000;
 /// The legacy timer gate is re-read in the background at most this often.
 const TIMER_REFRESH_MS: i64 = 5_000;
 /// A bounded documentation history.
@@ -178,6 +182,13 @@ fn now_millis() -> i64 {
 /// It outlasts the preflight's own bound by the abandonment grace, so a
 /// preflight that refuses names itself instead of being reported as a start
 /// that never finished.
+fn stop_cycle_grace_ms(started_at: &str) -> u64 {
+    match parse_millis(started_at) {
+        Some(started) if now_millis() - started < 60_000 => STOP_FRESH_CYCLE_GRACE_MS,
+        _ => STOP_CYCLE_GRACE_MS,
+    }
+}
+
 fn start_deadline_at(now: i64, timeout_ms: u64) -> i64 {
     now + timeout_ms as i64 + PREFLIGHT_BUDGET_GRACE_MS as i64 + START_ABANDON_GRACE_MS
 }
@@ -1876,10 +1887,61 @@ fn pid_alive(pid: u32) -> bool {
     }
     unsafe {
         if libc::kill(pid as i32, 0) == 0 {
-            return true;
+            // An exited child its owner has not reaped yet is a zombie, not a
+            // worker: it holds no lock and runs no cycle.
+            return !process_is_zombie(pid);
         }
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn process_is_zombie(pid: u32) -> bool {
+    process_state(pid).as_deref() == Some("Z")
+}
+
+fn process_state(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let close = stat.rfind(')')?;
+    stat[close + 2..]
+        .chars()
+        .next()
+        .map(|state| state.to_string())
+}
+
+/// Ends a worker a Start spawned whose preflight then refused.
+///
+/// The worker may not have published its lock yet, so there is no control
+/// channel to ask; a refusal must leave no live worker behind. SIGTERM gives a
+/// worker that did publish a chance to settle, and SIGKILL bounds the wait so
+/// the card's refusal lands inside the page's budget.
+async fn terminate_spawned(pid: u32) {
+    if !pid_alive(pid) {
+        return;
+    }
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while pid_alive(pid) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    if pid_alive(pid) {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
+/// Publishes the family's projection when a stop proof ends, so the card
+/// settles even when the poll's disk fingerprint never moved.
+struct StopPublish(SharedPublish);
+
+impl Drop for StopPublish {
+    fn drop(&mut self) {
+        if let Some(publisher) = self.0.lock().ok().and_then(|slot| slot.clone()) {
+            publisher(None);
+        }
+    }
 }
 
 fn process_started_at(pid: u32) -> Option<i64> {
@@ -2159,16 +2221,19 @@ struct AgentsMode {
     /// The 250 ms poll rebuilds and serializes a family only after this
     /// changes, so an idle dashboard does no projection work at all.
     poll_signatures: Mutex<HashMap<&'static str, u64>>,
+    /// Serializes snapshot publication, so a poll that read the state before a
+    /// stop proof cannot store its older projection after the final one.
+    publish_lock: Mutex<()>,
     /// Broadcasts wait out the connect replay's settle window.
     settle_until: Mutex<i64>,
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 enum Adapter {
-    Repo(RepoFamily),
-    Watchdog(WatchdogFamily),
-    Mcp(McpFamily),
-    Release(ReleaseFamily),
+    Repo(Arc<RepoFamily>),
+    Watchdog(Arc<WatchdogFamily>),
+    Mcp(Arc<McpFamily>),
+    Release(Arc<ReleaseFamily>),
 }
 
 impl Adapter {
@@ -2240,7 +2305,7 @@ impl Adapter {
             Adapter::Repo(family) => Some(&family.preflight_override),
             Adapter::Watchdog(family) => Some(&family.preflight_override),
             Adapter::Mcp(family) => Some(&family.preflight_override),
-            Adapter::Release(_) => None,
+            Adapter::Release(family) => Some(&family.preflight_override),
         }
     }
 
@@ -2249,7 +2314,43 @@ impl Adapter {
             Adapter::Repo(family) => Some(family.preflight_timeout_cell()),
             Adapter::Watchdog(family) => Some(family.preflight_timeout_cell()),
             Adapter::Mcp(family) => Some(family.preflight_timeout_cell()),
-            Adapter::Release(_) => None,
+            Adapter::Release(family) => Some(family.preflight_timeout_cell()),
+        }
+    }
+
+    /// The executable resolver every spawn of this family's children uses.
+    fn program_cell(&self) -> &ProgramLink {
+        match self {
+            Adapter::Repo(family) => &family.program,
+            Adapter::Watchdog(family) => &family.program,
+            Adapter::Mcp(family) => &family.program,
+            Adapter::Release(family) => &family.program,
+        }
+    }
+
+    /// Whether any live worker this family reads is still attached.
+    fn has_live_workers(&self) -> bool {
+        match self {
+            Adapter::Repo(family) => !family.all_owners().is_empty(),
+            Adapter::Watchdog(family) => !family.owners().is_empty(),
+            Adapter::Mcp(family) => !family.owners().is_empty(),
+            Adapter::Release(family) => !family.owners().is_empty(),
+        }
+    }
+
+    /// Publishes this family's current projection after a background Start
+    /// preflight settles. A refusal must reach the card without waiting for
+    /// the poll's disk fingerprint, which a refusal that wrote no lock never
+    /// changes.
+    fn set_publisher(&self, publisher: PublishCallback) {
+        let cell = match self {
+            Adapter::Repo(family) => &family.publisher,
+            Adapter::Watchdog(family) => &family.publisher,
+            Adapter::Mcp(family) => &family.publisher,
+            Adapter::Release(family) => &family.publisher,
+        };
+        if let Ok(mut slot) = cell.lock() {
+            *slot = Some(publisher);
         }
     }
 
@@ -2434,14 +2535,6 @@ impl AgentResult {
             latency: false,
         }
     }
-
-    fn latency(text: String) -> Self {
-        Self {
-            ok: false,
-            message: Some(text),
-            latency: true,
-        }
-    }
 }
 
 impl AgentsMode {
@@ -2490,7 +2583,7 @@ impl AgentsMode {
             RepoFamilyId::SingleResponsibility,
             RepoFamilyId::ConsistentNaming,
         ] {
-            adapters.push(Adapter::Repo(RepoFamily::new(
+            adapters.push(Adapter::Repo(Arc::new(RepoFamily::new(
                 family_id,
                 &repo_dir,
                 &state_dir,
@@ -2502,7 +2595,7 @@ impl AgentsMode {
                 new_preflight(),
                 forge_reader.clone(),
                 now.clone(),
-            )));
+            ))));
         }
         // Registry order: scout, watchdog, design, dead-code, mcp-optimizer,
         // api-standards, single-responsibility, consistent-naming, release-train.
@@ -2512,7 +2605,7 @@ impl AgentsMode {
             .map(|adapter| (adapter.id(), adapter))
             .collect();
         ordered.push(indices.remove("scout").expect("scout"));
-        ordered.push(Adapter::Watchdog(WatchdogFamily::new(
+        ordered.push(Adapter::Watchdog(Arc::new(WatchdogFamily::new(
             &repo_dir,
             &state_dir,
             &environment,
@@ -2521,10 +2614,10 @@ impl AgentsMode {
             new_preflight(),
             forge_reader.clone(),
             now.clone(),
-        )));
+        ))));
         ordered.push(indices.remove("design").expect("design"));
         ordered.push(indices.remove("dead-code").expect("dead-code"));
-        ordered.push(Adapter::Mcp(McpFamily::new(
+        ordered.push(Adapter::Mcp(Arc::new(McpFamily::new(
             &repo_dir,
             &state_dir,
             &environment,
@@ -2533,7 +2626,7 @@ impl AgentsMode {
             new_preflight(),
             forge_reader.clone(),
             now.clone(),
-        )));
+        ))));
         ordered.push(indices.remove("api-standards").expect("api-standards"));
         ordered.push(
             indices
@@ -2545,14 +2638,15 @@ impl AgentsMode {
                 .remove("consistent-naming")
                 .expect("consistent-naming"),
         );
-        ordered.push(Adapter::Release(ReleaseFamily::new(
+        ordered.push(Adapter::Release(Arc::new(ReleaseFamily::new(
             &repo_dir,
             &state_dir,
             &environment,
             running_version.clone(),
             spawn.clone(),
+            new_preflight(),
             now.clone(),
-        )));
+        ))));
         let shared_for_clients = Arc::clone(&shared);
         Arc::new(Self {
             prompts: PromptController {
@@ -2565,9 +2659,37 @@ impl AgentsMode {
             signatures: Mutex::new(HashMap::new()),
             cached: Mutex::new(HashMap::new()),
             poll_signatures: Mutex::new(HashMap::new()),
+            publish_lock: Mutex::new(()),
             settle_until: Mutex::new(0),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
         })
+    }
+
+    /// Gives every family the mode's own publisher, so a Start preflight that
+    /// settles after the command answered can put its refusal on the card and
+    /// refresh the cached projection `/agents` serves.
+    fn wire_publishers(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        for adapter in &self.adapters {
+            let weak = weak.clone();
+            let id = adapter.id();
+            let publisher: PublishCallback = Arc::new(move |error: Option<String>| {
+                let Some(mode) = weak.upgrade() else {
+                    return;
+                };
+                let Some(adapter) = mode.adapters.iter().find(|adapter| adapter.id() == id) else {
+                    return;
+                };
+                mode.publish_if_changed(adapter);
+                if let Some(message) = error {
+                    // A fault refusal keeps the page's alert; a latency refusal
+                    // is only the card's notice and answers no error frame.
+                    mode.shared
+                        .send_all(json!({"type": "error", "message": message}), None);
+                }
+            });
+            adapter.set_publisher(publisher);
+        }
     }
 
     fn begin(self: &Arc<Self>) {
@@ -2656,10 +2778,25 @@ impl AgentsMode {
             let previous = signatures.insert(adapter.id(), signature);
             previous != Some(signature)
         };
-        changed || adapter.rebuild_always()
+        // A projection that still reads `stopping` after the family has no
+        // pending stop is stale: rebuild it once, even when the disk
+        // fingerprint did not move.
+        let stale_stop = self
+            .cached
+            .lock()
+            .ok()
+            .and_then(|cached| cached.get(adapter.id()).cloned())
+            .map(|snapshot| snapshot.get("lifecycle").and_then(Value::as_str) == Some("stopping"))
+            .unwrap_or(false)
+            && !adapter.has_live_workers();
+        changed || stale_stop || adapter.rebuild_always()
     }
 
     fn publish_if_changed(&self, adapter: &Adapter) {
+        let _publish = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let snapshot = adapter.snapshot();
         self.store_projection(adapter, &snapshot);
         let text = crate::jsjson::stringify(&snapshot);
@@ -2982,6 +3119,29 @@ pub type PreflightCallback = Arc<
 >;
 type SharedPreflight = Arc<Mutex<Option<PreflightCallback>>>;
 type SharedSpawn = Arc<Mutex<SpawnFn>>;
+type PublishCallback = Arc<dyn Fn(Option<String>) + Send + Sync>;
+type SharedPublish = Arc<Mutex<Option<PublishCallback>>>;
+
+/// The harness executable a family's children start, through the one shared
+/// resolution order. A fixture supplies an executable link to prove the order
+/// without replacing the test process's own image.
+#[derive(Clone, Default)]
+struct ProgramLink(Arc<Mutex<Option<PathBuf>>>);
+
+impl ProgramLink {
+    fn resolve(&self, repo_dir: &Path) -> Result<PathBuf, String> {
+        match self.0.lock().ok().and_then(|slot| slot.clone()) {
+            Some(linked) => crate::relaunch::harness_program_for(repo_dir, &linked),
+            None => crate::relaunch::harness_program(repo_dir),
+        }
+    }
+
+    fn set(&self, linked: Option<PathBuf>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = linked;
+        }
+    }
+}
 type AgentEnvironment = dyn Fn() -> Pin<Box<dyn Future<Output = Result<HashMap<String, String>, String>> + Send>>
     + Send
     + Sync;
@@ -3000,11 +3160,9 @@ fn default_spawn(argv: &[String], environment: HashMap<String, String>) -> Optio
     crate::supervision::supervised_detach(argv, options)
 }
 
-fn harness_argv(family: &str, flags: &[(&str, &Path)]) -> Vec<String> {
+fn harness_argv(program: &Path, family: &str, flags: &[(&str, &Path)]) -> Vec<String> {
     let mut argv = vec![
-        crate::relaunch::own_program()
-            .to_string_lossy()
-            .into_owned(),
+        program.to_string_lossy().into_owned(),
         "worker".to_string(),
         family.to_string(),
     ];
@@ -3086,6 +3244,19 @@ pub fn set_preflight(app: &Arc<App>, family: &str, callback: PreflightCallback) 
                 if let Ok(mut slot) = cell.lock() {
                     *slot = Some(Arc::clone(&callback));
                 }
+            }
+        }
+    }
+}
+
+/// Replaces the executable link a family resolves its worker program from.
+/// Tests use it to prove the shared resolution order without replacing the
+/// test process's own image.
+pub fn set_program_link(app: &Arc<App>, family: &str, linked: Option<PathBuf>) {
+    if let Some(mode) = mode_for(app) {
+        for adapter in &mode.adapters {
+            if adapter.id() == family {
+                adapter.program_cell().set(linked.clone());
             }
         }
     }
@@ -3459,6 +3630,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
 /// Registers this mode's durable state with the dashboard.
 pub fn init(app: &Arc<App>) {
     let mode = AgentsMode::new(app);
+    mode.wire_publishers();
     if let Ok(mut modes) = modes().lock() {
         modes.insert(mode_key(app), Arc::clone(&mode));
     }
@@ -4040,6 +4212,9 @@ struct RepoMutable {
     /// The state tree's metadata fingerprint the parsed states were read at.
     states_signature: Option<u64>,
     states: Vec<RepoState>,
+    /// The Start whose preflight may still settle. A newer Start invalidates
+    /// the older one, so a late refusal never stops the newer worker.
+    start_attempt: u64,
 }
 
 struct RepoFamily {
@@ -4057,6 +4232,8 @@ struct RepoFamily {
     agent_environment: Arc<Mutex<Arc<AgentEnvironment>>>,
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    program: ProgramLink,
+    publisher: SharedPublish,
     mutable: Arc<Mutex<RepoMutable>>,
     start_lock: tokio::sync::Mutex<()>,
 }
@@ -4103,6 +4280,8 @@ impl RepoFamily {
                 seed_forge_facts(family_id, state_dir, repo_dir),
             ),
             now,
+            program: ProgramLink::default(),
+            publisher: Arc::new(Mutex::new(None)),
             mutable: Arc::new(Mutex::new(RepoMutable {
                 preview_starting: false,
                 starting: false,
@@ -4120,8 +4299,17 @@ impl RepoFamily {
                 last_activity_stamp: None,
                 states_signature: None,
                 states: Vec::new(),
+                start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Publishes this family's projection after a background preflight settles.
+    fn publish_refusal(&self, refusal: &StartRefusal) {
+        let error = (!refusal.latency).then(|| refusal.message.clone());
+        if let Some(publisher) = self.publisher.lock().ok().and_then(|slot| slot.clone()) {
+            publisher(error);
         }
     }
 
@@ -4873,7 +5061,7 @@ impl RepoFamily {
         }
     }
 
-    async fn start(&self) -> AgentResult {
+    async fn start(self: &Arc<Self>) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
             // A Start's own preview is not a spawn: a second command must say
@@ -4969,7 +5157,7 @@ impl RepoFamily {
                 ));
             }
         }
-        {
+        let attempt = {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.starting = true;
             mutable.starting_since = None;
@@ -4980,7 +5168,35 @@ impl RepoFamily {
             mutable.started_pid = None;
             mutable.start_error = None;
             mutable.notice = None;
+            mutable.start_attempt += 1;
+            mutable.start_attempt
+        };
+        // The worker exists before the preflight is asked: Start's observable
+        // outcome is the spawned process, and a forge read slower than the
+        // page's budget must not hold it back. A refusal settles beside it.
+        let started = self.spawn_worker().await;
+        if !started.ok {
+            return started;
         }
+        if let Some(pid) = self
+            .mutable
+            .lock()
+            .ok()
+            .and_then(|mutable| mutable.started_pid)
+        {
+            self.begin_preflight(attempt, pid);
+        }
+        AgentResult::ok()
+    }
+
+    /// Runs this Start's preflight beside the worker it already spawned.
+    ///
+    /// A refusal stops that worker and publishes the same fields the
+    /// synchronous path published, through the family's publisher, so the card
+    /// updates without waiting for a poll whose disk fingerprint never changed.
+    /// A later Start or Stop invalidates this attempt, so a late answer cannot
+    /// stop a worker it does not own.
+    fn begin_preflight(self: &Arc<Self>, attempt: u64, pid: u32) {
         let request = PreflightRequest {
             family: self.family_id.directory().to_string(),
             repo_dir: self.repo_dir.clone(),
@@ -4993,34 +5209,52 @@ impl RepoFamily {
             .ok()
             .and_then(|slot| slot.clone());
         let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
-        let budget = PreflightBudget::new(timeout_ms);
-        let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
-            match override_preflight {
-                Some(callback) => callback(request),
-                None => Box::pin(self.real_preflight(budget)),
-            };
-        let result =
-            match crate::deadline::within_deadline(pending, timeout_ms + PREFLIGHT_BUDGET_GRACE_MS)
-                .await
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let budget = PreflightBudget::new(timeout_ms);
+            let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+                match override_preflight {
+                    Some(callback) => callback(request),
+                    None => Box::pin(this.real_preflight(budget)),
+                };
+            let result = match crate::deadline::within_deadline(
+                pending,
+                timeout_ms + PREFLIGHT_BUDGET_GRACE_MS,
+            )
+            .await
             {
                 Some(result) => result,
                 None => Err(format!(
-                "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
-            )),
+                    "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+                )),
             };
-        match result {
-            Ok(_) => self.spawn_worker().await,
-            Err(message) => {
-                let refusal = StartRefusal::classify(message);
-                let mut mutable = self.mutable.lock().expect("family state");
+            let message = match result {
+                Ok(_) => return,
+                Err(message) => message,
+            };
+            let refusal = StartRefusal::classify(message);
+            {
+                let mutable = this.mutable.lock().expect("family state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+            }
+            terminate_spawned(pid).await;
+            {
+                let mut mutable = this.mutable.lock().expect("family state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
                 mutable.starting = false;
                 mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.started_pid = None;
                 let (start_error, notice) = refusal.fields();
                 mutable.start_error = start_error;
                 mutable.notice = notice;
-                refusal.result()
             }
-        }
+            this.publish_refusal(&refusal);
+        });
     }
 
     async fn wait_for_stop(&self, pid: u32) -> bool {
@@ -5032,7 +5266,19 @@ impl RepoFamily {
     }
 
     async fn spawn_worker(&self) -> AgentResult {
+        let program = match self.program.resolve(&self.repo_dir) {
+            Ok(program) => program,
+            Err(message) => {
+                let mut mutable = self.mutable.lock().expect("family state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                return AgentResult::failure(message);
+            }
+        };
         let argv = harness_argv(
+            &program,
             self.family_id.directory(),
             &[
                 ("repo", self.repo_dir.as_path()),
@@ -5139,6 +5385,8 @@ impl RepoFamily {
             mutable.stop_requested = true;
             mutable.start_error = None;
             mutable.notice = None;
+            // A preflight still in flight belongs to the worker being stopped.
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
         }
         for owner in owners {
             self.schedule_stop_proof(owner.pid);
@@ -5161,7 +5409,9 @@ impl RepoFamily {
         for directory in worker_state_directories(&self.repo_state_directory()) {
             state_paths.push(directory.join("state.json"));
         }
+        let publisher = Arc::clone(&self.publisher);
         let async_proof = async move {
+            let _publish = StopPublish(publisher);
             loop {
                 tokio::time::sleep(Duration::from_millis(STOP_PROOF_MS)).await;
                 if !still_stopping(&mutable, pid) {
@@ -5181,7 +5431,11 @@ impl RepoFamily {
                 if !still_stopping(&mutable, pid) {
                     return;
                 }
-                if !pid_alive(pid) || !proves_worker(pid, family_id, &repo_dir, &canonical) {
+                // This pid already took SIGTERM. A worker that is still alive is
+                // either ignoring it or waiting on a peer to settle; the stop
+                // proof's own bound ends it here. Re-proving argv would abandon
+                // the kill while a shutting-down worker still holds the lock.
+                if !pid_alive(pid) {
                     clear_stopping(&mutable, pid);
                     return;
                 }
@@ -6011,14 +6265,6 @@ impl StartRefusal {
             (Some(self.message.clone()), None)
         }
     }
-
-    fn result(self) -> AgentResult {
-        if self.latency {
-            AgentResult::latency(self.message)
-        } else {
-            AgentResult::failure(self.message)
-        }
-    }
 }
 
 /// Reads the repository document through the shared Gitea client. A fast
@@ -6522,12 +6768,16 @@ struct WatchdogMutable {
     start_deadline: Option<i64>,
     start_pending: bool,
     start_cancelled: bool,
+    /// The pid the last Start spawned, so a Stop can end it before it attaches.
+    started_pid: Option<u32>,
     stop_requested: bool,
     start_error: Option<String>,
     notice: Option<String>,
     stopping: HashSet<u32>,
     takeover: bool,
     legacy_control_keys: HashSet<String>,
+    /// The Start whose preflight may still settle.
+    start_attempt: u64,
 }
 
 struct WatchdogFamily {
@@ -6542,6 +6792,8 @@ struct WatchdogFamily {
     preflight_timeout_ms: Arc<AtomicU64>,
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    program: ProgramLink,
+    publisher: SharedPublish,
     mutable: Arc<Mutex<WatchdogMutable>>,
     start_lock: tokio::sync::Mutex<()>,
 }
@@ -6569,6 +6821,8 @@ impl WatchdogFamily {
             preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             forge: ForgeProjection::new(forge_reader, Vec::new()),
             now,
+            program: ProgramLink::default(),
+            publisher: Arc::new(Mutex::new(None)),
             mutable: Arc::new(Mutex::new(WatchdogMutable {
                 preview_starting: false,
                 timer_gate: None,
@@ -6579,14 +6833,24 @@ impl WatchdogFamily {
                 start_deadline: None,
                 start_pending: false,
                 start_cancelled: false,
+                started_pid: None,
                 stop_requested: false,
                 start_error: None,
                 notice: None,
                 stopping: HashSet::new(),
                 takeover: false,
                 legacy_control_keys: HashSet::new(),
+                start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Publishes this family's projection after a background preflight settles.
+    fn publish_refusal(&self, refusal: &StartRefusal) {
+        let error = (!refusal.latency).then(|| refusal.message.clone());
+        if let Some(publisher) = self.publisher.lock().ok().and_then(|slot| slot.clone()) {
+            publisher(error);
         }
     }
 
@@ -7104,7 +7368,7 @@ impl WatchdogFamily {
         {
             return;
         }
-        if self.spawn_worker().is_none() {
+        if self.spawn_worker().is_err() {
             return;
         }
         for owner in owners {
@@ -7131,7 +7395,7 @@ impl WatchdogFamily {
         }
     }
 
-    async fn start(&self) -> AgentResult {
+    async fn start(self: &Arc<Self>) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
             let mut mutable = self.mutable.lock().expect("watchdog state");
@@ -7169,7 +7433,7 @@ impl WatchdogFamily {
             }
             return AgentResult::ok();
         }
-        {
+        let attempt = {
             let mut mutable = self.mutable.lock().expect("watchdog state");
             mutable.start_pending = true;
             mutable.starting = true;
@@ -7181,7 +7445,33 @@ impl WatchdogFamily {
             mutable.start_cancelled = false;
             mutable.start_error = None;
             mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
+            mutable.start_attempt
+        };
+        // The worker exists before the preflight is asked: the page observes
+        // the spawned process, not the forge read that gates its first cycle.
+        let pid = match self.spawn_worker() {
+            Ok(pid) => pid,
+            Err(message) => {
+                self.end_start();
+                if let Ok(mut mutable) = self.mutable.lock() {
+                    mutable.start_error = Some(message.clone());
+                }
+                return AgentResult::failure(message);
+            }
+        };
+        {
+            let mut mutable = self.mutable.lock().expect("watchdog state");
+            mutable.starting = true;
+            mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
         }
+        self.begin_preflight(attempt, pid);
+        AgentResult::ok()
+    }
+
+    /// Runs this Start's preflight beside the worker it already spawned.
+    fn begin_preflight(self: &Arc<Self>, attempt: u64, pid: u32) {
         let request = PreflightRequest {
             family: "watchdog".to_string(),
             repo_dir: self.repo_dir.clone(),
@@ -7194,59 +7484,55 @@ impl WatchdogFamily {
             .ok()
             .and_then(|slot| slot.clone());
         let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
-        let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
-            match override_preflight {
-                Some(callback) => callback(request),
-                None => Box::pin(self.preflight_watchdog(PreflightBudget::new(timeout_ms))),
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+                match override_preflight {
+                    Some(callback) => callback(request),
+                    None => Box::pin(this.preflight_watchdog(PreflightBudget::new(timeout_ms))),
+                };
+            let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+                Some(result) => result,
+                None => Err(format!(
+                    "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+                )),
             };
-        let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
-            Some(result) => result,
-            None => Err(format!(
-                "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
-            )),
-        };
-        let cancelled = self
-            .mutable
-            .lock()
-            .map(|mutable| mutable.start_cancelled)
-            .unwrap_or(false);
-        if cancelled {
-            self.end_start();
-            return AgentResult::ok();
-        }
-        if let Err(message) = result {
-            self.end_start();
+            let message = match result {
+                Ok(_) => {
+                    let mut mutable = this.mutable.lock().expect("watchdog state");
+                    if mutable.start_attempt == attempt {
+                        mutable.start_pending = false;
+                        mutable.start_cancelled = false;
+                    }
+                    return;
+                }
+                Err(message) => message,
+            };
             let refusal = StartRefusal::classify(message);
-            if let Ok(mut mutable) = self.mutable.lock() {
+            {
+                let mutable = this.mutable.lock().expect("watchdog state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+            }
+            terminate_spawned(pid).await;
+            {
+                let mut mutable = this.mutable.lock().expect("watchdog state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+                mutable.start_pending = false;
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_cancelled = false;
+                mutable.started_pid = None;
                 let (start_error, notice) = refusal.fields();
                 mutable.start_error = start_error;
                 mutable.notice = notice;
             }
-            return refusal.result();
-        }
-        {
-            let mut mutable = self.mutable.lock().expect("watchdog state");
-            mutable.starting = true;
-            mutable.starting_since = Some((self.now)());
-            mutable.start_deadline = None;
-        }
-        match self.spawn_worker() {
-            Some(_) => {
-                if let Ok(mut mutable) = self.mutable.lock() {
-                    mutable.start_pending = false;
-                    mutable.start_cancelled = false;
-                }
-                AgentResult::ok()
-            }
-            None => {
-                self.end_start();
-                let message = "the Watchdog worker could not be started".to_string();
-                if let Ok(mut mutable) = self.mutable.lock() {
-                    mutable.start_error = Some(message.clone());
-                }
-                AgentResult::failure(message)
-            }
-        }
+            this.publish_refusal(&refusal);
+        });
     }
 
     fn end_start(&self) {
@@ -7256,11 +7542,14 @@ impl WatchdogFamily {
             mutable.starting_since = None;
             mutable.start_deadline = None;
             mutable.start_cancelled = false;
+            mutable.started_pid = None;
         }
     }
 
-    fn spawn_worker(&self) -> Option<u32> {
+    fn spawn_worker(&self) -> Result<u32, String> {
+        let program = self.program.resolve(&self.repo_dir)?;
         let argv = harness_argv(
+            &program,
             "watchdog",
             &[
                 ("repo", self.repo_dir.as_path()),
@@ -7272,8 +7561,17 @@ impl WatchdogFamily {
             &self.environment,
             &[("REPO_DIR", self.repo_dir.to_string_lossy().as_ref())],
         );
-        let spawn = self.spawn.lock().map(|slot| slot.clone()).ok()?;
-        spawn(&argv, environment)
+        let spawn = self
+            .spawn
+            .lock()
+            .map(|slot| slot.clone())
+            .map_err(|_| "the Watchdog worker could not be started".to_string())?;
+        let pid = spawn(&argv, environment)
+            .ok_or_else(|| "the Watchdog worker could not be started".to_string())?;
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable.started_pid = Some(pid);
+        }
+        Ok(pid)
     }
 
     fn stop(&self) -> AgentResult {
@@ -7285,9 +7583,16 @@ impl WatchdogFamily {
                 .map(|mutable| mutable.start_pending)
                 .unwrap_or(false);
             if start_pending {
-                if let Ok(mut mutable) = self.mutable.lock() {
+                let spawned = if let Ok(mut mutable) = self.mutable.lock() {
                     mutable.start_cancelled = true;
                     mutable.start_error = None;
+                    mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
+                    mutable.started_pid.take()
+                } else {
+                    None
+                };
+                if let Some(pid) = spawned {
+                    tokio::spawn(terminate_spawned(pid));
                 }
                 return AgentResult::ok();
             }
@@ -7313,19 +7618,28 @@ impl WatchdogFamily {
             mutable.stop_requested = true;
             mutable.start_error = None;
             mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
         }
-        self.schedule_stop_proof(owners.iter().map(|owner| owner.pid).collect());
+        self.schedule_stop_proof(owners);
         AgentResult::ok()
     }
 
-    fn schedule_stop_proof(&self, pids: Vec<u32>) {
-        if pids.is_empty() {
+    fn schedule_stop_proof(&self, owners: Vec<LockOwner>) {
+        if owners.is_empty() {
             return;
         }
+        let grace = owners
+            .iter()
+            .map(|owner| stop_cycle_grace_ms(&owner.started_at))
+            .min()
+            .unwrap_or(STOP_CYCLE_GRACE_MS);
+        let pids: Vec<u32> = owners.into_iter().map(|owner| owner.pid).collect();
         let directory = self.directory.clone();
         let mutable = Arc::clone(&self.mutable);
+        let publisher = Arc::clone(&self.publisher);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(STOP_CYCLE_GRACE_MS)).await;
+            let _publish = StopPublish(publisher);
+            tokio::time::sleep(Duration::from_millis(grace)).await;
             let signalled: Vec<u32> = pids
                 .into_iter()
                 .filter(|pid| {
@@ -7764,6 +8078,8 @@ struct McpMutable {
     notice: Option<String>,
     stopping: HashSet<u32>,
     takeover: bool,
+    /// The Start whose preflight may still settle.
+    start_attempt: u64,
 }
 
 struct McpFamily {
@@ -7778,6 +8094,8 @@ struct McpFamily {
     preflight_timeout_ms: Arc<AtomicU64>,
     forge: ForgeProjection,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    program: ProgramLink,
+    publisher: SharedPublish,
     mutable: Arc<Mutex<McpMutable>>,
     start_lock: tokio::sync::Mutex<()>,
 }
@@ -7825,6 +8143,8 @@ impl McpFamily {
             preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             forge: ForgeProjection::new(forge_reader, seed),
             now,
+            program: ProgramLink::default(),
+            publisher: Arc::new(Mutex::new(None)),
             mutable: Arc::new(Mutex::new(McpMutable {
                 preview_starting: false,
                 starting: false,
@@ -7835,8 +8155,17 @@ impl McpFamily {
                 notice: None,
                 stopping: HashSet::new(),
                 takeover: false,
+                start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Publishes this family's projection after a background preflight settles.
+    fn publish_refusal(&self, refusal: &StartRefusal) {
+        let error = (!refusal.latency).then(|| refusal.message.clone());
+        if let Some(publisher) = self.publisher.lock().ok().and_then(|slot| slot.clone()) {
+            publisher(error);
         }
     }
 
@@ -8112,7 +8441,7 @@ impl McpFamily {
         )
     }
 
-    async fn takeover(&self) {
+    async fn takeover(self: &Arc<Self>) {
         {
             let Ok(mut mutable) = self.mutable.lock() else {
                 return;
@@ -8167,7 +8496,7 @@ impl McpFamily {
         }
     }
 
-    async fn start(&self) -> AgentResult {
+    async fn start(self: &Arc<Self>) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
             let mut mutable = self.mutable.lock().expect("mcp state");
@@ -8196,8 +8525,8 @@ impl McpFamily {
         self.spawn_worker().await
     }
 
-    async fn spawn_worker(&self) -> AgentResult {
-        {
+    async fn spawn_worker(self: &Arc<Self>) -> AgentResult {
+        let attempt = {
             let mut mutable = self.mutable.lock().expect("mcp state");
             mutable.starting = true;
             mutable.starting_since = None;
@@ -8207,7 +8536,57 @@ impl McpFamily {
             ));
             mutable.start_error = None;
             mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
+            mutable.start_attempt
+        };
+        let program = match self.program.resolve(&self.repo_dir) {
+            Ok(program) => program,
+            Err(message) => {
+                let mut mutable = self.mutable.lock().expect("mcp state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                return AgentResult::failure(message);
+            }
+        };
+        let argv = harness_argv(
+            &program,
+            "mcp-optimizer",
+            &[
+                ("repo", self.repo_dir.as_path()),
+                ("state-dir", self.state_dir.as_path()),
+            ],
+        );
+        let environment = provider_environment(
+            &self.environment,
+            &[("REPO_DIR", self.repo_dir.to_string_lossy().as_ref())],
+        );
+        let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
+        let pid = match spawn.and_then(|spawn| spawn(&argv, environment)) {
+            Some(pid) => pid,
+            None => {
+                let message = "the MCP optimizer worker could not be started".to_string();
+                let mut mutable = self.mutable.lock().expect("mcp state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                return AgentResult::failure(message);
+            }
+        };
+        {
+            let mut mutable = self.mutable.lock().expect("mcp state");
+            mutable.starting = true;
+            mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
         }
+        self.begin_preflight(attempt, pid);
+        AgentResult::ok()
+    }
+
+    /// Runs this Start's preflight beside the worker it already spawned.
+    fn begin_preflight(self: &Arc<Self>, attempt: u64, pid: u32) {
         let request = PreflightRequest {
             family: "mcp-optimizer".to_string(),
             repo_dir: self.repo_dir.clone(),
@@ -8220,57 +8599,45 @@ impl McpFamily {
             .ok()
             .and_then(|slot| slot.clone());
         let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
-        let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
-            match override_preflight {
-                Some(callback) => callback(request),
-                None => Box::pin(self.preflight_mcp(PreflightBudget::new(timeout_ms))),
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+                match override_preflight {
+                    Some(callback) => callback(request),
+                    None => Box::pin(this.preflight_mcp(PreflightBudget::new(timeout_ms))),
+                };
+            let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+                Some(result) => result,
+                None => Err(format!(
+                    "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+                )),
             };
-        let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
-            Some(result) => result,
-            None => Err(format!(
-                "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
-            )),
-        };
-        if let Err(message) = result {
+            let message = match result {
+                Ok(_) => return,
+                Err(message) => message,
+            };
             let refusal = StartRefusal::classify(message);
-            let mut mutable = self.mutable.lock().expect("mcp state");
-            mutable.starting = false;
-            mutable.starting_since = None;
-            let (start_error, notice) = refusal.fields();
-            mutable.start_error = start_error;
-            mutable.notice = notice;
-            return refusal.result();
-        }
-        let argv = harness_argv(
-            "mcp-optimizer",
-            &[
-                ("repo", self.repo_dir.as_path()),
-                ("state-dir", self.state_dir.as_path()),
-            ],
-        );
-        {
-            let mut mutable = self.mutable.lock().expect("mcp state");
-            mutable.starting = true;
-            mutable.starting_since = Some((self.now)());
-            mutable.start_deadline = None;
-        }
-        let environment = provider_environment(
-            &self.environment,
-            &[("REPO_DIR", self.repo_dir.to_string_lossy().as_ref())],
-        );
-        let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
-        let pid = spawn.and_then(|spawn| spawn(&argv, environment));
-        match pid {
-            Some(_) => AgentResult::ok(),
-            None => {
-                let message = "the MCP optimizer worker could not be started".to_string();
-                let mut mutable = self.mutable.lock().expect("mcp state");
+            {
+                let mutable = this.mutable.lock().expect("mcp state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+            }
+            terminate_spawned(pid).await;
+            {
+                let mut mutable = this.mutable.lock().expect("mcp state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
                 mutable.starting = false;
                 mutable.starting_since = None;
-                mutable.start_error = Some(message.clone());
-                AgentResult::failure(message)
+                mutable.start_deadline = None;
+                let (start_error, notice) = refusal.fields();
+                mutable.start_error = start_error;
+                mutable.notice = notice;
             }
-        }
+            this.publish_refusal(&refusal);
+        });
     }
 
     fn stop(&self) -> AgentResult {
@@ -8288,11 +8655,12 @@ impl McpFamily {
             if let Ok(mut mutable) = self.mutable.lock() {
                 mutable.stop_requested = true;
             }
-            self.schedule_stop_proof(owner.pid);
+            self.schedule_stop_proof(owner.clone());
         }
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.start_error = None;
             mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
         }
         if failures.is_empty() {
             AgentResult::ok()
@@ -8304,7 +8672,9 @@ impl McpFamily {
         }
     }
 
-    fn schedule_stop_proof(&self, pid: u32) {
+    fn schedule_stop_proof(&self, owner: LockOwner) {
+        let pid = owner.pid;
+        let grace = stop_cycle_grace_ms(&owner.started_at);
         {
             let mut mutable = self.mutable.lock().expect("mcp state");
             if !mutable.stopping.insert(pid) {
@@ -8314,8 +8684,10 @@ impl McpFamily {
         let directory = self.directory.clone();
         let repo_dir = self.repo_dir.clone();
         let mutable = Arc::clone(&self.mutable);
+        let publisher = Arc::clone(&self.publisher);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(STOP_CYCLE_GRACE_MS)).await;
+            let _publish = StopPublish(publisher);
+            tokio::time::sleep(Duration::from_millis(grace)).await;
             if !pid_alive(pid) {
                 return;
             }
@@ -8599,6 +8971,8 @@ struct ReleaseMutable {
     /// Names a worker another dashboard's STATE_DIR owns, so a Start that
     /// cannot act on it says why instead of doing nothing.
     notice: Option<String>,
+    /// The Start whose preflight may still settle.
+    start_attempt: u64,
 }
 
 /// The notice a page reads while a worker of another dashboard's STATE_DIR owns
@@ -8617,7 +8991,11 @@ struct ReleaseFamily {
     running_version: Option<String>,
     environment: HashMap<String, String>,
     spawn: SharedSpawn,
+    preflight_override: SharedPreflight,
+    preflight_timeout_ms: Arc<AtomicU64>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    program: ProgramLink,
+    publisher: SharedPublish,
     mutable: Arc<Mutex<ReleaseMutable>>,
     start_lock: tokio::sync::Mutex<()>,
 }
@@ -8629,6 +9007,7 @@ impl ReleaseFamily {
         environment: &HashMap<String, String>,
         running_version: Option<String>,
         spawn: SharedSpawn,
+        preflight_override: SharedPreflight,
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Self {
         Self {
@@ -8639,7 +9018,11 @@ impl ReleaseFamily {
             running_version,
             environment: environment.clone(),
             spawn,
+            preflight_override,
+            preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             now,
+            program: ProgramLink::default(),
+            publisher: Arc::new(Mutex::new(None)),
             mutable: Arc::new(Mutex::new(ReleaseMutable {
                 preview_starting: false,
                 starting: false,
@@ -8649,9 +9032,22 @@ impl ReleaseFamily {
                 start_error: None,
                 takeover: false,
                 notice: None,
+                start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Publishes this family's projection after a background preflight settles.
+    fn publish_refusal(&self, refusal: &StartRefusal) {
+        let error = (!refusal.latency).then(|| refusal.message.clone());
+        if let Some(publisher) = self.publisher.lock().ok().and_then(|slot| slot.clone()) {
+            publisher(error);
+        }
+    }
+
+    fn preflight_timeout_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.preflight_timeout_ms)
     }
 
     /// Every live Release Train worker for this root, whichever dashboard's
@@ -8987,7 +9383,7 @@ impl ReleaseFamily {
         }
     }
 
-    async fn start(&self) -> AgentResult {
+    async fn start(self: &Arc<Self>) -> AgentResult {
         let _guard = self.start_lock.lock().await;
         {
             let mut mutable = self.mutable.lock().expect("release state");
@@ -9035,7 +9431,7 @@ impl ReleaseFamily {
         self.takeover().await
     }
 
-    async fn takeover(&self) -> AgentResult {
+    async fn takeover(self: &Arc<Self>) -> AgentResult {
         {
             let Ok(mut mutable) = self.mutable.lock() else {
                 return AgentResult::failure("the dashboard is stopping".to_string());
@@ -9097,7 +9493,7 @@ impl ReleaseFamily {
         AgentResult::ok()
     }
 
-    async fn spawn_worker(&self) -> AgentResult {
+    async fn spawn_worker(self: &Arc<Self>) -> AgentResult {
         let problem = root_problem(&self.repo_dir);
         if let Some(problem) = problem {
             if let Ok(mut mutable) = self.mutable.lock() {
@@ -9105,27 +9501,36 @@ impl ReleaseFamily {
             }
             return AgentResult::failure(problem);
         }
-        {
+        let attempt = {
             let mut mutable = self.mutable.lock().expect("release state");
             mutable.starting = true;
             mutable.starting_since = None;
             mutable.start_deadline =
                 Some(start_deadline_at((self.now)(), AGENT_PREFLIGHT_TIMEOUT_MS));
             mutable.start_error = None;
-        }
+            mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
+            mutable.start_attempt
+        };
+        let program = match self.program.resolve(&self.repo_dir) {
+            Ok(program) => program,
+            Err(message) => {
+                let mut mutable = self.mutable.lock().expect("release state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                return AgentResult::failure(message);
+            }
+        };
         let argv = harness_argv(
+            &program,
             "release-train",
             &[
                 ("repo", self.repo_dir.as_path()),
                 ("state-dir", self.state_dir.as_path()),
             ],
         );
-        {
-            let mut mutable = self.mutable.lock().expect("release state");
-            mutable.starting = true;
-            mutable.starting_since = Some((self.now)());
-            mutable.start_deadline = None;
-        }
         let mut environment = provider_environment(
             &self.environment,
             &[("REPO_DIR", self.repo_dir.to_string_lossy().as_ref())],
@@ -9134,18 +9539,81 @@ impl ReleaseFamily {
             environment.insert("DEVBOARD_HARNESS_VERSION".to_string(), version.clone());
         }
         let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
-        let pid = spawn.and_then(|spawn| spawn(&argv, environment));
-        match pid {
-            Some(_) => AgentResult::ok(),
+        let pid = match spawn.and_then(|spawn| spawn(&argv, environment)) {
+            Some(pid) => pid,
             None => {
                 let message = "the Release Train worker could not be started".to_string();
                 let mut mutable = self.mutable.lock().expect("release state");
                 mutable.starting = false;
                 mutable.starting_since = None;
+                mutable.start_deadline = None;
                 mutable.start_error = Some(message.clone());
-                AgentResult::failure(message)
+                return AgentResult::failure(message);
             }
+        };
+        {
+            let mut mutable = self.mutable.lock().expect("release state");
+            mutable.starting = true;
+            mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
         }
+        self.begin_preflight(attempt, pid);
+        AgentResult::ok()
+    }
+
+    /// Runs this Start's preflight beside the worker it already spawned.
+    fn begin_preflight(self: &Arc<Self>, attempt: u64, pid: u32) {
+        let request = PreflightRequest {
+            family: "release-train".to_string(),
+            repo_dir: self.repo_dir.clone(),
+            state_dir: self.state_dir.clone(),
+            environment: self.environment.clone(),
+        };
+        let override_preflight = self
+            .preflight_override
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+                match override_preflight {
+                    Some(callback) => callback(request),
+                    None => Box::pin(async { Ok(String::new()) }),
+                };
+            let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+                Some(result) => result,
+                None => Err(format!(
+                    "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+                )),
+            };
+            let message = match result {
+                Ok(_) => return,
+                Err(message) => message,
+            };
+            let refusal = StartRefusal::classify(message);
+            {
+                let mutable = this.mutable.lock().expect("release state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+            }
+            terminate_spawned(pid).await;
+            {
+                let mut mutable = this.mutable.lock().expect("release state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                let (start_error, notice) = refusal.fields();
+                mutable.start_error = start_error;
+                mutable.notice = notice;
+            }
+            this.publish_refusal(&refusal);
+        });
     }
 
     fn stop(&self) -> AgentResult {
@@ -9172,6 +9640,7 @@ impl ReleaseFamily {
         if let Ok(mut mutable) = self.mutable.lock() {
             mutable.start_error = None;
             mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
         }
         if failures.is_empty() {
             AgentResult::ok()

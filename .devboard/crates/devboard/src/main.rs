@@ -65,7 +65,17 @@ fn clear_inherited_credentials() -> anyhow::Result<()> {
     if devboard::relaunch::inherited_credential_variables().is_empty() {
         return Ok(());
     }
-    let program = devboard::relaunch::own_program();
+    let args: Vec<String> = std::env::args().collect();
+    let repo_dir = args
+        .iter()
+        .position(|arg| arg == "--repo-dir")
+        .and_then(|index| args.get(index + 1))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("REPO_DIR").ok().map(PathBuf::from))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    let program = devboard::relaunch::harness_program(&repo_dir)
+        .map_err(|message| anyhow::anyhow!(message))?;
     let mut command = std::process::Command::new(program);
     command.args(std::env::args_os().skip(1)).env(MARKER, "1");
     devboard::relaunch::drop_obsolete_credential_variables(&mut command);
@@ -711,12 +721,8 @@ fn start_dashboard(host: &std::path::Path, port: u16) -> anyhow::Result<()> {
         terminate_dashboard(dashboard.pid);
     }
 
-    let program = host.join(".devboard").join("bin").join("devboard");
-    let program = if program.is_file() {
-        program
-    } else {
-        devboard::relaunch::own_program()
-    };
+    let program =
+        devboard::relaunch::harness_program(host).map_err(|message| anyhow::anyhow!(message))?;
     let log_path = state_dir.join("dashboard.log");
     let log = std::fs::File::create(&log_path).context("creating the dashboard log")?;
     let mut command = Command::new(&program);

@@ -1,11 +1,14 @@
 //! The installed version, its staleness, the replacement program, and the
 //! harness directory an installed binary resolves.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use devboard::app::App;
+use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
+use serde_json::{json, Value};
 
 fn fixture(label: &str) -> PathBuf {
     let host = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -240,5 +243,149 @@ fn only_the_served_checkout_own_harness_starts_source_refresh() {
         !devboard::version::is_own_checkout_harness(&repo, &installed),
         "an installed prefix is not a source checkout"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A repository fixture with the prompt tree the agent registry reads and a
+/// state directory beside it.
+fn agents_fixture(label: &str) -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("resolver-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo/.devboard/prompts")).unwrap();
+    std::fs::create_dir_all(root.join("repo/adrs")).unwrap();
+    std::fs::create_dir_all(root.join("state")).unwrap();
+    for prompt in [
+        "scout-recommendations.md",
+        "design-system.md",
+        "dead-code-removal.md",
+        "api-standards.md",
+        "single-responsibility.md",
+        "consistent-naming.md",
+        "release-train.md",
+    ] {
+        std::fs::write(
+            root.join("repo/.devboard/prompts").join(prompt),
+            format!("# {prompt}\n"),
+        )
+        .unwrap();
+    }
+    root
+}
+
+fn agents_app(root: &Path) -> Arc<App> {
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: root.join("repo/adrs"),
+        repo_dir: root.join("repo"),
+        goal_file: root.join("repo/GOAL.md"),
+        static_dir: None,
+        agent_command: "omp acp".to_string(),
+        state_dir: root.join("state"),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    App::new(config, journal)
+}
+
+fn latest_agent<'a>(frames: &'a [Value], id: &str) -> Option<&'a Value> {
+    frames
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("agentState"))
+        .filter_map(|frame| frame.get("agent"))
+        .filter(|agent| agent.get("id").and_then(Value::as_str) == Some(id))
+        .next_back()
+}
+
+#[test]
+fn a_deleted_executable_falls_back_to_the_installed_binary() {
+    let host = fixture("deleted-installed");
+    let installed = host.join(".devboard/bin/devboard");
+    let linked = PathBuf::from(format!("{} (deleted)", installed.display()));
+    let resolved =
+        devboard::relaunch::harness_program_for(&host, &linked).expect("the installed binary");
+    assert_eq!(resolved, installed);
+    assert!(resolved.is_file());
+    assert!(
+        !resolved.to_string_lossy().contains(" (deleted)"),
+        "a child is never started from a deleted link"
+    );
+    let _ = std::fs::remove_dir_all(&host);
+}
+
+#[test]
+fn a_source_checkout_uses_the_live_suffixless_executable() {
+    let source = fixture("source-live");
+    let _ = std::fs::remove_dir_all(source.join(".devboard/bin"));
+    let linked = PathBuf::from(format!(
+        "{} (deleted)",
+        std::env::current_exe().unwrap().display()
+    ));
+    assert_eq!(
+        devboard::relaunch::harness_program_for(&source, &linked).unwrap(),
+        std::env::current_exe().unwrap()
+    );
+    let missing = source.join(".devboard/bin/devboard");
+    let linked_missing = PathBuf::from(format!("{} (deleted)", missing.display()));
+    let refusal = devboard::relaunch::harness_program_for(&source, &linked_missing)
+        .expect_err("neither path exists");
+    assert!(refusal.contains(&missing.to_string_lossy().into_owned()));
+    assert!(refusal.starts_with("missing prerequisite:"));
+    let _ = std::fs::remove_dir_all(&source);
+}
+
+#[tokio::test]
+async fn a_missing_executable_refuses_before_any_spawn() {
+    let root = agents_fixture("missing-executable");
+    let repo = root.join("repo");
+    let app = agents_app(&root);
+    let missing = repo.join(".devboard/bin/devboard");
+    devboard::agents_mode::set_program_link(
+        &app,
+        "dead-code",
+        Some(PathBuf::from(format!("{} (deleted)", missing.display()))),
+    );
+    let recorded: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&recorded);
+    devboard::agents_mode::set_spawn(&app, move |argv, _environment| {
+        seen.lock().unwrap().push(argv.to_vec());
+        None
+    });
+
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = devboard::app::Conn::new(outbox);
+    app.register(conn.clone()).await;
+    let started = std::time::Instant::now();
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    let frames: Vec<Value> = {
+        let mut frames = Vec::new();
+        while let Ok(text) = inbox.try_recv() {
+            frames.push(serde_json::from_str(&text).expect("a frame"));
+        }
+        frames
+    };
+    assert!(
+        recorded.lock().unwrap().is_empty(),
+        "a missing executable spawned a child: {frames:?}"
+    );
+    let agent = latest_agent(&frames, "dead-code").expect("a dead-code snapshot");
+    let error = agent["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains(&missing.to_string_lossy().into_owned()),
+        "the refusal names the missing executable: {agent:?}"
+    );
+    assert_ne!(agent["lifecycle"], json!("running"));
     let _ = std::fs::remove_dir_all(&root);
 }

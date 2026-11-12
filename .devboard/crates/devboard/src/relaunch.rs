@@ -90,6 +90,49 @@ pub fn live_path(linked: &Path) -> PathBuf {
     linked.to_path_buf()
 }
 
+/// The harness executable every child of this process must start.
+///
+/// The running image is not always a path a child may start: a rebuild replaces
+/// the binary on disk while the old one still runs, leaving an executable link
+/// that reads "... (deleted)". Resolution therefore never returns that link.
+/// An installed host starts `<repo>/.devboard/bin/devboard`, the binary its
+/// update wrote. A source checkout starts the live suffixless path, the name a
+/// rebuild put back. When neither exists, the refusal names both paths, so a
+/// Start card says which executable is missing instead of spawning a path the
+/// kernel cannot run.
+pub fn harness_program(repo_dir: &Path) -> Result<PathBuf, String> {
+    let linked = std::env::current_exe().map_err(|error| {
+        format!("missing prerequisite: this process's own executable could not be read: {error}")
+    })?;
+    harness_program_for(repo_dir, &linked)
+}
+
+/// [`harness_program`] against an explicit executable link, so a fixture can
+/// prove the resolution order without replacing the test process's image.
+pub fn harness_program_for(repo_dir: &Path, linked: &Path) -> Result<PathBuf, String> {
+    let installed = repo_dir.join(".devboard").join("bin").join("devboard");
+    if installed.is_file() {
+        return Ok(installed);
+    }
+    let live = suffixless(linked);
+    if live.is_file() {
+        return Ok(live);
+    }
+    Err(format!(
+        "missing prerequisite: no harness executable at {} and no live executable at {}; rebuild or reinstall the harness",
+        installed.display(),
+        live.display()
+    ))
+}
+
+/// The executable name behind an executable link a rebuild replaced.
+fn suffixless(linked: &Path) -> PathBuf {
+    match linked.to_string_lossy().strip_suffix(" (deleted)") {
+        Some(path) => PathBuf::from(path),
+        None => linked.to_path_buf(),
+    }
+}
+
 /// The executable a replacement runs.
 ///
 /// An installed host starts `<host>/.devboard/bin/devboard`, the binary the

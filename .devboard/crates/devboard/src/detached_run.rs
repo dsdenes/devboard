@@ -1662,7 +1662,7 @@ impl DetachedPeer {
             .map_err(|error| error.to_string())?;
         std::fs::write(detached_run_prompt_path(&self.inner.directory), prompt)
             .map_err(|error| error.to_string())?;
-        let argv = self.owner_argv(&generation);
+        let argv = self.owner_argv(&generation)?;
         let pid = spawn_owner(&argv, &self.inner.options.repo_dir, &self.environment())
             .ok_or_else(|| format!("The {} run owner could not start.", self.inner.options.kind))?;
         if let Ok(mut owner) = self.inner.owner_pid.lock() {
@@ -1671,8 +1671,8 @@ impl DetachedPeer {
         Ok(())
     }
 
-    fn owner_argv(&self, generation: &str) -> Vec<String> {
-        let executable = owner_executable();
+    fn owner_argv(&self, generation: &str) -> Result<Vec<String>, String> {
+        let executable = owner_executable(&self.inner.options.repo_dir)?;
         let permission = match self.inner.options.permission {
             crate::acp::PermissionPolicy::Allow => "allow",
             crate::acp::PermissionPolicy::Deny => "deny",
@@ -1708,7 +1708,7 @@ impl DetachedPeer {
             argv.push("--harness-version".to_string());
             argv.push(version.clone());
         }
-        argv
+        Ok(argv)
     }
 
     fn environment(&self) -> HashMap<String, String> {
@@ -1995,31 +1995,37 @@ fn consume<T: Clone>(read: DetachedRunJournalRead<T>, seen: usize) -> (Vec<T>, u
     }
 }
 
-/// The harness binary that runs a detached owner. A production dashboard is
-/// its own owner executable; a test binary under `target/debug/deps` names the
-/// `devboard` binary beside it instead.
-fn owner_executable() -> PathBuf {
+/// The harness binary that runs a detached owner, through the shared resolver.
+/// A test binary under `target/debug/deps` names the `devboard` binary beside
+/// it instead, because the test image itself is not the harness.
+fn owner_executable(repo_dir: &Path) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var("DEVBOARD_OWNER_EXECUTABLE")
         .ok()
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
     {
-        return path;
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "missing prerequisite: the run owner executable {} is missing; rebuild or reinstall the harness",
+            path.display()
+        ));
     }
-    let current = crate::relaunch::own_program();
-    if current.file_name().is_some_and(|name| name == "devboard") {
-        return current;
+    let program = crate::relaunch::harness_program(repo_dir)?;
+    if program.file_name().is_some_and(|name| name == "devboard") {
+        return Ok(program);
     }
-    if let Some(sibling) = current
+    if let Some(sibling) = program
         .parent()
         .and_then(Path::parent)
         .map(|parent| parent.join("devboard"))
     {
         if sibling.is_file() {
-            return sibling;
+            return Ok(sibling);
         }
     }
-    current
+    Ok(program)
 }
 
 /// Starts one detached owner in its own session with ignored stdio.

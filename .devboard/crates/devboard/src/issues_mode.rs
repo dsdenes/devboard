@@ -2846,17 +2846,18 @@ async fn run_forge_close(
     ))
 }
 
-/// The detached worker's argv: this binary's own worker entry point.
-fn worker_argv(repo_dir: &Path, state_dir: &Path) -> Vec<String> {
-    vec![
-        crate::relaunch::own_program().display().to_string(),
+/// The detached worker's argv: the resolved harness worker entry point.
+fn worker_argv(repo_dir: &Path, state_dir: &Path) -> Result<Vec<String>, String> {
+    let program = crate::relaunch::harness_program(repo_dir)?;
+    Ok(vec![
+        program.to_string_lossy().into_owned(),
         "worker".to_string(),
         "issues".to_string(),
         "--repo".to_string(),
         repo_dir.display().to_string(),
         "--state-dir".to_string(),
         state_dir.display().to_string(),
-    ]
+    ])
 }
 
 fn production_spawn(
@@ -4008,7 +4009,10 @@ impl IssuesBridge {
     }
 
     async fn spawn(self: &Arc<Self>) -> StartOutcome {
-        let argv = worker_argv(&self.repo_dir, &self.state_dir);
+        let argv = match worker_argv(&self.repo_dir, &self.state_dir) {
+            Ok(argv) => argv,
+            Err(message) => return StartOutcome::Refused { message },
+        };
         let base = match (self.hooks.agent_environment)().await {
             Ok(environment) => environment,
             Err(message) => return StartOutcome::Refused { message },

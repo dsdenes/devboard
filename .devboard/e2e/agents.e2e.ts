@@ -2,8 +2,8 @@
  * Every background agent family the suite drives, through the two controls an
  * operator uses.
  *
- * Start must move the family to `running` within 60 s; Stop must move it to
- * `stopped` within 30 s; the worker process the page recorded must be gone
+ * Start must move the family to `running` with a recorded worker pid within
+ * 2,000 ms; Stop must move it to `stopped` within 30 s; the worker process the page recorded must be gone
  * and no `devboard worker <family>` process for the fixture repository may
  * survive. The page, the server, and the worker are the real artifacts. The
  * Release Train is not driven here: its gate reads the fixture's live origin,
