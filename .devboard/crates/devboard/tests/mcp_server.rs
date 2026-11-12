@@ -183,6 +183,8 @@ async fn the_stdio_server_answers_initialize_list_and_the_core_tools() {
         context.state_dir.to_string_lossy()
     );
     assert_eq!(status["dashboard"], Value::Null);
+    assert_eq!(status["dashboardState"], "none");
+    assert_eq!(status["dashboardCandidates"], json!([]));
     assert!(status["version"].is_object());
     assert_eq!(status["git"]["ahead"], 0);
 
@@ -1111,4 +1113,37 @@ async fn a_staged_skill_description_is_capped_in_characters() {
         message.contains("description must be at most 1024 characters."),
         "{message}"
     );
+}
+
+#[tokio::test]
+async fn two_dashboards_report_ambiguous_instead_of_null() {
+    let mut context = fixture("ambiguous");
+    let dashboard = |pid: u32, port: u16| LiveDashboard {
+        pid,
+        port,
+        repo_dir: context.repo_dir.to_string_lossy().into_owned(),
+        harness: context.harness_dir.to_string_lossy().into_owned(),
+        state_dir: context.state_dir.to_string_lossy().into_owned(),
+    };
+    context.dashboards = Some(vec![dashboard(4101, 18081), dashboard(4102, 18082)]);
+    let frames = drive(
+        &context,
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-01-01"}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "devboard_status", "arguments": {}}}),
+        ],
+    )
+    .await;
+    let status = tool_result(&frames, 2);
+    assert_eq!(status["dashboard"], Value::Null);
+    assert_eq!(status["dashboardState"], "ambiguous");
+    let candidates = status["dashboardCandidates"]
+        .as_array()
+        .expect("a candidate list");
+    assert_eq!(candidates.len(), 2, "{status}");
+    assert_eq!(candidates[0]["pid"], 4101);
+    assert_eq!(candidates[0]["port"], 18081);
+    assert_eq!(candidates[0]["ready"], true);
+    assert_eq!(candidates[1]["pid"], 4102);
 }

@@ -1588,10 +1588,42 @@ async fn devboard_status(context: &McpContext) -> Result<Value, String> {
     } else {
         None
     };
+    // A caller that supplied the dashboards (the test seam) already said they
+    // are live; real discovery proves each one answers before it is called
+    // live. Which of none, one, or several answered is part of the answer: a
+    // bare null cannot tell a missing dashboard from an ambiguous one.
+    let injected = context.dashboards.is_some();
+    let ready: Vec<bool> = futures_util::future::join_all(dashboards.iter().map(|candidate| {
+        let port = candidate.port;
+        let pid = candidate.pid;
+        async move { injected || crate::relaunch::probe_ready(port, Some(pid)).await }
+    }))
+    .await;
     let live = match dashboard.as_ref() {
-        Some(dashboard) => live_version(dashboard).await,
-        None => None,
+        Some(dashboard) if ready.first().copied().unwrap_or(false) => live_version(dashboard).await,
+        _ => None,
     };
+    let dashboard_state = if dashboards.is_empty() {
+        "none"
+    } else if dashboards.len() > 1 {
+        "ambiguous"
+    } else if live.is_some() {
+        "live"
+    } else {
+        "silent"
+    };
+    let dashboard_candidates: Vec<Value> = dashboards
+        .iter()
+        .zip(ready.iter())
+        .map(|(candidate, ready)| {
+            json!({
+                "pid": candidate.pid,
+                "port": candidate.port,
+                "ready": ready,
+                "repoDir": candidate.repo_dir,
+            })
+        })
+        .collect();
     let fallback = crate::version::server_version(
         &context.repo_dir,
         crate::version::read_harness_version(&context.harness_dir),
@@ -1627,6 +1659,8 @@ async fn devboard_status(context: &McpContext) -> Result<Value, String> {
         "stateDirectory": context.state_dir.to_string_lossy(),
         "git": git_state(&context.repo_dir),
         "dashboard": dashboard_json,
+        "dashboardState": dashboard_state,
+        "dashboardCandidates": dashboard_candidates,
         "version": {
             "running": version.get("running").cloned().unwrap_or(Value::Null),
             "installed": version.get("installed").cloned().unwrap_or(Value::Null),
