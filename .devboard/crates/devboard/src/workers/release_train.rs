@@ -3056,6 +3056,9 @@ struct Inner {
     worker: Option<ReleaseTrainWorkerRecord>,
     lock: Option<AcquiredLock>,
     stopping: bool,
+    /// Set by a drain: this worker starts no new unit and exits once the one
+    /// in flight ends. It is not a stop, so the in-flight run keeps its peer.
+    draining: bool,
     paused: bool,
     ticking: bool,
     active_run: Option<ReleaseTrainRun>,
@@ -3074,6 +3077,7 @@ impl Inner {
             worker: None,
             lock: None,
             stopping: false,
+            draining: false,
             paused: false,
             ticking: false,
             active_run: None,
@@ -3253,8 +3257,21 @@ impl ReleaseTrainWorker {
         lock_unpoisoned(&self.inner).worker.clone()
     }
 
+    /// True after Stop: the worker ends now, and an in-flight run's peer is
+    /// closed.
     pub fn is_stopping(&self) -> bool {
         lock_unpoisoned(&self.inner).stopping
+    }
+
+    pub fn is_draining(&self) -> bool {
+        lock_unpoisoned(&self.inner).draining
+    }
+
+    /// True once a drain has nothing left to wait for: the worker starts no
+    /// new unit, so it leaves as soon as the one in flight has ended.
+    fn drain_settled(&self) -> bool {
+        let inner = lock_unpoisoned(&self.inner);
+        inner.draining && !inner.ticking && inner.active_run.is_none()
     }
 
     fn lock_details(&self) -> LockDetails {
@@ -3320,7 +3337,8 @@ impl ReleaseTrainWorker {
         true
     }
 
-    /// Runs until Stop or a drain ends the worker.
+    /// Runs until Stop ends it now, or a drain ends it after the unit in
+    /// flight.
     pub async fn run(&self) -> i32 {
         if !self.begin() {
             return 0;
@@ -3330,7 +3348,7 @@ impl ReleaseTrainWorker {
         let mut control = tokio::time::interval(Duration::from_millis(CONTROL_POLL_MS));
         ticker.tick().await;
         control.tick().await;
-        while !self.is_stopping() {
+        while !self.is_stopping() && !self.drain_settled() {
             tokio::select! {
                 _ = ticker.tick() => {
                     // A tick can run for hours — a gate fetch, a release suite,
@@ -3376,7 +3394,12 @@ impl ReleaseTrainWorker {
         let now = (self.clock)();
         {
             let mut inner = lock_unpoisoned(&self.inner);
-            if inner.stopping || inner.paused || inner.active_run.is_some() || inner.ticking {
+            if inner.stopping
+                || inner.draining
+                || inner.paused
+                || inner.active_run.is_some()
+                || inner.ticking
+            {
                 return;
             }
             if !force && now < inner.next_run_at_ms {
@@ -3632,6 +3655,19 @@ impl ReleaseTrainWorker {
         release_commits: Vec<ReleaseTrainCommit>,
         now: i64,
     ) {
+        // A drain that lands after this tick began still starts no unit: it
+        // ends the worker after the one in flight, never with a new release.
+        if self.is_draining() {
+            self.activity(&format!(
+                "draining before {range} started: nothing was released"
+            ));
+            {
+                let mut inner = lock_unpoisoned(&self.inner);
+                inner.notice = Some("draining: the release was not started".to_string());
+            }
+            self.finish_tick(now);
+            return;
+        }
         let run_id = format!("{now}-{}", short_uuid());
         let run = ReleaseTrainRun {
             id: run_id.clone(),
@@ -3927,7 +3963,11 @@ impl ReleaseTrainWorker {
 
     fn finish(&self) {
         let mut inner = lock_unpoisoned(&self.inner);
-        inner.notice = None;
+        inner.notice = if inner.draining {
+            Some("Drained: exited after its in-flight cycle.".to_string())
+        } else {
+            None
+        };
         if let Some(worker) = inner.worker.as_mut() {
             worker.lifecycle = AgentLifecycle::Stopped;
             worker.enabled = false;
@@ -3952,10 +3992,10 @@ impl ReleaseTrainWorker {
             }
             ReleaseTrainCommand::Drain => {
                 let mut inner = lock_unpoisoned(&self.inner);
+                inner.draining = true;
                 if inner.worker.is_some() {
                     inner.notice = Some("draining after the active run".to_string());
                 }
-                inner.stopping = true;
                 self.publish_worker(&mut inner);
             }
             ReleaseTrainCommand::Pause => {

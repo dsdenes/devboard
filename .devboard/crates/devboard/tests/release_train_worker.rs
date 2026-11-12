@@ -1044,8 +1044,96 @@ async fn a_tick_during_an_active_run_starts_no_second_run() {
 }
 
 #[tokio::test]
-async fn drain_stops_after_the_active_run_and_publishes_stopped_state() {
+async fn a_drain_finishes_the_active_run_without_stopping_it() {
     let workspace = workspace("drain");
+    let clock = FakeClock::new(start_ms());
+    let runs = Arc::new(AtomicUsize::new(0));
+    let target = "c".repeat(40);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let observed_stop = Arc::new(AtomicUsize::new(0));
+    let run: RunReleaseFn = {
+        let runs = runs.clone();
+        let started_tx = started_tx.clone();
+        let release = release.clone();
+        let observed_stop = observed_stop.clone();
+        Arc::new(move |input: ReleaseRunInput| -> RunFuture {
+            runs.fetch_add(1, Ordering::SeqCst);
+            if let Some(sender) = started_tx.lock().expect("the sender").take() {
+                let _ = sender.send(());
+            }
+            let release = release.clone();
+            let observed_stop = observed_stop.clone();
+            Box::pin(async move {
+                loop {
+                    if (input.stopping)() {
+                        observed_stop.fetch_add(1, Ordering::SeqCst);
+                        return ReleaseRunResult::failed("stopped");
+                    }
+                    tokio::select! {
+                        _ = release.notified() => return ok_result("1.0.1"),
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+                    }
+                }
+            })
+        })
+    };
+    let worker = Arc::new(worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(unreleased(&target, "1.0.1")),
+        run,
+    ));
+    let running = {
+        let worker = worker.clone();
+        tokio::spawn(async move { worker.run().await })
+    };
+    started_rx.await.expect("the run started");
+    let directory = release_train_directory(&workspace.state_dir);
+    let control = versioned_control_directory(&directory, Some("test-version"));
+    write_command(&control, &ReleaseTrainCommand::Drain).expect("a drain command");
+    // One control poll is enough for the drain to reach the live worker.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert!(worker.is_draining());
+    assert!(
+        !worker.is_stopping(),
+        "a drain ends the worker after its run, never before it"
+    );
+    assert_eq!(
+        observed_stop.load(Ordering::SeqCst),
+        0,
+        "the in-flight run keeps working through a drain"
+    );
+    release.notify_one();
+    let code = tokio::time::timeout(std::time::Duration::from_secs(10), running)
+        .await
+        .expect("the refused worker leaves once its in-flight run ended")
+        .expect("the worker task");
+    assert_eq!(code, 0);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "a draining worker starts nothing else"
+    );
+    let record = read_worker_state(&versioned_worker_state_path(
+        &directory,
+        Some("test-version"),
+    ))
+    .expect("the worker record");
+    assert_eq!(record.lifecycle, AgentLifecycle::Stopped);
+    assert!(!record.enabled);
+    assert_eq!(
+        record.notice.as_deref(),
+        Some("Drained: exited after its in-flight cycle.")
+    );
+    assert!(!versioned_lock_path(&directory, Some("test-version")).exists());
+}
+
+#[tokio::test]
+async fn a_drain_of_an_idle_worker_starts_nothing_and_exits() {
+    let workspace = workspace("drain-idle");
     let clock = FakeClock::new(start_ms());
     let runs = Arc::new(AtomicUsize::new(0));
     let worker = worker(
@@ -1055,23 +1143,22 @@ async fn drain_stops_after_the_active_run_and_publishes_stopped_state() {
         gate_ok(unreleased(&"c".repeat(40), "1.0.1")),
         run_ok(runs.clone(), "1.0.1"),
     );
-    assert!(worker.begin());
     let directory = release_train_directory(&workspace.state_dir);
     let control = versioned_control_directory(&directory, Some("test-version"));
     write_command(&control, &ReleaseTrainCommand::Drain).expect("a drain command");
-    worker.consume();
-    assert!(worker.is_stopping(), "drain ends the worker after its run");
-    assert_eq!(
-        worker.current_worker().expect("a record").notice.as_deref(),
-        Some("draining after the active run")
+    let code = tokio::time::timeout(std::time::Duration::from_secs(10), worker.run())
+        .await
+        .expect("a drain ends an idle worker");
+    assert_eq!(code, 0);
+    assert!(
+        !worker.is_stopping(),
+        "a drain never reports a stop it did not receive"
     );
-    worker.tick_now(true).await;
     assert_eq!(
         runs.load(Ordering::SeqCst),
         0,
         "a draining worker starts nothing"
     );
-    worker.stop().await;
     let record = read_worker_state(&versioned_worker_state_path(
         &directory,
         Some("test-version"),
@@ -1079,7 +1166,6 @@ async fn drain_stops_after_the_active_run_and_publishes_stopped_state() {
     .expect("the worker record");
     assert_eq!(record.lifecycle, AgentLifecycle::Stopped);
     assert!(!record.enabled);
-    assert!(!versioned_lock_path(&directory, Some("test-version")).exists());
     assert!(!release_train_owners(&directory)
         .iter()
         .any(|owner| owner.pid == std::process::id()
