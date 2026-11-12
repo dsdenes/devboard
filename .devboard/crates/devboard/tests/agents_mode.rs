@@ -258,6 +258,8 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
     assert_eq!(scout["limits"]["maxPending"], 5);
     assert_eq!(scout["detail"]["panel"], "activity");
     assert!(scout["issues"].as_array().expect("issues").is_empty());
+    assert_eq!(scout["notices"], json!([]));
+    assert_eq!(scout["lastScan"], Value::Null);
     assert!(scout["workers"].as_array().expect("workers").is_empty());
 
     let watchdog = &agents[1];

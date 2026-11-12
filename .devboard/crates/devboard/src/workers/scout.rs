@@ -492,6 +492,24 @@ pub struct ScoutScanRecord {
     pub requested: i64,
 }
 
+/// What one finished scan asked for, filed, and how it ended.
+///
+/// Kept in the family state so the last outcome survives the tick: the scan
+/// file alone is not what a dashboard or an MCP read samples.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScoutScanOutcome {
+    pub scan_id: String,
+    pub status: String,
+    pub requested: i64,
+    pub filed: i64,
+    #[serde(default)]
+    pub shortfall: Option<String>,
+    pub started_at: String,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoutState {
@@ -513,7 +531,28 @@ pub struct ScoutState {
     pub next_attempt_at: Option<String>,
     pub last_error: Option<String>,
     pub notice: Option<String>,
+    /// The recent status lines, newest first: one slot loses the last filing to
+    /// the next settings save.
+    #[serde(default)]
+    pub notices: Vec<String>,
+    /// The last scan that finished, with its count and shortfall.
+    #[serde(default)]
+    pub last_scan: Option<ScoutScanOutcome>,
     pub updated_at: String,
+}
+
+/// How many status lines the state keeps.
+const NOTICE_HISTORY: usize = 8;
+
+impl ScoutState {
+    /// Records the status line a reader sees, keeping the recent ones.
+    pub fn note(&mut self, text: String) {
+        if self.notices.first() != Some(&text) {
+            self.notices.insert(0, text.clone());
+            self.notices.truncate(NOTICE_HISTORY);
+        }
+        self.notice = Some(text);
+    }
 }
 
 pub fn empty_state(repo: &str, root: &Path, now: i64) -> ScoutState {
@@ -536,6 +575,8 @@ pub fn empty_state(repo: &str, root: &Path, now: i64) -> ScoutState {
         next_attempt_at: None,
         last_error: None,
         notice: None,
+        notices: Vec::new(),
+        last_scan: None,
         updated_at: iso_from_millis(now),
     }
 }
@@ -651,6 +692,30 @@ fn parse_sync(value: &Value) -> Option<ScoutSync> {
 }
 
 /// Parses one version-2 document; `None` means the bytes are not ours.
+fn parse_notices(value: Option<&Value>) -> Option<Vec<String>> {
+    match value {
+        None | Some(Value::Null) => Some(Vec::new()),
+        Some(Value::Array(entries)) => entries
+            .iter()
+            .map(|entry| entry.as_str().map(str::to_string))
+            .collect(),
+        Some(_) => None,
+    }
+}
+
+fn parse_outcome(value: &Value) -> Option<ScoutScanOutcome> {
+    let object = value.as_object()?;
+    Some(ScoutScanOutcome {
+        scan_id: value_string(object.get("scanId"))?,
+        status: value_string(object.get("status"))?,
+        requested: is_integer(object.get("requested"))?,
+        filed: is_integer(object.get("filed"))?,
+        shortfall: nullable_string(object.get("shortfall"))?,
+        started_at: value_string(object.get("startedAt"))?,
+        finished_at: nullable_string(object.get("finishedAt"))?,
+    })
+}
+
 pub fn parse_state(text: &str) -> Option<ScoutState> {
     let parsed: Value = serde_json::from_str(text).ok()?;
     let object = parsed.as_object()?;
@@ -704,6 +769,11 @@ pub fn parse_state(text: &str) -> Option<ScoutState> {
     let next_attempt_at = nullable_string(object.get("nextAttemptAt"))?;
     let last_error = nullable_string(object.get("lastError"))?;
     let notice = nullable_string(object.get("notice"))?;
+    let notices = parse_notices(object.get("notices"))?;
+    let last_scan = match object.get("lastScan") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(parse_outcome(value)?),
+    };
     let updated_at = value_string(object.get("updatedAt"))?;
     Some(ScoutState {
         version: STATE_VERSION,
@@ -724,6 +794,8 @@ pub fn parse_state(text: &str) -> Option<ScoutState> {
         next_attempt_at,
         last_error,
         notice,
+        notices,
+        last_scan,
         updated_at,
     })
 }
@@ -752,6 +824,11 @@ pub fn migrate_state(text: &str) -> Option<ScoutState> {
     let newest_scan_id = nullable_string(object.get("newestScanId"))?;
     let last_error = nullable_string(object.get("lastError"))?;
     let notice = nullable_string(object.get("notice"))?;
+    let notices = parse_notices(object.get("notices"))?;
+    let last_scan = match object.get("lastScan") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(parse_outcome(value)?),
+    };
     let updated_at = value_string(object.get("updatedAt"))?;
     Some(ScoutState {
         version: STATE_VERSION,
@@ -780,6 +857,8 @@ pub fn migrate_state(text: &str) -> Option<ScoutState> {
                 if discarded == 1 { "" } else { "s" }
             ))
         },
+        notices,
+        last_scan,
         updated_at,
     })
 }
@@ -2688,6 +2767,8 @@ struct ScanCompletion {
     /// The first refused `issue_create`: it stays on the record and in
     /// `last_error`, and never fails a scan whose status the count decides.
     filing_error: Option<String>,
+    /// The finished scan's own outcome, kept in the family state.
+    outcome: Option<ScoutScanOutcome>,
     start_failure: bool,
 }
 
@@ -3198,7 +3279,7 @@ impl ScoutWorker {
                     runtime.draining = true;
                     runtime.state.enabled = false;
                     runtime.state.next_attempt_at = None;
-                    runtime.state.notice = Some(
+                    runtime.state.note(
                         "Draining: the in-flight scan finishes on this harness, then the worker \
                          exits."
                             .to_string(),
@@ -3237,11 +3318,12 @@ impl ScoutWorker {
                     };
                     runtime.state.interval_minutes = interval_minutes;
                     runtime.state.last_error = None;
-                    runtime.state.notice = Some(format!(
+                    let saved = format!(
                         "Settings saved: every {interval_minutes} minute(s), {} per hour, {} open.",
                         limit_label(runtime.state.limits.max_per_hour),
                         limit_label(runtime.state.limits.max_pending)
-                    ));
+                    );
+                    runtime.state.note(saved);
                     runtime.state.next_attempt_at = None;
                     self.publish_locked(&mut runtime);
                 }
@@ -3355,7 +3437,9 @@ impl ScoutWorker {
         runtime.state.last_error = (kind != ForgeReadFailureKind::RateLimit
             && !is_forge_read_outage(detail))
         .then(|| detail.to_string());
-        runtime.state.notice = Some(format!("Could not read the forge: {detail}"));
+        runtime
+            .state
+            .note(format!("Could not read the forge: {detail}"));
         runtime.state.next_attempt_at = None;
         runtime.next_sync_at = now + self.sync_ms as i64;
         self.publish_locked(&mut runtime);
@@ -3795,7 +3879,7 @@ impl ScoutWorker {
         let mut runtime = lock_unpoisoned(&self.runtime);
         runtime.state.newest_scan_id = Some(scan.scan_id.clone());
         runtime.state.last_error = Some(detail.to_string());
-        runtime.state.notice = Some(format!("{SCAN_FAILED_PREFIX}{detail}"));
+        runtime.state.note(format!("{SCAN_FAILED_PREFIX}{detail}"));
         runtime.state.lifecycle = ScoutLifecycle::Failed.as_str().to_string();
         runtime.state.next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
         self.publish_locked(&mut runtime);
@@ -3851,9 +3935,10 @@ impl ScoutWorker {
         }
         runtime.state.lifecycle = ScoutLifecycle::Failed.as_str().to_string();
         runtime.state.last_error = error.clone();
-        runtime.state.notice = error
-            .as_ref()
-            .map(|error| format!("{SCAN_FAILED_PREFIX}{error}"));
+        match error.as_ref() {
+            Some(error) => runtime.state.note(format!("{SCAN_FAILED_PREFIX}{error}")),
+            None => runtime.state.notice = None,
+        }
         runtime.state.next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
         self.clear_active_scan_locked(runtime);
         self.release_scan_slot_locked(runtime);
@@ -3964,11 +4049,18 @@ impl ScoutWorker {
             // A completed scan owns the status line, including an empty one: a
             // clean scan that files nothing clears a previous failure's text
             // instead of letting it outlive the state that recorded it.
-            runtime.state.notice = completion
+            let notice = completion
                 .error
                 .as_ref()
                 .map(|error| format!("{SCAN_FAILED_PREFIX}{error}"))
                 .or_else(|| completion.notice.clone());
+            match notice {
+                Some(text) => runtime.state.note(text),
+                None => runtime.state.notice = None,
+            }
+            if let Some(outcome) = completion.outcome.clone() {
+                runtime.state.last_scan = Some(outcome);
+            }
             runtime.state.lifecycle = if completion.error.is_none() {
                 ScoutLifecycle::Idle.as_str().to_string()
             } else {
@@ -4096,10 +4188,14 @@ impl ScoutWorker {
             runtime.state.enabled = false;
             runtime.state.scan = None;
             runtime.state.next_attempt_at = None;
-            runtime.state.notice = draining.then(|| {
-                "Drained: the worker finished its work and exited; its records stay readable."
-                    .to_string()
-            });
+            if draining {
+                runtime.state.note(
+                    "Drained: the worker finished its work and exited; its records stay readable."
+                        .to_string(),
+                );
+            } else {
+                runtime.state.notice = None;
+            }
             runtime.state.lifecycle = ScoutLifecycle::Stopped.as_str().to_string();
             self.publish_locked(&mut runtime);
         }
@@ -4446,6 +4542,7 @@ async fn run_scan_task(task: ScanTaskOptions) -> ScanCompletion {
                 notice: None,
                 error: Some(error),
                 filing_error: None,
+                outcome: None,
                 start_failure: !started,
             }
         }
@@ -4486,6 +4583,7 @@ async fn run_scan_task(task: ScanTaskOptions) -> ScanCompletion {
                 notice: None,
                 error: Some(error),
                 filing_error: None,
+                outcome: None,
                 start_failure: !started,
             }
         }
@@ -4548,6 +4646,7 @@ async fn complete_scan(
                 notice: None,
                 error: Some(detail.to_string()),
                 filing_error: None,
+                outcome: None,
                 start_failure: false,
             }
         }
@@ -4563,6 +4662,7 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
             notice: None,
             error,
             filing_error: None,
+            outcome: None,
             start_failure: false,
         }
     };
@@ -4721,6 +4821,7 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
         Some(quota) if filed < quota => SCAN_STATUS_INCOMPLETE,
         _ => "succeeded",
     };
+    let finished_at = iso_from_millis((task.clock)());
     write_scan_record(
         &task.directory,
         &task.scan_id,
@@ -4728,7 +4829,7 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
         &task.repo_dir,
         status,
         &task.started_at,
-        Some(iso_from_millis((task.clock)())),
+        Some(finished_at.clone()),
         task.requested,
         filed,
         &task.prompt,
@@ -4737,6 +4838,15 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
         shortfall.as_deref(),
         task.harness_version.as_deref(),
     );
+    let outcome = ScoutScanOutcome {
+        scan_id: task.scan_id.clone(),
+        status: status.to_string(),
+        requested: task.requested,
+        filed,
+        shortfall: shortfall.clone(),
+        started_at: task.started_at.clone(),
+        finished_at: Some(finished_at),
+    };
     let notice = match &last_filed {
         Some((number, title)) if filed == 1 => {
             Some(format!("Filed #{number} \u{201c}{title}\u{201d}"))
@@ -4755,6 +4865,7 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
     let mut completion = finish(Some(patch), None, None);
     completion.filing_error = filing_error;
     completion.notice = notice;
+    completion.outcome = Some(outcome);
     completion
 }
 

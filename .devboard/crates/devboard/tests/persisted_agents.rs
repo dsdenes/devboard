@@ -127,6 +127,32 @@ impl Fixture {
             }),
         );
         self.write(
+            "dead-code/state.json",
+            json!({
+                "version": 2,
+                "lifecycle": "idle",
+                "enabled": true,
+                "issues": [{
+                    "number": 11,
+                    "title": "A dead function",
+                    "url": "https://forge.test/acme/fixture/issues/11",
+                    "createdAt": "2026-01-02T00:00:05.000Z",
+                    "state": "pending",
+                }],
+                "notices": ["Filed #11", "Settings saved"],
+                "lastScan": {
+                    "scanId": "cycle-1",
+                    "status": "incomplete",
+                    "requested": 2,
+                    "filed": 1,
+                    "shortfall": "filed 1 of the 2 requested",
+                    "startedAt": "2026-01-02T00:00:00.000Z",
+                    "finishedAt": "2026-01-02T00:01:00.000Z",
+                },
+                "updatedAt": "2026-01-02T00:01:00.000Z",
+            }),
+        );
+        self.write(
             "release-train/state.json",
             json!({
                 "version": 1,
@@ -248,6 +274,22 @@ fn persisted_workers_answer_without_a_dashboard() {
     assert_eq!(optimizer["limits"]["maxPending"], 5);
     assert_eq!(optimizer["issues"].as_array().unwrap().len(), 1);
     assert_eq!(optimizer["issues"][0]["title"], "Repeated command");
+
+    let dead_code = find("dead-code");
+    assert_eq!(
+        dead_code["notices"],
+        json!(["Filed #11", "Settings saved"]),
+        "the recent status lines survive: {dead_code}"
+    );
+    assert_eq!(dead_code["lastScan"]["status"], "incomplete");
+    assert_eq!(
+        dead_code["lastScan"]["shortfall"],
+        "filed 1 of the 2 requested"
+    );
+    assert_eq!(
+        dead_code["issues"][0]["filedAt"], "2026-01-02T00:00:05.000Z",
+        "a row filed without a filedAt names its creation instant"
+    );
 
     let release = find("release-train");
     let entries: Vec<&str> = release["detail"]["entries"]

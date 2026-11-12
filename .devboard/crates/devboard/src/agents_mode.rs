@@ -544,6 +544,10 @@ struct SnapshotInput {
     sync: AgentSync,
     detail: Detail,
     notice: Option<String>,
+    /// The recent status lines a family kept, newest first.
+    notices: Vec<String>,
+    /// The last completed cycle or scan, with its outcome.
+    last_scan: Option<Value>,
     error: Option<String>,
     timer: Option<TimerGate>,
     workers: Vec<Worker>,
@@ -597,7 +601,10 @@ fn normalize_issue(row: Value) -> Value {
     json!({
         "title": object.and_then(|map| map.get("title")).cloned().unwrap_or(Value::Null),
         "category": nullable_text(text("category")),
-        "filedAt": object.and_then(|map| map.get("filedAt")).cloned().unwrap_or(Value::Null),
+        "filedAt": object
+            .and_then(|map| map.get("filedAt").or_else(|| map.get("createdAt")))
+            .cloned()
+            .unwrap_or(Value::Null),
         "url": object.and_then(|map| map.get("url")).cloned().unwrap_or(Value::Null),
         "state": state.unwrap_or_else(|| "unknown".to_string()),
         "version": nullable_text(text("version")),
@@ -733,6 +740,8 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
         "detail": detail,
         "releases": releases,
         "notice": nullable_text(input.notice),
+        "notices": input.notices,
+        "lastScan": input.last_scan.unwrap_or(Value::Null),
         "error": nullable_text(input.error),
         "timer": match input.timer {
             Some(timer) => timer.to_json(),
@@ -3696,6 +3705,19 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             sync,
             detail,
             notice: reader("notice"),
+            notices: value_of(&state)
+                .and_then(|value| value.get("notices"))
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            last_scan: value_of(&state)
+                .and_then(|value| value.get("lastScan"))
+                .cloned(),
             error: reader("lastError").or_else(|| reader("error")),
             timer: None,
             workers: Vec::new(),
@@ -3893,6 +3915,8 @@ struct RepoState {
     next_attempt_at: Option<String>,
     last_error: Option<String>,
     notice: Option<String>,
+    notices: Vec<String>,
+    last_scan: Option<Value>,
     draining: bool,
     updated_at: String,
     active_cycle_started_at: Option<String>,
@@ -4032,6 +4056,17 @@ fn parse_repo_state(family_id: RepoFamilyId, text: &str) -> Option<RepoState> {
     let next_attempt_at = nullable_key(object, "nextAttemptAt")?;
     let last_error = nullable_key(object, "lastError")?;
     let notice = nullable_key(object, "notice")?;
+    let notices: Vec<String> = object
+        .get("notices")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let last_scan = object.get("lastScan").cloned();
     let draining = match object.get("draining") {
         None => false,
         Some(value) => value.as_bool()?,
@@ -4062,6 +4097,8 @@ fn parse_repo_state(family_id: RepoFamilyId, text: &str) -> Option<RepoState> {
         next_attempt_at,
         last_error,
         notice,
+        notices,
+        last_scan,
         draining,
         updated_at,
         active_cycle_started_at,
@@ -4090,7 +4127,7 @@ fn project_repo_issue(family_id: RepoFamilyId, issue: &Value) -> Value {
     row.insert(
         "filedAt".to_string(),
         object
-            .and_then(|map| map.get("createdAt"))
+            .and_then(|map| map.get("filedAt").or_else(|| map.get("createdAt")))
             .cloned()
             .unwrap_or(Value::Null),
     );
@@ -4929,6 +4966,11 @@ impl RepoFamily {
                     scan_id: cycle_id,
                     entries: mutable.last_activity.clone(),
                 },
+                notices: active
+                    .as_ref()
+                    .map(|state| state.notices.clone())
+                    .unwrap_or_default(),
+                last_scan: active.as_ref().and_then(|state| state.last_scan.clone()),
                 notice: mutable
                     .notice
                     .clone()
@@ -6112,6 +6154,8 @@ fn empty_repo_input(descriptor: &Descriptor) -> SnapshotInput {
             Detail::Cycles(Vec::new())
         },
         notice: None,
+        notices: Vec::new(),
+        last_scan: None,
         error: None,
         timer: None,
         workers: Vec::new(),
@@ -7256,6 +7300,8 @@ impl WatchdogFamily {
                 pending,
                 sync: self.forge.sync(now),
                 detail: Detail::Cycles(cycles),
+                notices: Vec::new(),
+                last_scan: None,
                 notice: mutable
                     .notice
                     .clone()
@@ -8511,6 +8557,8 @@ impl McpFamily {
                 pending,
                 sync: self.forge.sync(now),
                 detail: Detail::Cycles(cycles),
+                notices: Vec::new(),
+                last_scan: None,
                 notice: mutable
                     .notice
                     .clone()
@@ -9436,6 +9484,8 @@ impl ReleaseFamily {
                     scan_id: Some(scan_id),
                     entries: activity,
                 },
+                notices: Vec::new(),
+                last_scan: None,
                 notice: mutable
                     .notice
                     .clone()

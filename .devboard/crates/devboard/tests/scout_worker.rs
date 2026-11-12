@@ -294,6 +294,18 @@ async fn one_cycle_files_the_recommendation_and_writes_every_record() {
     assert_eq!(state.sync.state, "ok");
     assert_eq!(state.scan, None);
     assert!(state.notice.as_deref().unwrap().contains("Filed #12"));
+    let outcome = state
+        .last_scan
+        .as_ref()
+        .expect("the completed scan keeps its outcome");
+    assert_eq!(outcome.scan_id, scan_ids(&repo)[0]);
+    assert_eq!(outcome.filed, 1);
+    assert!(outcome.finished_at.is_some());
+    assert!(
+        state.notices.iter().any(|line| line.contains("Filed #12")),
+        "the status line survives in the history: {:?}",
+        state.notices
+    );
 
     let ids = scan_ids(&repo);
     assert_eq!(ids.len(), 1);
