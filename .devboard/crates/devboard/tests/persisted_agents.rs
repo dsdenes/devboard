@@ -213,6 +213,13 @@ fn persisted_workers_answer_without_a_dashboard() {
     };
 
     let watchdog = find("watchdog");
+    assert_eq!(watchdog["provenance"], "persisted");
+    assert!(
+        watchdog["asOf"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "a persisted snapshot names the instant it observed: {watchdog}"
+    );
     assert_eq!(watchdog["lifecycle"], "stopped");
     assert_eq!(watchdog["enabled"], true);
     assert_eq!(watchdog["attached"], false);
@@ -227,6 +234,14 @@ fn persisted_workers_answer_without_a_dashboard() {
     );
     assert!(watchdog["sync"]["state"].is_string());
     assert!(watchdog["detail"]["entries"].is_array());
+
+    let scout = find("scout");
+    assert_eq!(scout["provenance"], "persisted");
+    assert_eq!(
+        scout["lifecycle"],
+        Value::Null,
+        "a family no file names never claims a lifecycle: {scout}"
+    );
 
     let optimizer = find("mcp-optimizer");
     assert_eq!(optimizer["limits"]["maxPerHour"], 3);

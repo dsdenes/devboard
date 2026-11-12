@@ -497,8 +497,35 @@ enum Detail {
     Cycles(Vec<Value>),
 }
 
+/// Which read produced a snapshot.
+///
+/// A live snapshot is the dashboard's own state. A persisted snapshot is the
+/// family's files, read when no dashboard answered — a different claim about
+/// the same family, and one that must be visible to the reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotSource {
+    Live,
+    Persisted,
+}
+
+impl SnapshotSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Persisted => "persisted",
+        }
+    }
+}
+
 struct SnapshotInput {
-    lifecycle: String,
+    /// Which read produced this snapshot.
+    provenance: SnapshotSource,
+    /// When that read observed the family; `None` when it names no instant.
+    as_of: Option<String>,
+    /// The lifecycle a source actually names. `None` is a fact too: neither the
+    /// dashboard nor a persisted file said what the family is doing, and a
+    /// default would invent an answer.
+    lifecycle: Option<String>,
     paused: bool,
     enabled: bool,
     owned: bool,
@@ -534,6 +561,26 @@ fn lifecycle_in_vocabulary(value: &str) -> &str {
         value
     } else {
         "stopped"
+    }
+}
+
+/// The snapshot lifecycle a persisted state file's own word maps onto.
+///
+/// A family file names its work (`scanning`, `auditing`, `idle`); a snapshot
+/// names whether the family runs. An unrecognized word is `None` — the snapshot
+/// reports that nothing named a lifecycle instead of inventing `stopped`.
+fn persisted_lifecycle(raw: &str, attached: bool, enabled: bool) -> Option<&'static str> {
+    match raw {
+        "failed" => Some(if attached || enabled {
+            "failed"
+        } else {
+            "stopped"
+        }),
+        "stopped" => Some("stopped"),
+        "idle" | "scanning" | "auditing" | "releasing" | "detecting" => {
+            Some(if attached { "running" } else { "stopped" })
+        }
+        _ => None,
     }
 }
 
@@ -661,7 +708,12 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
         "label": descriptor.label,
         "description": descriptor.description,
         "scope": descriptor.scope,
-        "lifecycle": lifecycle_in_vocabulary(&input.lifecycle),
+        "provenance": input.provenance.as_str(),
+        "asOf": nullable_text(input.as_of),
+        "lifecycle": match input.lifecycle {
+            Some(value) => Value::String(lifecycle_in_vocabulary(&value).to_string()),
+            None => Value::Null,
+        },
         "paused": input.paused,
         "enabled": input.enabled,
         "owned": input.owned,
@@ -3323,8 +3375,32 @@ fn family_directory(state_dir: &Path, id: &str) -> PathBuf {
     state_dir.join(id)
 }
 
+/// One state file the walk chose: when it was written, and what it holds.
+///
+/// The write time is part of the read, because a snapshot built from files must
+/// name the instant it observed them: a consumer cannot tell a family that just
+/// wrote `stopped` from one whose last write is hours old otherwise.
+struct StateFile {
+    at: std::time::SystemTime,
+    value: Value,
+}
+
+impl StateFile {
+    fn millis(&self) -> i64 {
+        self.at
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// The value one family file contributed, if that file exists.
+fn value_of(file: &Option<StateFile>) -> Option<&Value> {
+    file.as_ref().map(|file| &file.value)
+}
+
 /// The newest file named `name` under `root`, by modification time.
-fn newest_state_file(root: &Path, name: &str) -> Option<Value> {
+fn newest_state_file(root: &Path, name: &str) -> Option<StateFile> {
     fn visit(
         directory: &Path,
         name: &str,
@@ -3363,7 +3439,7 @@ fn newest_state_file(root: &Path, name: &str) -> Option<Value> {
     }
     let mut best = None;
     visit(root, name, 0, &mut best);
-    best.map(|(_, value)| value)
+    best.map(|(at, value)| StateFile { at, value })
 }
 
 fn object_text(value: Option<&Value>, key: &str) -> Option<String> {
@@ -3397,65 +3473,66 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
     let settings = newest_state_file(&directory, "settings.json");
     let projection = newest_state_file(&directory, "projection.json");
     let reader = |key: &str| {
-        object_text(worker.as_ref(), key)
-            .or_else(|| object_text(state.as_ref(), key))
-            .or_else(|| object_text(settings.as_ref(), key))
+        object_text(value_of(&worker), key)
+            .or_else(|| object_text(value_of(&state), key))
+            .or_else(|| object_text(value_of(&settings), key))
     };
-    let lifecycle = reader("lifecycle").unwrap_or_else(|| "stopped".to_string());
-    let enabled = object_bool(worker.as_ref(), "enabled")
-        .or_else(|| object_bool(state.as_ref(), "enabled"))
-        .or_else(|| object_bool(settings.as_ref(), "enabled"))
+    let raw_lifecycle = reader("lifecycle");
+    let enabled = object_bool(value_of(&worker), "enabled")
+        .or_else(|| object_bool(value_of(&state), "enabled"))
+        .or_else(|| object_bool(value_of(&settings), "enabled"))
         .unwrap_or(false);
-    let paused = object_bool(worker.as_ref(), "paused")
-        .or_else(|| object_bool(state.as_ref(), "paused"))
+    let paused = object_bool(value_of(&worker), "paused")
+        .or_else(|| object_bool(value_of(&state), "paused"))
         .unwrap_or(false);
-    let owner = worker
-        .as_ref()
+    let owner = value_of(&worker)
         .and_then(|value| value.get("pid"))
         .and_then(Value::as_u64)
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| pid_alive(*pid));
     let attached = owner.is_some();
     let owned = attached
-        && object_text(worker.as_ref(), "stateDir")
+        && object_text(value_of(&worker), "stateDir")
             .map(PathBuf::from)
             .map(|path| resolved(&path) == resolved(state_dir))
             .unwrap_or(false);
-    let minutes = object_limit(worker.as_ref(), "intervalMinutes")
-        .or_else(|| object_limit(state.as_ref(), "intervalMinutes"))
-        .or_else(|| object_limit(settings.as_ref(), "intervalMinutes"))
+    // A file's own word is mapped, never defaulted: an unrecognized lifecycle
+    // leaves the snapshot saying nothing rather than claiming `stopped`.
+    let lifecycle = raw_lifecycle
+        .as_deref()
+        .and_then(|raw| persisted_lifecycle(raw, attached, enabled))
+        .map(str::to_string);
+    let minutes = object_limit(value_of(&worker), "intervalMinutes")
+        .or_else(|| object_limit(value_of(&state), "intervalMinutes"))
+        .or_else(|| object_limit(value_of(&settings), "intervalMinutes"))
         .unwrap_or(descriptor.default_minutes);
     let limits = Limits {
-        max_per_hour: object_limit(state.as_ref(), "maxPerHour")
+        max_per_hour: object_limit(value_of(&state), "maxPerHour")
             .or_else(|| {
-                state
-                    .as_ref()
+                value_of(&state)
                     .and_then(|value| value.get("limits"))
                     .and_then(|limits| limits.get("maxPerHour"))
                     .and_then(Value::as_u64)
                     .and_then(|number| u32::try_from(number).ok())
             })
-            .or_else(|| object_limit(settings.as_ref(), "maxPerHour")),
-        max_pending: object_limit(state.as_ref(), "maxPending")
+            .or_else(|| object_limit(value_of(&settings), "maxPerHour")),
+        max_pending: object_limit(value_of(&state), "maxPending")
             .or_else(|| {
-                state
-                    .as_ref()
+                value_of(&state)
                     .and_then(|value| value.get("limits"))
                     .and_then(|limits| limits.get("maxPending"))
                     .and_then(Value::as_u64)
                     .and_then(|number| u32::try_from(number).ok())
             })
-            .or_else(|| object_limit(settings.as_ref(), "maxPending")),
+            .or_else(|| object_limit(value_of(&settings), "maxPending")),
     };
-    let mut issues: Vec<Value> = state
-        .as_ref()
+    let mut issues: Vec<Value> = value_of(&state)
         .and_then(|value| value.get("issues"))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
     if issues.is_empty() {
-        issues = state
-            .as_ref()
+        issues = value_of(&state)
             .and_then(|value| value.get("findings"))
             .and_then(Value::as_object)
             .map(|findings| {
@@ -3476,21 +3553,18 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             })
             .unwrap_or_default();
     }
-    let pending = state
-        .as_ref()
+    let pending = value_of(&state)
         .and_then(|value| value.get("pending"))
         .and_then(Value::as_u64)
         .unwrap_or_else(|| {
-            let findings = state
-                .as_ref()
+            let findings = value_of(&state)
                 .and_then(|value| value.get("findings"))
                 .and_then(Value::as_object)
                 .map(|findings| findings.len())
                 .unwrap_or(0);
             (findings as u64).saturating_sub(issues.len() as u64)
         });
-    let sync = state
-        .as_ref()
+    let sync = value_of(&state)
         .and_then(|value| value.get("sync"))
         .and_then(|sync| sync.as_object())
         .map(|sync| AgentSync {
@@ -3507,8 +3581,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
         })
         .unwrap_or_else(AgentSync::stale);
     if issues.is_empty() {
-        issues = projection
-            .as_ref()
+        issues = value_of(&projection)
             .and_then(|value| value.get("issues"))
             .and_then(Value::as_array)
             .map(|rows| {
@@ -3517,8 +3590,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
                         json!({
                             "title": row.get("title").cloned().unwrap_or(Value::Null),
                             "category": row.get("category").cloned().unwrap_or(Value::Null),
-                            "filedAt": projection
-                                .as_ref()
+                            "filedAt": value_of(&projection)
                                 .and_then(|value| value.get("at"))
                                 .cloned()
                                 .unwrap_or(Value::Null),
@@ -3531,8 +3603,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             .unwrap_or_default();
     }
     let mut entries: Vec<String> = read_activity(&directory);
-    if let Some(activity) = state
-        .as_ref()
+    if let Some(activity) = value_of(&state)
         .and_then(|value| value.get("activity"))
         .and_then(Value::as_array)
     {
@@ -3542,8 +3613,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             }
         }
     }
-    if let Some(runs) = state
-        .as_ref()
+    if let Some(runs) = value_of(&state)
         .and_then(|value| value.get("runs"))
         .and_then(Value::as_array)
     {
@@ -3553,8 +3623,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             }
         }
     }
-    if let Some(cycles) = state
-        .as_ref()
+    if let Some(cycles) = value_of(&state)
         .and_then(|value| value.get("cycles"))
         .and_then(Value::as_array)
     {
@@ -3568,8 +3637,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
         }
     }
     if entries.is_empty() {
-        entries = projection
-            .as_ref()
+        entries = value_of(&projection)
             .and_then(|value| value.get("issues"))
             .and_then(Value::as_array)
             .map(|issues| {
@@ -3589,10 +3657,20 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
         scan_id: reader("newestCycleId").or_else(|| reader("scanId")),
         entries,
     };
+    // The newest write among the four files is the instant this snapshot
+    // observed: a consumer can then tell a fresh `stopped` from a stale one.
+    let as_of = [&state, &worker, &settings, &projection]
+        .into_iter()
+        .flatten()
+        .map(|file| file.millis())
+        .max()
+        .map(iso_from_millis);
     let _ = repo_dir;
     project_snapshot(
         descriptor,
         SnapshotInput {
+            provenance: SnapshotSource::Persisted,
+            as_of,
             lifecycle,
             paused,
             enabled,
@@ -3604,14 +3682,12 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             next_run_at,
             limits,
             issues,
-            documentation: state
-                .as_ref()
+            documentation: value_of(&state)
                 .and_then(|value| value.get("documentation"))
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default(),
-            releases: state
-                .as_ref()
+            releases: value_of(&state)
                 .and_then(|value| value.get("releases"))
                 .and_then(Value::as_array)
                 .cloned()
@@ -4825,7 +4901,9 @@ impl RepoFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                lifecycle,
+                provenance: SnapshotSource::Live,
+                as_of: None,
+                lifecycle: Some(lifecycle),
                 paused: false,
                 enabled,
                 owned: attached,
@@ -6005,7 +6083,9 @@ impl RepoFamily {
 
 fn empty_repo_input(descriptor: &Descriptor) -> SnapshotInput {
     SnapshotInput {
-        lifecycle: "stopped".to_string(),
+        provenance: SnapshotSource::Live,
+        as_of: None,
+        lifecycle: Some("stopped".to_string()),
         paused: false,
         enabled: false,
         owned: false,
@@ -7145,7 +7225,9 @@ impl WatchdogFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                lifecycle,
+                provenance: SnapshotSource::Live,
+                as_of: None,
+                lifecycle: Some(lifecycle),
                 paused: false,
                 enabled: attached
                     && active.as_ref().map(|state| state.enabled).unwrap_or(false)
@@ -8400,7 +8482,9 @@ impl McpFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                lifecycle,
+                provenance: SnapshotSource::Live,
+                as_of: None,
+                lifecycle: Some(lifecycle),
                 paused: false,
                 enabled,
                 owned: attached,
@@ -9304,7 +9388,9 @@ impl ReleaseFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                lifecycle: lifecycle.clone(),
+                provenance: SnapshotSource::Live,
+                as_of: None,
+                lifecycle: Some(lifecycle.clone()),
                 paused: active.as_ref().map(|record| record.paused).unwrap_or(false),
                 enabled: attached
                     && active

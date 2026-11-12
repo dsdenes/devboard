@@ -142,6 +142,10 @@
     {
       "name": "live",
       "reason": "the active agent count, available memory, and slice figures are live host facts"
+    },
+    {
+      "name": "asOf",
+      "reason": "the instant a snapshot observed the family, which differs per run"
     }
   ]
 }

@@ -244,6 +244,12 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
         "Scans the repository and files significant findings as issues."
     );
     assert_eq!(scout["scope"], "repository");
+    assert_eq!(scout["provenance"], "live");
+    assert_eq!(
+        scout["asOf"],
+        Value::Null,
+        "a live answer is current by construction"
+    );
     assert_eq!(scout["lifecycle"], "stopped");
     assert_eq!(scout["paused"], false);
     assert_eq!(scout["cadence"]["minutes"], 1);
