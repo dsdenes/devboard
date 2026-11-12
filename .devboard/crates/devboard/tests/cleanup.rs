@@ -1069,7 +1069,10 @@ fn a_held_build_lock_keeps_the_canonical_tree() {
     let busy = run_build_cleanup_with(&repo, false, 0, &|_| false, &|| Vec::new());
     assert!(busy.removed.is_empty(), "{:?}", busy.removed);
     assert!(!busy.cap_removed);
-    assert!(old.exists() && new.exists(), "a held lock keeps every artifact");
+    assert!(
+        old.exists() && new.exists(),
+        "a held lock keeps every artifact"
+    );
 
     drop(held);
 
@@ -1088,7 +1091,10 @@ fn a_held_build_lock_keeps_the_canonical_tree() {
     }
     assert!(after.skipped.is_none(), "{:?}", after.skipped);
     assert!(!old.exists(), "the duplicate leaves once the lock is free");
-    assert!(after.cap_removed, "the cap removes the tree once the lock is free");
+    assert!(
+        after.cap_removed,
+        "the cap removes the tree once the lock is free"
+    );
     let _ = std::fs::remove_dir_all(&directory);
 }
 
