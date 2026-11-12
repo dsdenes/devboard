@@ -234,7 +234,10 @@ impl Server {
     /// The app keeps the static root the operator configured, because a
     /// replacement inherits it through `RelaunchSettings`; only the served
     /// configuration moves to this process's own snapshot, which prunes with
-    /// this pid and is useless to a child.
+    /// this pid and is useless to a child. A snapshot that cannot be copied
+    /// leaves the served configuration with no static root at all, so every
+    /// answer reads the immutable embedded client instead of the source tree
+    /// a rebuild is rewriting.
     pub fn new(config: Config, journal: crate::journal::Journal) -> Arc<Self> {
         let mut served = config.clone();
         if let Some(source) = served.static_dir.clone() {
@@ -244,6 +247,10 @@ impl Server {
             match crate::assets::snapshot_static(&source, &served.state_dir, &version) {
                 Ok(snapshot) => served.static_dir = Some(snapshot),
                 Err(error) => {
+                    // Never keep serving the operator's source tree: it is the
+                    // mutable directory a rebuild rewrites, and the embedded
+                    // client is immutable and complete.
+                    served.static_dir = None;
                     journal.write("server-error", &format!("static snapshot: {error}"), None)
                 }
             }

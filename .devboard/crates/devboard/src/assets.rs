@@ -34,7 +34,13 @@ pub fn snapshot_static(
     }
     let staging = serving.join(format!(".{name}.tmp"));
     let _ = std::fs::remove_dir_all(&staging);
-    copy_tree(source, &staging)?;
+    if let Err(error) = copy_tree(source, &staging) {
+        // A failed copy is never renamed into place and never resumed: remove
+        // the partial tree so a failed attempt leaves nothing to serve and a
+        // later start copies the source again.
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
     std::fs::rename(&staging, &target).map_err(|error| error.to_string())?;
     Ok(target)
 }

@@ -34,7 +34,10 @@ fn private_root(label: &str) -> PathBuf {
 }
 
 async fn start(label: &str) -> Instance {
-    let root = private_root(label);
+    start_at(private_root(label)).await
+}
+
+async fn start_at(root: PathBuf) -> Instance {
     let config = Config {
         hostname: "127.0.0.1".to_string(),
         port: 0,
@@ -657,6 +660,95 @@ async fn a_static_directory_is_served_from_an_immutable_snapshot() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(first, second, "a rebuild never changes the served bytes");
+}
+
+/// A snapshot that cannot be copied leaves every answer to the embedded
+/// client: the operator's source tree is exactly the directory a rebuild
+/// rewrites, so keeping it live would drop the invariant the snapshot exists
+/// to hold.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_static_snapshot_serves_the_embedded_client_not_the_source() {
+    let root = private_root("static-snapshot-failure");
+    std::fs::write(
+        root.join("static/index.html"),
+        "<!doctype html><title>source-1817-marker</title>\n",
+    )
+    .expect("a marked source document");
+    std::os::unix::fs::symlink("missing-target", root.join("static/dangling"))
+        .expect("a dangling symlink");
+    let instance = start_at(root.clone()).await;
+    assert!(
+        instance.server.config.static_dir.is_none(),
+        "a failed snapshot leaves no static root to serve"
+    );
+
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        devboard::assets::lookup("index.html").expect("the embedded index document"),
+        "the embedded client answers, not the source document"
+    );
+
+    // Nothing a rebuild writes under the source reaches an answer.
+    std::fs::write(
+        root.join("static/index.html"),
+        "<!doctype html><title>rebuilt-1817-marker</title>\n",
+    )
+    .expect("a rebuilt source document");
+    std::fs::write(root.join("static/assets/app-abc.css"), "body{color:red}\n")
+        .expect("a rebuilt source asset");
+    let (status, _headers, _body) = send(
+        Method::GET,
+        &format!("{}/assets/app-abc.css", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a source asset is never served after a failed snapshot"
+    );
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        devboard::assets::lookup("index.html").expect("the embedded index document"),
+        "a rebuilt source document never reaches the answer"
+    );
+
+    let journal = std::fs::read_to_string(devboard::journal::journal_file(
+        &root.join("state"),
+        &root.join("repo"),
+    ))
+    .expect("the journal");
+    assert!(journal.contains("server-error"), "{journal}");
+    assert_eq!(
+        journal.matches("static snapshot:").count(),
+        1,
+        "the failure is journaled once at startup: {journal}"
+    );
+
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/ready", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("ready JSON");
+    assert_eq!(parsed["pid"], std::process::id());
 }
 
 /// The app keeps the static root the operator configured while this process
