@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent};
 use crate::forge::{
     classify_forge_read_failure, git, gitea_closing_commits, gitea_json, gitea_list_issues,
-    gitea_list_labelled_issues, gitea_list_releases, is_forge_read_latency, is_forge_read_outage,
+    gitea_list_labelled_issues, is_forge_read_latency, is_forge_read_outage,
     origin_forge_with, resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge,
     ForgeReadFailureKind, ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState,
     RepositoryGitHub, RepositoryGitHubOptions, VersionResolution,
@@ -2375,6 +2375,10 @@ pub struct GiteaScoutForge {
     target: crate::forge::GiteaTarget,
     transport: crate::forge::Transport,
     options: crate::forge::GiteaCallOptions,
+    /// The environment a production read resolves its credential from. An
+    /// empty environment keeps the explicit target, which is what a test
+    /// injects.
+    environment: HashMap<String, String>,
     version: GiteaVersionClient,
 }
 
@@ -2383,6 +2387,26 @@ pub struct GiteaVersionClient {
     repo_dir: PathBuf,
     transport: crate::forge::Transport,
     options: crate::forge::GiteaCallOptions,
+    environment: HashMap<String, String>,
+}
+
+/// The read target for one scout read: the injected target, or the resolved
+/// public-or-credential target a production read uses.
+async fn scout_read_target(
+    target: &crate::forge::GiteaTarget,
+    environment: &HashMap<String, String>,
+    transport: &crate::forge::Transport,
+) -> Result<crate::forge::GiteaTarget, crate::forge::GiteaError> {
+    if environment.is_empty() {
+        return Ok(target.clone());
+    }
+    crate::forge::gitea_read_target(
+        &target.base_url,
+        &target.project,
+        environment,
+        transport,
+    )
+    .await
 }
 
 fn encode_uri_component(value: &str) -> String {
@@ -2414,23 +2438,37 @@ impl GiteaScoutForge {
             repo_dir: repo_dir.clone(),
             transport: transport.clone(),
             options: options.clone(),
+            environment: HashMap::new(),
         };
         let _ = &repo_dir;
         Self {
             target,
             transport,
             options,
+            environment: HashMap::new(),
             version,
         }
+    }
+
+    /// Resolves this forge's reads through the environment, so a public
+    /// repository is read without presenting the configured credential.
+    pub fn with_environment(mut self, environment: HashMap<String, String>) -> Self {
+        self.version.environment = environment.clone();
+        self.environment = environment;
+        self
     }
 }
 
 impl ScoutForge for GiteaScoutForge {
     fn list_issues(&self) -> ForgeFuture<Vec<ScoutForgeIssue>> {
-        let target = self.target.clone();
+        let injected = self.target.clone();
+        let environment = self.environment.clone();
         let transport = self.transport.clone();
         let options = self.options.clone();
         Box::pin(async move {
+            let target = scout_read_target(&injected, &environment, &transport)
+                .await
+                .map_err(|error| error.message)?;
             let issues = gitea_list_labelled_issues(
                 &target,
                 IssueQueryState::All,
@@ -2457,10 +2495,14 @@ impl ScoutForge for GiteaScoutForge {
     }
 
     fn list_open_issue_titles(&self) -> ForgeFuture<Vec<String>> {
-        let target = self.target.clone();
+        let injected = self.target.clone();
+        let environment = self.environment.clone();
         let transport = self.transport.clone();
         let options = self.options.clone();
         Box::pin(async move {
+            let target = scout_read_target(&injected, &environment, &transport)
+                .await
+                .map_err(|error| error.message)?;
             let issues = gitea_list_issues(&target, IssueQueryState::Open, &transport, &options)
                 .await
                 .map_err(|error| error.message)?;
@@ -2469,11 +2511,15 @@ impl ScoutForge for GiteaScoutForge {
     }
 
     fn list_releases(&self) -> ForgeFuture<Vec<GitHubRelease>> {
-        let target = self.target.clone();
+        let injected = self.target.clone();
+        let environment = self.environment.clone();
         let transport = self.transport.clone();
         let options = self.options.clone();
         Box::pin(async move {
-            let releases = gitea_list_releases(&target, &transport, &options)
+            let target = scout_read_target(&injected, &environment, &transport)
+                .await
+                .map_err(|error| error.message)?;
+            let releases = crate::release_cache::list(&target, &transport, &options)
                 .await
                 .map_err(|error| error.message)?;
             Ok(releases
@@ -2494,7 +2540,10 @@ impl ScoutForge for GiteaScoutForge {
 impl ClosingCommitClient for GiteaVersionClient {
     fn closing_commit(&self, issue_number: i64) -> crate::forge::ClientFuture<'_, Option<String>> {
         Box::pin(async move {
-            gitea_closing_commits(&self.target, issue_number, &self.transport, &self.options)
+            let target = scout_read_target(&self.target, &self.environment, &self.transport)
+                .await
+                .map_err(|error| error.message)?;
+            gitea_closing_commits(&target, issue_number, &self.transport, &self.options)
                 .await
                 .map(|commits| commits.into_iter().next())
                 .map_err(|error| error.message)
@@ -2503,7 +2552,10 @@ impl ClosingCommitClient for GiteaVersionClient {
 
     fn closing_commits(&self, issue_number: i64) -> crate::forge::ClientFuture<'_, Vec<String>> {
         Box::pin(async move {
-            gitea_closing_commits(&self.target, issue_number, &self.transport, &self.options)
+            let target = scout_read_target(&self.target, &self.environment, &self.transport)
+                .await
+                .map_err(|error| error.message)?;
+            gitea_closing_commits(&target, issue_number, &self.transport, &self.options)
                 .await
                 .map_err(|error| error.message)
         })
@@ -2533,12 +2585,15 @@ impl ClosingCommitClient for GiteaVersionClient {
                     return Ok(Some(sha.to_string()));
                 }
             }
+            let target = scout_read_target(&self.target, &self.environment, &self.transport)
+                .await
+                .map_err(|error| error.message)?;
             let path = format!(
                 "{}/git/commits/{}",
-                crate::forge::repo_path(&self.target),
+                crate::forge::repo_path(&target),
                 encode_uri_component(&short)
             );
-            match gitea_json(&self.target, &path, None, &self.transport, &self.options).await {
+            match gitea_json(&target, &path, None, &self.transport, &self.options).await {
                 Ok(value) => Ok(value
                     .get("sha")
                     .and_then(Value::as_str)
@@ -2561,15 +2616,18 @@ impl ClosingCommitClient for GiteaVersionClient {
                 return Ok(containment.contained);
             }
             let mut contained = containment.contained;
+            let target = scout_read_target(&self.target, &self.environment, &self.transport)
+                .await
+                .map_err(|error| error.message)?;
             for release in containment.pending {
                 let path = format!(
                     "{}/compare/{}...{}",
-                    crate::forge::repo_path(&self.target),
+                    crate::forge::repo_path(&target),
                     encode_uri_component(&release.tag),
                     encode_uri_component(&commit)
                 );
                 let Ok(value) =
-                    gitea_json(&self.target, &path, None, &self.transport, &self.options).await
+                    gitea_json(&target, &path, None, &self.transport, &self.options).await
                 else {
                     continue;
                 };
@@ -3102,11 +3160,10 @@ impl ScoutWorker {
                     &self.environment,
                 )
                 .map_err(|error| error.message)?;
-                Ok(Arc::new(GiteaScoutForge::new(
-                    target,
-                    self.repo_dir.clone(),
-                    self.read_timeout_ms,
-                )))
+                Ok(Arc::new(
+                    GiteaScoutForge::new(target, self.repo_dir.clone(), self.read_timeout_ms)
+                        .with_environment(self.environment.clone()),
+                ))
             }
             Some(remote) if remote.forge == Forge::GitLab => Err(format!(
                 "the scout supports a GitHub or Gitea origin, not a GitLab one: {}",

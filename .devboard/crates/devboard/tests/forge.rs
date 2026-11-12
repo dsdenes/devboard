@@ -644,15 +644,12 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
             })),
             ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
             ("GET", "/api/v1/repos/owner/name/issues") => {
+                // A page shorter than the requested size is the last page, so
+                // one answer ends the walk.
                 if request.query.contains("page=1") {
                     json_response(json!([
                         issue_value(1, "One", "open"),
                         issue_value(2, "Two", "open")
-                    ]))
-                } else if request.query.contains("page=2") {
-                    json_response(json!([
-                        issue_value(2, "Two", "open"),
-                        issue_value(3, "Three", "open")
                     ]))
                 } else {
                     json_response(json!([]))
@@ -759,7 +756,7 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
         .expect("issues");
     assert_eq!(
         issues.iter().map(|issue| issue.number).collect::<Vec<_>>(),
-        vec![1, 2, 3]
+        vec![1, 2]
     );
     let first_page = server
         .find("GET", "/api/v1/repos/owner/name/issues")
@@ -853,6 +850,7 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
     assert_eq!(
         gitea_ensure_label(
             &target,
+            &target,
             "processing",
             "color",
             "description",
@@ -867,7 +865,7 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
         .find("POST", "/api/v1/repos/owner/name/labels")
         .is_none());
     assert_eq!(
-        gitea_ensure_label(&target, "new", "color", "description", &transport, &options)
+        gitea_ensure_label(&target, &target, "new", "color", "description", &transport, &options)
             .await
             .expect("created label"),
         12
@@ -1026,16 +1024,30 @@ async fn gitea_auth_resolves_through_the_api_and_refuses_with_the_contract_text(
     options.base_url = Some(server.base.clone());
     options.gitea_transport = Some(default_transport(5_000));
 
+    // A public repository is read anonymously even when a credential is
+    // configured: the anonymous view answers, so the read presents no token.
     let auth = resolve_forge_auth(&exec, &options)
         .await
         .into_result()
         .expect("resolved auth");
-    assert_eq!(auth.login, "alice");
-    assert_eq!(auth.token.as_deref(), Some("secret"));
-    assert_eq!(auth.source, "GITEA_TOKEN");
+    assert_eq!(auth.login, "anonymous");
+    assert_eq!(auth.token, None);
+    assert_eq!(auth.source, "public repository");
     assert_eq!(auth.permission, Permission::Pull);
     assert!(!auth.can_write);
     assert_eq!(auth.base_url.as_deref(), Some(server.base.as_str()));
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.path == "/api/v1/repos/owner/name")
+            .count(),
+        1,
+        "the anonymous view is the read"
+    );
+    assert!(!server.requests().iter().any(|request| request
+        .headers
+        .contains_key("authorization")));
 
     let mut write = options.clone();
     write.required = RequiredAccess::Write;
@@ -1112,9 +1124,8 @@ async fn a_refused_credential_resolves_a_public_repository_anonymously() {
     options.base_url = Some(server.base.clone());
     options.gitea_transport = Some(default_transport(5_000));
 
-    // The probe presents the credential and is refused, the anonymous probe
-    // reads the public view, and the account probe is never attempted with a
-    // credential the forge already refused.
+    // The anonymous view answers the read, so the refused credential is never
+    // presented and the account probe never runs.
     let auth = resolve_forge_auth(&exec, &options)
         .await
         .into_result()
@@ -1129,12 +1140,12 @@ async fn a_refused_credential_resolves_a_public_repository_anonymously() {
         .into_iter()
         .filter(|request| request.path == "/api/v1/repos/owner/name")
         .collect();
-    assert_eq!(probes.len(), 2);
-    assert_eq!(
-        probes[0].headers.get("authorization").map(String::as_str),
-        Some("token secret")
-    );
-    assert!(!probes[1].headers.contains_key("authorization"));
+    assert_eq!(probes.len(), 1);
+    assert!(!probes[0].headers.contains_key("authorization"));
+    assert!(!server
+        .requests()
+        .iter()
+        .any(|request| request.path == "/api/v1/user"));
 
     // A write has no anonymous form: the refusal is named, never a missing
     // credential, because one was configured and the forge refused it.
@@ -1178,9 +1189,8 @@ async fn a_refused_account_probe_resolves_a_public_repository_anonymously() {
     options.base_url = Some(server.base.clone());
     options.gitea_transport = Some(default_transport(5_000));
 
-    // The account refusal is no proof the repository is unreadable, so the read
-    // resolves to the public view instead of failing as a Watchdog
-    // deduplication turn's `issues_list` did.
+    // A read resolves from the anonymous view alone, so no credential — and
+    // therefore no refused account probe — takes part in it.
     let auth = resolve_forge_auth(&exec, &options)
         .await
         .into_result()
@@ -1195,20 +1205,16 @@ async fn a_refused_account_probe_resolves_a_public_repository_anonymously() {
         .into_iter()
         .filter(|request| request.path == "/api/v1/repos/owner/name")
         .collect();
-    assert_eq!(probes.len(), 2, "one credential read, one anonymous read");
-    assert_eq!(
-        probes[0].headers.get("authorization").map(String::as_str),
-        Some("token secret")
-    );
-    assert!(!probes[1].headers.contains_key("authorization"));
+    assert_eq!(probes.len(), 1, "one anonymous read");
+    assert!(!probes[0].headers.contains_key("authorization"));
     assert_eq!(
         server
             .requests()
             .iter()
             .filter(|request| request.path == "/api/v1/user")
             .count(),
-        1,
-        "the refused account is probed once, never with the refused credential again"
+        0,
+        "a read never probes the account"
     );
 
     // A write has no anonymous form: the account refusal is named.
@@ -1223,6 +1229,252 @@ async fn a_refused_account_probe_resolves_a_public_repository_anonymously() {
             "the Gitea credential was refused for owner/name on {}: GET /user failed (HTTP 401): invalid username, password or token; writing needs a token the forge accepts",
             server.base
         )
+    );
+}
+
+/// One repository document with the requested permissions.
+fn repository_document(permissions: Value) -> Value {
+    json!({"full_name": "owner/name", "private": false, "permissions": permissions})
+}
+
+fn pull_permissions() -> Value {
+    json!({"pull": true, "push": false, "admin": false})
+}
+
+#[tokio::test]
+async fn public_reads_present_no_credential_and_every_write_presents_it() {
+    let server = StubServer::start(|request| match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/api/v1/repos/owner/name") => json_response(repository_document(pull_permissions())),
+        ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+        ("GET", "/api/v1/repos/owner/name/issues") => json_response(json!([])),
+        ("GET", "/api/v1/repos/owner/name/issues/1") => json_response(issue_value(1, "One", "open")),
+        ("GET", "/api/v1/repos/owner/name/issues/1/timeline") => json_response(json!([])),
+        ("GET", "/api/v1/repos/owner/name/issues/1/comments") => json_response(json!([])),
+        ("GET", "/api/v1/repos/owner/name/labels") => json_response(json!([{"id": 7, "name": "bug"}])),
+        ("GET", "/api/v1/repos/owner/name/releases") => json_response(json!([])),
+        ("GET", "/api/v1/repos/owner/name/releases/latest") => json_response(json!({
+            "tag_name": "v9.9.9",
+            "draft": false,
+            "published_at": "2026-01-01T00:00:00Z",
+        })),
+        ("POST", "/api/v1/repos/owner/name/issues") => json_response(issue_value(2, "Two", "open")),
+        ("PATCH", "/api/v1/repos/owner/name/issues/1") => json_response(issue_value(1, "One", "closed")),
+        ("POST", "/api/v1/repos/owner/name/labels") => json_response(json!({"id": 8, "name": "goal"})),
+        ("POST", "/api/v1/repos/owner/name/issues/1/labels") => json_response(json!([])),
+        ("POST", "/api/v1/repos/owner/name/releases") => json_response(json!({
+            "tag_name": "v1.0.0",
+            "published_at": "2026-01-01T00:00:00Z",
+        })),
+        _ => text_response(500, "unexpected"),
+    })
+    .await;
+    let transport = default_transport(5_000);
+    let options = GiteaCallOptions::default();
+    let environment = environment(&[
+        ("GITEA_TOKEN", "secret"),
+        ("DEVBOARD_GITEA_URL", server.base.as_str()),
+    ]);
+    let mut resolve = ResolveOptions::new(Forge::Gitea, "localhost", "owner/name", temp_dir("public-read"));
+    resolve.env = environment.clone();
+    resolve.base_url = Some(server.base.clone());
+    resolve.gitea_transport = Some(transport.clone());
+    let auth = resolve_forge_auth(&default_exec(), &resolve)
+        .await
+        .into_result()
+        .expect("a public read resolves");
+    assert_eq!(auth.login, "anonymous");
+    assert_eq!(auth.token, None);
+
+    let read_target = GiteaTarget {
+        base_url: server.base.clone(),
+        project: "owner/name".to_string(),
+        token: auth.token.clone(),
+    };
+    let write_target = GiteaTarget {
+        base_url: server.base.clone(),
+        project: "owner/name".to_string(),
+        token: Some("secret".to_string()),
+    };
+    gitea_list_issues(&read_target, IssueQueryState::All, &transport, &options)
+        .await
+        .expect("list issues");
+    gitea_list_labelled_issues(&read_target, IssueQueryState::All, "bug", &transport, &options)
+        .await
+        .expect("list labelled");
+    gitea_issue(&read_target, 1, &transport, &options)
+        .await
+        .expect("one issue");
+    gitea_closing_commits(&read_target, 1, &transport, &options)
+        .await
+        .expect("timeline");
+    gitea_labels(&read_target, &transport, &options)
+        .await
+        .expect("labels");
+    gitea_list_releases(&read_target, &transport, &options)
+        .await
+        .expect("releases");
+    gitea_latest_release(&read_target, &transport, &options)
+        .await
+        .expect("latest release");
+    // The tracker reads resolve their own target and stay anonymous too.
+    let tracker = TrackerOptions {
+        forge: Forge::Gitea,
+        repository: "owner/name".to_string(),
+        etag: None,
+        run: None,
+        environment: environment.clone(),
+        timeout_ms: None,
+        base_url: Some(server.base.clone()),
+        transport: Some(transport.clone()),
+    };
+    match poll_open_issues(&tracker).await {
+        PollResult::Issues { .. } => {}
+        other => panic!("the tracker read failed: {other:?}"),
+    }
+    match fetch_issue_state(&tracker, 1).await {
+        IssueStateResult::State(IssueState::Open) => {}
+        other => panic!("the issue state read failed: {other:?}"),
+    }
+    let reads: Vec<RecordedRequest> = server.requests();
+    let sent_credentials: Vec<RecordedRequest> = reads
+        .iter()
+        .filter(|request| request.headers.contains_key("authorization"))
+        .cloned()
+        .collect();
+    assert!(
+        sent_credentials.is_empty(),
+        "a read presented a credential: {sent_credentials:?}"
+    );
+
+    gitea_create_issue(
+        &write_target,
+        &CreateIssueInput {
+            title: "Two".to_string(),
+            body: String::new(),
+            labels: None,
+        },
+        &transport,
+        &options,
+    )
+    .await
+    .expect("create issue");
+    gitea_close_issue(&write_target, 1, &transport, &options)
+        .await
+        .expect("close issue");
+    gitea_create_label(&write_target, "goal", "1d76db", "", &transport, &options)
+        .await
+        .expect("create label");
+    gitea_add_issue_label(&write_target, 1, 7, &transport, &options)
+        .await
+        .expect("add label");
+    gitea_create_release(
+        &write_target,
+        &CreateReleaseInput {
+            tag: "v1.0.0".to_string(),
+            title: "v1.0.0".to_string(),
+            notes: String::new(),
+            target_commitish: None,
+        },
+        &transport,
+        &options,
+    )
+    .await
+    .expect("create release");
+    let writes: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method != "GET")
+        .collect();
+    assert_eq!(writes.len(), 5);
+    for write in &writes {
+        assert_eq!(
+            write.headers.get("authorization").map(String::as_str),
+            Some("token secret"),
+            "{} {} presented no credential",
+            write.method,
+            write.path
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_private_repository_resolves_the_token_and_reads_with_it() {
+    let server = StubServer::start(|request| {
+        let authorized = request.headers.contains_key("authorization");
+        match request.path.as_str() {
+            "/api/v1/repos/owner/name" => {
+                if authorized {
+                    json_response(repository_document(pull_permissions()))
+                } else {
+                    text_response(401, r#"{"message":"no access"}"#)
+                }
+            }
+            "/api/v1/user" => json_response(json!({"login": "alice"})),
+            "/api/v1/repos/owner/name/issues" => {
+                if authorized {
+                    json_response(json!([]))
+                } else {
+                    text_response(401, r#"{"message":"no access"}"#)
+                }
+            }
+            _ => text_response(500, "unexpected"),
+        }
+    })
+    .await;
+    let transport = default_transport(5_000);
+    let mut resolve = ResolveOptions::new(
+        Forge::Gitea,
+        "localhost",
+        "owner/name",
+        temp_dir("private-read"),
+    );
+    resolve.env = environment(&[("GITEA_TOKEN", "secret")]);
+    resolve.base_url = Some(server.base.clone());
+    resolve.gitea_transport = Some(transport.clone());
+    let auth = resolve_forge_auth(&default_exec(), &resolve)
+        .await
+        .into_result()
+        .expect("a private read resolves the token");
+    assert_eq!(auth.login, "alice");
+    assert_eq!(auth.token.as_deref(), Some("secret"));
+    assert_eq!(auth.source, "GITEA_TOKEN");
+
+    let target = GiteaTarget {
+        base_url: server.base.clone(),
+        project: "owner/name".to_string(),
+        token: auth.token.clone(),
+    };
+    gitea_list_issues(
+        &target,
+        IssueQueryState::Open,
+        &transport,
+        &GiteaCallOptions::default(),
+    )
+    .await
+    .expect("the private read answers");
+
+    let requests = server.requests();
+    let repository_probes: Vec<&RecordedRequest> = requests
+        .iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name")
+        .collect();
+    assert_eq!(repository_probes.len(), 2, "one anonymous, one credential");
+    assert!(!repository_probes[0].headers.contains_key("authorization"));
+    assert_eq!(
+        repository_probes[1]
+            .headers
+            .get("authorization")
+            .map(String::as_str),
+        Some("token secret")
+    );
+    let reads: Vec<&RecordedRequest> = requests
+        .iter()
+        .filter(|request| request.path == "/api/v1/repos/owner/name/issues")
+        .collect();
+    assert_eq!(reads.len(), 1, "no anonymous retry loop");
+    assert_eq!(
+        reads[0].headers.get("authorization").map(String::as_str),
+        Some("token secret")
     );
 }
 
@@ -2143,8 +2395,8 @@ async fn list_labelled_asks_the_gitea_forge_for_the_label() {
         .collect();
     assert_eq!(
         listed.len(),
-        2,
-        "the labelled page and the page that ends it"
+        1,
+        "one short page ends the labelled walk"
     );
     for request in &listed {
         assert!(request.query.contains("state=all"), "{}", request.query);
@@ -2220,8 +2472,8 @@ async fn the_design_forge_asks_the_gitea_forge_for_the_design_label() {
         .collect();
     assert_eq!(
         listed.len(),
-        2,
-        "the labelled page and the page that ends it"
+        1,
+        "one short page ends the labelled walk"
     );
     for request in &listed {
         assert!(request.query.contains("state=all"), "{}", request.query);
@@ -2351,8 +2603,8 @@ async fn auto_scout_reads_only_the_scout_labelled_set() {
         .collect();
     assert_eq!(
         listed.len(),
-        2,
-        "the labelled page and the page that ends it"
+        1,
+        "one short page ends the labelled walk"
     );
     for request in &listed {
         assert!(request.query.contains("state=all"), "{}", request.query);
@@ -2408,11 +2660,11 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
     assert_eq!(open[0].number, 7);
     let requests = server.requests();
     assert_eq!(requests[0].path, "/api/v1/repos/owner/name");
-    assert_eq!(requests[1].path, "/api/v1/user");
-    assert_eq!(requests[2].path, "/api/v1/repos/owner/name/issues");
-    assert_eq!(
-        requests[2].headers.get("authorization").map(String::as_str),
-        Some("token secret")
+    assert!(!requests[0].headers.contains_key("authorization"));
+    assert_eq!(requests[1].path, "/api/v1/repos/owner/name/issues");
+    assert!(
+        !requests[1].headers.contains_key("authorization"),
+        "a public read presents no credential"
     );
 
     let closed = client
@@ -2420,9 +2672,10 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
         .await
         .expect("close");
     assert_eq!(closed.state, IssueState::Closed);
-    // The credential is resolved once per access level: read probes twice
-    // (repository and user), and the write access probes twice again.
-    assert_eq!(server.count(), 8);
+    // The read resolves from the anonymous repository view; the write resolves
+    // the credential once (repository and user) and then patches and reads the
+    // closed issue back.
+    assert_eq!(server.count(), 6);
     let patch = server
         .find("PATCH", "/api/v1/repos/owner/name/issues/7")
         .expect("close request");
@@ -2554,8 +2807,8 @@ async fn a_bounded_list_reads_only_the_newest_page_of_a_large_tracker() {
     assert_eq!(all[0].number, PAGING_STUB_ISSUES);
     assert_eq!(
         issue_page_requests(&server).len() - before,
-        (PAGING_STUB_ISSUES as usize).div_ceil(GITEA_PAGE_SIZE) + 1,
-        "every page is read, and one page ends it"
+        (PAGING_STUB_ISSUES as usize).div_ceil(GITEA_PAGE_SIZE),
+        "every page is read, and the short last page ends it"
     );
 }
 
@@ -2614,17 +2867,10 @@ async fn a_refused_credential_never_blocks_a_public_read_and_never_retries_a_wri
         .collect();
     assert_eq!(
         list_requests.len(),
-        2,
-        "one refused read, one anonymous read"
+        1,
+        "the public read never presents the refused credential"
     );
-    assert_eq!(
-        list_requests[0]
-            .headers
-            .get("authorization")
-            .map(String::as_str),
-        Some("token secret")
-    );
-    assert!(!list_requests[1].headers.contains_key("authorization"));
+    assert!(!list_requests[0].headers.contains_key("authorization"));
 
     // A write has no anonymous form: the refused credential is reported, and
     // the request is never repeated without it.
@@ -2714,9 +2960,17 @@ async fn a_read_that_needs_the_refused_credential_reports_the_refusal() {
             return text_response(401, r#"{"message":"invalid username, password or token"}"#);
         }
         match (request.method.as_str(), request.path.as_str()) {
-            ("GET", "/api/v1/repos/owner/name") => json_response(json!({
-                "permissions": {"pull": true, "push": true, "admin": false},
-            })),
+            // The repository is private: only the configured token reads it,
+            // and that same token is refused for the issue page.
+            ("GET", "/api/v1/repos/owner/name") => {
+                if request.headers.contains_key("authorization") {
+                    json_response(json!({
+                        "permissions": {"pull": true, "push": true, "admin": false},
+                    }))
+                } else {
+                    text_response(401, r#"{"message":"no access"}"#)
+                }
+            }
             ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
             _ => text_response(500, "unexpected"),
         }
@@ -2748,16 +3002,18 @@ async fn a_read_that_needs_the_refused_credential_reports_the_refusal() {
         "{}",
         error.message
     );
-    // The refusal is retried anonymously once, and the second refusal is what
-    // the caller sees; there is no third attempt.
+    // A private read presents the resolved credential, and the credential's
+    // refusal is the caller's error: the read is not retried anonymously.
+    let pages: Vec<RecordedRequest> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.path.ends_with("/issues"))
+        .filter(|request| request.query.contains("page=1"))
+        .collect();
+    assert_eq!(pages.len(), 1);
     assert_eq!(
-        server
-            .requests()
-            .iter()
-            .filter(|request| request.path.ends_with("/issues"))
-            .filter(|request| request.query.contains("page=1"))
-            .count(),
-        2
+        pages[0].headers.get("authorization").map(String::as_str),
+        Some("token secret")
     );
 }
 
@@ -3064,4 +3320,203 @@ async fn a_refused_gitea_connection_names_the_cause() {
         }
         other => panic!("expected an error, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Short pages and the shared release cache
+
+fn release_row(index: usize) -> Value {
+    json!({
+        "tag_name": format!("v1.0.{index}"),
+        "draft": false,
+        "published_at": "2026-01-01T00:00:00Z",
+    })
+}
+
+#[tokio::test]
+async fn a_short_page_ends_every_gitea_walk() {
+    let server = StubServer::start(|request| match request.path.as_str() {
+        "/api/v1/repos/owner/name/issues" => json_response(json!([
+            issue_value(1, "One", "open"),
+            issue_value(2, "Two", "open"),
+        ])),
+        "/api/v1/repos/owner/name/labels" => json_response(json!([{"id": 1, "name": "bug"}])),
+        "/api/v1/repos/owner/name/releases" => {
+            let page = query_value(request.query.as_str(), "page")
+                .parse::<usize>()
+                .unwrap_or(1);
+            let rows: Vec<Value> = match page {
+                1 => (0..50).map(release_row).collect(),
+                2 => (50..100).map(release_row).collect(),
+                _ => (100..120).map(release_row).collect(),
+            };
+            json_response(Value::Array(rows))
+        }
+        "/api/v1/repos/owner/name/issues/1/timeline" => json_response(json!([
+            {"id": 1, "body": "unrelated"},
+            {"id": 2, "body": "still unrelated"},
+        ])),
+        "/api/v1/repos/owner/name/issues/1/comments" => json_response(json!([
+            {"id": 3, "body": "nothing here"},
+            {"id": 4, "body": "nothing there"},
+        ])),
+        _ => text_response(500, "unexpected"),
+    })
+    .await;
+    let target = GiteaTarget {
+        base_url: server.base.clone(),
+        project: "owner/name".to_string(),
+        token: None,
+    };
+    let transport = default_transport(5_000);
+    let options = GiteaCallOptions::default();
+
+    let issues = gitea_list_issues(&target, IssueQueryState::Open, &transport, &options)
+        .await
+        .expect("two issues");
+    assert_eq!(issues.len(), 2);
+    let labels = gitea_labels(&target, &transport, &options)
+        .await
+        .expect("one label");
+    assert_eq!(labels.len(), 1);
+    let releases = devboard::release_cache::list_with_ttl(&target, &transport, &options, 60_000)
+        .await
+        .expect("every release");
+    assert_eq!(releases.len(), 120);
+    gitea_closing_commits(&target, 1, &transport, &options)
+        .await
+        .expect("timeline and comments");
+
+    let count = |path: &str| {
+        server
+            .requests()
+            .into_iter()
+            .filter(|request| request.path == path)
+            .count()
+    };
+    assert_eq!(
+        count("/api/v1/repos/owner/name/issues"),
+        1,
+        "a short issue page ends the walk"
+    );
+    assert_eq!(
+        count("/api/v1/repos/owner/name/labels"),
+        1,
+        "a short label page ends the walk"
+    );
+    assert_eq!(
+        count("/api/v1/repos/owner/name/releases"),
+        3,
+        "120 releases are three pages, and the short third page ends the walk"
+    );
+    assert_eq!(
+        count("/api/v1/repos/owner/name/issues/1/timeline"),
+        1,
+        "a short timeline page ends the walk"
+    );
+    assert_eq!(
+        count("/api/v1/repos/owner/name/issues/1/comments"),
+        1,
+        "a short comments page ends the walk"
+    );
+}
+
+#[tokio::test]
+async fn release_reads_share_one_walk_per_ttl_and_a_known_tag_never_walks() {
+    let server = StubServer::start(|request| {
+        if let Some(tag) = request.path.strip_prefix("/api/v1/repos/owner/name/releases/tags/") {
+            return json_response(json!({
+                "tag_name": tag,
+                "draft": false,
+                "published_at": "2026-01-02T00:00:00Z",
+            }));
+        }
+        match request.path.as_str() {
+            "/api/v1/repos/owner/name/releases" => {
+                let page = query_value(request.query.as_str(), "page")
+                    .parse::<usize>()
+                    .unwrap_or(1);
+                let rows: Vec<Value> = match page {
+                    1 => (0..50).map(release_row).collect(),
+                    2 => (50..100).map(release_row).collect(),
+                    _ => (100..120).map(release_row).collect(),
+                };
+                json_response(Value::Array(rows))
+            }
+            _ => text_response(500, "unexpected"),
+        }
+    })
+    .await;
+    let target = GiteaTarget {
+        base_url: server.base.clone(),
+        project: "owner/name".to_string(),
+        token: None,
+    };
+    let transport = default_transport(5_000);
+    let options = GiteaCallOptions::default();
+    let walks = || {
+        server
+            .requests()
+            .into_iter()
+            .filter(|request| request.path == "/api/v1/repos/owner/name/releases")
+            .count()
+    };
+
+    let first = devboard::release_cache::list_with_ttl(&target, &transport, &options, 60_000)
+        .await
+        .expect("the first walk");
+    assert_eq!(first.len(), 120);
+    assert_eq!(walks(), 3);
+    let second = devboard::release_cache::list_with_ttl(&target, &transport, &options, 60_000)
+        .await
+        .expect("the cached answer");
+    assert_eq!(second.len(), 120);
+    assert_eq!(walks(), 3, "a read inside the TTL issues no request");
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    devboard::release_cache::list_with_ttl(&target, &transport, &options, 1)
+        .await
+        .expect("the walk after expiry");
+    assert_eq!(
+        walks(),
+        6,
+        "the first read after expiry walks exactly three pages again"
+    );
+
+    let fresh = StubServer::start(|request| match request.path.as_str() {
+        "/api/v1/repos/owner/name/releases/tags/v1.2.3" => json_response(json!({
+            "tag_name": "v1.2.3",
+            "draft": false,
+            "published_at": "2026-01-02T00:00:00Z",
+        })),
+        _ => text_response(500, "unexpected"),
+    })
+    .await;
+    let tagged = GiteaTarget {
+        base_url: fresh.base.clone(),
+        project: "owner/name".to_string(),
+        token: None,
+    };
+    let release = devboard::release_cache::release_by_tag(
+        &tagged,
+        "v1.2.3",
+        &transport,
+        &options,
+    )
+    .await
+    .expect("the known tag")
+    .expect("a release");
+    assert_eq!(release.tag, "v1.2.3");
+    let requests = fresh.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].path,
+        "/api/v1/repos/owner/name/releases/tags/v1.2.3"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.path == "/api/v1/repos/owner/name/releases"),
+        "a known version performs no walk"
+    );
 }

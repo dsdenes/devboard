@@ -101,15 +101,13 @@ pub fn manifest_source(
     let repository =
         release::release_project(environment.get("DEVBOARD_RELEASE_REPO").map(String::as_str));
     if let Some(base_url) = gitea_base(environment) {
-        let token = environment
-            .get("GITEA_TOKEN")
-            .or_else(|| environment.get("DEVBOARD_GITEA_TOKEN"))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
+        // The release repository is public. A check that presented the
+        // operator's credential made Gitea update the token row every
+        // interval, so the read is anonymous and never touches that store.
         return Some(ManifestSource {
             base_url: base_url.trim_end_matches('/').to_string(),
             repository,
-            token,
+            token: None,
             timeout_ms: 30_000,
             local_dir: None,
             forge: release::ReleaseForge::Gitea,
@@ -237,8 +235,20 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
     let Some(source) = manifest_source_from_env(&app.config().state_dir) else {
         return UpdateOutcome::Current;
     };
-    let release = match release::latest_manifest(&source).await {
-        Ok(release) => release,
+    let running = app.running_version.clone();
+    let release = match release::latest_manifest_for(&source, running.as_deref()).await {
+        Ok(Some(release)) => release,
+        Ok(None) => {
+            // The newest release already names this process's version: there
+            // is nothing newer to read, and no manifest was downloaded.
+            if let Some(version) = running {
+                if let Ok(mut value) = latest.lock() {
+                    *value = Some(version.clone());
+                }
+                app.note_latest_version(&version);
+            }
+            return UpdateOutcome::Current;
+        }
         Err(error) => {
             // An offline, rate-limited, or overloaded forge is a transient
             // condition, not a failed update: `activity` names it,

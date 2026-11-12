@@ -1582,3 +1582,115 @@ async fn a_replay_reaches_its_own_page_alone() {
     );
     drop(owner);
 }
+
+/// One tracker read per interval serves both the worker and the bridge.
+///
+/// A live worker owns the repository and reads the tracker on its interval.
+/// The bridge projects that published result instead of reading the same
+/// issues again, so three intervals cost three reads; on the parent commit the
+/// bridge's own read doubled that to six.
+#[tokio::test]
+async fn one_tracker_read_per_interval_serves_the_worker_and_the_bridge() {
+    let (repo, state) = scratch("shared-read");
+    let owner = spawn_owner(&repo, &state);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let tracker: TrackerRead = Arc::new(move |_request: TrackerReadRequest| {
+        let number = seen.fetch_add(1, Ordering::SeqCst) + 1;
+        Box::pin(async move {
+            PollResult::Issues {
+                issues: vec![Issue {
+                    number: number as u64,
+                    title: format!("Issue {number}"),
+                    url: format!("https://example.test/{number}"),
+                    created_at: "2026-01-01T00:00:00.000Z".into(),
+                    labels: Vec::new(),
+                    body: None,
+                }],
+                etag: Some(format!("etag-{number}")),
+            }
+        })
+    });
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    settings.has_clients = Arc::new(|| true);
+    settings.hooks.tracker_read = Arc::clone(&tracker);
+    let bridge = IssuesBridge::new(settings);
+
+    for interval in 0..3u64 {
+        // The worker's one read for this interval, and the state it publishes.
+        let read = tracker(TrackerReadRequest {
+            repository: "acme/app".into(),
+            etag: None,
+        })
+        .await;
+        let PollResult::Issues { issues, etag } = read else {
+            panic!("the worker read answered");
+        };
+        let mut document = state_document(&repo, "idle", json!([]));
+        document["worker"] = attached_worker(&owner.pid, &state);
+        document["poll"] = json!({
+            "intervalMs": 10000,
+            "lastPollAt": format!("2026-01-01T00:00:{:02}.000Z", interval),
+            "nextPollAt": null,
+            "etag": etag,
+            "notModified": false,
+            "rateLimitedUntil": null,
+            "error": null,
+        });
+        document["queue"] = json!(issues
+            .into_iter()
+            .map(|issue| json!({
+                "number": issue.number,
+                "title": issue.title,
+                "url": issue.url,
+                "createdAt": issue.created_at,
+                "labels": issue.labels,
+                "handled": false,
+                "runId": null,
+                "agentRunId": null,
+            }))
+            .collect::<Vec<_>>());
+        write_state(&repo, &state, &document);
+
+        bridge.sync_now().await;
+        let snapshot = bridge.snapshot();
+        assert_eq!(
+            snapshot["queue"][0]["number"],
+            json!(interval + 1),
+            "the bridge carries the worker's read"
+        );
+        assert_eq!(
+            snapshot["sync"]["lastSyncAt"],
+            json!(format!("2026-01-01T00:00:{:02}.000Z", interval)),
+            "the bridge states when the one read happened"
+        );
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "three intervals cost three reads"
+    );
+
+    // With no live worker the bridge reads for itself, once per interval.
+    drop(owner);
+    bridge.sync_now().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "the bridge reads when no worker is live"
+    );
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["queue"][0]["number"], json!(4));
+    assert!(snapshot["sync"]["lastSyncAt"].is_string());
+}

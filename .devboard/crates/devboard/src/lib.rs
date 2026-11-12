@@ -48,6 +48,7 @@ pub mod records;
 pub mod redact;
 pub mod relaunch;
 pub mod release;
+pub mod release_cache;
 pub mod release_suite;
 pub mod reports;
 pub mod resources;

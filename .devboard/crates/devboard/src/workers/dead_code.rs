@@ -1554,7 +1554,9 @@ struct RealForge {
 enum ReleaseClient {
     GitHub(crate::forge::RepositoryGitHub),
     Gitea {
-        target: crate::forge::GiteaTarget,
+        base_url: String,
+        project: String,
+        environment: HashMap<String, String>,
         transport: crate::forge::Transport,
         options: crate::forge::GiteaCallOptions,
     },
@@ -1613,11 +1615,13 @@ impl RealForge {
             crate::forge::ForgeIssuesClient::new(options).map_err(|error| error.message)?;
         let releases = match remote.forge {
             Forge::Gitea => {
-                let target =
-                    crate::forge::gitea_target(Some(&remote), None, None, None, &environment)
-                        .map_err(|error| error.message)?;
+                let base_url = crate::forge::gitea_base_url(Some(&remote), &environment)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "the Gitea address is not configured".to_string())?;
                 ReleaseClient::Gitea {
-                    target,
+                    base_url,
+                    project: remote.project.clone(),
+                    environment: environment.clone(),
                     transport: crate::forge::default_transport(30_000),
                     options: crate::forge::GiteaCallOptions::default(),
                 }
@@ -1655,20 +1659,28 @@ impl ReleaseClient {
                 })
                 .collect()),
             Self::Gitea {
-                target,
+                base_url,
+                project,
+                environment,
                 transport,
                 options,
-            } => Ok(
-                crate::forge::gitea_list_releases(target, transport, options)
-                    .await
-                    .map_err(|error| error.message)?
-                    .into_iter()
-                    .map(|release| Release {
-                        tag: release.tag,
-                        published_at: release.published_at,
-                    })
-                    .collect(),
-            ),
+            } => {
+                let target =
+                    crate::forge::gitea_read_target(base_url, project, environment, transport)
+                        .await
+                        .map_err(|error| error.message)?;
+                Ok(
+                    crate::release_cache::list(&target, transport, options)
+                        .await
+                        .map_err(|error| error.message)?
+                        .into_iter()
+                        .map(|release| Release {
+                            tag: release.tag,
+                            published_at: release.published_at,
+                        })
+                        .collect(),
+                )
+            }
         }
     }
 
@@ -1676,12 +1688,20 @@ impl ReleaseClient {
         match self {
             Self::GitHub(client) => client.closing_commits(issue_number).await,
             Self::Gitea {
-                target,
+                base_url,
+                project,
+                environment,
                 transport,
                 options,
-            } => crate::forge::gitea_closing_commits(target, issue_number, transport, options)
-                .await
-                .map_err(|error| error.message),
+            } => {
+                let target =
+                    crate::forge::gitea_read_target(base_url, project, environment, transport)
+                        .await
+                        .map_err(|error| error.message)?;
+                crate::forge::gitea_closing_commits(&target, issue_number, transport, options)
+                    .await
+                    .map_err(|error| error.message)
+            }
         }
     }
 

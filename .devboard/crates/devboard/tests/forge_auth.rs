@@ -143,6 +143,26 @@ fn gitea_handler(
     }
 }
 
+/// A Gitea stub whose repository view refuses every anonymous read, so only
+/// the configured token can read it.
+fn private_gitea_handler(
+    permissions: Value,
+    login: &'static str,
+) -> impl Fn(&RecordedRequest) -> StubResponse {
+    move |request| {
+        if !request.headers.contains_key("authorization") {
+            return text_response(401, r#"{"message":"invalid username, password or token"}"#);
+        }
+        match request.path.as_str() {
+            "/api/v1/repos/owner/name" => json_response(json!({
+                "permissions": permissions.clone(),
+            })),
+            "/api/v1/user" => json_response(json!({"login": login})),
+            _ => text_response(500, "unexpected"),
+        }
+    }
+}
+
 /// An isolated scratch root. It is its own git repository with no remote, so a
 /// run never inherits the enclosing checkout's origin.
 fn temp_dir(label: &str) -> PathBuf {
@@ -290,7 +310,7 @@ fn assert_no_token(outcome: &RunOutcome, token: &str) {
 
 #[tokio::test]
 async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
-    let server = StubServer::start(gitea_handler(
+    let server = StubServer::start(private_gitea_handler(
         json!({"pull": true, "push": false, "admin": false}),
         "alice",
     ))
@@ -373,7 +393,8 @@ async fn check_defaults_to_the_origin_and_reports_the_identity_as_json() {
 #[tokio::test]
 async fn forge_gitea_defaults_the_host_to_the_configured_gitea_address() {
     let server =
-        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+        StubServer::start(private_gitea_handler(json!({"pull": true, "push": true}), "alice"))
+            .await;
     let root = git_repo("configured-host", None);
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "configured-secret"),
@@ -464,7 +485,8 @@ async fn a_foreign_explicit_host_is_refused_without_contacting_the_configured_gi
 #[tokio::test]
 async fn gitea_token_precedence_follows_the_configured_order() {
     let server =
-        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+        StubServer::start(private_gitea_handler(json!({"pull": true, "push": true}), "alice"))
+            .await;
     let root = git_repo("token-order", None);
     let environment = forge::environment(&[
         ("GITEA_TOKEN", "preferred-token"),
@@ -500,7 +522,8 @@ async fn gitea_token_precedence_follows_the_configured_order() {
     assert_no_token(&outcome, "fallback-token");
 
     let fallback_server =
-        StubServer::start(gitea_handler(json!({"pull": true, "push": true}), "alice")).await;
+        StubServer::start(private_gitea_handler(json!({"pull": true, "push": true}), "alice"))
+            .await;
     let fallback_environment = forge::environment(&[
         ("DEVBOARD_GITEA_TOKEN", "fallback-token"),
         ("DEVBOARD_GITEA_URL", fallback_server.base.as_str()),
@@ -919,7 +942,7 @@ fn placeholder_cli_path(root: &Path) -> String {
 #[cfg(unix)]
 #[tokio::test]
 async fn the_binary_exits_with_the_check_verdict_and_prints_no_token() {
-    let server = StubServer::start(gitea_handler(
+    let server = StubServer::start(private_gitea_handler(
         json!({"pull": true, "push": false, "admin": false}),
         "alice",
     ))

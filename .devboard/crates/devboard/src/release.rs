@@ -295,8 +295,8 @@ pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, Str
     }
 }
 
-/// Reads the newest release's manifest from Gitea.
-async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
+/// The newest Gitea release's tag and document, without reading a manifest.
+async fn gitea_latest_document(source: &ManifestSource) -> Result<(String, Value), String> {
     let client = source.client();
     let url = source.api(&format!("{}/releases/latest", source.repo_path()));
     let response =
@@ -315,7 +315,19 @@ async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, S
     let tag = document
         .get("tag_name")
         .and_then(Value::as_str)
-        .ok_or_else(|| "the release names no tag".to_string())?;
+        .filter(|tag| !tag.is_empty())
+        .ok_or_else(|| "the release names no tag".to_string())?
+        .to_string();
+    Ok((tag, document))
+}
+
+/// Reads one Gitea release document's manifest asset.
+async fn gitea_manifest_from_document(
+    source: &ManifestSource,
+    tag: &str,
+    document: &Value,
+) -> Result<ReleaseInfo, String> {
+    let client = source.client();
     let assets = document
         .get("assets")
         .and_then(Value::as_array)
@@ -345,6 +357,53 @@ async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, S
         release.tag = tag.to_string();
     }
     Ok(release)
+}
+
+/// Reads the newest release's manifest from Gitea.
+async fn latest_gitea_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
+    let (tag, document) = gitea_latest_document(source).await?;
+    gitea_manifest_from_document(source, &tag, &document).await
+}
+
+/// True when a release tag names the running version.
+pub fn tag_names_version(tag: &str, version: &str) -> bool {
+    tag.trim().trim_start_matches('v') == version.trim().trim_start_matches('v')
+}
+
+/// The newest manifest, or `None` when the forge's newest release already
+/// names the running version.
+///
+/// The check asks the forge which release is newest before it downloads
+/// anything. A Gitea `/releases/latest` naming the running version's tag is the
+/// whole answer: the manifest describes a release this process already runs,
+/// so downloading it every interval was pure load. A newer tag reads exactly
+/// one manifest and the ordinary update rules apply.
+pub async fn latest_manifest_for(
+    source: &ManifestSource,
+    running: Option<&str>,
+) -> Result<Option<ReleaseInfo>, String> {
+    if let Some(directory) = &source.local_dir {
+        let path = directory.join(MANIFEST_ASSET);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let manifest: Value = serde_json::from_str(&text)
+            .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
+        return ReleaseInfo::from_manifest(&manifest)
+            .map(Some)
+            .ok_or_else(|| format!("{} is not a release manifest", path.display()));
+    }
+    match source.forge {
+        ReleaseForge::Gitea => {
+            let (tag, document) = gitea_latest_document(source).await?;
+            if running.is_some_and(|running| tag_names_version(&tag, running)) {
+                return Ok(None);
+            }
+            Ok(Some(
+                gitea_manifest_from_document(source, &tag, &document).await?,
+            ))
+        }
+        ReleaseForge::GitHub => Ok(Some(latest_github_manifest(source).await?)),
+    }
 }
 
 /// Reads the newest public release's manifest from GitHub.

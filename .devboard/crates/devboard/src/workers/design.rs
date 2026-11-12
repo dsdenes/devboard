@@ -1774,14 +1774,21 @@ struct LiveDesignForge {
     timeout_ms: u64,
 }
 
-fn gitea_target_for(
+/// The read target for one repository: anonymous when it is publicly
+/// readable, the configured credential otherwise.
+async fn gitea_target_for(
     repository: &str,
     repo_dir: &Path,
     environment: &HashMap<String, String>,
 ) -> Result<crate::forge::GiteaTarget, String> {
     let remote = crate::forge::origin_forge_with(repo_dir, environment);
-    crate::forge::gitea_target(remote.as_ref(), Some(repository), None, None, environment)
-        .map_err(|error| error.to_string())
+    let base_url = crate::forge::gitea_base_url(remote.as_ref(), environment)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "the Gitea address is not configured".to_string())?;
+    let transport = crate::forge::default_transport(crate::forge::GITEA_REQUEST_TIMEOUT_MS);
+    crate::forge::gitea_read_target(&base_url, repository, environment, &transport)
+        .await
+        .map_err(|error| error.message)
 }
 
 async fn gitea_design_issues(
@@ -1791,7 +1798,7 @@ async fn gitea_design_issues(
     timeout_ms: u64,
     state: crate::forge::IssueQueryState,
 ) -> Result<Vec<DesignForgeIssue>, String> {
-    let target = gitea_target_for(&repository, &repo_dir, &environment)?;
+    let target = gitea_target_for(&repository, &repo_dir, &environment).await?;
     let transport = crate::forge::default_transport(timeout_ms);
     let options = crate::forge::GiteaCallOptions {
         flow_id: None,
@@ -1966,14 +1973,14 @@ async fn gitea_releases(
     environment: HashMap<String, String>,
     timeout_ms: u64,
 ) -> Result<Vec<ForgeRelease>, String> {
-    let target = gitea_target_for(&repository, &repo_dir, &environment)?;
+    let target = gitea_target_for(&repository, &repo_dir, &environment).await?;
     let transport = crate::forge::default_transport(timeout_ms);
     let options = crate::forge::GiteaCallOptions {
         flow_id: None,
         timeout_ms: Some(timeout_ms),
     };
     Ok(
-        crate::forge::gitea_list_releases(&target, &transport, &options)
+        crate::release_cache::list(&target, &transport, &options)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
@@ -2059,7 +2066,7 @@ impl DesignForge for LiveDesignForge {
                 return Ok(None);
             }
             let commits = if forge == crate::forge::Forge::Gitea {
-                let target = gitea_target_for(&repository, &repo_dir, &environment)?;
+                let target = gitea_target_for(&repository, &repo_dir, &environment).await?;
                 let transport = crate::forge::default_transport(timeout_ms);
                 let options = crate::forge::GiteaCallOptions {
                     flow_id: None,

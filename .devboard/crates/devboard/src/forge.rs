@@ -1102,6 +1102,92 @@ pub fn gitea_target(
     })
 }
 
+/// How long one process remembers whether a repository is publicly readable.
+pub const GITEA_READ_AUTH_TTL_MS: u64 = 300_000;
+
+fn gitea_read_auth_ttl_ms(environment: &Environment) -> i64 {
+    environment
+        .get("DEVBOARD_GITEA_READ_AUTH_TTL_MS")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(GITEA_READ_AUTH_TTL_MS) as i64
+}
+
+fn gitea_read_auth_cache() -> &'static tokio::sync::Mutex<HashMap<String, (i64, Option<String>)>> {
+    static CACHE: std::sync::OnceLock<tokio::sync::Mutex<HashMap<String, (i64, Option<String>)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+/// The token a read presents for one repository, decided once per process and
+/// remembered for [`GITEA_READ_AUTH_TTL_MS`].
+///
+/// A public repository is read without a credential, so no read triggers the
+/// token write a busy forge performs on every authenticated request. A
+/// repository the anonymous view refuses needs the configured token, and that
+/// decision is cached with it: a periodic read does not probe the repository
+/// on every cycle. A repository that refuses both is an error the caller
+/// reports, not a token.
+pub async fn gitea_read_token(
+    base_url: &str,
+    project: &str,
+    environment: &Environment,
+    transport: &Transport,
+) -> Result<Option<String>, GiteaError> {
+    let key = format!("{}|{}", base_url.trim_end_matches('/'), project);
+    let ttl = gitea_read_auth_ttl_ms(environment);
+    {
+        let cache = gitea_read_auth_cache().lock().await;
+        if let Some((at, token)) = cache.get(&key) {
+            if now_millis().saturating_sub(*at) < ttl {
+                return Ok(token.clone());
+            }
+        }
+    }
+    let anonymous = GiteaTarget {
+        base_url: base_url.trim_end_matches('/').to_string(),
+        project: project.to_string(),
+        token: None,
+    };
+    let call_options = GiteaCallOptions::default();
+    let anonymous_error = match gitea_repository(&anonymous, transport, &call_options).await {
+        Ok(repository) if gitea_permission(repository.permissions()) != Permission::None => {
+            let mut cache = gitea_read_auth_cache().lock().await;
+            cache.insert(key, (now_millis(), None));
+            return Ok(None);
+        }
+        Ok(_) => None,
+        Err(error) => Some(error),
+    };
+    let configured = configured_gitea_token(environment);
+    let Some(token) = configured else {
+        return Err(anonymous_error.unwrap_or_else(|| {
+            GiteaError::new(
+                format!("{project} is not publicly readable on {base_url}"),
+                None,
+            )
+        }));
+    };
+    let mut cache = gitea_read_auth_cache().lock().await;
+    cache.insert(key, (now_millis(), Some(token.clone())));
+    Ok(Some(token))
+}
+
+/// One read target for a Gitea repository: anonymous when the repository is
+/// public, the configured credential otherwise.
+pub async fn gitea_read_target(
+    base_url: &str,
+    project: &str,
+    environment: &Environment,
+    transport: &Transport,
+) -> Result<GiteaTarget, GiteaError> {
+    Ok(GiteaTarget {
+        base_url: base_url.trim_end_matches('/').to_string(),
+        project: project.to_string(),
+        token: gitea_read_token(base_url, project, environment, transport).await?,
+    })
+}
+
 /// `/api/v1` under the configured origin.
 pub fn api_url(target: &GiteaTarget, path: &str) -> String {
     let suffix = if path.starts_with('/') {
@@ -1191,14 +1277,9 @@ fn json_body(value: &Value) -> Vec<u8> {
 /// One API call; a non-2xx status becomes a `GiteaError` with the server
 /// message.
 ///
-/// A GET that presents a credential the forge refuses is retried once without
-/// it. Gitea answers HTTP 401 for a token it does not accept, even for a public
-/// repository, and it answers the same way while its token store cannot answer
-/// at all: a busy database fails the token lookup and the credential is
-/// reported as invalid. A public repository still reads without it, so neither
-/// refusal costs a read its data, and a resource that really needs the
-/// credential refuses the anonymous attempt too and the first refusal is what
-/// the caller sees. A write has no anonymous form, so it is never retried.
+/// A read's target already states whether it presents a credential: the
+/// anonymous view decided it, so a refusal is the forge's answer to that exact
+/// request and is never retried anonymously. A write has no anonymous form.
 pub async fn gitea_request(
     target: &GiteaTarget,
     path: &str,
@@ -1207,7 +1288,7 @@ pub async fn gitea_request(
     accept: Option<&str>,
     options: &GiteaCallOptions,
 ) -> Result<HttpResponse, GiteaError> {
-    gitea_request_with(target, path, init, transport, accept, options, true).await
+    gitea_request_with(target, path, init, transport, accept, options).await
 }
 
 async fn gitea_request_with(
@@ -1217,16 +1298,9 @@ async fn gitea_request_with(
     transport: &Transport,
     accept: Option<&str>,
     options: &GiteaCallOptions,
-    anonymous_fallback: bool,
 ) -> Result<HttpResponse, GiteaError> {
     let mut init = init.unwrap_or_default();
     let method = init.method().to_string();
-    let presented = target
-        .token
-        .as_deref()
-        .is_some_and(|token| !token.is_empty());
-    // Only a bodyless read has an anonymous form to retry.
-    let anonymous_retry = anonymous_fallback && presented && method == "GET" && init.body.is_none();
     let response = send_gitea_request(
         target,
         path,
@@ -1238,17 +1312,6 @@ async fn gitea_request_with(
         true,
     )
     .await?;
-    if anonymous_retry && response.status == 401 {
-        let retried = send_gitea_request(
-            target, path, &method, None, transport, accept, options, false,
-        )
-        .await
-        .ok()
-        .filter(|retry| (200..300).contains(&retry.status));
-        if let Some(retry) = retried {
-            return Ok(retry);
-        }
-    }
     if (200..300).contains(&response.status) {
         return Ok(response);
     }
@@ -1311,18 +1374,7 @@ pub async fn gitea_json(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<Value, GiteaError> {
-    gitea_json_with(target, path, init, transport, options, true).await
-}
-
-/// One credential-probe JSON call, which never falls back to an anonymous read.
-async fn gitea_json_authenticated(
-    target: &GiteaTarget,
-    path: &str,
-    init: Option<GiteaRequestInit>,
-    transport: &Transport,
-    options: &GiteaCallOptions,
-) -> Result<Value, GiteaError> {
-    gitea_json_with(target, path, init, transport, options, false).await
+    gitea_json_with(target, path, init, transport, options).await
 }
 
 async fn gitea_json_with(
@@ -1331,20 +1383,10 @@ async fn gitea_json_with(
     init: Option<GiteaRequestInit>,
     transport: &Transport,
     options: &GiteaCallOptions,
-    anonymous_fallback: bool,
 ) -> Result<Value, GiteaError> {
     let init = init.unwrap_or_default();
     let method = init.method().to_string();
-    let response = gitea_request_with(
-        target,
-        path,
-        Some(init),
-        transport,
-        None,
-        options,
-        anonymous_fallback,
-    )
-    .await?;
+    let response = gitea_request_with(target, path, Some(init), transport, None, options).await?;
     let text = response_text(&response);
     serde_json::from_str(&text).map_err(|_| {
         let first = text
@@ -1392,7 +1434,7 @@ pub async fn gitea_repository(
     options: &GiteaCallOptions,
 ) -> Result<GiteaRepository, GiteaError> {
     let document =
-        gitea_json_authenticated(target, &repo_path(target), None, transport, options).await?;
+        gitea_json(target, &repo_path(target), None, transport, options).await?;
     Ok(GiteaRepository { document })
 }
 
@@ -1402,7 +1444,7 @@ pub async fn gitea_user(
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<String, GiteaError> {
-    let document = gitea_json_authenticated(target, "/user", None, transport, options).await?;
+    let document = gitea_json(target, "/user", None, transport, options).await?;
     Ok(document
         .get("login")
         .and_then(Value::as_str)
@@ -1602,6 +1644,10 @@ async fn gitea_list_issues_matching(
         if entries.is_empty() {
             break;
         }
+        // A page shorter than the one asked for is the last page: the forge
+        // has no more rows, so the walk ends instead of asking for an empty
+        // page.
+        let short_page = entries.len() < page_size;
         let mut added = 0;
         for entry in entries {
             let Some(issue) = issue_from_document(entry) else {
@@ -1615,6 +1661,9 @@ async fn gitea_list_issues_matching(
                 continue;
             }
             issues.push(issue);
+        }
+        if short_page {
+            break;
         }
         if bound.is_some_and(|bound| issues.len() >= bound) {
             break;
@@ -1794,6 +1843,7 @@ async fn gitea_paged_entries(
         if items.is_empty() {
             break;
         }
+        let short_page = items.len() < GITEA_PAGE_SIZE;
         let mut added = 0;
         for entry in items {
             if !seen.insert(paged_entry_key(entry)) {
@@ -1802,7 +1852,7 @@ async fn gitea_paged_entries(
             entries.push(entry.clone());
             added += 1;
         }
-        if added == 0 {
+        if short_page || added == 0 {
             break;
         }
     }
@@ -1953,6 +2003,7 @@ pub async fn gitea_labels(
         if entries.is_empty() {
             break;
         }
+        let short_page = entries.len() < GITEA_PAGE_SIZE;
         let mut added = 0;
         for entry in entries {
             let Some(id) = entry.get("id").and_then(Value::as_i64) else {
@@ -1970,7 +2021,7 @@ pub async fn gitea_labels(
             });
             added += 1;
         }
-        if added == 0 {
+        if short_page || added == 0 {
             break;
         }
     }
@@ -2011,15 +2062,19 @@ pub async fn gitea_create_label(
 }
 
 /// The label id, created when the repository does not have it yet.
+///
+/// The listing is a read, so it presents no credential a public repository
+/// does not need; only the creation is a write and carries the write target.
 pub async fn gitea_ensure_label(
-    target: &GiteaTarget,
+    read_target: &GiteaTarget,
+    write_target: &GiteaTarget,
     name: &str,
     color: &str,
     description: &str,
     transport: &Transport,
     options: &GiteaCallOptions,
 ) -> Result<i64, GiteaError> {
-    if let Some(existing) = gitea_labels(target, transport, options)
+    if let Some(existing) = gitea_labels(read_target, transport, options)
         .await?
         .into_iter()
         .find(|label| label.name == name)
@@ -2027,7 +2082,7 @@ pub async fn gitea_ensure_label(
         return Ok(existing.id);
     }
     Ok(
-        gitea_create_label(target, name, color, description, transport, options)
+        gitea_create_label(write_target, name, color, description, transport, options)
             .await?
             .id,
     )
@@ -2280,6 +2335,10 @@ pub struct GiteaRelease {
     pub published_at: String,
 }
 
+pub(crate) fn release_from_document(value: &Value) -> Option<GiteaRelease> {
+    published_release(value)
+}
+
 fn published_release(value: &Value) -> Option<GiteaRelease> {
     let tag = value.get("tag_name").and_then(Value::as_str)?;
     if tag.is_empty() || value.get("draft").and_then(Value::as_bool) == Some(true) {
@@ -2315,6 +2374,7 @@ pub async fn gitea_list_releases(
         if entries.is_empty() {
             break;
         }
+        let short_page = entries.len() < GITEA_PAGE_SIZE;
         let mut added = 0;
         for entry in entries {
             let Some(release) = published_release(entry) else {
@@ -2326,7 +2386,7 @@ pub async fn gitea_list_releases(
             releases.push(release);
             added += 1;
         }
-        if added == 0 {
+        if short_page || added == 0 {
             break;
         }
     }
@@ -3732,76 +3792,48 @@ async fn resolve_gitea_inner(
     token: &str,
 ) -> Result<AuthOutcome, GiteaError> {
     let required = options.required;
-    let mut token = token;
-    let target = GiteaTarget {
-        base_url: base_url.to_string(),
-        project: options.project.clone(),
-        token: (!token.is_empty()).then(|| token.to_string()),
-    };
     let transport = options
         .gitea_transport
         .clone()
         .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
     let call_options = GiteaCallOptions::default();
-    // A refusal while verifying the credential is not proof that it is
-    // unusable: Gitea answers HTTP 401 for a token it no longer accepts and for
-    // every token while its token store cannot answer. A public repository
-    // still answers without it, so the read resolves to the public view and a
-    // write still needs a credential the forge accepts.
-    let mut refused: Option<GiteaError> = None;
     let anonymous = GiteaTarget {
-        base_url: target.base_url.clone(),
-        project: target.project.clone(),
+        base_url: base_url.to_string(),
+        project: options.project.clone(),
         token: None,
     };
-    let mut repository = match gitea_repository(&target, &transport, &call_options).await {
-        Ok(repository) => repository,
-        Err(error) if !token.is_empty() && error.status == Some(401) => {
-            let repository = match gitea_repository(&anonymous, &transport, &call_options).await {
-                Ok(repository)
-                    if gitea_permission(repository.permissions()) != Permission::None =>
-                {
-                    repository
-                }
-                _ => return Err(error),
-            };
-            refused = Some(error);
-            token = "";
-            repository
-        }
-        Err(error) => return Err(error),
+    let configured = GiteaTarget {
+        base_url: base_url.to_string(),
+        project: options.project.clone(),
+        token: (!token.is_empty()).then(|| token.to_string()),
     };
-    // The account probe is the credential check after the repository view, and
-    // a refusal there is no more a verdict than a refused repository probe:
-    // Gitea answers HTTP 401 at `/user` for a token it no longer accepts and
-    // for every token while its token store cannot answer. A public repository
-    // still answers without it, so the read resolves to the public view and a
-    // write still needs a credential the forge accepts.
-    let mut login = String::new();
-    if !token.is_empty() {
-        match gitea_user(&target, &transport, &call_options).await {
-            Ok(account) => login = account,
-            Err(error) if error.status == Some(401) => {
-                match gitea_repository(&anonymous, &transport, &call_options).await {
-                    Ok(view) if gitea_permission(view.permissions()) != Permission::None => {
-                        repository = view;
-                        refused = Some(error);
-                        token = "";
-                    }
-                    _ => return Err(error),
+    let refused_read = |error: &GiteaError| {
+        format!(
+            "the Gitea credential was refused for {} on {base_url}: {}; the repository is not public",
+            options.project, error.message
+        )
+    };
+    // A read never presents a credential a public repository does not need:
+    // the anonymous view decides first, so no read triggers a token use. A
+    // repository that refuses the anonymous view needs the configured token,
+    // and a transport failure is not a refusal — the next attempt retries it.
+    if required == RequiredAccess::Read {
+        let mut anonymous_error: Option<GiteaError> = None;
+        match gitea_repository(&anonymous, &transport, &call_options).await {
+            Ok(repository) => {
+                let permission = gitea_permission(repository.permissions());
+                if permission != Permission::None {
+                    return Ok(anonymous_resolution(options, base_url, permission));
                 }
+            }
+            Err(error) if matches!(error.status, Some(401) | Some(403) | Some(404)) => {
+                anonymous_error = Some(error);
             }
             Err(error) => return Err(error),
         }
-    }
-    let permission = gitea_permission(repository.permissions());
-    if token.is_empty() {
-        if permission == Permission::None {
-            let error = match &refused {
-                Some(refusal) => format!(
-                    "the Gitea credential was refused for {} on {base_url}: {}; the repository is not public",
-                    options.project, refusal.message
-                ),
+        if token.is_empty() {
+            let error = match anonymous_error {
+                Some(error) => refused_read(&error),
                 None => format!(
                     "no Gitea credential is configured for {} on {base_url}, and the repository is not public",
                     options.project
@@ -3809,32 +3841,60 @@ async fn resolve_gitea_inner(
             };
             return Ok(AuthOutcome::Failure(AuthFailure { error }));
         }
-        if required == RequiredAccess::Write {
-            let error = match &refused {
-                Some(refusal) => format!(
-                    "the Gitea credential was refused for {} on {base_url}: {}; writing needs a token the forge accepts",
-                    options.project, refusal.message
-                ),
-                None => format!(
-                    "no Gitea credential is configured for {} on {base_url}; writing needs GITEA_TOKEN",
-                    options.project
-                ),
-            };
-            return Ok(AuthOutcome::Failure(AuthFailure { error }));
-        }
-        return Ok(AuthOutcome::Resolved(ResolvedAuth {
-            forge: Forge::Gitea,
-            host: options.host.clone(),
-            project: options.project.clone(),
-            login: "anonymous".to_string(),
-            token: None,
-            source: "public repository".to_string(),
-            base_url: Some(base_url.to_string()),
-            active: true,
-            permission,
-            can_write: false,
+        let repository = match gitea_repository(&configured, &transport, &call_options).await {
+            Ok(repository) => repository,
+            Err(error) if matches!(error.status, Some(401) | Some(403)) => {
+                return Ok(AuthOutcome::Failure(AuthFailure {
+                    error: refused_read(&error),
+                }));
+            }
+            Err(error) => return Err(error),
+        };
+        let login = match gitea_user(&configured, &transport, &call_options).await {
+            Ok(login) => login,
+            Err(error) if matches!(error.status, Some(401) | Some(403)) => {
+                return Ok(AuthOutcome::Failure(AuthFailure {
+                    error: refused_read(&error),
+                }));
+            }
+            Err(error) => return Err(error),
+        };
+        return Ok(read_resolution(options, base_url, token, login, repository));
+    }
+    // A write has no anonymous form: it needs a credential the forge accepts.
+    if token.is_empty() {
+        return Ok(AuthOutcome::Failure(AuthFailure {
+            error: format!(
+                "no Gitea credential is configured for {} on {base_url}; writing needs GITEA_TOKEN",
+                options.project
+            ),
         }));
     }
+    let repository = match gitea_repository(&configured, &transport, &call_options).await {
+        Ok(repository) => repository,
+        Err(error) if matches!(error.status, Some(401) | Some(403)) => {
+            return Ok(AuthOutcome::Failure(AuthFailure {
+                error: format!(
+                    "the Gitea credential was refused for {} on {base_url}: {}; writing needs a token the forge accepts",
+                    options.project, error.message
+                ),
+            }));
+        }
+        Err(error) => return Err(error),
+    };
+    let login = match gitea_user(&configured, &transport, &call_options).await {
+        Ok(login) => login,
+        Err(error) if matches!(error.status, Some(401) | Some(403)) => {
+            return Ok(AuthOutcome::Failure(AuthFailure {
+                error: format!(
+                    "the Gitea credential was refused for {} on {base_url}: {}; writing needs a token the forge accepts",
+                    options.project, error.message
+                ),
+            }));
+        }
+        Err(error) => return Err(error),
+    };
+    let permission = gitea_permission(repository.permissions());
     if login.is_empty() {
         return Ok(AuthOutcome::Failure(AuthFailure {
             error: format!("the Gitea token returned no account for {base_url}"),
@@ -3848,7 +3908,7 @@ async fn resolve_gitea_inner(
             ),
         }));
     }
-    if required == RequiredAccess::Write && permission == Permission::Pull {
+    if permission == Permission::Pull {
         return Ok(AuthOutcome::Failure(AuthFailure {
             error: format!(
                 "the Gitea account {login} cannot write to {} on {base_url}",
@@ -3866,8 +3926,62 @@ async fn resolve_gitea_inner(
         base_url: Some(base_url.to_string()),
         active: true,
         permission,
-        can_write: permission != Permission::Pull,
+        can_write: true,
     }))
+}
+
+fn anonymous_resolution(
+    options: &ResolveOptions,
+    base_url: &str,
+    permission: Permission,
+) -> AuthOutcome {
+    AuthOutcome::Resolved(ResolvedAuth {
+        forge: Forge::Gitea,
+        host: options.host.clone(),
+        project: options.project.clone(),
+        login: "anonymous".to_string(),
+        token: None,
+        source: "public repository".to_string(),
+        base_url: Some(base_url.to_string()),
+        active: true,
+        permission,
+        can_write: false,
+    })
+}
+
+fn read_resolution(
+    options: &ResolveOptions,
+    base_url: &str,
+    token: &str,
+    login: String,
+    repository: GiteaRepository,
+) -> AuthOutcome {
+    let permission = gitea_permission(repository.permissions());
+    if login.is_empty() {
+        return AuthOutcome::Failure(AuthFailure {
+            error: format!("the Gitea token returned no account for {base_url}"),
+        });
+    }
+    if permission == Permission::None {
+        return AuthOutcome::Failure(AuthFailure {
+            error: format!(
+                "the Gitea account {login} has no access to {} on {base_url}",
+                options.project
+            ),
+        });
+    }
+    AuthOutcome::Resolved(ResolvedAuth {
+        forge: Forge::Gitea,
+        host: options.host.clone(),
+        project: options.project.clone(),
+        login,
+        token: Some(token.to_string()),
+        source: "GITEA_TOKEN".to_string(),
+        base_url: Some(base_url.to_string()),
+        active: true,
+        permission,
+        can_write: permission != Permission::Pull,
+    })
 }
 
 async fn resolve_gitea(options: &ResolveOptions, base: &Environment) -> AuthOutcome {
@@ -5425,9 +5539,11 @@ impl ForgeIssuesClient {
 
     pub async fn ensure_label(&self, name: &str) -> Result<(), ForgeIssueError> {
         if self.forge == Forge::Gitea {
-            let target = self.gitea_target(RequiredAccess::Write).await?;
+            let read = self.gitea_target(RequiredAccess::Read).await?;
+            let write = self.gitea_target(RequiredAccess::Write).await?;
             gitea_ensure_label(
-                &target,
+                &read,
+                &write,
                 name,
                 "1d76db",
                 "Devboard goal specification",
@@ -5895,15 +6011,25 @@ pub async fn poll_open_issues(options: &TrackerOptions) -> PollResult {
                 detail: "the Gitea address is not configured; set DEVBOARD_GITEA_URL".to_string(),
             };
         };
-        let target = GiteaTarget {
-            base_url,
-            project: options.repository.clone(),
-            token: configured_gitea_token(&options.environment),
-        };
         let transport = options
             .transport
             .clone()
             .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
+        let target = match gitea_read_target(
+            &base_url,
+            &options.repository,
+            &options.environment,
+            &transport,
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                return PollResult::Error {
+                    detail: error.message,
+                };
+            }
+        };
         return match gitea_list_issues(
             &target,
             IssueQueryState::Open,
@@ -6023,15 +6149,25 @@ pub async fn fetch_issue_state(options: &TrackerOptions, number: i64) -> IssueSt
                 detail: "the Gitea address is not configured; set DEVBOARD_GITEA_URL".to_string(),
             };
         };
-        let target = GiteaTarget {
-            base_url,
-            project: options.repository.clone(),
-            token: configured_gitea_token(&options.environment),
-        };
         let transport = options
             .transport
             .clone()
             .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
+        let target = match gitea_read_target(
+            &base_url,
+            &options.repository,
+            &options.environment,
+            &transport,
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                return IssueStateResult::Error {
+                    detail: error.message,
+                };
+            }
+        };
         return match gitea_issue(&target, number, &transport, &GiteaCallOptions::default()).await {
             Ok(issue) => IssueStateResult::State(issue.state),
             Err(error) => IssueStateResult::Error {
@@ -6099,7 +6235,7 @@ pub async fn write_issue_processing(
             };
         };
         let target = GiteaTarget {
-            base_url,
+            base_url: base_url.clone(),
             project: options.repository.clone(),
             token: configured_gitea_token(&options.environment),
         };
@@ -6108,8 +6244,24 @@ pub async fn write_issue_processing(
             .clone()
             .unwrap_or_else(|| default_transport(GITEA_REQUEST_TIMEOUT_MS));
         let call_options = GiteaCallOptions::default();
+        let read_target = match gitea_read_target(
+            &base_url,
+            &options.repository,
+            &options.environment,
+            &transport,
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                return ProcessingWriteResult::Error {
+                    detail: error.message,
+                };
+            }
+        };
         if active {
             let ensured = gitea_ensure_label(
+                &read_target,
                 &target,
                 PROCESSING_LABEL,
                 PROCESSING_LABEL_COLOR,
@@ -6132,7 +6284,7 @@ pub async fn write_issue_processing(
                 },
             };
         }
-        let labels = match gitea_labels(&target, &transport, &call_options).await {
+        let labels = match gitea_labels(&read_target, &transport, &call_options).await {
             Ok(labels) => labels,
             Err(error) => {
                 return ProcessingWriteResult::Error {

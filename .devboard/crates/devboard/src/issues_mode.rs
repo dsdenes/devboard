@@ -2988,6 +2988,8 @@ struct BridgeInner {
     sync_stopped: bool,
     /// When the supervisor last tried to replace a vanished worker.
     resume_attempt: Option<std::time::Instant>,
+    /// The worker's last published poll time the bridge has projected.
+    last_worker_poll: Option<String>,
     /// A Start this dashboard accepted whose stop proof, preflight, or spawn
     /// still runs. It is answered before any of that work, so the page learns
     /// the start is in flight instead of waiting on a forge read.
@@ -3148,6 +3150,68 @@ impl IssuesBridge {
 
     fn current_state(&self) -> Option<IssuesState> {
         newest_state(&self.state_dir, &self.repo_dir)
+    }
+
+    /// The state of a live worker this dashboard owns, if one is serving the
+    /// repository right now.
+    ///
+    /// A live worker reads the tracker on its own interval and publishes the
+    /// result in its state. The bridge reads the tracker only when no such
+    /// worker exists, so one interval costs one forge read, not two.
+    fn attached_worker_state(&self) -> Option<IssuesState> {
+        let owners: Vec<LockOwner> = self
+            .owners()
+            .into_iter()
+            .filter(|owner| !self.foreign_owner(owner))
+            .collect();
+        if owners.is_empty() {
+            return None;
+        }
+        let states = self.all_states();
+        owners.iter().find_map(|owner| {
+            states
+                .iter()
+                .find(|state| {
+                    state
+                        .worker
+                        .as_ref()
+                        .map(|worker| worker.pid == owner.pid)
+                        .unwrap_or(false)
+                })
+                .cloned()
+        })
+    }
+
+    /// Projects a worker's newest published read through the issue hook.
+    fn publish_worker_read(&self, state: &IssuesState) {
+        let Some(poll_at) = state.poll.last_poll_at.clone() else {
+            return;
+        };
+        let fresh = {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            if inner.last_worker_poll.as_deref() == Some(poll_at.as_str()) {
+                false
+            } else {
+                inner.last_worker_poll = Some(poll_at);
+                true
+            }
+        };
+        if !fresh || state.queue.is_empty() {
+            return;
+        }
+        let issues: Vec<Issue> = state
+            .queue
+            .iter()
+            .map(|row| Issue {
+                number: row.number,
+                title: row.title.clone(),
+                url: row.url.clone(),
+                created_at: row.created_at.clone(),
+                labels: row.labels.clone(),
+                body: row.body.clone(),
+            })
+            .collect();
+        (self.on_open_issues)(issues);
     }
 
     fn owners(&self) -> Vec<LockOwner> {
@@ -3516,10 +3580,16 @@ impl IssuesBridge {
             poll.map(|poll| serde_json::to_value(poll).unwrap_or(Value::Null))
                 .unwrap_or(Value::Null),
         );
+        // A live worker's published queue is the interval's single read: the
+        // bridge shows it instead of reading the same issues again.
+        let queue = match attached.then(|| newest.first()).flatten() {
+            Some(state) => state.queue.clone(),
+            None => self.queue_for(&live_states),
+        };
         map.insert(
             "queue".into(),
             Value::Array(
-                self.queue_for(&live_states)
+                queue
                     .into_iter()
                     .map(|issue| serde_json::to_value(issue).unwrap_or(Value::Null))
                     .collect(),
@@ -3575,9 +3645,17 @@ impl IssuesBridge {
             updated_at.map(Value::String).unwrap_or(Value::Null),
         );
         map.insert("workers".into(), Value::Array(workers));
+        let sync = match attached.then(|| newest.first()).flatten() {
+            Some(state) => SyncView {
+                interval_ms: state.poll.interval_ms,
+                last_sync_at: state.poll.last_poll_at.clone(),
+                error: state.poll.error.clone(),
+            },
+            None => self.tracker.view(),
+        };
         map.insert(
             "sync".into(),
-            serde_json::to_value(self.tracker.view()).unwrap_or(Value::Null),
+            serde_json::to_value(sync).unwrap_or(Value::Null),
         );
         Value::Object(map)
     }
@@ -4281,6 +4359,16 @@ impl IssuesBridge {
 
     pub async fn sync_now(self: &Arc<Self>) {
         if !self.watching() {
+            return;
+        }
+        // A live worker owns the tracker read for this repository: it reads
+        // once per interval and publishes the result, and the bridge projects
+        // that result. Reading the same issues here made every interval cost
+        // two forge requests, each one a token use on the forge's busiest
+        // table.
+        if let Some(state) = self.attached_worker_state() {
+            self.publish_worker_read(&state);
+            self.refresh();
             return;
         }
         // A page polls its resource once a second; the tracker is read once

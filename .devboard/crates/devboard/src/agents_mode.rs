@@ -1515,15 +1515,21 @@ fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) ->
                 }
                 crate::forge::Forge::Gitea => {
                     let gitea_origin = crate::forge::gitea_base_url(Some(&remote), &environment);
-                    let target = crate::forge::gitea_target(
-                        Some(&remote),
-                        None,
-                        None,
-                        None,
-                        &environment,
-                    )
-                    .map_err(|error| error.to_string())?;
                     let transport = crate::forge::default_transport(20_000);
+                    let Some(base_url) = gitea_origin
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                    else {
+                        return Err("the Gitea address is not configured".to_string());
+                    };
+                    let target = crate::forge::gitea_read_target(
+                        base_url,
+                        &remote.project,
+                        &environment,
+                        &transport,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
                     let options = crate::forge::GiteaCallOptions { flow_id: None, timeout_ms: None };
                     let mut releases: Option<Vec<crate::forge::GitHubRelease>> = None;
                     let mut facts = Vec::new();
@@ -1571,7 +1577,7 @@ fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) ->
                             continue;
                         }
                         if releases.is_none() {
-                            let listed = crate::forge::gitea_list_releases(
+                            let listed = crate::release_cache::list(
                                 &target, &transport, &options,
                             )
                             .await
