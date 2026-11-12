@@ -95,10 +95,11 @@ ini_value() {
     }' "$3"
 }
 
-discover_db() {
-  # The live server is the authority: its --config names the ini, and the ini
-  # names the database. GITEA_WORK_DIR resolves a relative PATH.
-  local pid args config work path
+gitea_config_paths() {
+  # gitea_config_paths: one <config><TAB><work> pair per running `gitea web`
+  # process, from the process table: --config names the ini, GITEA_WORK_DIR the
+  # work directory. Nonzero when no process table is readable.
+  local pid args config work
   command -v pgrep >/dev/null 2>&1 || return 1
   for pid in $(pgrep -f 'gitea' 2>/dev/null || true); do
     [ -r "/proc/$pid/cmdline" ] || continue
@@ -118,14 +119,33 @@ discover_db() {
       config="$work/conf/app.ini"
     fi
     [ -n "$work" ] || work=$(dirname "$(dirname "$config")")
-    path=$(ini_value database PATH "$config" || true)
-    [ -n "$path" ] || continue
-    case "$path" in
-      /*) printf '%s\n' "$path" ;;
-      *) printf '%s\n' "$work/$path" ;;
-    esac
-    return 0
+    printf '%s\t%s\n' "$config" "$work"
   done
+}
+
+db_path_from_config() {
+  # db_path_from_config <config> <work>: the [database] PATH of the ini,
+  # resolved against <work> when it is relative. Nonzero when the ini names no
+  # PATH.
+  local path
+  path=$(ini_value database PATH "$1" || true)
+  [ -n "$path" ] || return 1
+  case "$path" in
+    /*) printf '%s\n' "$path" ;;
+    *) printf '%s\n' "$2/$path" ;;
+  esac
+}
+
+discover_db() {
+  # The live server is the authority: the first gitea web process whose config
+  # names a [database] PATH supplies the database.
+  local config work path
+  while IFS=$'\t' read -r config work; do
+    path=$(db_path_from_config "$config" "$work" || true)
+    [ -n "$path" ] || continue
+    printf '%s\n' "$path"
+    return 0
+  done < <(gitea_config_paths)
   return 1
 }
 
