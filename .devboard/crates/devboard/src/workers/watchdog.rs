@@ -373,8 +373,11 @@ pub(crate) fn process_started_at(pid: u32) -> Option<i64> {
 /// `/proc`.
 const START_TIME_TOLERANCE_MS: i64 = 2_000;
 
-/// The instant this process started, for the lock it writes.
-fn own_started_at() -> String {
+/// The instant this process started, for the locks and records it writes.
+///
+/// A record that names its own start instant is attributable to one process: a
+/// pid the kernel handed to a later process never matches it.
+pub fn own_started_at() -> String {
     let started = process_started_at(std::process::id()).unwrap_or_else(|| {
         let uptime = std::fs::read_to_string("/proc/uptime")
             .ok()
@@ -1657,17 +1660,51 @@ fn read_guard_owner(host: &Path) -> Option<crate::instances::GuardOwner> {
     crate::instances::GuardOwner::from_json(&value)
 }
 
-/// The dashboard a guard record names, when the record still describes the
+/// The `version.json` marker a dashboard writes into its state directory.
+///
+/// Only a marker that names its own repository and start instant is usable:
+/// the record must stand on its own, because the process it names may have
+/// rewritten its command line into something discovery cannot parse.
+fn read_version_marker(state_dir: &Path) -> Option<crate::instances::GuardOwner> {
+    let text = std::fs::read_to_string(state_dir.join("version.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    Some(crate::instances::GuardOwner {
+        pid: u32::try_from(value.get("pid")?.as_u64()?).ok()?,
+        port: u16::try_from(value.get("port")?.as_u64()?).ok()?,
+        repo_dir: value.get("repoDir")?.as_str()?.to_string(),
+        state_dir: state_dir.to_string_lossy().into_owned(),
+        started_at: value.get("startedAt")?.as_str()?.to_string(),
+    })
+}
+
+/// True when a record's start instant names the live pid and not a later
+/// process the kernel handed the same pid.
+///
+/// The kernel start instant is the proof, so no program name, working
+/// directory, or `argv[0]` a wrapper leaves behind is consulted. A platform
+/// that reports none has only the live pid, exactly as the worker locks accept
+/// it there.
+fn recorded_start_matches(recorded: &str, started: Option<i64>) -> bool {
+    let Some(recorded) = parse_iso_ms(recorded) else {
+        return false;
+    };
+    match started {
+        Some(actual) => (actual - recorded).abs() <= START_TIME_TOLERANCE_MS,
+        None => !cfg!(target_os = "linux"),
+    }
+}
+
+/// The dashboard a marker record names, when the record still describes the
 /// process serving this repository.
 ///
 /// A rebuild that removed the running binary leaves a process started through
-/// `/proc/<pid>/exe`, so its command line no longer names the harness. The
-/// record the dashboard wrote at startup still does, and the executable it is
-/// running proves the pid was not recycled. `exe` is `/proc/<pid>/exe`.
+/// `/proc/<pid>/exe`, and a wrapper (`sh -c`, a unit file, a container) rewrites
+/// `argv[0]`, so the command line alone no longer names the harness. The record
+/// the dashboard wrote at startup still does, and the pid's own start instant
+/// proves the pid was not recycled.
 pub fn marker_instance(
     host: &Path,
     owner: Option<&crate::instances::GuardOwner>,
-    exe: Option<&Path>,
 ) -> Option<Instance> {
     let owner = owner?;
     if !live_process(owner.pid) || owner.port == 0 || owner.state_dir.is_empty() {
@@ -1676,10 +1713,10 @@ pub fn marker_instance(
     if real_path(Path::new(&owner.repo_dir)) != real_path(host) {
         return None;
     }
-    let harness = host.join(".devboard");
-    if exe.and_then(harness_tree)? != real_path(&harness)? {
+    if !recorded_start_matches(&owner.started_at, process_started_at(owner.pid)) {
         return None;
     }
+    let harness = host.join(".devboard");
     let state_dir = PathBuf::from(&owner.state_dir);
     let journal = journal_file(&state_dir, Path::new(&owner.repo_dir));
     let legacy = legacy_log_path(&harness, &owner.repo_dir);
@@ -1698,23 +1735,76 @@ pub fn marker_instance(
     })
 }
 
+/// The startup records that name a live dashboard of this repository.
+///
+/// The guard record is authoritative while a dashboard holds the host; the
+/// `version.json` marker covers a start that wrote no guard — a fixture
+/// bypass — and a state directory the guard has not replaced yet.
+pub fn marker_instances(host: &Path) -> Vec<Instance> {
+    let directory = host.join(".devboard").join(".tmp");
+    let mut records: Vec<crate::instances::GuardOwner> = Vec::new();
+    if let Some(guard) = read_guard_owner(host) {
+        if !guard.state_dir.is_empty() {
+            let state_dir = PathBuf::from(&guard.state_dir);
+            if real_path(&state_dir) != real_path(&directory) {
+                if let Some(marker) = read_version_marker(&state_dir) {
+                    records.push(marker);
+                }
+            }
+        }
+        records.push(guard);
+    }
+    if let Some(marker) = read_version_marker(&directory) {
+        records.push(marker);
+    }
+    let mut instances: Vec<Instance> = Vec::new();
+    for record in records {
+        let Some(instance) = marker_instance(host, Some(&record)) else {
+            continue;
+        };
+        // Two records of one pid name one dashboard; it is listed once.
+        if instances.iter().all(|seen| seen.pid != instance.pid) {
+            instances.push(instance);
+        }
+    }
+    instances
+}
+
+/// True when two recorded repository paths name the same directory, comparing
+/// the real path when both resolve and the recorded text when one does not.
+fn same_instance_repository(left: &str, right: &str) -> bool {
+    let resolve = |path: &str| real_path(Path::new(path)).unwrap_or_else(|| PathBuf::from(path));
+    resolve(left) == resolve(right)
+}
+
+/// Adds every marker instance the process scan did not already list.
+///
+/// One pid is one process, and one repository on one port is one dashboard,
+/// whichever proof found it; a second live dashboard of the same repository
+/// binds another port, so it stays.
+pub fn merge_marker_instances(instances: &mut Vec<Instance>, markers: Vec<Instance>) {
+    for marker in markers {
+        let duplicate = instances.iter().any(|instance| {
+            instance.pid == marker.pid
+                || (instance.port == marker.port
+                    && same_instance_repository(&instance.repo_dir, &marker.repo_dir))
+        });
+        if !duplicate {
+            instances.push(marker);
+        }
+    }
+}
+
 /// Every dashboard on the machine, plus the one serving `root` even when that
 /// repository is a verification fixture.
 pub fn discover_instances_for(root: &Path) -> Vec<Instance> {
     let self_pids = HashSet::from([std::process::id()]);
     let mut instances =
         instances_from_processes_including(&process_table(), &self_pids, Some(root));
-    // The guard is the one record that survives a command line which no longer
-    // names the harness; it only fills a pid the process scan did not find.
-    let owner = read_guard_owner(root);
-    let exe = owner
-        .as_ref()
-        .and_then(|owner| std::fs::read_link(format!("/proc/{}/exe", owner.pid)).ok());
-    if let Some(marker) = marker_instance(root, owner.as_ref(), exe.as_deref()) {
-        if !instances.iter().any(|instance| instance.pid == marker.pid) {
-            instances.push(marker);
-        }
-    }
+    // A rewritten command line hides a dashboard from the process scan. The
+    // records it wrote at startup still name it; they only fill a dashboard the
+    // scan did not find.
+    merge_marker_instances(&mut instances, marker_instances(root));
     instances
 }
 

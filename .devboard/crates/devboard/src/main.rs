@@ -225,7 +225,10 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
             .to_string_lossy()
             .into_owned(),
         state_dir: config.state_dir.to_string_lossy().into_owned(),
-        started_at: devboard::workers::watchdog::now_iso(),
+        // Discovery proves a record's pid by this instant, so the record names
+        // the process's own start, not the later moment it took the guard: a
+        // replacement waits up to thirty seconds for the dashboard it replaces.
+        started_at: devboard::workers::watchdog::own_started_at(),
     };
     let guard = if devboard::instances::fixture_bypass(&config.repo_dir) {
         None
