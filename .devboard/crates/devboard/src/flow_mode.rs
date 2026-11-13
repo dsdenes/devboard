@@ -4988,7 +4988,7 @@ impl FlowMode {
             text,
             status: "new".to_string(),
         };
-        {
+        let merged = {
             let mut inner = self.lock();
             let Some(session) = inner
                 .session
@@ -4997,7 +4997,20 @@ impl FlowMode {
             else {
                 return false;
             };
-            session.steering.push(note.clone());
+            // A merged session is never ticked again, so its note would stay
+            // `new` forever and vanish with the session on the next restore.
+            if session.status == "merged" {
+                true
+            } else {
+                session.steering.push(note.clone());
+                false
+            }
+        };
+        if merged {
+            self.error(&format!(
+                "Flow session {session_id} is merged, so it no longer reads steering notes."
+            ));
+            return false;
         }
         if let Err(error) = self.append_steering(&note) {
             self.error(&format!("Could not record the steering note: {error}"));

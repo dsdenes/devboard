@@ -108,6 +108,15 @@ export class FlowStore {
     return !(this.status === "stopped" && this.pr?.state === "live");
   }
 
+  /** A merged session never ticks again, so a note sent to it is never read. */
+  get steeringMerged(): boolean {
+    return this.status === "merged";
+  }
+
+  get steeringDisabled(): boolean {
+    return this.steeringMerged || this.steeringDraft.trim().length === 0;
+  }
+
   get conversationStale(): boolean {
     return (
       this.conversation !== null &&

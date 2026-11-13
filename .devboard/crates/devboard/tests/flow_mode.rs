@@ -1026,3 +1026,118 @@ async fn a_failed_steering_write_surfaces_a_flow_error() {
         "{error}"
     );
 }
+
+/// A merged session stays on screen with its steering list, but its tick
+/// returns before acknowledgements, so a note written there is never read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_merged_session_refuses_a_steering_note() {
+    let _env = ENV_LOCK.lock().await;
+    let fixture = fixture("merged-steering");
+    let app = fixture.app.clone();
+    let mut client = Client::connect(&app).await;
+
+    send(&app, &client.conn, Command::CreateFlowGoal).await;
+    let snapshot = client
+        .wait_for("a session snapshot", |frame| {
+            frame["type"] == "flowSnapshot" && frame["sessionId"].is_string()
+        })
+        .await;
+    let session_id = snapshot["sessionId"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+    let directory = session_directory(&fixture, &session_id);
+    let goal_question = client
+        .wait_for("the goal question", |frame| {
+            frame["type"] == "flowQuestion" && frame["target"] == "goal"
+        })
+        .await;
+    send(
+        &app,
+        &client.conn,
+        Command::FlowAnswer {
+            id: Some(goal_question["id"].clone()),
+            value: Some(json!("Alpha")),
+            target: Some(json!("goal")),
+        },
+    )
+    .await;
+    client
+        .wait_for("flowGoalStopped", |frame| {
+            frame["type"] == "flowGoalStopped"
+        })
+        .await;
+
+    send(&app, &client.conn, Command::StartFlowImplementation).await;
+    client
+        .wait_for("flowStopped", |frame| frame["type"] == "flowStopped")
+        .await;
+    client
+        .wait_for("a draft pull request", |frame| {
+            frame["type"] == "flowPr" && frame["pr"]["state"] == "draft"
+        })
+        .await;
+    send(&app, &client.conn, Command::MarkFlowPrReady).await;
+    client
+        .wait_for("a live pull request", |frame| {
+            frame["type"] == "flowPr" && frame["pr"]["state"] == "live"
+        })
+        .await;
+
+    // A stopped implementation is still accepted: a restart reads the note at
+    // its next checkpoint.
+    send(
+        &app,
+        &client.conn,
+        Command::SendFlowSteering {
+            text: Some(json!("Prefer the smaller shape")),
+        },
+    )
+    .await;
+    client
+        .wait_for("the stopped session's steering note", |frame| {
+            frame["type"] == "flowSteering"
+                && frame["notes"].as_array().is_some_and(|notes| {
+                    notes.iter().any(|note| {
+                        note["source"] == "developer" && note["text"] == "Prefer the smaller shape"
+                    })
+                })
+        })
+        .await;
+    let before = std::fs::read_to_string(directory.join("steering.jsonl"))
+        .expect("steering.jsonl")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert_eq!(before, 1);
+
+    send(&app, &client.conn, Command::MergeFlowPr).await;
+    client
+        .wait_for("the merged snapshot", |frame| {
+            frame["type"] == "flowSnapshot" && frame["status"] == "merged"
+        })
+        .await;
+
+    let expected =
+        format!("Flow session {session_id} is merged, so it no longer reads steering notes.");
+    send(
+        &app,
+        &client.conn,
+        Command::SendFlowSteering {
+            text: Some(json!("One last note")),
+        },
+    )
+    .await;
+    let refused = client
+        .wait_for("the merged steering refusal", |frame| {
+            frame["type"] == "flowError" && frame["message"] == expected.as_str()
+        })
+        .await;
+    assert_eq!(refused["message"], expected.as_str());
+    let after = std::fs::read_to_string(directory.join("steering.jsonl"))
+        .expect("steering.jsonl")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert_eq!(after, before, "a refused note appends no line");
+}
