@@ -51,7 +51,9 @@ export class NotificationStore {
     };
     this.items = [item, ...this.items].slice(0, HISTORY_LIMIT);
     this.live = [item, ...this.live];
-    this.unread += 1;
+    // The counter names entries the store still holds; the history slice can
+    // drop the oldest one, so clamp it to the surviving history.
+    this.unread = Math.min(this.unread + 1, this.items.length);
     this.timers.set(
       item.id,
       setTimeout(() => this.close(item.id), this.autoCloseMs),
@@ -72,6 +74,8 @@ export class NotificationStore {
     this.forget(id);
     this.items = this.items.filter((item) => item.id !== id);
     this.live = this.live.filter((item) => item.id !== id);
+    // A dismissed entry can no longer be unread.
+    this.unread = Math.min(this.unread, this.items.length);
   }
 
   clear(): void {

@@ -51,6 +51,31 @@ test("dismissing removes a card from the live region and the history", () => {
   expect(store.items).toHaveLength(0);
 });
 
+test("dismissing the last notification clears the unread count", () => {
+  vi.useFakeTimers();
+  const store = new NotificationStore();
+
+  store.push("Flow", "notice", "Flow restored.");
+  store.dismiss(store.items[0]!.id);
+
+  expect(store.items).toHaveLength(0);
+  expect(store.live).toHaveLength(0);
+  expect(store.unread).toBe(0);
+});
+
+test("the unread count never exceeds the remaining history", () => {
+  vi.useFakeTimers();
+  const store = new NotificationStore();
+
+  // The history keeps 200 entries; the 201st drops the oldest.
+  for (let index = 0; index < 201; index += 1) {
+    store.push("Issues", "notice", `Notification ${index}.`);
+    expect(store.unread).toBeLessThanOrEqual(store.items.length);
+  }
+  expect(store.items).toHaveLength(200);
+  expect(store.unread).toBe(200);
+});
+
 test("clearing cancels every pending auto-close", () => {
   vi.useFakeTimers();
   const store = new NotificationStore();
