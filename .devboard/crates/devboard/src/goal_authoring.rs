@@ -22,6 +22,7 @@ use crate::acp::{
 };
 use crate::app::{App, Conn, ModeGate, StateSection};
 use crate::command::Command;
+use crate::goal_run::question_cleared_event;
 use crate::state::{ACTIVITY_MAX_BYTES, ACTIVITY_MAX_ENTRIES, ACTIVITY_TRIMMED_MARKER};
 
 /// The prompt a creation peer receives.
@@ -144,7 +145,10 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
         )
     };
     if let Some(owner) = creation {
-        conn.send(json!({"type": "goalCreationStarted"}));
+        // The snapshot is authoritative for the question: a page keeps the
+        // prompt and its draft until a read proves the answer landed, and a
+        // poll after an accepted answer carries no question.
+        conn.send(json!({"type": "goalCreationStarted", "question": owner.question_json()}));
         for text in owner.activity() {
             conn.send(json!({"type": "activity", "text": text}));
         }
@@ -153,7 +157,7 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
         }
     }
     if let Some(owner) = revision {
-        conn.send(json!({"type": "goalRevisionStarted"}));
+        conn.send(json!({"type": "goalRevisionStarted", "question": owner.question_json()}));
         for text in owner.activity() {
             conn.send(json!({"type": "activity", "text": text}));
         }
@@ -162,7 +166,10 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
         }
     }
     if let Some(preparation) = preparation {
-        conn.send(json!({"type": "skillsPreparationStarted"}));
+        conn.send(json!({
+            "type": "skillsPreparationStarted",
+            "question": preparation.owner.question_json(),
+        }));
         for text in preparation.owner.activity() {
             conn.send(json!({"type": "activity", "text": text}));
         }
@@ -1673,6 +1680,7 @@ impl GoalAuthoring {
         let conn = conn.clone();
         let value = value.to_string();
         let question_id = question.id.clone();
+        let app = self.app.get().and_then(Weak::upgrade);
         tokio::spawn(async move {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(5_000);
             loop {
@@ -1686,12 +1694,23 @@ impl GoalAuthoring {
                     };
                     if agent.answer(&acp_id, &value).await {
                         let owner = active.owner();
-                        let mut question = lock(&owner.question);
-                        if question
-                            .as_ref()
-                            .is_some_and(|current| question_id_key(&current.id) == id)
-                        {
-                            *question = None;
+                        let cleared = {
+                            let mut question = lock(&owner.question);
+                            let cleared = question
+                                .as_ref()
+                                .is_some_and(|current| question_id_key(&current.id) == id);
+                            if cleared {
+                                *question = None;
+                            }
+                            cleared
+                        };
+                        // The page keeps the prompt and the draft until a
+                        // frame proves the answer was accepted.
+                        if cleared {
+                            if let Some(app) = &app {
+                                app.shared
+                                    .broadcast(question_cleared_event(&question_id, None));
+                            }
                         }
                         return;
                     }

@@ -1354,6 +1354,20 @@ fn error_event(message: impl Into<String>) -> Value {
     json!({"type": "error", "message": message.into()})
 }
 
+/// The frame that revokes one question an accepted answer cleared.
+///
+/// A page keeps the prompt and its draft until a frame proves the answer was
+/// accepted, so this names the question, and the lane when a lane asked it. A
+/// refused answer sends no such frame: the prompt and the draft stay for the
+/// retry.
+pub(crate) fn question_cleared_event(id: &Value, lane: Option<&str>) -> Value {
+    let mut frame = json!({"type": "questionCleared", "id": id});
+    if let Some(lane) = lane {
+        frame["lane"] = json!(lane);
+    }
+    frame
+}
+
 /// A manual run's replayable frame set.
 struct ManualView {
     file: String,
@@ -1382,6 +1396,10 @@ fn send_run_conversation(target: &Conn, run: &ManualView) {
         "title": run.title,
         "action": run.action,
         "manual": true,
+        // The snapshot is authoritative for the question: a page keeps the
+        // prompt and its draft until a read proves the answer landed, and a
+        // poll after an accepted answer carries no question.
+        "question": run.question.as_ref().map(RunQuestion::to_json),
     }));
     for text in &run.activity {
         target.send(json!({"type": "activity", "text": text}));
@@ -3619,6 +3637,18 @@ impl AnswerTarget {
             Self::Lane(lane) => *lock(&lane.question) = None,
         }
     }
+
+    /// Announces the question an accepted answer just cleared. A page keeps the
+    /// prompt and its draft until a frame proves the answer was accepted, so
+    /// this one names the question and, for a lane, the lane that asked it.
+    fn broadcast_cleared(&self, app: &Arc<App>, question: &RunQuestion) {
+        let lane = match self {
+            Self::Manual(_) => None,
+            Self::Lane(lane) => Some(lane.id.as_str()),
+        };
+        app.shared
+            .broadcast(question_cleared_event(&question.id, lane));
+    }
 }
 
 /// Answers one held question, waiting for a peer the replay has not attached
@@ -3648,6 +3678,7 @@ fn deliver_answer(
                 if agent.answer(&acp_id, &value).await {
                     if target.question().as_ref() == Some(&question) {
                         target.clear();
+                        target.broadcast_cleared(&app, &question);
                         if publish {
                             if let Some(this) = state_for(&app) {
                                 this.publish_lanes(&app);

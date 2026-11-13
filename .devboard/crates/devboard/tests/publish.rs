@@ -24,7 +24,7 @@ use devboard::publish::{
     RELEASE_INSTALLERS, RELEASE_TARGETS,
 };
 use devboard::release_suite::{
-    BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
+    BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport, EVERY_TEST_QUARANTINED,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1828,6 +1828,26 @@ async fn release_suite_gate_prevents_tagging_and_dispatch() {
         .is_none());
     let manifest = fs::read_to_string(live.seed.join(".devboard/Cargo.toml")).expect("manifest");
     assert!(manifest.contains("version = \"0.0.0\""), "{manifest}");
+
+    // An all-quarantined suite reports the same refusal: no test proved the
+    // commit, so nothing may be tagged or dispatched.
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.release_suite = Some(Arc::new(StubSuiteGate {
+        code: 1,
+        structural: Some(EVERY_TEST_QUARANTINED.to_string()),
+    }));
+    let error = publish(args)
+        .await
+        .expect_err("an all-quarantined suite blocks the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("release suite did not pass"), "{message}");
+    assert!(message.contains(EVERY_TEST_QUARANTINED), "{message}");
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
+    assert!(git_output(&live.seed, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+    assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
 struct Live {

@@ -223,7 +223,10 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
         5_000,
     )
     .await;
-    assert_eq!(replay_started, json!({"type": "goalCreationStarted"}));
+    // The replayed snapshot carries the question it still holds, so a poll that
+    // follows an accepted answer can revoke the prompt the page kept.
+    assert_eq!(replay_started["type"], "goalCreationStarted");
+    assert_eq!(replay_started["question"]["id"], question["id"]);
     frame_matching(
         &mut late_inbox,
         |frame| frame["type"] == "activity" && frame["text"] == "Creating the goal",
@@ -263,6 +266,17 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
         "# Created goal\n\nThe agent wrote this."
     );
     assert_eq!(log_lines(&scratch, "answer "), vec!["Alpha".to_string()]);
+
+    // The accepted answer is the only thing that clears the prompt, and it
+    // names the question so a page can revoke exactly that one.
+    assert!(
+        after_answer
+            .iter()
+            .any(|frame| frame["type"] == "questionCleared"
+                && frame["id"] == question["id"]
+                && frame.get("lane").is_none()),
+        "the accepted answer clears the creation's question: {after_answer:?}"
+    );
 
     let activities: Vec<String> = after_answer
         .iter()
