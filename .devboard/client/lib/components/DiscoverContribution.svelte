@@ -13,9 +13,10 @@
   const PERCENT_KEY = /(?:Share|Ratio|Usage)$/;
 
   function emptyText(fact: ContributionFact): string {
-    if (fact.confidence === "unknown") return "Not recorded.";
-    if (Array.isArray(fact.value) && fact.value.length === 0) return "None recorded.";
-    return "None recorded.";
+    if (fact.confidence !== "unknown") return "None recorded.";
+    return typeof fact.reason === "string" && fact.reason.length > 0
+      ? `Not recorded. ${fact.reason}`
+      : "Not recorded.";
   }
 
   function scalar(value: unknown): string {

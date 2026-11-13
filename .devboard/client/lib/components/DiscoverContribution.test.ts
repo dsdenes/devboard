@@ -50,6 +50,32 @@ function contribution(): Contribution {
   };
 }
 
+function unknownContribution(): Contribution {
+  const sheet = contribution();
+  sheet.sections = [
+    {
+      id: "provenance",
+      label: "Provenance",
+      facts: [
+        {
+          key: "forge",
+          label: "Forge",
+          confidence: "unknown",
+          evidence: [],
+          reason: "The forge could not be determined.",
+        },
+        {
+          key: "style",
+          label: "Style",
+          confidence: "unknown",
+          evidence: [],
+        },
+      ],
+    },
+  ];
+  return sheet;
+}
+
 function state(): DiscoverStatePayload {
   return {
     active: false,
@@ -95,4 +121,16 @@ test("a percent-shaped record fact renders its rows and a numeric one renders a 
   expect(share).toContain("min: 1");
   expect(share).toContain("max: 9");
   expect(factValue(view.container, "testsShare")).toBe("40%");
+});
+
+test("an unknown fact renders its reason and keeps the bare wording when absent", () => {
+  const payload = state();
+  payload.contribution = unknownContribution();
+  discover.state = payload;
+  const view = render(DiscoverContribution);
+
+  expect(factValue(view.container, "forge")).toBe(
+    "Not recorded. The forge could not be determined.",
+  );
+  expect(factValue(view.container, "style")).toBe("Not recorded.");
 });
