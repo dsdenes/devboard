@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Start the Devboard dashboard for this checkout from the newest build.
+"""Start, restart, stop, and open the Devboard dashboard for this checkout.
 
-The click target of the desktop icon beside the terminal:
+The click target of the desktop icon beside the terminal is the bare
+invocation. Every mode shares the same lifecycle:
 
-- rebuilds the harness from this checkout, so the process that starts is the
-  binary the current source builds;
-- restarts a dashboard that already serves this checkout, through the
-  dashboard's own `restartServer` handoff, so a live agentic run survives the
-  replacement;
-- starts a detached dashboard when none serves this checkout and opens its
-  page with the launcher credential;
-- reports every step and every failure through the desktop's native
-  notification service.
+  --status     print the state and exit 0 only when the dashboard serves
+  --start      build and start a dashboard when none serves this checkout
+  --restart    rebuild and replace the dashboard that serves this checkout
+  --stop       stop the dashboard that serves this checkout
+  --open-ui    open the dashboard page, starting the dashboard when needed
+  --indicator  run the resident panel indicator that offers these four actions
+  (no args)    start or restart, and open the page of a fresh start
+
+The lifecycle rebuilds the harness from this checkout, so the process that
+starts is the binary the current source builds; restarts a dashboard that
+already serves this checkout through the dashboard's own `restartServer`
+handoff, so a live agentic run survives the replacement; starts a detached
+dashboard when none serves this checkout; and reports every step and every
+failure through the desktop's native notification service.
 
 A source checkout builds `target/debug/devboard`; an installed host starts its
 own `bin/devboard` and is never rebuilt.
@@ -19,8 +25,10 @@ own `bin/devboard` and is never rebuilt.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
+import math
 import os
 import re
 import shutil
@@ -28,6 +36,7 @@ import signal
 
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -511,7 +520,7 @@ def sweep_dashboards(binary: Path) -> dict:
     return report
 
 
-def main() -> int:
+def run_lifecycle(open_when_started: bool) -> int:
     CONTROL_DIR.mkdir(parents=True, exist_ok=True)
     load_dotenv(REPO / ".env")
     lock = acquire_lock(CONTROL_DIR / "launcher.lock")
@@ -611,8 +620,352 @@ def main() -> int:
         "Devboard is running",
         f"Version {version} · pid {ready} · http://127.0.0.1:{PORT}",
     )
-    open_page(PORT, tokens["bootstrap"])
+    if open_when_started:
+        open_page(PORT, tokens["bootstrap"])
     return 0
+
+
+# --------------------------------------------------------------------------
+# Component commands
+# --------------------------------------------------------------------------
+
+
+def launcher_busy() -> bool:
+    """True while another launcher holds the start or restart lock."""
+    import fcntl
+
+    try:
+        CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+        handle = open(CONTROL_DIR / "launcher.lock", "a+", encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return True
+    handle.close()
+    return False
+
+
+def dashboard_token(pid: int) -> str:
+    """The token a running dashboard accepts, without rewriting stored state."""
+    token = process_env(pid).get("DEVBOARD_DASHBOARD_TOKEN")
+    if token:
+        return token
+    return credentials()["token"]
+
+
+def status_report() -> tuple[str, str]:
+    """The panel's state and one line of detail. Never builds or restarts."""
+    if launcher_busy():
+        return "starting", "a build, start, or restart is in flight"
+    running = running_dashboard()
+    if running is None:
+        return "down", "no dashboard serves this checkout"
+    pid, port = running
+    if wait_ready(port, dashboard_token(pid), pid, 2.0) is None:
+        return "degraded", f"pid {pid} on port {port} stopped answering"
+    version = version_marker().get("running")
+    detail = f"pid {pid} · port {port}"
+    if isinstance(version, str) and version:
+        detail = f"v{version} · {detail}"
+    return "ready", detail
+
+
+def status_command() -> int:
+    state, detail = status_report()
+    print(f"{state}: {detail}", flush=True)
+    return 0 if state == "ready" else 1
+
+
+def start_command() -> int:
+    state, detail = status_report()
+    if state == "ready":
+        print(f"ready: {detail}", flush=True)
+        return 0
+    return run_lifecycle(open_when_started=False)
+
+
+def stop_command() -> int:
+    running = running_dashboard()
+    if running is None:
+        print("down: no dashboard serves this checkout", flush=True)
+        notify(TITLE, "Devboard is not running")
+        return 0
+    pid, port = running
+    if not stop_dashboard(pid):
+        return fail(
+            "Devboard is still running",
+            f"pid {pid} on port {port} did not stop",
+        )
+    log(f"stop: pid {pid} on port {port}")
+    notify("Devboard stopped", f"pid {pid} on port {port} is no longer serving")
+    return 0
+
+
+def open_ui_command() -> int:
+    """Open the page, starting the dashboard first when nothing serves it."""
+    running = running_dashboard()
+    if running is None:
+        return run_lifecycle(open_when_started=True)
+    pid, port = running
+    tokens = adopt_credentials(pid)
+    open_page(port, tokens["bootstrap"])
+    log(f"open: pid {pid} on port {port}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Resident panel indicator
+# --------------------------------------------------------------------------
+
+# One colour per state: the panel mark is the Devboard favicon redrawn in the
+# colour of the state it reports.
+INDICATOR_STATES = {
+    "ready": "#2ea043",
+    "starting": "#d29922",
+    "degraded": "#db6d28",
+    "down": "#8b949e",
+}
+INDICATOR_POLL_SECONDS = 10
+INDICATOR_ICON_PIXELS = 64
+# The favicon's three bars in its own 64-unit space: x, y, width, height,
+# corner radius, and the white opacity each bar carries.
+INDICATOR_BARS = (
+    (13.0, 26.0, 10.0, 24.0, 3.5, 0.72),
+    (27.0, 14.0, 10.0, 36.0, 3.5, 1.0),
+    (41.0, 20.0, 10.0, 30.0, 3.5, 0.86),
+)
+
+
+def rounded_rectangle(context, x, y, width, height, radius) -> None:
+    """One closed rounded-rectangle sub-path, clockwise from the top right."""
+    context.new_sub_path()
+    context.arc(x + width - radius, y + radius, radius, -math.pi / 2, 0)
+    context.arc(x + width - radius, y + height - radius, radius, 0, math.pi / 2)
+    context.arc(x + radius, y + height - radius, radius, math.pi / 2, math.pi)
+    context.arc(x + radius, y + radius, radius, math.pi, 3 * math.pi / 2)
+    context.close_path()
+
+
+def render_mark(colour: str, path: Path) -> None:
+    """Draw the Devboard mark in one state colour and write it as a PNG."""
+    import cairo
+    import gi
+
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk
+
+    size = INDICATOR_ICON_PIXELS
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+    context = cairo.Context(surface)
+    context.scale(size / 64.0, size / 64.0)
+    context.set_source_rgb(*(int(colour[index:index + 2], 16) / 255.0 for index in (1, 3, 5)))
+    rounded_rectangle(context, 0.0, 0.0, 64.0, 64.0, 14.0)
+    context.fill()
+    # The bars are white and stay inside the square.
+    context.save()
+    rounded_rectangle(context, 0.0, 0.0, 64.0, 64.0, 14.0)
+    context.clip()
+    for x, y, width, height, radius, opacity in INDICATOR_BARS:
+        context.set_source_rgba(1.0, 1.0, 1.0, opacity)
+        rounded_rectangle(context, x, y, width, height, radius)
+        context.fill()
+    context.restore()
+    surface.flush()
+    pixbuf = Gdk.pixbuf_get_from_surface(surface, 0, 0, size, size)
+    if pixbuf is None:
+        raise RuntimeError("the mark could not be copied out of the surface")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pixbuf.savev(str(path), "png", [], [])
+
+
+def indicator_icons() -> dict[str, str]:
+    """The four panel marks, drawn once into the dashboard's state directory."""
+    fallback = str(ICON) if ICON.is_file() else "applications-internet"
+    directory = CONTROL_DIR / "icons"
+    icons: dict[str, str] = {}
+    for state, colour in INDICATOR_STATES.items():
+        path = directory / f"devboard-{state}.png"
+        try:
+            render_mark(colour, path)
+        except Exception as error:  # a headless host still gets the favicon
+            log(f"indicator: could not draw the {state} mark: {error}")
+            icons[state] = fallback
+        else:
+            icons[state] = str(path)
+    return icons
+
+
+def indicator_appindicator(gi):
+    """The Ayatana typelib, or the older AppIndicator one when only that exists."""
+    import importlib
+
+    for namespace in ("AyatanaAppIndicator3", "AppIndicator3"):
+        try:
+            gi.require_version(namespace, "0.1")
+            return importlib.import_module(f"gi.repository.{namespace}")
+        except (ImportError, ValueError):
+            continue
+    return None
+
+
+def run_indicator() -> int:
+    lock = acquire_lock(CONTROL_DIR / "indicator.lock")
+    if lock is None:
+        print("devboard indicator: already running", flush=True)
+        return 0
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import GLib, Gtk
+    except (ImportError, ValueError) as error:
+        log(f"indicator: no GTK 3 typelib: {error}")
+        notify(TITLE, "The panel indicator needs python3-gi and GTK 3")
+        return 1
+    app_indicator = indicator_appindicator(gi)
+    if app_indicator is None:
+        log("indicator: no Ayatana AppIndicator typelib")
+        notify(TITLE, "The panel indicator needs the Ayatana AppIndicator library")
+        return 1
+
+    icons = indicator_icons()
+    indicator = app_indicator.Indicator.new(
+        "devboard-indicator",
+        icons["starting"],
+        app_indicator.IndicatorCategory.APPLICATION_STATUS,
+    )
+    indicator.set_status(app_indicator.IndicatorStatus.ACTIVE)
+    indicator.set_title(f"{TITLE}: starting")
+
+    menu = Gtk.Menu()
+    status_item = Gtk.MenuItem(label="starting: checking the dashboard")
+    status_item.set_sensitive(False)
+    menu.append(status_item)
+    menu.append(Gtk.SeparatorMenuItem())
+    open_item = Gtk.MenuItem(label="Open UI")
+    start_item = Gtk.MenuItem(label="Start stack")
+    restart_item = Gtk.MenuItem(label="Restart stack")
+    stop_item = Gtk.MenuItem(label="Stop stack")
+    for item in (open_item, start_item, restart_item, stop_item):
+        menu.append(item)
+    menu.append(Gtk.SeparatorMenuItem())
+    quit_item = Gtk.MenuItem(label="Quit indicator")
+    menu.append(quit_item)
+    menu.show_all()
+    indicator.set_menu(menu)
+    # Middle-click activation opens the UI; the first action item does the same.
+    try:
+        indicator.set_secondary_activate_target(open_item)
+    except AttributeError:
+        pass
+
+    check_lock = threading.Lock()
+    actions = {
+        "open": open_ui_command,
+        "start": start_command,
+        "restart": lambda: run_lifecycle(open_when_started=False),
+        "stop": stop_command,
+    }
+
+    def apply_state(state: str, detail: str) -> bool:
+        icon = icons.get(state, icons["starting"])
+        try:
+            indicator.set_icon_full(icon, f"{TITLE} {state}")
+        except AttributeError:
+            indicator.set_icon(icon)
+        indicator.set_title(f"{TITLE}: {state} — {detail}")
+        status_item.set_label(f"{state}: {detail}")
+        return False
+
+    def check_worker() -> None:
+        try:
+            state, detail = status_report()
+        except Exception as error:  # a failed check never kills the panel icon
+            state, detail = "degraded", f"the status check failed: {error}"
+        finally:
+            check_lock.release()
+        GLib.idle_add(apply_state, state, detail)
+
+    def schedule_check() -> bool:
+        if check_lock.acquire(blocking=False):
+            threading.Thread(target=check_worker, daemon=True).start()
+        return True
+
+    def trigger_check() -> bool:
+        schedule_check()
+        return False
+
+    def run_action(action) -> None:
+        def worker() -> None:
+            try:
+                action()
+            finally:
+                GLib.idle_add(trigger_check)
+
+        # A build or restart takes minutes; the panel stays responsive while
+        # the action runs and the launcher's own lock refuses a second one.
+        threading.Thread(target=worker, daemon=True).start()
+
+    open_item.connect("activate", lambda *_: run_action(actions["open"]))
+    start_item.connect("activate", lambda *_: run_action(actions["start"]))
+    restart_item.connect("activate", lambda *_: run_action(actions["restart"]))
+    stop_item.connect("activate", lambda *_: run_action(actions["stop"]))
+    quit_item.connect("activate", lambda *_: Gtk.main_quit())
+
+    signal_add = getattr(GLib, "unix_signal_add", None)
+    try:
+        gi.require_version("GLibUnix", "2.0")
+        from gi.repository import GLibUnix
+
+        signal_add = GLibUnix.signal_add
+    except (ImportError, ValueError):
+        pass
+    if signal_add is not None:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal_add(GLib.PRIORITY_DEFAULT, signum, Gtk.main_quit)
+
+    schedule_check()
+    GLib.timeout_add_seconds(INDICATOR_POLL_SECONDS, schedule_check)
+    Gtk.main()
+    lock.close()
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Start, restart, stop, and open the Devboard dashboard"
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--status", action="store_true",
+                       help="print the state; exit 0 only when the dashboard serves")
+    group.add_argument("--start", action="store_true",
+                       help="build and start a dashboard when none serves this checkout")
+    group.add_argument("--restart", action="store_true",
+                       help="rebuild and replace the dashboard that serves this checkout")
+    group.add_argument("--stop", action="store_true",
+                       help="stop the dashboard that serves this checkout")
+    group.add_argument("--open-ui", action="store_true",
+                       help="open the dashboard page, starting the dashboard when needed")
+    group.add_argument("--indicator", action="store_true",
+                       help="run the resident panel indicator")
+    arguments = parser.parse_args()
+
+    if arguments.status:
+        return status_command()
+    if arguments.start:
+        return start_command()
+    if arguments.restart:
+        return run_lifecycle(open_when_started=False)
+    if arguments.stop:
+        return stop_command()
+    if arguments.open_ui:
+        return open_ui_command()
+    if arguments.indicator:
+        return run_indicator()
+    return run_lifecycle(open_when_started=True)
 
 
 if __name__ == "__main__":

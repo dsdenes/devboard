@@ -63,10 +63,13 @@ or mismatched manifest leaves the running process serving and is journaled once 
 reload control (`data-testid="reload-devboard"`) appears only when a replacement could not start
 and retries the same launcher. The MATE top-panel Devboard icon
 (`desktop/devboard-launcher.py`) is the sanctioned operator path: it sweeps this host's stray
-dashboards, keeps the newest ready one, and starts or restarts exactly one. Never restart a
-dashboard by hand outside that icon, and never symlink a host. The reaper signals only processes
-of the host directory it runs for: a dashboard, worker, or run belonging to another host
-directory is never signalled.
+dashboards, keeps the newest ready one, and starts or restarts exactly one. The same script runs
+the resident top-panel indicator (`--indicator`) and the four actions its menu offers — Open UI,
+Start stack, Restart stack, Stop stack — plus `--status`; every one of those modes drives that
+same sweep and handoff, so the indicator is the second sanctioned operator surface and never a
+second implementation. Never restart a dashboard by hand outside those two surfaces, and never
+symlink a host. The reaper signals only processes of the host directory it runs for: a dashboard,
+worker, or run belonging to another host directory is never signalled.
 
 ## Restart the source interface after every change
 

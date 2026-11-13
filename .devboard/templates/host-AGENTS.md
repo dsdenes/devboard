@@ -229,9 +229,9 @@ Guardrails:
 
 - Never rebuild only a worktree or only the client and call the change done.
 - Never kill, spawn, or relaunch a dashboard server by hand: the MATE top-panel Devboard icon
-  (`desktop/devboard-launcher.py`) sweeps this host's stray dashboards and starts or restarts
-  exactly one; install, update, the reload control, and the publish-driven source refresh are the
-  only other paths.
+  (`desktop/devboard-launcher.py`) sweeps this host's stray dashboards and starts, restarts, or
+  stops exactly one, and the resident panel indicator runs those same four actions; install,
+  update, the reload control, and the publish-driven source refresh are the only other paths.
 - Never copy the harness into a host or symlink a host path to this checkout; install owns the
   host prefix.
 - Stale output is the first suspect, not the last: when the UI behaves like an older revision,
