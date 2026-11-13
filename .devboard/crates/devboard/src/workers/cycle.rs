@@ -65,11 +65,13 @@ pub fn summary(report: &Value) -> Option<Value> {
 
 /// One run's cycle summary, derived from the report and recorded when the run
 /// predates the summary. A summary is written only after its report, so an
-/// existing one always describes that run.
+/// existing one always describes that run, and because a run records it once,
+/// the one sampling path answers every later read from its `(modified, len)`
+/// stamp instead of reading and parsing the document again.
 pub fn read_run(run: &Path) -> Option<Value> {
     let summary_path = run.join(SUMMARY_FILE);
-    if let Some(summary) = read_json(&summary_path) {
-        return Some(summary);
+    if let Some(summary) = crate::sampling::json(&summary_path) {
+        return Some((*summary).clone());
     }
     let report = read_report(&run.join(REPORT_FILE))?;
     let summary = summary(&report)?;
@@ -85,16 +87,30 @@ pub fn record(run: &Path, report: &Value) -> std::io::Result<()> {
     }
 }
 
-/// The newest run's summary, or `None` when the family holds no run: the same
-/// cycle `latest.json` copies, read without parsing the whole report.
-pub fn latest_run(directory: &Path) -> Option<Value> {
-    let newest = std::fs::read_dir(directory.join("runs"))
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .max()?;
-    read_run(&directory.join("runs").join(newest))
+/// The newest run's summary and the newest `limit` runs' summaries, both from
+/// one directory scan: a family reads its latest cycle and the bounded history
+/// its projection lists together, so a projection never walks the runs
+/// directory twice.
+pub fn read_history(directory: &Path, limit: usize) -> (Option<Value>, Vec<Value>) {
+    let mut names: Vec<String> = std::fs::read_dir(directory.join("runs"))
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort_by(|left, right| right.cmp(left));
+    let newest = names
+        .first()
+        .and_then(|name| read_run(&directory.join("runs").join(name)));
+    let runs = names
+        .iter()
+        .take(limit)
+        .filter_map(|name| read_run(&directory.join("runs").join(name)))
+        .collect();
+    (newest, runs)
 }
 
 fn read_report(path: &Path) -> Option<Value> {
@@ -217,8 +233,18 @@ mod tests {
             )
             .expect("a run report");
         }
-        let latest = latest_run(&root).expect("the newest summary");
+        let (latest, runs) = read_history(&root, 100);
+        let latest = latest.expect("the newest summary");
         assert_eq!(latest["cycle"], json!("2026-11-09T10:11:00.000Z"));
         assert_eq!(latest["findings"].as_array().map(Vec::len), Some(1));
+        let at: Vec<&Value> = runs.iter().map(|run| &run["cycle"]).collect();
+        assert_eq!(
+            at,
+            vec![
+                &json!("2026-11-09T10:11:00.000Z"),
+                &json!("2026-11-09T10:10:00.000Z"),
+            ],
+            "the history lists the newest run first"
+        );
     }
 }

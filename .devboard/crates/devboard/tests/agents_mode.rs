@@ -607,6 +607,85 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
 }
 
 #[tokio::test]
+async fn a_stop_answer_reads_each_cycle_summary_once() {
+    let root = scratch("stop-cycle-reads");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
+
+    let pid = stand_in_watchdog();
+    write_watchdog_lock(&repo, &state, pid);
+
+    // A long-lived watchdog keeps one run per cycle. The family holds more runs
+    // than its projection lists, so the bound is part of this test too.
+    let runs = repo.join(".devboard/.tmp/watchdog/runs");
+    for index in 0..120 {
+        let hour = 10 + index / 60;
+        let minute = index % 60;
+        let at = format!("2026-11-09T{hour:02}:{minute:02}:00.000Z");
+        write_json(
+            &runs
+                .join(format!("2026-11-09T{hour:02}-{minute:02}-00-000Z"))
+                .join("cycle.json"),
+            json!({
+                "cycle": at,
+                "window": {"start": at, "end": at},
+                "action": "none",
+                "findings": [{"fingerprint": format!("finding-{index}")}],
+                "issues": [],
+            }),
+        );
+    }
+    devboard::sampling::reset_reads_under(&runs);
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StopAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "stop refused: {all:?}");
+    let listed = devboard::sampling::reads_under(&runs);
+    assert_eq!(
+        listed, 100,
+        "the Stop answer reads each listed cycle summary once, not per row"
+    );
+
+    // The same projection over an unchanged history reads no summary again, so
+    // the answer is bounded by the state that changed, not by the history it
+    // accumulated.
+    let started = std::time::Instant::now();
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StopAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "stop refused: {all:?}");
+    assert_eq!(
+        devboard::sampling::reads_under(&runs),
+        listed,
+        "an unchanged cycle history is never read again"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "a Stop answer over an unchanged history took {elapsed:?}"
+    );
+
+    kill_stand_in(pid);
+}
+
+#[tokio::test]
 async fn a_slow_preflight_never_trips_the_state_publication_proof() {
     let root = scratch("slow-preflight");
     let app = app_at(&root);

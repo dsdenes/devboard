@@ -33,6 +33,8 @@ const ISSUE_STATES: [&str; 3] = ["pending", "implemented", "unknown"];
 
 /// The default poll cadence of every family's dashboard half.
 const POLL_MS: u64 = 250;
+/// How many of a family's newest cycles one projection lists.
+const CYCLE_ROWS: usize = 100;
 /// How long a spawned worker may take to publish its state before Start fails.
 const START_PROOF_MS: i64 = 5_000;
 /// Wall-clock bound for a family's Start preflight. A preflight that never
@@ -6818,47 +6820,32 @@ fn cycle_from_report(report: &Value, resolve: &dyn Fn(&str) -> Option<String>) -
     Some(Value::Object(row))
 }
 
-fn read_cycles(
+/// The newest run's document and the bounded history rows one projection
+/// lists, from one scan of the family's runs directory. A run records a bounded
+/// summary beside its report, which carries the whole cycle evidence; a
+/// projection is a Start's or a Stop's answer frame, so it reads the summary
+/// through the one sampling path and never re-parses that evidence. The newest
+/// run's summary is the same cycle `latest.json` copies, and `latest.json`
+/// answers only when the family kept no run for it.
+fn cycle_history(
     directory: &Path,
-    latest: Option<Value>,
     resolve: &dyn Fn(&str) -> Option<String>,
-) -> Vec<Value> {
-    let mut names: Vec<String> = std::fs::read_dir(directory.join("runs"))
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.path().is_dir())
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort_by(|left, right| right.cmp(left));
-    names.truncate(100);
-    if names.is_empty() {
-        return latest.into_iter().collect();
-    }
-    let mut cycles = Vec::new();
-    for name in names {
-        // A run records a bounded summary beside its report, which carries the
-        // whole cycle evidence; a projection is a Start's answer frame, so it
-        // reads the summary and never re-parses that evidence.
-        if let Some(report) = crate::workers::cycle::read_run(&directory.join("runs").join(&name)) {
-            if let Some(cycle) = cycle_from_report(&report, resolve) {
-                cycles.push(cycle);
-            }
-        }
-    }
-    cycles
-}
-
-/// The document describing a family's latest cycle. The newest run's summary
-/// is the same cycle `latest.json` copies, read without parsing the report that
-/// carries the whole cycle evidence; `latest.json` answers only when the family
-/// kept no run for it.
-fn latest_cycle_document(directory: &Path) -> Value {
-    crate::workers::cycle::latest_run(directory)
+) -> (Value, Vec<Value>) {
+    let (newest, runs) = crate::workers::cycle::read_history(directory, CYCLE_ROWS);
+    let latest = newest
         .or_else(|| read_json(&directory.join("latest.json")))
-        .unwrap_or(Value::Null)
+        .unwrap_or(Value::Null);
+    if runs.is_empty() {
+        return (
+            latest.clone(),
+            cycle_from_report(&latest, resolve).into_iter().collect(),
+        );
+    }
+    let cycles = runs
+        .iter()
+        .filter_map(|run| cycle_from_report(run, resolve))
+        .collect();
+    (latest, cycles)
 }
 
 fn watchdog_status(
@@ -6873,7 +6860,11 @@ fn watchdog_status(
     Vec<Value>,
     Vec<Value>,
 ) {
-    let latest = latest_cycle_document(directory);
+    let issues = watchdog_issue_rows(ledger);
+    let pending = watchdog_pending(ledger);
+    let urls = ledger_urls(ledger);
+    let resolve = |fingerprint: &str| urls.get(fingerprint).map(|url| (*url).to_string());
+    let (latest, cycles) = cycle_history(directory, &resolve);
     let latest_object = latest.as_object();
     let cycle = latest_object
         .and_then(|object| object.get("cycle"))
@@ -6889,12 +6880,6 @@ fn watchdog_status(
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0) as u64;
-    let issues = watchdog_issue_rows(ledger);
-    let pending = watchdog_pending(ledger);
-    let urls = ledger_urls(ledger);
-    let resolve = |fingerprint: &str| urls.get(fingerprint).map(|url| (*url).to_string());
-    let latest_cycle = cycle_from_report(&latest, &resolve);
-    let cycles = read_cycles(directory, latest_cycle, &resolve);
     let mut status_rows = Vec::new();
     for issue in &issues {
         let url = issue.get("url").and_then(Value::as_str).unwrap_or("");
@@ -8210,7 +8195,10 @@ fn mcp_status(
     Vec<Value>,
     Vec<Value>,
 ) {
-    let latest = latest_cycle_document(directory);
+    let issues = mcp_family_entries(directory);
+    let pending = mcp_pending(directory);
+    let resolve = |family: &str| mcp_issue_url_for(directory, family);
+    let (latest, cycles) = cycle_history(directory, &resolve);
     let object = latest.as_object();
     let cycle = object
         .and_then(|object| object.get("cycle"))
@@ -8239,11 +8227,6 @@ fn mcp_status(
         .and_then(|object| object.get("dropped"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let issues = mcp_family_entries(directory);
-    let pending = mcp_pending(directory);
-    let resolve = |family: &str| mcp_issue_url_for(directory, family);
-    let latest_cycle = cycle_from_report(&latest, &resolve);
-    let cycles = read_cycles(directory, latest_cycle, &resolve);
     (
         cycle, action, families, selected, filed, dropped, pending, issues, cycles,
     )

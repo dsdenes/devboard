@@ -1319,6 +1319,11 @@ applies every direction before its next checkpoint; the tool appends each id onc
 ids it wrote and skipped. Refusing a widget records the refusal as a steering note, and concluding
 a widget conversation appends its conclusion to the decision board and adds one steering note.
 
+A merged session accepts no steering note: its tick returns before any acknowledgement, so
+`sendFlowSteering` answers a `flowError` naming the session and appends nothing. A `stopped`
+session still accepts a note, because a restarted implementation reads it at its next checkpoint;
+the panel and the `flow.steering.send` command disable the send only while `status` is `merged`.
+
 The decision board is `<session-dir>/decisions.md`, rendered read-only in the UI. Sections the
 server appends — a widget conclusion, for example — are timestamped and source-named, and only
 ever append: they never edit, reflow, or remove an earlier section. An appended section is a

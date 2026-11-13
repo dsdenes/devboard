@@ -595,10 +595,12 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Flow",
     disabled: () =>
       disabledWhen(
-        flow.restoring || flow.steeringDraft.trim().length === 0,
+        flow.restoring || flow.steeringDisabled,
         flow.restoring
           ? "Wait for the stored Flow session to finish restoring."
-          : "Type a steering note first.",
+          : flow.steeringMerged
+            ? "The Flow session is merged."
+            : "Type a steering note first.",
       ),
     run: () => flow.sendSteering(),
   });

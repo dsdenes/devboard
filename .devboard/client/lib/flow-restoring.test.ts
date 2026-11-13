@@ -55,3 +55,20 @@ test("a restoring frame disables Start and goal creation until the restore lands
   expect(flow.restoring).toBe(false);
   expect(flow.startDisabled).toBe(false);
 });
+
+/// A merged session never ticks again, so the composer must not promise a
+/// checkpoint; a stopped session is still read after a restart.
+test("only an unmerged session offers a steering send", () => {
+  applyFrames([snapshot("merged", "merged-session")]);
+  flow.steeringDraft = "One more note";
+  expect(flow.steeringMerged).toBe(true);
+  expect(flow.steeringDisabled).toBe(true);
+
+  applyFrames([snapshot("stopped", "stopped-session")]);
+  flow.steeringDraft = "One more note";
+  expect(flow.steeringMerged).toBe(false);
+  expect(flow.steeringDisabled).toBe(false);
+
+  flow.steeringDraft = "   ";
+  expect(flow.steeringDisabled).toBe(true);
+});

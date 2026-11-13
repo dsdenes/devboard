@@ -773,13 +773,17 @@
           <span
             class="panel__subtitle steering-state"
             data-testid="flow-steering-state"
-            data-state={pendingSteering > 0
-              ? "waiting"
-              : flow.steering.length > 0
-                ? "read"
-                : "empty"}
+            data-state={flow.steeringMerged
+              ? "merged"
+              : pendingSteering > 0
+                ? "waiting"
+                : flow.steering.length > 0
+                  ? "read"
+                  : "empty"}
           >
-            {#if pendingSteering > 0}
+            {#if flow.steeringMerged}
+              Session merged; no checkpoint will read notes
+            {:else if pendingSteering > 0}
               {pendingSteering} note{pendingSteering === 1 ? "" : "s"} waiting for the next checkpoint
             {:else if flow.steering.length > 0}
               All notes read
@@ -806,7 +810,7 @@
                 command={() => flow.sendSteering()}
                 data-command="flow.steering.send"
                 data-testid="send-flow-steering"
-                disabled={flow.steeringDraft.trim().length === 0}
+                disabled={flow.steeringDisabled}
               >
                 Send
               </CommandButton>
