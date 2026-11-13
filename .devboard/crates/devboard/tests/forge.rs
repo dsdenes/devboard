@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use devboard::forge::*;
+use devboard::issues_mode::{CloseIssueRequest, IssuesOptions};
 use devboard::workers::scout::{GiteaScoutForge, ScoutForge};
 use serde_json::{json, Value};
 
@@ -2778,6 +2779,89 @@ async fn a_close_spends_one_write_resolution_and_no_follow_up_read() {
             ),
         ],
         "one resolution, the close write, and nothing else"
+    );
+}
+
+/// The operator close the Issues page sends, against one stub. The page's
+/// budget is measured on the `issuesClosed` frame, so the hook is what it pays.
+async fn operator_close(
+    server: &StubServer,
+    label: &str,
+    credentials: Vec<(&str, &str)>,
+) -> Result<(), String> {
+    let repo = git_repo(label, "git@localhost:owner/name.git");
+    let state = temp_dir(&format!("{label}-state"));
+    let hooks = IssuesOptions::production_hooks(
+        &repo,
+        &state,
+        Arc::new(|| Box::pin(async { Ok::<_, String>(HashMap::new()) })),
+    );
+    let mut values: Vec<(&str, &str)> = vec![("DEVBOARD_GITEA_URL", server.base.as_str())];
+    values.extend(credentials);
+    (hooks.close_issue)(CloseIssueRequest {
+        repo_dir: repo,
+        repository: "owner/name".to_string(),
+        number: 7,
+        environment: environment(&values),
+    })
+    .await
+}
+
+/// A refused operator close names the forge, the operation, and the cause, and
+/// a checkout with no credential is refused before the forge is called at all:
+/// the close proves the account with the patch itself, so its refusal has to
+/// carry what the removed credential proof used to say.
+#[tokio::test]
+async fn an_operator_close_names_the_forge_and_the_refused_credential() {
+    let server =
+        StubServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("PATCH", "/api/v1/repos/owner/name/issues/7") => text_response(
+                    403,
+                    "user does not have permission to write to this repository",
+                ),
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let message = operator_close(
+        &server,
+        "operator-close-refused",
+        vec![("GITEA_TOKEN", "secret")],
+    )
+    .await
+    .expect_err("a refusal");
+    assert!(
+        message.starts_with("Gitea issue close for owner/name failed: "),
+        "{message}"
+    );
+    assert!(message.contains("HTTP 403"), "{message}");
+    assert!(
+        message.contains("user does not have permission"),
+        "{message}"
+    );
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .map(|request| request.method.as_str())
+            .collect::<Vec<_>>(),
+        vec!["PATCH"],
+        "the refusal is the close's own answer, with no credential read beside it"
+    );
+
+    let unconfigured = StubServer::start(|_request| text_response(500, "unexpected")).await;
+    let message = operator_close(&unconfigured, "operator-close-unconfigured", Vec::new())
+        .await
+        .expect_err("a refusal");
+    assert!(
+        message.contains("no Gitea credential is configured for owner/name"),
+        "{message}"
+    );
+    assert_eq!(
+        unconfigured.count(),
+        0,
+        "a missing credential is refused before the forge is called"
     );
 }
 
