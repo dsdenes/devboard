@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, jest, test } from "bun:test";
+import { Event as DomEvent } from "happy-dom";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -58,6 +59,8 @@ const { tick } = await import("svelte");
 const { agents } = await import("../agents.svelte");
 // Loaded after the DOM globals, like every other store the component reads.
 const { connection } = await import("../connection.svelte");
+const { layout } = await import("../layout.svelte");
+const { pageVisibility } = await import("../page-visibility.svelte");
 const { default: AgentPage } = await import("./AgentPage.svelte");
 const { default: QueryHarness } = await import("./QueryHarness.svelte");
 
@@ -82,6 +85,7 @@ afterEach(() => {
   FakeSocket.instances = [];
   agents.requestedPrompts = [];
   connection.state = "connecting";
+  layout.setMode("goal");
 });
 
 const FOREIGN_NOTICE =
@@ -431,6 +435,9 @@ function emptyFetch(): () => void {
 test("an agent page refresh sends once per open, not once per pushed frame", async () => {
   const restoreFetch = emptyFetch();
   try {
+    // The page's own workspace is the one on screen; only a shown page asks
+    // for its read.
+    layout.setMode("devboard");
     const socket = openConnection();
     agents.handleEvent({
       type: "agentState",
@@ -473,6 +480,7 @@ test("an agent page refresh sends once per open, not once per pushed frame", asy
 test("a page mounted while the connection connects refresh sends once when it opens", async () => {
   const restoreFetch = emptyFetch();
   try {
+    layout.setMode("devboard");
     render(QueryHarness);
     await tick();
     globals.WebSocket = FakeSocket;
@@ -521,6 +529,7 @@ test("an agent page refresh is not retriggered by the mutation that sends it", a
     );
   };
   try {
+    layout.setMode("devboard");
     agents.handleEvent({
       type: "agentState",
       agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
@@ -551,5 +560,83 @@ test("an agent page refresh is not retriggered by the mutation that sends it", a
         headers: { "content-type": "application/json" },
       }),
     );
+  }
+});
+
+// A page the operator cannot see asks for nothing. Every mode workspace stays
+// mounted, so a page left behind a shown mode used to nudge its worker while
+// another mode rendered — and the browser defers and throttles that work, so
+// the page-open action was measured against its own first paint.
+
+test("an agent page behind another mode sends no refresh until the workspace is shown", async () => {
+  const restoreFetch = emptyFetch();
+  try {
+    layout.setMode("issues");
+    const socket = openConnection();
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
+    });
+    render(QueryHarness);
+    await tick();
+    render(AgentPage, { props: { agentId: "release-train" } });
+    await settle();
+    expect(refreshFrames(socket)).toEqual([]);
+
+    // The first moment the workspace is on screen is the page's own open; the
+    // boot that mounted it hidden asks for nothing.
+    layout.setMode("devboard");
+    await settle();
+    expect(refreshFrames(socket).map((command) => command.id)).toEqual(["release-train"]);
+
+    agents.handleEvent({
+      type: "agentsState",
+      agents: [releaseSnapshot({ attached: true, owned: true, notice: null })],
+    });
+    await settle();
+    expect(refreshFrames(socket)).toHaveLength(1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("a page opened in a hidden document sends no refresh until the document is visible", async () => {
+  const restoreFetch = emptyFetch();
+  const stopVisibility = pageVisibility.install();
+  const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+  try {
+    layout.setMode("devboard");
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new DomEvent("visibilitychange") as unknown as Event);
+    expect(pageVisibility.visible).toBe(false);
+
+    const socket = openConnection();
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
+    });
+    render(QueryHarness);
+    await tick();
+    render(AgentPage, { props: { agentId: "release-train" } });
+    await settle();
+    expect(refreshFrames(socket)).toEqual([]);
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new DomEvent("visibilitychange") as unknown as Event);
+    await settle();
+    expect(refreshFrames(socket).map((command) => command.id)).toEqual(["release-train"]);
+
+    agents.handleEvent({
+      type: "agentsState",
+      agents: [releaseSnapshot({ attached: true, owned: true, notice: null })],
+    });
+    await settle();
+    expect(refreshFrames(socket)).toHaveLength(1);
+  } finally {
+    stopVisibility();
+    if (visibility === undefined) Reflect.deleteProperty(document, "visibilityState");
+    else Object.defineProperty(document, "visibilityState", visibility);
+    document.dispatchEvent(new DomEvent("visibilitychange") as unknown as Event);
+    restoreFetch();
   }
 });

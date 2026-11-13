@@ -4,6 +4,7 @@
   import { agents } from "../agents.svelte";
   import { connection } from "../connection.svelte";
   import { layout } from "../layout.svelte";
+  import { pageVisibility } from "../page-visibility.svelte";
   import type {
     AgentCycle,
     AgentDocumentationEntry,
@@ -77,13 +78,20 @@
   // untracked: `connection.send` runs the app root's TanStack mutation, and
   // reading that mutation's reactive result inside this effect would make the
   // effect its own trigger and send on every mutation update.
+  //
+  // A page the operator cannot see asks for nothing. Every mode workspace
+  // stays mounted, so a page left behind a shown mode would otherwise send
+  // while another mode renders, and a document the browser reports as hidden
+  // defers that work and throttles its timers anyway. The page asks its one
+  // read on the first moment it is on screen in a visible document; leaving
+  // that state drops the claim, so returning to the page asks again.
   let refreshedAgent: string | null = null;
   let refreshedOpen = false;
 
   $effect(() => {
     if (descriptor === undefined) return;
     const open = connection.open;
-    if (!open) {
+    if (!open || layout.mode !== "devboard" || !pageVisibility.visible) {
       refreshedOpen = false;
       return;
     }

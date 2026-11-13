@@ -33,6 +33,7 @@
   import type { WorkspaceTab } from "./lib/layout.svelte";
   import { mcpTools } from "./lib/mcp-tools.svelte";
   import { notifications } from "./lib/notifications.svelte";
+  import { pageVisibility } from "./lib/page-visibility.svelte";
   import { fileSlowUiAction } from "./lib/notification-issue";
   import { collectPendingQuestions, osNotifications } from "./lib/os-notifications.svelte";
   import { providers } from "./lib/providers.svelte";
@@ -329,6 +330,7 @@
     }
     viewport.update();
     const stopCadence = installVisibilityCadence();
+    const stopVisibility = pageVisibility.install();
     const onResize = () => viewport.update();
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", handleKeydown, true);
@@ -373,6 +375,7 @@
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", handleKeydown, true);
       stopCadence();
+      stopVisibility();
       slowUiAction.reset();
       connection.dispose();
     };

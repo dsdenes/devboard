@@ -2559,8 +2559,12 @@ Browser-to-backend state and controls use the REST API. The page polls `GET /age
 activity-panel agent's activity as `agentActivity` with its agent id, and refuses an unknown id
 with an error naming it before spawning anything.
 A page open asks for exactly one fresh read: `POST /agents/{id}/refreshes` is sent once as the
-agent page opens, and once more only when that page switches to another agent or a connection that
-was still connecting opens. A pushed frame or any later store update never sends it again. The
+agent page is shown — its workspace on screen in a visible document — and once more only when that
+page switches to another agent, its workspace is shown again, or a connection that was still
+connecting opens. A page the operator cannot see sends nothing: a page left behind a shown mode
+issues no refresh, and a page in a hidden document keeps its read until the document is visible,
+so the browser's deferred rendering and throttled timers never measure the page's own first paint.
+A pushed frame or any later store update never sends it again. The
 command answers the current `agentState` with HTTP 202 whether or not it starts a refresh. The
 server coalesces a repeat per family inside `SYNC_REQUEST_MIN_INTERVAL_MS` (5,000 ms): a repeat
 inside the interval starts no worker refresh and no forge read, and a request past the interval
