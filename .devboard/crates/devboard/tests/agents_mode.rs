@@ -2407,3 +2407,81 @@ async fn wait_for_snapshot(
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
+
+/// A page can ask twice inside the coalescing interval: the second command must
+/// answer the same projection without starting a second worker refresh, and a
+/// request past the interval starts the next one.
+#[tokio::test]
+async fn a_repeated_page_open_refresh_is_coalesced_for_the_family() {
+    use std::time::Duration;
+
+    let root = scratch("refresh-coalescing");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("a stand-in worker");
+    let pid = child.id();
+    std::mem::forget(child);
+    let lock = devboard::workers::single_responsibility::lock_path(&repo);
+    write_json(
+        &lock,
+        json!({
+            "pid": pid,
+            "startedAt": devboard::journal::now_iso8601(),
+            "repo": repo.to_string_lossy(),
+            "stateDir": state.to_string_lossy(),
+            "harnessVersion": null,
+            "argv": ["devboard", "worker", "single-responsibility"],
+        }),
+    );
+    let control = devboard::workers::single_responsibility::control_directory(&state, &repo);
+    let control_commands = || -> Vec<Value> {
+        std::fs::read_dir(&control)
+            .expect("a control directory")
+            .filter_map(Result::ok)
+            .map(|entry| std::fs::read_to_string(entry.path()).expect("a command"))
+            .map(|text| serde_json::from_str::<Value>(&text).expect("JSON"))
+            .collect()
+    };
+    let (conn, mut inbox) = connection_for(&app).await;
+
+    let first = Command::RefreshAgent {
+        id: Some(json!("single-responsibility")),
+    };
+    devboard::agents_mode::handle(&app, &conn, &first).await;
+    let answered = frames(&mut inbox);
+    let opened = agent(&answered, "single-responsibility")
+        .expect("the first refresh answers a snapshot")
+        .clone();
+    assert_eq!(control_commands(), vec![json!({"type": "refresh"})]);
+
+    // One millisecond later, inside the interval: the answer repeats and no
+    // worker refresh command is written.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    devboard::agents_mode::handle(&app, &conn, &first).await;
+    let repeated = frames(&mut inbox);
+    assert_eq!(
+        agent(&repeated, "single-responsibility"),
+        Some(&opened),
+        "a coalesced refresh answers the same agentState frame"
+    );
+    assert!(find(&repeated, "error").is_empty(), "{repeated:?}");
+    assert_eq!(control_commands(), vec![json!({"type": "refresh"})]);
+
+    // Past the interval, the next page open starts the next refresh.
+    tokio::time::sleep(Duration::from_millis(5_001)).await;
+    devboard::agents_mode::handle(&app, &conn, &first).await;
+    let next = frames(&mut inbox);
+    assert!(agent(&next, "single-responsibility").is_some());
+    assert_eq!(
+        control_commands(),
+        vec![json!({"type": "refresh"}), json!({"type": "refresh"})]
+    );
+    kill_stand_in(pid);
+}

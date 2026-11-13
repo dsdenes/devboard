@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { agentRegistry } from "../../../lib/agent-registry.ts";
   import { agents } from "../agents.svelte";
   import { connection } from "../connection.svelte";
@@ -70,11 +71,26 @@
   }
 
   // Opening this page asks for one fresh read instead of waiting for the next
-  // cadence. The tracked connection state sends it if the socket was still
-  // connecting when the page mounted; it never starts a worker or a scan.
+  // cadence, and it asks once per open: a page mounted while the socket still
+  // connects sends when it opens, and switching to another agent sends for
+  // that agent. Nothing a pushed frame writes sends again. The send itself is
+  // untracked: `connection.send` runs the app root's TanStack mutation, and
+  // reading that mutation's reactive result inside this effect would make the
+  // effect its own trigger and send on every mutation update.
+  let refreshedAgent: string | null = null;
+  let refreshedOpen = false;
+
   $effect(() => {
     if (descriptor === undefined) return;
-    agents.refresh(agentId);
+    const open = connection.open;
+    if (!open) {
+      refreshedOpen = false;
+      return;
+    }
+    if (refreshedOpen && refreshedAgent === agentId) return;
+    refreshedOpen = true;
+    refreshedAgent = agentId;
+    untrack(() => agents.refresh(agentId));
   });
 
   let cadenceText = $state("");

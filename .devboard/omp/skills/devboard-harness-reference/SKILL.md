@@ -2550,6 +2550,13 @@ Browser-to-backend state and controls use the REST API. The page polls `GET /age
 `agentState` (one), and `agentPromptState` (one agent's prompt section), streams each
 activity-panel agent's activity as `agentActivity` with its agent id, and refuses an unknown id
 with an error naming it before spawning anything.
+A page open asks for exactly one fresh read: `POST /agents/{id}/refreshes` is sent once as the
+agent page opens, and once more only when that page switches to another agent or a connection that
+was still connecting opens. A pushed frame or any later store update never sends it again. The
+command answers the current `agentState` with HTTP 202 whether or not it starts a refresh. The
+server coalesces a repeat per family inside `SYNC_REQUEST_MIN_INTERVAL_MS` (5,000 ms): a repeat
+inside the interval starts no worker refresh and no forge read, and a request past the interval
+starts the next one.
 A Start answers its `starting` snapshot before the preflight, and the 1000 ms poll fingerprints
 each family's durable state and serializes a snapshot only after the fingerprint changes; an idle
 dashboard rebroadcasts nothing. A `GET /agents` read is answered from the same current snapshots

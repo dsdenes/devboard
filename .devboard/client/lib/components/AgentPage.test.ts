@@ -59,6 +59,7 @@ const { agents } = await import("../agents.svelte");
 // Loaded after the DOM globals, like every other store the component reads.
 const { connection } = await import("../connection.svelte");
 const { default: AgentPage } = await import("./AgentPage.svelte");
+const { default: QueryHarness } = await import("./QueryHarness.svelte");
 
 /**
  * Opens the shared connection over a stub socket, the one path that makes
@@ -66,12 +67,13 @@ const { default: AgentPage } = await import("./AgentPage.svelte");
  * leave the store with no socket, so the page's own refresh send would report
  * a connection failure instead.
  */
-function openConnection(): void {
+function openConnection(): FakeSocket {
   globals.WebSocket = FakeSocket;
   connection.connect();
   const socket = FakeSocket.instances[0];
   if (socket === undefined) throw new Error("no socket created");
   socket.open();
+  return socket;
 }
 
 afterEach(() => {
@@ -393,4 +395,161 @@ test("switching agents requests the newly shown agent's prompt", async () => {
   expect(within(view.container).getByTestId("agent-prompt").getAttribute("data-agent")).toBe(
     "scout",
   );
+});
+
+// The page-open read is one command per open, and nothing a frame writes may
+// send it again. These tests count the wire commands a stub socket received.
+
+function refreshFrames(socket: FakeSocket): Array<Record<string, unknown>> {
+  return socket.sent
+    .map((text) => JSON.parse(text) as Record<string, unknown>)
+    .filter((command) => command.type === "refreshAgent");
+}
+
+/** Flushes Svelte's effect queue and the microtasks a mutation schedules. */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+}
+
+/** Answers the plan's reads so a mounted QueryHarness stays quiet. */
+function emptyFetch(): () => void {
+  const previous = globalThis.fetch;
+  globals.fetch = () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ frames: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  return () => {
+    globals.fetch = previous;
+  };
+}
+
+test("an agent page refresh sends once per open, not once per pushed frame", async () => {
+  const restoreFetch = emptyFetch();
+  try {
+    const socket = openConnection();
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
+    });
+    render(QueryHarness);
+    await tick();
+    const view = render(AgentPage, { props: { agentId: "release-train" } });
+    await settle();
+    expect(refreshFrames(socket).map((command) => command.id)).toEqual(["release-train"]);
+
+    // The answer to that refresh is one pushed agents frame; it must not send.
+    agents.handleEvent({
+      type: "agentsState",
+      agents: [releaseSnapshot({ attached: true, owned: true, notice: null })],
+    });
+    await settle();
+    expect(refreshFrames(socket)).toHaveLength(1);
+
+    // A second page is a second open: the next agent id asks for its own read.
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({
+        id: "watchdog",
+        label: "Watchdog",
+        detail: { panel: "cycles", cycles: [] },
+      }),
+    });
+    await view.rerender({ agentId: "watchdog" });
+    await settle();
+    expect(refreshFrames(socket).map((command) => command.id)).toEqual([
+      "release-train",
+      "watchdog",
+    ]);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("a page mounted while the connection connects refresh sends once when it opens", async () => {
+  const restoreFetch = emptyFetch();
+  try {
+    render(QueryHarness);
+    await tick();
+    globals.WebSocket = FakeSocket;
+    connection.connect();
+    const socket = FakeSocket.instances[0];
+    if (socket === undefined) throw new Error("no socket created");
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
+    });
+    render(AgentPage, { props: { agentId: "release-train" } });
+    await settle();
+    expect(refreshFrames(socket)).toEqual([]);
+
+    socket.open();
+    await settle();
+    expect(refreshFrames(socket).map((command) => command.id)).toEqual(["release-train"]);
+
+    agents.handleEvent({
+      type: "agentsState",
+      agents: [releaseSnapshot({ attached: true, owned: true, notice: null })],
+    });
+    await settle();
+    expect(refreshFrames(socket)).toHaveLength(1);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("an agent page refresh is not retriggered by the mutation that sends it", async () => {
+  // No stub socket here: this is the app root's real command path, where
+  // `connection.send` runs the TanStack mutation. Hang the POST so only the
+  // local reactive state can resend, then count the requests.
+  const previousFetch = globalThis.fetch;
+  const posts: string[] = [];
+  const held = Promise.withResolvers<Response>();
+  globals.fetch = (input: RequestInfo | URL) => {
+    const path = String(input);
+    posts.push(path);
+    if (path.endsWith("/refreshes")) return held.promise;
+    return Promise.resolve(
+      new Response(JSON.stringify({ frames: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+  try {
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
+    });
+    render(QueryHarness);
+    await tick();
+    // No socket double: `connect` opens without a transport, so every command
+    // runs the app root's mutation, as it does in the browser.
+    const previousSocket = globals.WebSocket;
+    delete globals.WebSocket;
+    connection.connect();
+    render(AgentPage, { props: { agentId: "release-train" } });
+    await settle();
+    expect(posts.filter((path) => path.endsWith("/refreshes"))).toHaveLength(1);
+
+    connection.receiveFrame({
+      type: "agentsState",
+      agents: [releaseSnapshot({ attached: true, owned: true, notice: null })],
+    });
+    await settle();
+    expect(posts.filter((path) => path.endsWith("/refreshes"))).toHaveLength(1);
+    globals.WebSocket = previousSocket;
+  } finally {
+    globals.fetch = previousFetch;
+    held.resolve(
+      new Response(JSON.stringify({ frames: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }
 });

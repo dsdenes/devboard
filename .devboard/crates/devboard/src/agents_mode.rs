@@ -144,6 +144,17 @@ const STOP_DEADLINE_MS: u64 = STOP_PROOF_MS + STOP_KILL_GRACE_MS;
 const STOP_POLL_MS: u64 = 50;
 /// A page open asks an attached worker for one fresh read at most this often.
 const SYNC_REQUEST_MIN_INTERVAL_MS: i64 = 5_000;
+
+/// One page-open refresh per family inside the interval: the first call passes
+/// and stamps the family, a repeat starts no forge nudge and writes no worker
+/// command. A poisoned state lock never suppresses a refresh.
+fn sync_request_due(last_sync_request_at: &mut i64, now: i64) -> bool {
+    if now - *last_sync_request_at < SYNC_REQUEST_MIN_INTERVAL_MS {
+        return false;
+    }
+    *last_sync_request_at = now;
+    true
+}
 /// A connected dashboard re-reads a table's forge state this often.
 const AGENT_FORGE_INTERVAL_MS: i64 = 60_000;
 /// A success older than this reads as stale until the next scheduled read.
@@ -1189,6 +1200,9 @@ pub struct ForgeProjection {
     reader: Option<ForgeReader>,
     interval_ms: i64,
     stale_after_ms: i64,
+    /// Page-open nudges this projection accepted, for the coalescing test.
+    #[cfg(test)]
+    sync_requests: std::sync::atomic::AtomicU64,
 }
 
 impl ForgeProjection {
@@ -1223,6 +1237,8 @@ impl ForgeProjection {
             reader,
             interval_ms: AGENT_FORGE_INTERVAL_MS,
             stale_after_ms: AGENT_FORGE_STALE_MS,
+            #[cfg(test)]
+            sync_requests: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1293,7 +1309,18 @@ impl ForgeProjection {
     }
 
     /// A view opened this table: the sub-second poll schedules the read.
-    fn request_sync_only(&self) {}
+    fn request_sync_only(&self) {
+        #[cfg(test)]
+        self.sync_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The page-open nudges this family accepted, after coalescing.
+    #[cfg(test)]
+    fn sync_requests(&self) -> u64 {
+        self.sync_requests
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
 
     /// An empty table needs no forge round trip: the read answers immediately,
     /// exactly as `urls.length === 0 ? [] : reader.project(urls)` does.
@@ -2426,8 +2453,8 @@ impl Adapter {
     fn request_sync(&self) {
         match self {
             Adapter::Repo(family) => family.request_sync(),
-            Adapter::Watchdog(family) => family.forge.request_sync_only(),
-            Adapter::Mcp(family) => family.forge.request_sync_only(),
+            Adapter::Watchdog(family) => family.request_sync(),
+            Adapter::Mcp(family) => family.request_sync(),
             Adapter::Release(family) => family.request_sync(),
         }
     }
@@ -5109,24 +5136,21 @@ impl RepoFamily {
     }
 
     fn request_sync(&self) {
+        let now = (self.now)();
+        let allowed = match self.mutable.lock() {
+            Ok(mut mutable) => sync_request_due(&mut mutable.last_sync_request_at, now),
+            Err(_) => true,
+        };
+        if !allowed {
+            return;
+        }
         if self.family_id.uses_forge() {
             self.forge.request_sync_only();
         }
         if !self.family_id.refreshes_worker() {
             return;
         }
-        let owners = self.owned_owners();
-        if owners.is_empty() {
-            return;
-        }
-        let now = (self.now)();
-        if let Ok(mut mutable) = self.mutable.lock() {
-            if now - mutable.last_sync_request_at < SYNC_REQUEST_MIN_INTERVAL_MS {
-                return;
-            }
-            mutable.last_sync_request_at = now;
-        }
-        for owner in owners {
+        for owner in self.owned_owners() {
             let _ = write_command(&self.control_for(&owner), &json!({"type": "refresh"}));
         }
     }
@@ -6908,6 +6932,8 @@ struct WatchdogMutable {
     stopping: HashSet<u32>,
     takeover: bool,
     legacy_control_keys: HashSet<String>,
+    /// The last page-open refresh this family accepted.
+    last_sync_request_at: i64,
     /// The Start whose preflight may still settle.
     start_attempt: u64,
 }
@@ -6972,6 +6998,7 @@ impl WatchdogFamily {
                 stopping: HashSet::new(),
                 takeover: false,
                 legacy_control_keys: HashSet::new(),
+                last_sync_request_at: i64::MIN / 2,
                 start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
@@ -7032,6 +7059,18 @@ impl WatchdogFamily {
             Some(legacy)
         } else {
             None
+        }
+    }
+
+    /// A page opened this family: one forge nudge per interval.
+    fn request_sync(&self) {
+        let now = (self.now)();
+        let allowed = match self.mutable.lock() {
+            Ok(mut mutable) => sync_request_due(&mut mutable.last_sync_request_at, now),
+            Err(_) => true,
+        };
+        if allowed {
+            self.forge.request_sync_only();
         }
     }
 
@@ -8214,6 +8253,8 @@ struct McpMutable {
     notice: Option<String>,
     stopping: HashSet<u32>,
     takeover: bool,
+    /// The last page-open refresh this family accepted.
+    last_sync_request_at: i64,
     /// The Start whose preflight may still settle.
     start_attempt: u64,
 }
@@ -8291,6 +8332,7 @@ impl McpFamily {
                 notice: None,
                 stopping: HashSet::new(),
                 takeover: false,
+                last_sync_request_at: i64::MIN / 2,
                 start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
@@ -8311,6 +8353,18 @@ impl McpFamily {
 
     fn preflight_timeout_cell(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.preflight_timeout_ms)
+    }
+
+    /// A page opened this family: one forge nudge per interval.
+    fn request_sync(&self) {
+        let now = (self.now)();
+        let allowed = match self.mutable.lock() {
+            Ok(mut mutable) => sync_request_due(&mut mutable.last_sync_request_at, now),
+            Err(_) => true,
+        };
+        if allowed {
+            self.forge.request_sync_only();
+        }
     }
 
     fn owners(&self) -> Vec<LockOwner> {
@@ -9111,6 +9165,8 @@ struct ReleaseMutable {
     /// Names a worker another dashboard's STATE_DIR owns, so a Start that
     /// cannot act on it says why instead of doing nothing.
     notice: Option<String>,
+    /// The last page-open refresh this family accepted.
+    last_sync_request_at: i64,
     /// The Start whose preflight may still settle.
     start_attempt: u64,
 }
@@ -9172,6 +9228,7 @@ impl ReleaseFamily {
                 start_error: None,
                 takeover: false,
                 notice: None,
+                last_sync_request_at: i64::MIN / 2,
                 start_attempt: 0,
             })),
             start_lock: tokio::sync::Mutex::new(()),
@@ -9506,6 +9563,14 @@ impl ReleaseFamily {
     }
 
     fn request_sync(&self) {
+        let now = (self.now)();
+        let allowed = match self.mutable.lock() {
+            Ok(mut mutable) => sync_request_due(&mut mutable.last_sync_request_at, now),
+            Err(_) => true,
+        };
+        if !allowed {
+            return;
+        }
         for owner in self.owners() {
             let _ = write_command(&self.control_for(&owner), &json!({"type": "check"}));
         }
@@ -10522,5 +10587,152 @@ mod cycle_summary_rows {
         assert_eq!(bounded_row, full_row);
         assert_eq!(full_row["findings"], json!(3));
         assert_eq!(full_row["issues"], json!(["http://forge.invalid/issues/1"]));
+    }
+}
+
+#[cfg(test)]
+mod refresh_coalescing {
+    //! A page open asks one family for one fresh read. A repeat inside
+    //! `SYNC_REQUEST_MIN_INTERVAL_MS` starts no forge nudge and writes no
+    //! worker command; only a request past the interval starts the next one.
+    //! `Command::RefreshAgent` installs no gate of its own, so this drives the
+    //! family entry point that command calls.
+
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("refresh-coalescing-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo")).expect("a fixture repo");
+        std::fs::create_dir_all(root.join("state")).expect("a fixture state");
+        root
+    }
+
+    fn family_at(
+        repo_dir: &Path,
+        state_dir: &Path,
+        now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> RepoFamily {
+        let spawn: SpawnFn =
+            Arc::new(|_argv: &[String], _environment: HashMap<String, String>| None);
+        let environment: Arc<AgentEnvironment> =
+            Arc::new(|| Box::pin(async { Ok(HashMap::new()) }));
+        RepoFamily::new(
+            RepoFamilyId::Scout,
+            repo_dir,
+            state_dir,
+            &HashMap::new(),
+            "true",
+            None,
+            Arc::new(Mutex::new(environment)),
+            Arc::new(Mutex::new(spawn)),
+            Arc::new(Mutex::new(None)),
+            None,
+            now,
+        )
+    }
+
+    /// One attached worker lock this dashboard owns, so the refresh path writes
+    /// its command instead of returning early.
+    fn attach_worker(repo_dir: &Path, state_dir: &Path) -> u32 {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let pid = child.id();
+        std::mem::forget(child);
+        let directory = repo_dir.join(".devboard").join(".tmp").join("scout");
+        std::fs::create_dir_all(&directory).expect("a lock directory");
+        std::fs::write(
+            directory.join("lock"),
+            json!({
+                "pid": pid,
+                "startedAt": crate::journal::now_iso8601(),
+                "repo": repo_dir.to_string_lossy(),
+                "stateDir": state_dir.to_string_lossy(),
+                "harnessVersion": null,
+                "argv": ["devboard", "worker", "scout"],
+            })
+            .to_string(),
+        )
+        .expect("a worker lock");
+        pid
+    }
+
+    fn refresh_commands(family: &RepoFamily) -> usize {
+        let directory = family.repo_state_directory().join("control");
+        std::fs::read_dir(directory)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| {
+                        std::fs::read_to_string(entry.path())
+                            .ok()
+                            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                            == Some(json!({"type": "refresh"}))
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_repeat_page_open_inside_the_interval_starts_no_refresh() {
+        let root = fixture_root("repeat");
+        let repo_dir = root.join("repo");
+        let state_dir = root.join("state");
+        let pid = attach_worker(&repo_dir, &state_dir);
+        let clock = Arc::new(AtomicU64::new(0));
+        let clock_for_now = Arc::clone(&clock);
+        let now: Arc<dyn Fn() -> i64 + Send + Sync> =
+            Arc::new(move || clock_for_now.load(Ordering::SeqCst) as i64);
+        let family = Arc::new(family_at(&repo_dir, &state_dir, now));
+        let adapter = Adapter::Repo(Arc::clone(&family));
+
+        adapter.request_sync();
+        assert_eq!(
+            family.forge.sync_requests(),
+            1,
+            "the first page open starts one forge nudge"
+        );
+        assert_eq!(refresh_commands(&family), 1, "one worker refresh command");
+
+        // One millisecond later: inside the interval, so nothing starts.
+        clock.store(1, Ordering::SeqCst);
+        adapter.request_sync();
+        assert_eq!(
+            family.forge.sync_requests(),
+            1,
+            "a repeat inside the interval starts no forge nudge"
+        );
+        assert_eq!(
+            refresh_commands(&family),
+            1,
+            "a repeat inside the interval writes no worker refresh command"
+        );
+
+        // Just past the interval: the next page open starts the next refresh.
+        clock.store(5_001, Ordering::SeqCst);
+        adapter.request_sync();
+        assert_eq!(
+            family.forge.sync_requests(),
+            2,
+            "a request after the interval starts the next forge nudge"
+        );
+        assert_eq!(
+            refresh_commands(&family),
+            2,
+            "a request after the interval writes the next worker refresh command"
+        );
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
     }
 }
