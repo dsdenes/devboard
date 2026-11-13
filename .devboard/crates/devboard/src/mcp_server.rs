@@ -1624,14 +1624,14 @@ async fn devboard_status(context: &McpContext) -> Result<Value, String> {
             })
         })
         .collect();
-    let fallback = crate::version::server_version(
-        &context.repo_dir,
-        crate::version::read_harness_version(&context.harness_dir),
-        None,
-    );
+    // Only a dashboard that answered `getVersion` proves which version a
+    // process loaded. Zero discovered dashboards, several, and one that never
+    // answered all leave `running` null: the manifest is what a restart would
+    // load, so it is the `installed` value alone, never a running one.
+    let fallback = crate::version::server_version(&context.repo_dir, None, None);
     let version = live.unwrap_or_else(|| {
         json!({
-            "running": fallback.running,
+            "running": Value::Null,
             "installed": fallback.installed,
             "latest": fallback.latest,
             "stale": fallback.stale,
