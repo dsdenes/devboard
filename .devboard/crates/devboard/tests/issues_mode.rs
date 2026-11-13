@@ -1578,6 +1578,123 @@ async fn a_dispatched_start_answers_inside_the_budget_while_its_preflight_is_pen
     assert_eq!(frames[0]["worker"]["pid"], json!(4_242_424));
 }
 
+/// A Start answers the projection the bridge already published, restated with
+/// the Start's own facts.
+///
+/// The answer used to rebuild the projection, which read and parsed every
+/// worker document this checkout ever wrote inside the operator's request. The
+/// document below changes after the projection is published, so an answer that
+/// rebuilt it would report the new file instead of the published state.
+#[tokio::test]
+async fn a_start_restates_the_published_projection_instead_of_rebuilding_it() {
+    let (repo, state) = scratch("start-answer-published");
+    let mut document = state_document(&repo, "running", json!([running_agent("run-1", 7)]));
+    document["notice"] = json!("the operator stopped the previous worker");
+    write_state(&repo, &state, &document);
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(4_242_424)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+
+    let published = bridge.snapshot();
+    assert_eq!(
+        published["notice"],
+        json!("the operator stopped the previous worker"),
+        "{published}"
+    );
+    std::fs::remove_file(state_path(&repo, &state)).expect("the published document");
+
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    bridge.start_answering(&conn).await;
+    let frame = next_frame(&mut inbox).await;
+    assert_eq!(frame["type"], "issuesState", "{frame}");
+    assert_eq!(
+        frame["notice"],
+        json!("the operator stopped the previous worker"),
+        "the answer restates the published projection: {frame}"
+    );
+    assert_eq!(frame["starting"], json!(true), "{frame}");
+    assert_eq!(frame["worker"]["pid"], json!(4_242_424), "{frame}");
+}
+
+/// The projection parses a state document once per content change, not once
+/// per build.
+///
+/// Every build read all of this checkout's worker documents — sixty of them,
+/// four megabytes — and the bridge builds on a 250 ms cadence and on every
+/// action's answer. The parse is what made one build cost hundreds of
+/// milliseconds.
+#[tokio::test]
+async fn a_projection_parses_an_unchanged_document_once() {
+    let (repo, state) = scratch("projection-parse-once");
+    let mut first = state_document(&repo, "idle", json!([]));
+    first["notice"] = json!("first");
+    write_state(&repo, &state, &first);
+    let newer = versioned_worker_directory(&repo, &state, "1.0.0");
+    std::fs::create_dir_all(&newer).expect("a worker directory");
+    let mut second = state_document(&repo, "idle", json!([]));
+    second["notice"] = json!("second");
+    std::fs::write(
+        newer.join("state.json"),
+        serde_json::to_string(&second).expect("state JSON"),
+    )
+    .expect("a worker state");
+
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(4_242_424)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+
+    devboard::issues_mode::reset_state_parses();
+    let first_build = bridge.snapshot();
+    let parses = devboard::issues_mode::state_parses();
+    assert_eq!(first_build["present"], json!(true), "{first_build}");
+    assert!(
+        parses <= 2,
+        "one build parsed {parses} documents for two documents"
+    );
+
+    let _second_build = bridge.snapshot();
+    assert_eq!(
+        devboard::issues_mode::state_parses(),
+        parses,
+        "an unchanged tree is parsed again"
+    );
+
+    let mut changed = second.clone();
+    changed["notice"] = json!("changed");
+    std::fs::write(
+        newer.join("state.json"),
+        serde_json::to_string(&changed).expect("state JSON"),
+    )
+    .expect("a rewritten worker state");
+    let third_build = bridge.snapshot();
+    assert!(
+        devboard::issues_mode::state_parses() > parses,
+        "a changed document is parsed again"
+    );
+    assert_eq!(third_build["present"], json!(true), "{third_build}");
+}
+
 /// A read replays each running agent's activity to the page that asked, and
 /// to no other page.
 ///

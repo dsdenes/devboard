@@ -1567,8 +1567,28 @@ fn is_agent(value: &Value) -> bool {
             .unwrap_or(false)
 }
 
+thread_local! {
+    /// The state documents one thread has parsed. A document is sampled once
+    /// per content change, so this count is the evidence that a rebuild
+    /// re-parses nothing it already read. It is per thread so a test measures
+    /// its own build, and production pays one thread-local read per parse.
+    static STATE_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The state documents this thread has parsed since the last
+/// [`reset_state_parses`].
+pub fn state_parses() -> u64 {
+    STATE_PARSES.with(|parses| parses.get())
+}
+
+/// Clears this thread's parse count, so a test starts from a known number.
+pub fn reset_state_parses() {
+    STATE_PARSES.with(|parses| parses.set(0));
+}
+
 /// Parses one document; `None` means the bytes are not this version.
 fn parse_state(text: &str) -> Option<IssuesState> {
+    STATE_PARSES.with(|parses| parses.set(parses.get() + 1));
     let parsed: Value = serde_json::from_str(text).ok()?;
     let object = parsed.as_object()?;
     let version = object.get("version").and_then(Value::as_u64)?;
@@ -1722,10 +1742,65 @@ fn parse_state(text: &str) -> Option<IssuesState> {
     })
 }
 
+/// One document's parsed state, kept for as long as its content is unchanged.
+struct StateSample {
+    modified: std::time::SystemTime,
+    len: u64,
+    state: Option<Arc<IssuesState>>,
+}
+
+/// The parsed state of every document this process has read, keyed by path.
+static STATE_SAMPLES: std::sync::LazyLock<Mutex<HashMap<PathBuf, StateSample>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// One state document, parsed once per content change.
+///
+/// The stamp check is the contract [`crate::sampling`] applies to the bytes and
+/// this one applies to the parse: an unchanged document costs one `stat`, never
+/// a re-parse. A checkout keeps one document per worker version it ever ran, so
+/// the projection's read of them is proportional to that history — sixty
+/// four-megabyte documents here, which made one rebuild cost hundreds of
+/// milliseconds on a 250 ms cadence and on every action's answer.
+fn sample_state(path: &Path) -> Option<Arc<IssuesState>> {
+    let Some((modified, len)) = crate::sampling::stamp(path) else {
+        forget_state(path);
+        return None;
+    };
+    if let Ok(samples) = STATE_SAMPLES.lock() {
+        if let Some(sample) = samples.get(path) {
+            if sample.len == len && sample.modified == modified {
+                return sample.state.clone();
+            }
+        }
+    }
+    let state = crate::sampling::text(path)
+        .and_then(|text| parse_state(&text))
+        .map(Arc::new);
+    if let Ok(mut samples) = STATE_SAMPLES.lock() {
+        samples.insert(
+            path.to_path_buf(),
+            StateSample {
+                modified,
+                len,
+                state: state.clone(),
+            },
+        );
+    }
+    state
+}
+
+/// Drops one path's parsed state, so a vanished document is parsed again when
+/// it returns.
+fn forget_state(path: &Path) {
+    if let Ok(mut samples) = STATE_SAMPLES.lock() {
+        samples.remove(path);
+    }
+}
+
 fn read_state(path: &Path) -> Option<IssuesState> {
     // Sampled through the shared cache: the dashboard's 250 ms refresh never
-    // re-reads an unchanged state file.
-    crate::sampling::text(path).and_then(|text| parse_state(&text))
+    // re-reads, and never re-parses, an unchanged state file.
+    sample_state(path).map(|state| (*state).clone())
 }
 
 fn write_state(path: &Path, state: &IssuesState) -> std::io::Result<()> {
@@ -3166,6 +3241,19 @@ impl IssuesOptions {
 struct CachedProjection {
     snapshot: Value,
     frame_text: String,
+    /// The worker the build found attached, which is what clears a Start that
+    /// worker answered. An answer assembled from this projection reads it
+    /// instead of rebuilding the state to find it again.
+    attached_worker: Option<WorkerRecord>,
+}
+
+/// The Start facts one projection reports: whether a Start this dashboard
+/// accepted is still in flight, the reason a Start was refused, and the worker
+/// the projection names for it.
+struct StartEvidence {
+    starting: bool,
+    error: Option<String>,
+    worker: Option<WorkerRecord>,
 }
 
 #[derive(Default)]
@@ -3522,35 +3610,44 @@ impl IssuesBridge {
     /// A current projection, rebuilt now. A caller that asks for the state
     /// reflects the files as they stand.
     pub fn snapshot(&self) -> Value {
-        self.refresh_projection().0
+        self.refresh_projection().snapshot
     }
 
     /// The projection the bridge already published, built on first use. A
     /// page's poll answers from this, so one snapshot serves every viewer.
-    fn cached_projection(&self) -> (Value, String) {
+    fn cached_projection(&self) -> CachedProjection {
         if let Ok(inner) = self.inner.lock() {
             if let Some(cached) = &inner.cached {
-                return (cached.snapshot.clone(), cached.frame_text.clone());
+                return CachedProjection {
+                    snapshot: cached.snapshot.clone(),
+                    frame_text: cached.frame_text.clone(),
+                    attached_worker: cached.attached_worker.clone(),
+                };
             }
         }
         self.refresh_projection()
     }
 
     /// Rebuilds the projection and stores it with its serialized frame.
-    fn refresh_projection(&self) -> (Value, String) {
-        let snapshot = self.build_snapshot();
+    fn refresh_projection(&self) -> CachedProjection {
+        let (snapshot, attached_worker) = self.build_snapshot();
         let frame = Self::typed_snapshot(snapshot.clone());
         let frame_text = crate::jsjson::stringify(&frame);
         if let Ok(mut inner) = self.inner.lock() {
             inner.cached = Some(CachedProjection {
                 snapshot: snapshot.clone(),
                 frame_text: frame_text.clone(),
+                attached_worker: attached_worker.clone(),
             });
         }
-        (snapshot, frame_text)
+        CachedProjection {
+            snapshot,
+            frame_text,
+            attached_worker,
+        }
     }
 
-    fn build_snapshot(&self) -> Value {
+    fn build_snapshot(&self) -> (Value, Option<WorkerRecord>) {
         let owners = self.owners();
         let attached_owners: Vec<LockOwner> = owners
             .iter()
@@ -3736,29 +3833,8 @@ impl IssuesBridge {
         } else {
             None
         };
-        // A Start this dashboard accepted is its own fact, not a worker's: it
-        // exists before the spawned worker has published any state. `starting`
-        // stays in force until the projection can name that worker's pid, and
-        // a worker this dashboard spawned is named from the spawn itself, so
-        // no frame ever clears `starting` with neither a worker nor a reason.
-        let (starting, start_error, spawned) = {
-            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            let answered = attached_worker
-                .as_ref()
-                .map(|worker| !inner.stopping.contains_key(&worker.pid))
-                .unwrap_or(false);
-            if inner.starting && answered {
-                inner.starting = false;
-                inner.start_error = None;
-                inner.start_worker = None;
-            }
-            (
-                inner.starting,
-                inner.start_error.clone(),
-                inner.start_worker.clone(),
-            )
-        };
-        let worker = attached_worker.or_else(|| spawned.filter(|_| starting));
+        let start = self.start_evidence(attached_worker.clone());
+        let worker = start.worker.clone();
         let poll = active.as_ref().map(|state| state.poll.clone());
         // A deferral belongs to a worker this dashboard is attached to: the
         // line a stopped worker left behind describes nothing that still waits.
@@ -3865,10 +3941,14 @@ impl IssuesBridge {
             "deferral".into(),
             deferral.map(Value::String).unwrap_or(Value::Null),
         );
-        map.insert("starting".into(), Value::Bool(starting));
+        map.insert("starting".into(), Value::Bool(start.starting));
         map.insert(
             "startError".into(),
-            start_error.map(Value::String).unwrap_or(Value::Null),
+            start
+                .error
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
         );
         map.insert(
             "updatedAt".into(),
@@ -3887,7 +3967,36 @@ impl IssuesBridge {
             "sync".into(),
             serde_json::to_value(sync).unwrap_or(Value::Null),
         );
-        Value::Object(map)
+        (Value::Object(map), attached_worker)
+    }
+
+    /// The Start facts a projection reports.
+    ///
+    /// A Start this dashboard accepted is its own fact, not a worker's: it
+    /// exists before the spawned worker has published any state. `starting`
+    /// stays in force until the projection can name that worker's pid, and a
+    /// worker this dashboard spawned is named from the spawn itself, so no
+    /// frame ever clears `starting` with neither a worker nor a reason.
+    fn start_evidence(&self, attached_worker: Option<WorkerRecord>) -> StartEvidence {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let answered = attached_worker
+            .as_ref()
+            .map(|worker| !inner.stopping.contains_key(&worker.pid))
+            .unwrap_or(false);
+        if inner.starting && answered {
+            inner.starting = false;
+            inner.start_error = None;
+            inner.start_worker = None;
+        }
+        let starting = inner.starting;
+        let error = inner.start_error.clone();
+        let spawned = inner.start_worker.clone();
+        drop(inner);
+        StartEvidence {
+            starting,
+            error,
+            worker: attached_worker.or_else(|| spawned.filter(|_| starting)),
+        }
     }
 
     /// The rows this dashboard serves. The `processing` label marks a run in
@@ -3988,9 +4097,9 @@ impl IssuesBridge {
     /// each of those pages reads it on its own next read.
     pub fn replay(&self, conn: &Conn) {
         self.demand_at.store(monotonic_millis(), Ordering::Relaxed);
-        let (snapshot, frame_text) = self.cached_projection();
-        conn.send_payload(frame_text);
-        for run_id in self.active_run_ids(&snapshot) {
+        let cached = self.cached_projection();
+        conn.send_payload(cached.frame_text);
+        for run_id in self.active_run_ids(&cached.snapshot) {
             let activity = self.read_activity(&run_id);
             {
                 let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
@@ -4009,9 +4118,49 @@ impl IssuesBridge {
     /// action's answer only confirms the change it made: one run's activity
     /// reaches 1 MiB, so replaying every running agent's log here made a
     /// Start's answer 32 MB on a dashboard with sixteen running agents.
+    ///
+    /// The state it answers with is the projection this bridge already
+    /// published, restated with the Start facts the action changed. Rebuilding
+    /// it here read and parsed every worker document this checkout ever wrote —
+    /// sixty of them, four megabytes — inside the operator's request, so an
+    /// action's answer cost hundreds of milliseconds and the one-second budget
+    /// was missed whenever the sampling cache was cold. The projection is
+    /// published on its own cadence, so file-derived fields are at most one
+    /// cadence old when an answer restates them.
     pub fn reply(&self, conn: &Conn) {
-        let (_, frame_text) = self.refresh_projection();
-        conn.send_payload(frame_text);
+        conn.send_payload(self.answer_frame());
+    }
+
+    /// The frame one action answers with: the published projection, restated
+    /// with the Start facts the action changed, and kept as the projection the
+    /// next read answers from.
+    fn answer_frame(&self) -> String {
+        let cached = self.cached_projection();
+        let start = self.start_evidence(cached.attached_worker.clone());
+        let mut snapshot = cached.snapshot;
+        if let Value::Object(object) = &mut snapshot {
+            object.insert("starting".into(), Value::Bool(start.starting));
+            object.insert(
+                "startError".into(),
+                start.error.map(Value::String).unwrap_or(Value::Null),
+            );
+            object.insert(
+                "worker".into(),
+                start
+                    .worker
+                    .map(|worker| serde_json::to_value(worker).unwrap_or(Value::Null))
+                    .unwrap_or(Value::Null),
+            );
+        }
+        let frame_text = crate::jsjson::stringify(&Self::typed_snapshot(snapshot.clone()));
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.cached = Some(CachedProjection {
+                snapshot,
+                frame_text: frame_text.clone(),
+                attached_worker: cached.attached_worker,
+            });
+        }
+        frame_text
     }
 
     /// One snapshot with the frame type the page reads it by.
@@ -4029,8 +4178,8 @@ impl IssuesBridge {
     /// Recomputes the state and publishes a changed snapshot and activity.
     pub fn refresh(&self) {
         self.settle_vanished_start();
-        let (snapshot, frame_text) = self.refresh_projection();
-        let signature = frame_text;
+        let cached = self.refresh_projection();
+        let signature = cached.frame_text;
         let changed = {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             if inner.last_signature == signature {
@@ -4041,9 +4190,9 @@ impl IssuesBridge {
             }
         };
         if changed {
-            (self.send)(Self::typed_snapshot(snapshot.clone()), None);
+            (self.send)(Self::typed_snapshot(cached.snapshot.clone()), None);
         }
-        let run_ids = self.active_run_ids(&snapshot);
+        let run_ids = self.active_run_ids(&cached.snapshot);
         let active: HashSet<&String> = run_ids.iter().collect();
         {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
@@ -4102,7 +4251,7 @@ impl IssuesBridge {
             }
             StartAcceptance::Answered { .. } => self.reply(conn),
             StartAcceptance::Accepted { generation, inline } => {
-                let accepted = self.refresh_projection().1;
+                let accepted = self.answer_frame();
                 self.answer_accepted(conn, accepted, generation, inline)
                     .await;
             }

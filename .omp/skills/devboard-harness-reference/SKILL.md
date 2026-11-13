@@ -3904,10 +3904,15 @@ replay reaches the page that asked and no other page; a `GET /issues` read repla
 activity to its own page, which is how a page heals a log whose delta a hidden or failed poll
 missed. An operator action's answer, a Start included, carries the state document alone: one run's
 activity reaches 1 MiB, so replaying every running agent's log inside an action's answer made one
-Start's response 32 MB on a dashboard with sixteen running agents. The state document version is
-2; the parser still accepts version 1, loading it with empty `agents`, `cooldowns` populated from
-its `goalCooldowns`, and its queue, labels, ledger, and runs intact. A damaged state file is
-renamed aside and never prevents the mode from opening.
+Start's response 32 MB on a dashboard with sixteen running agents. That answer restates the
+projection the bridge already published, with the Start facts the action changed, so no action's
+answer rebuilds the projection inside the request: a rebuild reads every worker document the
+checkout ever wrote, one per harness version it ran, and the measured read of sixty such documents
+was hundreds of milliseconds on the tick's 250 ms cadence. The bridge also parses a state document
+once per content change, so rebuilding an unchanged tree costs one `stat` per document rather than
+one parse. The state document version is 2; the parser still accepts version 1, loading it with
+empty `agents`, `cooldowns` populated from its `goalCooldowns`, and its queue, labels, ledger, and
+runs intact. A damaged state file is renamed aside and never prevents the mode from opening.
 
 The worker records the harness version it loaded, its pid, and its argv; a mismatched dashboard
 shows a notice and never kills the worker, and the state records each ACP child's pid, argv, and
