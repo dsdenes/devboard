@@ -29,6 +29,16 @@ Every agent flow this harness runs follows four rules, and a change that breaks 
    the observable result it produces. No prompt body opens with a backticked or bare slash-command
    invocation of itself.
 
+## Issue claims prove their owner
+
+An Issues claim names its issue, the owner's pid and kernel start tick, the harness version, and
+the owning run id. It blocks a start only while that exact process still runs and that run is
+`running`; a legacy claim without a start tick blocks only while a live worker lock names the same
+pid and version. Every other claim is reclaimed in the pass that wants the issue, a refused claim
+closes the run it opened without starting a peer, and a worker start prunes claims and locks whose
+owner is provably dead. The deferral line names only proven holders, with the version their worker
+state records and their pid.
+
 ## The source tree is not the installed harness
 
 This checkout builds and releases the harness; hosts run an installed copy.

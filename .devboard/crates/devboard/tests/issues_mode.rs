@@ -108,6 +108,38 @@ fn state_document(repo: &Path, lifecycle: &str, agents: Value) -> Value {
     })
 }
 
+/// A `running` run record whose identity is this test process, so a claim
+/// naming it proves its owner.
+fn running_run(repo: &Path, state: &Path, run_id: &str) {
+    let directory = state
+        .join("issues")
+        .join(repo_key(repo))
+        .join("runs")
+        .join(run_id);
+    std::fs::create_dir_all(&directory).expect("a run directory");
+    std::fs::write(
+        directory.join("run.json"),
+        json!({
+            "version": 1,
+            "runId": run_id,
+            "repo": "acme/app",
+            "status": "running",
+            "argv": [],
+            "cwd": repo.display().to_string(),
+            "startedAt": devboard::journal::now_iso8601(),
+            "finishedAt": null,
+            "exitCode": null,
+            "issues": [],
+            "firstStderrLine": null,
+            "workerPid": std::process::id(),
+            "startTicks": devboard::supervision::start_ticks(std::process::id()),
+            "harnessVersion": "1.2.3",
+        })
+        .to_string(),
+    )
+    .expect("a run record");
+}
+
 fn write_state(repo: &Path, state: &Path, document: &Value) {
     let path = state_path(repo, state);
     std::fs::create_dir_all(path.parent().expect("a parent")).expect("a state directory");
@@ -410,7 +442,9 @@ async fn a_fresh_read_clears_a_processing_label_no_live_claim_owns() {
             Ok(())
         })
     });
-    // Issue #5 is owned by a claim this live process holds; #4 is not.
+    // Issue #5 is owned by a claim this live process holds through its
+    // running run; #4 is not.
+    running_run(&repo, &state, "run-5");
     let claims = repo.join(".devboard/.tmp/issues/claims");
     std::fs::create_dir_all(&claims).expect("a claims directory");
     std::fs::write(
@@ -418,7 +452,9 @@ async fn a_fresh_read_clears_a_processing_label_no_live_claim_owns() {
         json!({
             "number": 5,
             "pid": std::process::id(),
+            "startTicks": devboard::supervision::start_ticks(std::process::id()),
             "runId": "run-5",
+            "harnessVersion": "1.2.3",
         })
         .to_string(),
     )

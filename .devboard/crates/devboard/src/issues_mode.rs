@@ -614,11 +614,23 @@ fn release_lock(path: &Path, token: &str) {
 /* Issue claims                                                              */
 /* ------------------------------------------------------------------------ */
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct IssueClaim {
     number: u64,
     pid: u32,
+    /// The owner's kernel start tick. Absent on a legacy claim, whose owner is
+    /// proven only by a live worker lock naming the same pid and version.
+    start_ticks: Option<i64>,
+    harness_version: Option<String>,
+    /// The run that owns the issue: the id its directory and `run.json` carry.
     run_id: String,
+}
+
+/// One proven live owner of a queued claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaimHolder {
+    pid: u32,
+    version: Option<String>,
 }
 
 fn claim_path(repo_dir: &Path, number: u64) -> PathBuf {
@@ -634,9 +646,27 @@ fn parse_claim(text: &str) -> Option<IssueClaim> {
         return None;
     }
     let run_id = object.get("runId").and_then(Value::as_str)?;
+    if run_id.is_empty()
+        || run_id == "."
+        || run_id == ".."
+        || run_id.contains('/')
+        || run_id.contains('\\')
+    {
+        return None;
+    }
+    let start_ticks = match object.get("startTicks") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_i64()?),
+    };
+    let harness_version = match object.get("harnessVersion") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_str()?.to_string()),
+    };
     Some(IssueClaim {
         number,
         pid: pid as u32,
+        start_ticks,
+        harness_version,
         run_id: run_id.to_string(),
     })
 }
@@ -647,7 +677,89 @@ fn read_issue_claim(repo_dir: &Path, number: u64) -> Option<IssueClaim> {
         .and_then(|text| parse_claim(&text))
 }
 
-fn live_issue_claims(repo_dir: &Path) -> Vec<IssueClaim> {
+/// The run record a claim names, when that record parses.
+fn claimed_run(state_dir: &Path, repo_dir: &Path, run_id: &str) -> Option<RunFile> {
+    let path = run_file_path(&run_directory(state_dir, repo_dir, run_id));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| parse_run_file(&text))
+}
+
+fn claimed_run_is_running(state_dir: &Path, repo_dir: &Path, run_id: &str) -> bool {
+    claimed_run(state_dir, repo_dir, run_id)
+        .map(|run| run.status == "running")
+        .unwrap_or(false)
+}
+
+/// The live worker lock that proves a legacy claim: the recorded pid and
+/// harness version must be the claim's.
+fn legacy_claim_lock(repo_dir: &Path, claim: &IssueClaim) -> Option<LockOwner> {
+    live_lock_owners(&lock_path(repo_dir))
+        .into_iter()
+        .find(|owner| owner.pid == claim.pid && owner.harness_version == claim.harness_version)
+}
+
+/// The one rule that decides whether a claim still proves its owner. An
+/// identity claim is live only while the exact process it names still runs and
+/// the run it names is still `running`; a legacy claim without a start tick is
+/// live only while a worker lock names the same pid and version.
+fn claim_is_live(state_dir: &Path, repo_dir: &Path, claim: &IssueClaim) -> bool {
+    match claim.start_ticks {
+        Some(start_ticks) => {
+            crate::supervision::live_identity(claim.pid, Some(start_ticks))
+                && claimed_run_is_running(state_dir, repo_dir, &claim.run_id)
+        }
+        None => legacy_claim_lock(repo_dir, claim).is_some(),
+    }
+}
+
+/// The holder a live claim proves, with the harness version its own worker
+/// state records: the run record for an identity claim, the lock for a legacy
+/// one. `None` when the claim is not live.
+fn live_claim_holder(state_dir: &Path, repo_dir: &Path, claim: &IssueClaim) -> Option<ClaimHolder> {
+    if !claim_is_live(state_dir, repo_dir, claim) {
+        return None;
+    }
+    let version = if claim.start_ticks.is_some() {
+        claimed_run(state_dir, repo_dir, &claim.run_id).and_then(|run| run.harness_version)
+    } else {
+        legacy_claim_lock(repo_dir, claim).and_then(|owner| owner.harness_version)
+    };
+    Some(ClaimHolder {
+        pid: claim.pid,
+        version: version.or_else(|| claim.harness_version.clone()),
+    })
+}
+
+/// Counts one queued issue under its proven holder, when the claim still
+/// proves one. A claim that proves no holder contributes no line.
+fn count_claim_holder(
+    held: &mut BTreeMap<u32, (Option<String>, usize)>,
+    state_dir: &Path,
+    repo_dir: &Path,
+    number: u64,
+) {
+    let Some(claim) = read_issue_claim(repo_dir, number) else {
+        return;
+    };
+    let Some(holder) = live_claim_holder(state_dir, repo_dir, &claim) else {
+        return;
+    };
+    match held.entry(holder.pid) {
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let entry = entry.get_mut();
+            entry.1 += 1;
+            if entry.0.is_none() {
+                entry.0 = holder.version;
+            }
+        }
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert((holder.version, 1));
+        }
+    }
+}
+
+fn live_issue_claims(state_dir: &Path, repo_dir: &Path) -> Vec<IssueClaim> {
     let mut claims = Vec::new();
     let Ok(entries) = std::fs::read_dir(claims_directory(repo_dir)) else {
         return claims;
@@ -657,14 +769,15 @@ fn live_issue_claims(repo_dir: &Path) -> Vec<IssueClaim> {
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
+        // A record that does not parse proves no owner and blocks nothing;
+        // leaving it avoids deleting a claim another version is still writing.
         let Some(claim) = std::fs::read_to_string(&path)
             .ok()
             .and_then(|text| parse_claim(&text))
         else {
-            let _ = std::fs::remove_file(&path);
             continue;
         };
-        if !pid_alive(claim.pid) {
+        if !claim_is_live(state_dir, repo_dir, &claim) {
             let _ = std::fs::remove_file(&path);
             continue;
         }
@@ -674,8 +787,8 @@ fn live_issue_claims(repo_dir: &Path) -> Vec<IssueClaim> {
 }
 
 /// The issue numbers this checkout's live claims own.
-fn claimed_issue_numbers(repo_dir: &Path) -> HashSet<u64> {
-    live_issue_claims(repo_dir)
+fn claimed_issue_numbers(state_dir: &Path, repo_dir: &Path) -> HashSet<u64> {
+    live_issue_claims(state_dir, repo_dir)
         .into_iter()
         .map(|claim| claim.number)
         .collect()
@@ -692,7 +805,37 @@ fn unclaimed_processing(issues: &[Issue], owned: &HashSet<u64>) -> Vec<u64> {
         .collect()
 }
 
-fn claim_issue(repo_dir: &Path, number: u64, run_id: &str, version: Option<&str>) -> bool {
+/// Writes a fully formed claim beside its final path and links it into place,
+/// so no reader ever parses a half-written record.
+fn write_issue_claim(path: &Path, claim: &Value) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let staged = PathBuf::from(format!(
+        "{}.new-{}-{}",
+        path.display(),
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)?;
+        file.write_all(format!("{}\n", crate::jsjson::stringify(claim)).as_bytes())?;
+        std::fs::hard_link(&staged, path)
+    })();
+    let _ = std::fs::remove_file(&staged);
+    result
+}
+
+/// Takes the issue's claim for the run that owns it. A claim that no longer
+/// proves its owner is reclaimed here, in the same pass that wants the issue.
+fn claim_issue(
+    repo_dir: &Path,
+    state_dir: &Path,
+    number: u64,
+    run_id: &str,
+    version: Option<&str>,
+) -> bool {
     if std::fs::create_dir_all(claims_directory(repo_dir)).is_err() {
         return false;
     }
@@ -700,29 +843,23 @@ fn claim_issue(repo_dir: &Path, number: u64, run_id: &str, version: Option<&str>
     let claim = json!({
         "number": number,
         "pid": std::process::id(),
+        "startTicks": crate::supervision::start_ticks(std::process::id()),
         "runId": run_id,
         "harnessVersion": version,
     });
-    for _attempt in 0..2 {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                use std::io::Write as _;
-                let _ =
-                    file.write_all(format!("{}\n", crate::jsjson::stringify(&claim)).as_bytes());
-                return true;
-            }
+    for _attempt in 0..3 {
+        match write_issue_claim(&path, &claim) {
+            Ok(()) => return true,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let Some(existing) = read_issue_claim(repo_dir, number) else {
+                    // A damaged record proves no owner; it is replaced.
+                    let _ = std::fs::remove_file(&path);
                     continue;
                 };
                 if existing.pid == std::process::id() && existing.run_id == run_id {
                     return true;
                 }
-                if pid_alive(existing.pid) {
+                if claim_is_live(state_dir, repo_dir, &existing) {
                     return false;
                 }
                 let _ = std::fs::remove_file(&path);
@@ -741,6 +878,52 @@ fn release_issue_claim(repo_dir: &Path, number: u64) {
         return;
     }
     let _ = std::fs::remove_file(claim_path(repo_dir, number));
+}
+
+/// Removes every claim and worker lock whose owner no longer proves
+/// ownership. A live owner's file is left byte-identical.
+fn prune_dead_owners(state_dir: &Path, repo_dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(claims_directory(repo_dir)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let claim = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| parse_claim(&text));
+            match claim {
+                Some(claim) if !claim_is_live(state_dir, repo_dir, &claim) => {
+                    let _ = std::fs::remove_file(&path);
+                }
+                // Unparseable proves no dead owner; a claim still being
+                // written is left for its writer.
+                _ => {}
+            }
+        }
+    }
+    let base = lock_path(repo_dir);
+    let Some(directory) = base.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("lock") {
+            continue;
+        }
+        let Some(owner) = read_lock(&entry.path()) else {
+            continue;
+        };
+        if !owner_alive(&owner) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3711,7 +3894,7 @@ impl IssuesBridge {
     /// progress only while a live claim owns that issue, so a label a stopped,
     /// killed, or upgraded-away run left behind never keeps a row running.
     fn queue_for(&self, states: &[IssuesState]) -> Vec<QueuedIssue> {
-        let owned = claimed_issue_numbers(&self.repo_dir);
+        let owned = claimed_issue_numbers(&self.state_dir, &self.repo_dir);
         let mut rows = queue_rows(self.tracker.open_issues(), states);
         for row in &mut rows {
             if !owned.contains(&row.number) {
@@ -4690,11 +4873,11 @@ impl IssuesBridge {
     /// write is retried by the next fresh read; the row never keeps running,
     /// because `queue_for` hides a label no claim owns.
     async fn repair_stale_processing(&self, issues: &[Issue]) {
-        let owned = claimed_issue_numbers(&self.repo_dir);
+        let owned = claimed_issue_numbers(&self.state_dir, &self.repo_dir);
         for number in unclaimed_processing(issues, &owned) {
             // A claim written after the read belongs to a run that just
             // started; its label is not stale, so it is never cleared.
-            if claimed_issue_numbers(&self.repo_dir).contains(&number) {
+            if claimed_issue_numbers(&self.state_dir, &self.repo_dir).contains(&number) {
                 continue;
             }
             if let Err(detail) = (self.hooks.processing_write)(number, false).await {
@@ -5463,7 +5646,6 @@ struct IssuesWorker {
     active: HashMap<u64, WorkerActive>,
     dismissed: HashMap<u64, std::time::Instant>,
     claiming: HashSet<u64>,
-    claim_token: String,
     runs: Vec<RunEntry>,
     draining: bool,
     stopping: bool,
@@ -5509,7 +5691,6 @@ impl IssuesWorker {
             active: HashMap::new(),
             dismissed: HashMap::new(),
             claiming: HashSet::new(),
-            claim_token: format!("pending-{}-{}", std::process::id(), uuid::Uuid::new_v4()),
             runs: Vec::new(),
             draining: false,
             stopping: false,
@@ -5566,6 +5747,9 @@ impl IssuesWorker {
         let lock_path = versioned_lock_path(&self.repo_dir, self.harness_version.as_deref());
         self.lock = Some((lock_path, token));
         let _ = lock;
+        // Every claim and lock whose owner no longer holds it is removed
+        // before this worker reads the queue. A live owner is left untouched.
+        prune_dead_owners(&self.state_dir, &self.repo_dir);
 
         let versioned = versioned_state_path(
             &self.state_dir,
@@ -5944,14 +6128,17 @@ impl IssuesWorker {
 
     /// True when a live process outside this one holds this issue's claim, so
     /// this worker must leave the issue alone. This process's own claim is not
-    /// another owner, and a claim whose owner has exited is reclaimable.
+    /// another owner, and a claim that proves no owner is reclaimable.
     fn claimed_elsewhere(&self, number: u64) -> bool {
         if self.claiming.contains(&number) {
             return false;
         }
         match read_issue_claim(&self.repo_dir, number) {
             None => false,
-            Some(claim) => claim.pid != std::process::id() && pid_alive(claim.pid),
+            Some(claim) => {
+                claim.pid != std::process::id()
+                    && claim_is_live(&self.state_dir, &self.repo_dir, &claim)
+            }
         }
     }
 
@@ -6048,7 +6235,7 @@ impl IssuesWorker {
     async fn reconcile_processing(&mut self, issues: &[Issue]) {
         // This worker's own runs hold a live claim; the active set is the
         // local proof for a claim released a moment before its label clears.
-        let mut owned = claimed_issue_numbers(&self.repo_dir);
+        let mut owned = claimed_issue_numbers(&self.state_dir, &self.repo_dir);
         owned.extend(self.active.keys().copied());
         for number in unclaimed_processing(issues, &owned) {
             if let Err(detail) = write_processing(
@@ -6222,9 +6409,10 @@ impl IssuesWorker {
             return;
         }
         let mut deferral: Option<String> = None;
-        // How many queued issues each live owner outside this process holds,
-        // so a pass that starts none of them names who does.
-        let mut held_elsewhere: BTreeMap<u32, usize> = BTreeMap::new();
+        // Every proven live owner outside this process that holds a queued
+        // issue, with the harness version its worker state records, so a pass
+        // that starts none of them names who does.
+        let mut held_elsewhere: BTreeMap<u32, (Option<String>, usize)> = BTreeMap::new();
         let queue = self.state.queue.clone();
         for issue in queue {
             if self.active.len() >= MAX_CONCURRENT_PEERS {
@@ -6244,20 +6432,15 @@ impl IssuesWorker {
             if self.cooldown_remaining(issue.number) {
                 continue;
             }
-            if !claim_issue(
-                &self.repo_dir,
-                issue.number,
-                &self.claim_token,
-                self.harness_version.as_deref(),
-            ) {
-                if let Some(claim) = read_issue_claim(&self.repo_dir, issue.number) {
-                    if claim.pid != std::process::id() && pid_alive(claim.pid) {
-                        *held_elsewhere.entry(claim.pid).or_insert(0) += 1;
-                    }
-                }
+            if self.claimed_elsewhere(issue.number) {
+                count_claim_holder(
+                    &mut held_elsewhere,
+                    &self.state_dir,
+                    &self.repo_dir,
+                    issue.number,
+                );
                 continue;
             }
-            self.claiming.insert(issue.number);
             let issue = Issue {
                 number: issue.number,
                 title: issue.title,
@@ -6280,8 +6463,6 @@ impl IssuesWorker {
                         Ok(slot) => Some(slot),
                         Err(reason) => {
                             governor.record_deferral("issue", &label, &reason);
-                            release_issue_claim(&self.repo_dir, issue.number);
-                            self.claiming.remove(&issue.number);
                             deferral = Some(format!(
                                 "issue #{} deferred: {}",
                                 issue.number,
@@ -6293,21 +6474,51 @@ impl IssuesWorker {
                 }
                 None => None,
             };
-            self.begin(issue, permit).await;
+            // The owning run record is written before the claim, so a live
+            // claim always has a `running` run from its first instant.
+            let active = match self.open_run(&issue) {
+                Ok(active) => active,
+                Err((run_id, directory, error)) => {
+                    self.fail_without_peer(&issue, &run_id, &directory, &error);
+                    continue;
+                }
+            };
+            if !claim_issue(
+                &self.repo_dir,
+                &self.state_dir,
+                issue.number,
+                &active.run_id,
+                self.harness_version.as_deref(),
+            ) {
+                self.close_refused_run(&active);
+                count_claim_holder(
+                    &mut held_elsewhere,
+                    &self.state_dir,
+                    &self.repo_dir,
+                    issue.number,
+                );
+                continue;
+            }
+            self.claiming.insert(issue.number);
+            self.begin(issue, permit, active).await;
             if self.stopping || self.state.paused || !self.state.enabled {
                 break;
             }
         }
         if deferral.is_none() && !held_elsewhere.is_empty() {
-            let count: usize = held_elsewhere.values().sum();
+            let count: usize = held_elsewhere.values().map(|(_, count)| *count).sum();
             let holders = held_elsewhere
-                .keys()
-                .map(u32::to_string)
+                .iter()
+                .map(|(pid, (version, _))| {
+                    format!(
+                        "harness {} (pid {pid})",
+                        version.as_deref().unwrap_or("unknown")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             deferral = Some(format!(
-                "{count} queued issue(s) are claimed by another live worker (pid {holders}); \
-                 the start is deferred"
+                "{count} queued issue(s) are claimed by {holders}; the start is deferred"
             ));
         }
         self.state.lifecycle = self.settled_lifecycle();
@@ -6395,19 +6606,34 @@ impl IssuesWorker {
         })
     }
 
-    async fn begin(&mut self, issue: Issue, permit: Option<crate::resources::Slot>) {
+    async fn begin(
+        &mut self,
+        issue: Issue,
+        permit: Option<crate::resources::Slot>,
+        mut active: WorkerActive,
+    ) {
         if !self.set_processing(issue.number, true).await {
             if self.claiming.remove(&issue.number) {
                 release_issue_claim(&self.repo_dir, issue.number);
             }
+            let finished_at = iso_now();
+            let detail = format!(
+                "could not mark issue #{} as processing on the tracker",
+                issue.number
+            );
+            self.update_run(
+                &active.run_id,
+                &active.directory,
+                "failed",
+                &finished_at,
+                Some(1),
+                Some(detail.clone()),
+            );
             self.state.cooldowns.insert(
                 issue.number.to_string(),
                 iso_from_millis(epoch_millis(OffsetDateTime::now_utc()) + COOLDOWN_MS as i64),
             );
-            self.state.last_error = Some(format!(
-                "could not mark issue #{} as processing on the tracker",
-                issue.number
-            ));
+            self.state.last_error = Some(detail);
             self.state.lifecycle = self.settled_lifecycle();
             self.publish();
             return;
@@ -6417,24 +6643,15 @@ impl IssuesWorker {
             if self.claiming.remove(&issue.number) {
                 release_issue_claim(&self.repo_dir, issue.number);
             }
-            return;
-        }
-        let mut active = match self.open_run(&issue) {
-            Ok(active) => active,
-            Err((run_id, directory, error)) => {
-                self.set_processing(issue.number, false).await;
-                self.fail_without_peer(&issue, &run_id, &directory, &error);
-                return;
-            }
-        };
-        if self.stopping {
-            if let Some(peer) = &active.peer {
-                peer.close();
-            }
-            self.set_processing(issue.number, false).await;
-            if self.claiming.remove(&issue.number) {
-                release_issue_claim(&self.repo_dir, issue.number);
-            }
+            let finished_at = iso_now();
+            self.update_run(
+                &active.run_id,
+                &active.directory,
+                "stopped",
+                &finished_at,
+                None,
+                None,
+            );
             return;
         }
         let environment = match self.peer_environment(&active).await {
@@ -6660,6 +6877,20 @@ impl IssuesWorker {
         entry.run.exit_code = exit_code;
         entry.run.first_stderr_line = first_stderr_line;
         let _ = write_run_file(directory, &entry.run);
+    }
+
+    /// Closes a run whose claim another live worker already owns. No peer
+    /// starts for it, and it is never reported as this worker's failure.
+    fn close_refused_run(&mut self, active: &WorkerActive) {
+        let finished_at = iso_now();
+        self.update_run(
+            &active.run_id,
+            &active.directory,
+            "stopped",
+            &finished_at,
+            None,
+            None,
+        );
     }
 
     async fn forget(&mut self, number: u64, run_id: &str) {
@@ -7512,13 +7743,17 @@ mod tests {
     }
 
     fn worker(repo: &Path, state: &Path) -> IssuesWorker {
+        worker_with_version(repo, state, "1.2.3")
+    }
+
+    fn worker_with_version(repo: &Path, state: &Path, version: &str) -> IssuesWorker {
         let mut worker = IssuesWorker::new(
             repo.to_path_buf(),
             state.to_path_buf(),
             100,
             "omp acp".to_string(),
             HashMap::new(),
-            Some("1.2.3".to_string()),
+            Some(version.to_string()),
         );
         worker.state.repo = "acme/app".to_string();
         worker.state.enabled = true;
@@ -7530,6 +7765,73 @@ mod tests {
         let active = worker.open_run(&issue).expect("a run");
         worker.state.queue = vec![worker.queued(&issue)];
         worker.active.insert(issue.number, active);
+    }
+
+    /// A `running` run record for a claim written by a stand-in worker.
+    fn seed_running_run(state: &Path, repo: &Path, run_id: &str, version: &str, pid: u32) {
+        let directory = run_directory(state, repo, run_id);
+        std::fs::create_dir_all(&directory).expect("a run directory");
+        let run = RunFile {
+            version: 1,
+            run_id: run_id.to_string(),
+            repo: "acme/app".to_string(),
+            status: "running".to_string(),
+            argv: Vec::new(),
+            cwd: repo.display().to_string(),
+            started_at: iso_now(),
+            finished_at: None,
+            exit_code: None,
+            issues: Vec::new(),
+            first_stderr_line: None,
+            worker_pid: pid,
+            start_ticks: crate::supervision::start_ticks(pid),
+            harness_version: Some(version.to_string()),
+        };
+        write_run_file(&directory, &run).expect("a run record");
+    }
+
+    fn seed_claim(repo: &Path, claim: Value) {
+        std::fs::create_dir_all(claims_directory(repo)).expect("a claims directory");
+        let number = claim["number"].as_u64().expect("a claim number");
+        std::fs::write(
+            claim_path(repo, number),
+            format!("{}\n", crate::jsjson::stringify(&claim)),
+        )
+        .expect("a claim");
+    }
+
+    fn seed_lock(repo: &Path, version: Option<&str>, pid: u32) {
+        let path = versioned_lock_path(repo, version);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a lock directory");
+        }
+        let owner = LockOwner {
+            pid,
+            started_at: process_started_at(pid)
+                .map(iso_from_millis)
+                .unwrap_or_else(iso_now),
+            repo: repo.display().to_string(),
+            state_dir: String::new(),
+            harness_version: version.map(str::to_string),
+            argv: Vec::new(),
+        };
+        std::fs::write(&path, crate::jsjson::stringify(&owner.to_json())).expect("a lock");
+    }
+
+    /// Opens a run and claims its issue for this worker, as the pass does.
+    fn claim_for(worker: &mut IssuesWorker, number: u64) {
+        let issue = issue(number, &[]);
+        let active = worker.open_run(&issue).expect("a run");
+        let run_id = active.run_id.clone();
+        worker.active.insert(number, active);
+        assert!(claim_issue(
+            &worker.repo_dir,
+            &worker.state_dir,
+            number,
+            &run_id,
+            worker.harness_version.as_deref(),
+        ));
+        worker.claiming.insert(number);
     }
 
     fn entry(number: u64, run_id: &str) -> HandledIssue {
@@ -8046,18 +8348,18 @@ mod tests {
     async fn a_queue_claimed_by_another_live_worker_reads_idle_and_names_it() {
         let (repo, state) = unit_root("claim-held-elsewhere");
         let mut owner = stand_in();
-        let claim = json!({
-            "number": 7,
-            "pid": owner.id(),
-            "runId": "other-worker",
-            "harnessVersion": "1.2.2",
-        });
-        std::fs::create_dir_all(claims_directory(&repo)).expect("a claims directory");
-        std::fs::write(
-            claim_path(&repo, 7),
-            format!("{}\n", crate::jsjson::stringify(&claim)),
-        )
-        .expect("a claim");
+        let ticks = crate::supervision::start_ticks(owner.id()).expect("the stand-in's start tick");
+        seed_running_run(&state, &repo, "other-worker", "1.2.2", owner.id());
+        seed_claim(
+            &repo,
+            json!({
+                "number": 7,
+                "pid": owner.id(),
+                "startTicks": ticks,
+                "runId": "other-worker",
+                "harnessVersion": "1.2.2",
+            }),
+        );
 
         let mut worker = worker(&repo, &state);
         worker.agent_command = "/bin/false".to_string();
@@ -8073,9 +8375,12 @@ mod tests {
             .deferral
             .clone()
             .expect("the deferral names the owner");
-        assert!(
-            line.contains(&format!("pid {}", owner.id())),
-            "the line names the holding pid: {line}"
+        assert_eq!(
+            line,
+            format!(
+                "1 queued issue(s) are claimed by harness 1.2.2 (pid {}); the start is deferred",
+                owner.id()
+            )
         );
         let published = read_state(&versioned_state_path(&state, &repo, Some("1.2.3")))
             .expect("the published state");
@@ -8092,18 +8397,18 @@ mod tests {
     async fn a_queue_only_partly_claimed_by_another_worker_keeps_the_failure() {
         let (repo, state) = unit_root("claim-held-partly");
         let mut owner = stand_in();
-        let claim = json!({
-            "number": 7,
-            "pid": owner.id(),
-            "runId": "other-worker",
-            "harnessVersion": "1.2.2",
-        });
-        std::fs::create_dir_all(claims_directory(&repo)).expect("a claims directory");
-        std::fs::write(
-            claim_path(&repo, 7),
-            format!("{}\n", crate::jsjson::stringify(&claim)),
-        )
-        .expect("a claim");
+        let ticks = crate::supervision::start_ticks(owner.id()).expect("the stand-in's start tick");
+        seed_running_run(&state, &repo, "other-worker", "1.2.2", owner.id());
+        seed_claim(
+            &repo,
+            json!({
+                "number": 7,
+                "pid": owner.id(),
+                "startTicks": ticks,
+                "runId": "other-worker",
+                "harnessVersion": "1.2.2",
+            }),
+        );
 
         let mut worker = worker(&repo, &state);
         let held = issue(7, &[]);
@@ -8116,6 +8421,344 @@ mod tests {
 
         let _ = owner.kill();
         let _ = owner.wait();
+    }
+
+    /// A pid the kernel has already given to an unrelated process is no proof
+    /// of ownership: the claim is reclaimed and the pass attempts the issue
+    /// with no deferral line naming the stranger.
+    #[tokio::test]
+    async fn a_claim_with_a_recycled_pid_is_reclaimed() {
+        let (repo, state) = unit_root("claim-recycled-pid");
+        let mut stranger = stand_in();
+        let ticks =
+            crate::supervision::start_ticks(stranger.id()).expect("the stand-in's start tick");
+        seed_claim(
+            &repo,
+            json!({
+                "number": 7,
+                "pid": stranger.id(),
+                "startTicks": ticks + 1,
+                "runId": "gone-run",
+                "harnessVersion": "1.2.3",
+            }),
+        );
+
+        let mut worker = worker(&repo, &state);
+        worker.agent_command = "/definitely/not/a/devboard-agent".to_string();
+        let queued = issue(7, &[]);
+        worker.state.queue = vec![worker.queued(&queued)];
+        worker.maybe_trigger().await;
+
+        assert_eq!(worker.state.deferral, None, "no holder was proven");
+        assert!(
+            worker
+                .runs
+                .iter()
+                .any(|entry| entry.run.issues.iter().any(|issue| issue.number == 7)),
+            "the pass attempted the issue"
+        );
+        let claim = read_issue_claim(&repo, 7);
+        assert!(
+            claim.as_ref().map(|claim| claim.pid) != Some(stranger.id()),
+            "the stale claim was reclaimed: {claim:?}"
+        );
+
+        let _ = stranger.kill();
+        let _ = stranger.wait();
+    }
+
+    /// A legacy claim carries no start tick, so only a live worker lock naming
+    /// the same pid and harness version proves it.
+    #[tokio::test]
+    async fn a_legacy_claim_needs_a_live_worker_lock() {
+        let (repo, state) = unit_root("legacy-claim-lock");
+        let mut holder = stand_in();
+        let pid = holder.id();
+        let legacy_claim = || {
+            json!({
+                "number": 7,
+                "pid": pid,
+                "runId": "legacy-run",
+                "harnessVersion": "1.2.3",
+            })
+        };
+        seed_running_run(&state, &repo, "other-run", "1.2.4", std::process::id());
+        seed_claim(&repo, legacy_claim());
+        let claim = read_issue_claim(&repo, 7).expect("the legacy claim");
+        assert!(
+            !claim_is_live(&state, &repo, &claim),
+            "no lock proves the owner"
+        );
+
+        seed_lock(&repo, Some("1.2.3"), pid);
+        let claim = read_issue_claim(&repo, 7).expect("the legacy claim");
+        assert!(
+            claim_is_live(&state, &repo, &claim),
+            "the live lock proves the owner"
+        );
+        assert!(!claim_issue(&repo, &state, 7, "other-run", Some("1.2.4")));
+        assert_eq!(
+            read_issue_claim(&repo, 7).expect("the claim").run_id,
+            "legacy-run"
+        );
+
+        std::fs::remove_file(versioned_lock_path(&repo, Some("1.2.3"))).expect("the lock");
+        seed_lock(&repo, Some("1.2.4"), pid);
+        seed_claim(&repo, legacy_claim());
+        let claim = read_issue_claim(&repo, 7).expect("the legacy claim");
+        assert!(
+            !claim_is_live(&state, &repo, &claim),
+            "a foreign version is no proof"
+        );
+        assert!(claim_issue(&repo, &state, 7, "other-run", Some("1.2.4")));
+        assert_eq!(
+            read_issue_claim(&repo, 7).expect("the claim").run_id,
+            "other-run"
+        );
+
+        let _ = holder.kill();
+        let _ = holder.wait();
+    }
+
+    /// The deferral names the version the holding worker's own run records,
+    /// not a version the claim asserts about itself.
+    #[tokio::test]
+    async fn the_deferral_names_the_holding_worker_version() {
+        let (repo, state) = unit_root("deferral-holder-version");
+        let mut holder = stand_in();
+        let pid = holder.id();
+        let ticks = crate::supervision::start_ticks(pid).expect("the stand-in's start tick");
+        seed_running_run(&state, &repo, "holder-run", "1.2.2", pid);
+        seed_claim(
+            &repo,
+            json!({
+                "number": 7,
+                "pid": pid,
+                "startTicks": ticks,
+                "runId": "holder-run",
+                "harnessVersion": "9.9.9",
+            }),
+        );
+
+        let mut worker = worker(&repo, &state);
+        worker.agent_command = "/definitely/not/a/devboard-agent".to_string();
+        let queued = issue(7, &[]);
+        worker.state.queue = vec![worker.queued(&queued)];
+        worker.maybe_trigger().await;
+
+        assert!(worker.active.is_empty(), "the claim belongs to the holder");
+        assert_eq!(worker.state.lifecycle, "idle");
+        assert_eq!(
+            worker.state.deferral.as_deref(),
+            Some(
+                format!(
+                    "1 queued issue(s) are claimed by harness 1.2.2 (pid {pid}); \
+                     the start is deferred"
+                )
+                .as_str()
+            )
+        );
+        let published = read_state(&versioned_state_path(&state, &repo, Some("1.2.3")))
+            .expect("the published state");
+        assert_eq!(published.lifecycle, "idle");
+        assert_eq!(published.deferral, worker.state.deferral);
+
+        let _ = holder.kill();
+        let _ = holder.wait();
+    }
+
+    /// A start removes a dead owner's claim and lock and leaves a live
+    /// owner's files byte-identical; running it again changes nothing.
+    #[tokio::test]
+    async fn a_dead_owners_claim_and_lock_are_pruned_on_start() {
+        let (repo, state) = unit_root("prune-dead-owners");
+        let mut dead = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let dead_pid = dead.id();
+        let _ = dead.wait();
+        let mut alive = stand_in();
+        let alive_pid = alive.id();
+        let ticks = crate::supervision::start_ticks(alive_pid).expect("the stand-in's start tick");
+
+        seed_claim(
+            &repo,
+            json!({
+                "number": 8,
+                "pid": dead_pid,
+                "startTicks": 1,
+                "runId": "dead-run",
+                "harnessVersion": "1.2.3",
+            }),
+        );
+        seed_claim(
+            &repo,
+            json!({
+                "number": 9,
+                "pid": alive_pid,
+                "startTicks": ticks,
+                "runId": "live-run",
+                "harnessVersion": "1.2.3",
+            }),
+        );
+        seed_running_run(&state, &repo, "live-run", "1.2.3", alive_pid);
+        seed_lock(&repo, Some("1.2.2"), alive_pid);
+        seed_lock(&repo, Some("9.9.9"), dead_pid);
+
+        let live_claim = std::fs::read(claim_path(&repo, 9)).expect("the live claim");
+        let live_lock =
+            std::fs::read(versioned_lock_path(&repo, Some("1.2.2"))).expect("the live lock");
+
+        let mut worker = worker_with_version(&repo, &state, "1.2.4");
+        assert!(worker.start("acme/app"), "the worker starts");
+
+        assert!(
+            !claim_path(&repo, 8).exists(),
+            "the dead owner's claim is pruned"
+        );
+        assert_eq!(
+            std::fs::read(claim_path(&repo, 9)).expect("the live claim"),
+            live_claim,
+            "a live owner's claim is untouched"
+        );
+        assert!(
+            !versioned_lock_path(&repo, Some("9.9.9")).exists(),
+            "the dead owner's lock is pruned"
+        );
+        assert_eq!(
+            std::fs::read(versioned_lock_path(&repo, Some("1.2.2"))).expect("the live lock"),
+            live_lock,
+            "a live owner's lock is untouched"
+        );
+
+        let before = file_snapshot(claims_directory(&repo).parent().expect("the issues root"));
+        prune_dead_owners(&state, &repo);
+        let after = file_snapshot(claims_directory(&repo).parent().expect("the issues root"));
+        assert_eq!(before, after, "a second prune changes nothing");
+
+        let _ = alive.kill();
+        let _ = alive.wait();
+    }
+
+    /// Every way a run ends releases the claim in the same pass.
+    #[tokio::test]
+    async fn an_ended_run_leaves_no_claim() {
+        let (repo, state) = unit_root("ended-run-claim");
+        let mut worker = worker(&repo, &state);
+
+        claim_for(&mut worker, 1);
+        worker.record_succeeded(1).await;
+        assert!(
+            !claim_path(&repo, 1).exists(),
+            "a success releases its claim"
+        );
+
+        claim_for(&mut worker, 2);
+        worker.record_failed(2, "boom".to_string()).await;
+        assert!(
+            !claim_path(&repo, 2).exists(),
+            "a failure releases its claim"
+        );
+
+        claim_for(&mut worker, 3);
+        worker
+            .abandon_run(3, "closed on the tracker".to_string())
+            .await;
+        assert!(
+            !claim_path(&repo, 3).exists(),
+            "an abandonment releases its claim"
+        );
+
+        claim_for(&mut worker, 4);
+        worker.issue_state_override = Some(Arc::new(|_| {
+            Box::pin(async { IssueStateResult::State { closed: false } })
+        }));
+        worker.fail_silent_run(4, 60_000).await;
+        assert!(
+            !claim_path(&repo, 4).exists(),
+            "a silent-run failure releases its claim"
+        );
+
+        claim_for(&mut worker, 5);
+        worker.issue_state_override = None;
+        worker
+            .on_event(WorkerEvent::TurnEnded {
+                number: 5,
+                error: Some("the agent process exited".to_string()),
+            })
+            .await;
+        assert!(
+            !claim_path(&repo, 5).exists(),
+            "a peer exit releases its claim"
+        );
+    }
+
+    /// A second claimant of one issue takes nothing: one claim survives, and
+    /// the loser starts no peer and closes the run it opened for the attempt.
+    #[tokio::test]
+    async fn two_workers_never_own_one_claim() {
+        let (repo, state) = unit_root("two-claimants");
+        let queued = issue(7, &[]);
+        let mut winner = worker_with_version(&repo, &state, "1.2.3");
+        let active = winner.open_run(&queued).expect("a run");
+        let winner_run = active.run_id.clone();
+        assert!(claim_issue(&repo, &state, 7, &winner_run, Some("1.2.3")));
+        winner.active.insert(7, active);
+        winner.claiming.insert(7);
+
+        let mut loser = worker_with_version(&repo, &state, "1.2.4");
+        loser.agent_command = "/definitely/not/a/devboard-agent".to_string();
+        loser.state.queue = vec![loser.queued(&queued)];
+        loser.maybe_trigger().await;
+
+        assert!(loser.active.is_empty(), "the loser starts no peer");
+        let claim = read_issue_claim(&repo, 7).expect("the one claim");
+        assert_eq!(claim.run_id, winner_run);
+        assert_eq!(live_issue_claims(&state, &repo).len(), 1);
+        let running = winner
+            .runs
+            .iter()
+            .chain(loser.runs.iter())
+            .filter(|entry| entry.run.status == "running")
+            .count();
+        assert_eq!(running, 1, "exactly one run is running");
+        assert_eq!(
+            loser.runs.first().map(|entry| entry.run.status.as_str()),
+            Some("stopped"),
+            "the refused run is closed"
+        );
+        assert_eq!(
+            loser.state.deferral.as_deref(),
+            Some(
+                format!(
+                    "1 queued issue(s) are claimed by harness 1.2.3 (pid {}); \
+                     the start is deferred",
+                    std::process::id()
+                )
+                .as_str()
+            )
+        );
+    }
+
+    /// Every file below one directory, with its bytes, for an unchanged-file
+    /// assertion.
+    fn file_snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return files;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(file_snapshot(&path));
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                files.insert(path, bytes);
+            }
+        }
+        files
     }
 
     struct FlatMemory {

@@ -3696,6 +3696,18 @@ stopping worker to exit and only then spawns; if it still lives at the stop proo
 is refused with a message naming it instead of reporting it attached. Concurrent Starts share one
 preflight and spawn. Different repositories get independent workers.
 
+Each issue a worker starts carries one claim at
+`<REPO_DIR>/.devboard/.tmp/issues/claims/<number>.json`, written after its `run.json` and naming
+`number`, the owner's `pid`, its kernel `startTicks`, its `harnessVersion`, and the owning `runId`
+— the same id the run directory and its `run.json` carry. A claim blocks a start only while it
+proves ownership: an identity claim while `live_identity(pid, startTicks)` holds and that run is
+`running`; a legacy claim without `startTicks` only while a live `lock` or `lock.<version>` record
+names the same pid and harness version. Any other claim — a recycled pid, a vanished worker, an
+ended run — is reclaimed in the pass that wants the issue, and a refused claim closes the run it
+opened without starting a peer. A worker start prunes every claim and lock whose owner is provably
+dead and leaves a live owner's files byte-identical. The claim leaves in the same pass its run
+ends.
+
 The poll is the origin's issues endpoint through the operator's forge credential every 10 seconds,
 conditional on the previous `ETag` (`If-None-Match`). A `304` is no change; `403`/`429` honor
 `Retry-After` or `X-RateLimit-Reset`. Each read has a 20-second deadline: a stalled `gh` is killed,
@@ -3720,9 +3732,9 @@ tracker read per interval. That read is the only source of a row: no worker stat
 worker's memory, or ledger entry adds, removes, or re-states one. The `processing` label is the
 one forge state that marks a run in progress: a running worker ensures the label exists, adds it
 to the issue before its peer starts, and removes it when the run finishes, fails, is abandoned, or
-stops. The label marks a run only while the repository's claim file names a live process, so the
-dashboard strips it from a row no live claim owns: a stopped, killed, or upgraded-away run never
-keeps a row running. The pending count is every listed issue without that label; the running
+stops. The label marks a run only while the repository's claim proves a live owner by that rule,
+so the dashboard strips it from a row no live claim owns: a stopped, killed, or upgraded-away run
+never keeps a row running. The pending count is every listed issue without that label; the running
 count is every listed issue with it, and the page badge, sidebar entry, overview `Queue` line, and
 status bar all read those numbers from the same queue. A failed read freezes the last successful
 answer and publishes its error in `sync.error`.
@@ -3850,6 +3862,14 @@ deferred — a peer ends, the queue empties, or the worker pauses or stops — s
 keeps claiming peers that no longer run. A deferral-shaped value an older harness left in
 `notice` is never rendered as a notice. Operator feedback keeps its own
 `data-testid="issues-notice"` line.
+
+A pass that starts none of the issues another proven live worker holds publishes
+`<count> queued issue(s) are claimed by harness <version> (pid <pid>), ...; the start is deferred`.
+`<count>` is the number of queued issues those holders claim, each holder is named once with the
+harness version its own worker state records — the run record for an identity claim, the lock for
+a legacy one — and holders are sorted by pid ascending. A pass with no start and no proven foreign
+claim publishes no deferral line, and every pending issue held by a proven holder settles lifecycle
+`idle` without `failed`.
 
 `Check now` clears every cooldown and polls immediately; while paused it writes a notice and polls
 nothing. Lifecycle is `running` while any peer runs, `pausing` while paused with any peer,
