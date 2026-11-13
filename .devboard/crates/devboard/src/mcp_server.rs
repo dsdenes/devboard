@@ -1988,11 +1988,35 @@ fn stage_discover_significance(
 fn stage_discover_skill(context: &McpContext, args: &Map<String, Value>) -> Result<Value, String> {
     let directory = staging_directory(context, args.get("stagingDir"))?;
     let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
-    if !DISCOVER_SKILL_NAMES.contains(&name) {
-        return Err(format!(
-            "name must be one of {}.",
-            DISCOVER_SKILL_NAMES.join(", ")
-        ));
+    let running_agent = environment_value(context, crate::discover_mode::DISCOVER_AGENT_ENV)
+        .filter(|agent| !agent.is_empty());
+    match running_agent {
+        Some(agent) => {
+            let owned = crate::discover_mode::owned_skills(agent).ok_or_else(|| {
+                format!(
+                    "{} names no Discover agent: {agent}.",
+                    crate::discover_mode::DISCOVER_AGENT_ENV
+                )
+            })?;
+            if !owned.iter().any(|skill| skill.as_str() == name) {
+                return Err(if owned.is_empty() {
+                    format!("the {agent} agent owns no Discover skill, so it cannot stage {name}.")
+                } else {
+                    format!(
+                        "the {agent} agent owns {}; it cannot stage {name}.",
+                        owned.join(", ")
+                    )
+                });
+            }
+        }
+        None => {
+            if !DISCOVER_SKILL_NAMES.contains(&name) {
+                return Err(format!(
+                    "name must be one of {}.",
+                    DISCOVER_SKILL_NAMES.join(", ")
+                ));
+            }
+        }
     }
     let description = args
         .get("description")
@@ -2031,6 +2055,8 @@ fn stage_discover_skill(context: &McpContext, args: &Map<String, Value>) -> Resu
         "",
     ]
     .join("\n");
+    let label = format!("skills/{name}/SKILL.md");
+    crate::discover_mode::validate_skill_text(name, &text, &label).map(|_| ())?;
     let path = directory.join("skills").join(name).join("SKILL.md");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;

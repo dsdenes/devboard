@@ -104,6 +104,11 @@ pub const DISCOVER_RUN_ORDER: &[&str] = &[
 /// The longest skill description accepted, counted in characters.
 pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 1024;
 
+/// The variable that names the Discover agent behind one peer. The MCP
+/// staging tool reads it from its own environment, so a skill document the
+/// agent does not own is refused in the agent's turn.
+pub const DISCOVER_AGENT_ENV: &str = "DEVBOARD_DISCOVER_AGENT";
+
 /// The six project-local skills Discover publishes.
 pub const DISCOVER_SKILLS: &[&str] = &[
     "discover-testing-strategy",
@@ -2502,7 +2507,15 @@ pub struct StagedSkill {
     pub body: String,
 }
 
-fn validate_skill_text(name: &str, text: &str, path: &str) -> Result<StagedSkill, String> {
+/// The single rule source for one composed Discover skill document. The MCP
+/// staging tool calls this before it writes, so a document publication would
+/// refuse is refused in the agent's own turn. `path` labels the document in an
+/// error exactly as publication labels it.
+pub(crate) fn validate_skill_text(
+    name: &str,
+    text: &str,
+    path: &str,
+) -> Result<StagedSkill, String> {
     let parsed = parse_skill(text, path)?;
     let declared = parsed.fields.get("name").cloned().unwrap_or_default();
     if declared != name {
@@ -2611,7 +2624,7 @@ fn validate_skill_text(name: &str, text: &str, path: &str) -> Result<StagedSkill
     }
     let mut bullets = 0;
     static BULLET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[-*+]\s+").expect("a bullet"));
-    for line in &lines {
+    for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -2622,7 +2635,10 @@ fn validate_skill_text(name: &str, text: &str, path: &str) -> Result<StagedSkill
         if !BULLET.is_match(line.trim_start()) {
             return Err(invalid(
                 path,
-                "body prose must be imperative bullets, not paragraphs",
+                format!(
+                    "body line {} must be an imperative bullet, not a paragraph: {trimmed}",
+                    index + 1
+                ),
             ));
         }
         bullets += 1;
@@ -5463,6 +5479,13 @@ fn agent_ownership(id: &str) -> Option<Ownership> {
         glossary: descriptor.glossary,
         contribution: descriptor.id == "discover-contribution",
     })
+}
+
+/// The Discover skill documents one agent owns. The MCP staging tool refuses a
+/// name outside this set, so the refusal lands in the agent's own turn instead
+/// of at publication, which judges the same set.
+pub(crate) fn owned_skills(agent_id: &str) -> Option<Vec<String>> {
+    agent_ownership(agent_id).map(|ownership| ownership.skills)
 }
 
 fn walk_files(root: &Path, prefix: &str, files: &mut Vec<String>) -> std::io::Result<()> {
@@ -8693,7 +8716,7 @@ async fn run_agent(
     }));
     push_state(app, mode);
 
-    let environment = match app.providers.select_environment().await {
+    let mut environment = match app.providers.select_environment().await {
         Ok(environment) => environment
             .into_iter()
             .filter_map(|(key, value)| value.map(|value| (key, value)))
@@ -8711,6 +8734,9 @@ async fn run_agent(
             return false;
         }
     };
+    // The peer's MCP server judges a staged skill against this agent's owned
+    // set, so it needs the identity before its first tool call.
+    environment.insert(DISCOVER_AGENT_ENV.to_string(), descriptor.id.to_string());
     if !still_current(mode, &run_id, request) {
         return false;
     }

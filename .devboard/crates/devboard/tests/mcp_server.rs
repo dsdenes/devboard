@@ -1120,6 +1120,155 @@ async fn a_staged_skill_description_is_capped_in_characters() {
     );
 }
 
+/// The staging tool judges the composed skill document with the publication
+/// validator before it writes, and refuses a name the running agent does not
+/// own. Every refusal lands in the agent's turn and leaves nothing staged.
+#[tokio::test]
+async fn a_staged_skill_is_refused_exactly_as_publication_refuses_it() {
+    let mut context = fixture("skill-staging-validation");
+    context.environment.insert(
+        devboard::discover_mode::DISCOVER_AGENT_ENV.to_string(),
+        "discover-glossary".to_string(),
+    );
+    let staging = context
+        .repo_dir
+        .join(".omp")
+        .join("discover")
+        .join("staging")
+        .join("run-1");
+    std::fs::create_dir_all(&staging).expect("the staging directory");
+    let call = |id: i64, name: &str, description: &str, body: &str| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "discover_skill_stage",
+                "arguments": {
+                    "stagingDir": "run-1",
+                    "name": name,
+                    "description": description,
+                    "body": body,
+                }
+            }
+        })
+    };
+
+    let frames = drive(
+        &context,
+        &[
+            call(
+                90,
+                "discover-testing-strategy",
+                "Names the testing strategy.",
+                "# Testing\n\n- Run the suite.",
+            ),
+            call(
+                91,
+                "discover-glossary",
+                "Names the glossary rules.",
+                "# Glossary\n\nUse one term per concept.",
+            ),
+            call(
+                92,
+                "discover-glossary",
+                "Names the glossary rules.",
+                "# Glossary\n\n- Read /home/operator/project/file.rs before editing.",
+            ),
+            call(
+                93,
+                "discover-glossary",
+                "Names the glossary rules.",
+                "# Glossary\n\n- Use ghp_0123456789abcdefghij as the credential.",
+            ),
+        ],
+    )
+    .await;
+
+    let message = |id: i64| {
+        let refused = reply(&frames, id);
+        assert_eq!(refused["result"]["isError"], true, "call {id} is refused");
+        refused["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text")
+            .to_string()
+    };
+    let unowned = message(90);
+    assert!(
+        unowned.contains(
+            "the discover-glossary agent owns discover-glossary; \
+             it cannot stage discover-testing-strategy."
+        ),
+        "{unowned}"
+    );
+    let paragraph = message(91);
+    assert!(
+        paragraph.contains(
+            "skills/discover-glossary/SKILL.md: body line 4 must be an imperative bullet, \
+             not a paragraph: Use one term per concept."
+        ),
+        "{paragraph}"
+    );
+    let host_path = message(92);
+    assert!(
+        host_path.contains("must not carry an absolute host path"),
+        "{host_path}"
+    );
+    let secret = message(93);
+    assert!(secret.contains("must not carry a secret value"), "{secret}");
+    assert!(
+        !staging.join("skills").exists(),
+        "a refused document stages nothing"
+    );
+
+    context.environment.insert(
+        devboard::discover_mode::DISCOVER_AGENT_ENV.to_string(),
+        "discover-contribution".to_string(),
+    );
+    let frames = drive(
+        &context,
+        &[call(
+            95,
+            "discover-contribution",
+            "Contribution rules",
+            "# Contribution\n\n- Write one paragraph per concept.",
+        )],
+    )
+    .await;
+    let sentence = {
+        let refused = reply(&frames, 95);
+        assert_eq!(refused["result"]["isError"], true, "call 95 is refused");
+        refused["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text")
+            .to_string()
+    };
+    assert!(sentence.contains("must be one sentence"), "{sentence}");
+    assert!(
+        !staging.join("skills").exists(),
+        "a refused description stages nothing"
+    );
+
+    let frames = drive(
+        &context,
+        &[call(
+            96,
+            "discover-contribution",
+            "Names the contribution rules.",
+            "# Contribution\n\n- Write one paragraph per concept.",
+        )],
+    )
+    .await;
+    let staged = tool_result(&frames, 96);
+    assert_eq!(staged["name"], "discover-contribution");
+    let document = std::fs::read_to_string(staging.join("skills/discover-contribution/SKILL.md"))
+        .expect("the staged skill");
+    assert!(
+        document.contains("devboard-skill: contribution"),
+        "the staged document carries the contribution role: {document}"
+    );
+}
+
 #[tokio::test]
 async fn two_dashboards_report_ambiguous_instead_of_null() {
     let mut context = fixture("ambiguous");
