@@ -1316,6 +1316,119 @@ async fn single_responsibility_files_only_proven_filings() {
 }
 
 #[tokio::test]
+async fn single_responsibility_reports_every_filing_outcome_of_a_cycle() {
+    let fixture = Fixture::new("srp-outcomes");
+    let skill = fixture.srp_inputs();
+    srp::write_settings(
+        &srp::settings_path(&fixture.state_dir, &fixture.repo),
+        &srp::Settings {
+            max_per_hour: Some(2),
+            max_pending: Some(2),
+            interval_minutes: 60,
+        },
+    )
+    .expect("settings");
+    let forge = Arc::new(SrpForge::default());
+    let forge_for_peer = Arc::clone(&forge);
+    let skill_for_peer = skill.clone();
+    let connect = fake_connect(move |prompt| {
+        let forge = Arc::clone(&forge_for_peer);
+        let skill = skill_for_peer.clone();
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/single-responsibility ");
+            let filed = [
+                (
+                    "mixed-responsibilities",
+                    "src/handler.ts",
+                    1,
+                    "Split the handler",
+                ),
+                (
+                    "responsibility-leakage",
+                    "src/renderer.ts",
+                    1,
+                    "Move rendering out of the handler",
+                ),
+                (
+                    "divergent-change",
+                    "src/handler.ts",
+                    2,
+                    "Separate the parser",
+                ),
+            ];
+            let mut records = Vec::new();
+            for (index, (category, path, line, title)) in filed.iter().enumerate() {
+                let number = index as i64 + 1;
+                let quote = if *path == "src/handler.ts" && *line == 1 {
+                    "export const handle = 1;"
+                } else if *path == "src/handler.ts" {
+                    "export const parse = 2;"
+                } else {
+                    "export const renderRow = 1;"
+                };
+                forge
+                    .issues
+                    .lock()
+                    .expect("the fake")
+                    .push(srp::ForgeIssue {
+                        number,
+                        title: title.to_string(),
+                        url: format!("https://forge.test/acme/fixture/issues/{number}"),
+                        state: "open".to_string(),
+                        created_at: format!("2026-01-01T00:00:0{index}.000Z"),
+                        body: srp_body(category, path, *line, quote, &skill),
+                        labels: vec!["single-responsibility".to_string()],
+                    });
+                records.push(json!({
+                    "tool": "issue_create",
+                    "ok": true,
+                    "value": {"number": number, "title": title},
+                }));
+            }
+            records.push(json!({
+                "tool": "issue_create",
+                "ok": false,
+                "error": "the forge refused the request",
+            }));
+            let mut text = String::new();
+            for record in records {
+                text.push_str(&record.to_string());
+                text.push('\n');
+            }
+            std::fs::write(directory.join("tool-log.jsonl"), text).expect("tool records");
+            Ok(())
+        })
+    });
+    let worker = srp_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    let state = worker.current_state();
+    let directory = srp::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
+    let activity = api::read_activity(&directory).join("\n");
+    let filed: Vec<&str> = activity
+        .lines()
+        .filter(|line| line.starts_with("filed #"))
+        .collect();
+    assert_eq!(
+        filed,
+        vec![
+            "filed #1 “Split the handler”",
+            "filed #2 “Move rendering out of the handler”",
+        ]
+    );
+    assert!(activity.contains("filed beyond the requested count: #3"));
+    assert!(activity.contains("failed: the forge refused the request"));
+    assert_eq!(
+        state.last_error.as_deref(),
+        Some("the forge refused the request")
+    );
+    assert_eq!(state.issues.len(), 3);
+    worker.stop().await;
+}
+
+#[tokio::test]
 async fn single_responsibility_reads_open_titles_once_per_cycle_not_on_every_sync() {
     let fixture = Fixture::new("srp-titles");
     fixture.srp_inputs();

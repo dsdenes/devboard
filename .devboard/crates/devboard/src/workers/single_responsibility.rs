@@ -2448,46 +2448,12 @@ impl Worker {
             return;
         };
         peer.close();
-        let mut error: Option<String> = None;
-        let record = |text: String| self.record_activity_line(cycle_id, &text);
-        let mut filed_now = 0_i64;
-        let log_path = directory.join("tool-log.jsonl");
-        for entry in super::mcp_optimizer::read_tool_log(&log_path) {
-            if entry.get("tool").and_then(Value::as_str) != Some("issue_create") {
-                continue;
-            }
-            let number = tool_value_number(entry.get("value"), "number");
-            let title = tool_value_string(entry.get("value"), "title");
-            if entry.get("ok").and_then(Value::as_bool) == Some(true)
-                && number.is_some()
-                && title.is_some()
-            {
-                if filed_now >= requested {
-                    record(format!(
-                        "filed beyond the requested count: #{}",
-                        number.unwrap_or(0)
-                    ));
-                    continue;
-                }
-                filed_now += 1;
-                record(format!(
-                    "filed #{} “{}”",
-                    number.unwrap_or(0),
-                    title.unwrap_or_default()
-                ));
-                continue;
-            }
-            let detail = entry
-                .get("error")
-                .and_then(Value::as_str)
-                .filter(|text| !text.is_empty())
-                .unwrap_or("the issue-creation tool failed")
-                .to_string();
-            if error.is_none() {
-                error = Some(detail.clone());
-            }
-            record(format!("failed: {detail}"));
+        let summary = super::mcp_optimizer::issue_creation_summary(&directory, requested);
+        for line in &summary.lines {
+            self.record_activity_line(cycle_id, line);
         }
+        let error = summary.error;
+        let record = |text: String| self.record_activity_line(cycle_id, &text);
         match self.read_forge_within_deadline().await {
             Ok(issues) => self.apply_read(issues, Some(&record)),
             Err(failure) => record(format!("could not re-read the forge: {failure}")),
@@ -2701,18 +2667,6 @@ fn bounded_line(text: &str) -> String {
         bounded.push('…');
         bounded
     }
-}
-
-fn tool_value_number(value: Option<&Value>, field: &str) -> Option<i64> {
-    value?
-        .as_object()?
-        .get(field)
-        .and_then(Value::as_i64)
-        .filter(|number| *number > 0)
-}
-
-fn tool_value_string(value: Option<&Value>, field: &str) -> Option<String> {
-    value?.as_object()?.get(field)?.as_str().map(str::to_string)
 }
 
 const RATE_LIMIT_PATTERNS: [&str; 5] = [
