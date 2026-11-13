@@ -418,6 +418,20 @@ pub fn broken() -> i32 {
 "
 }
 
+/// One test, and it always fails: three consecutive attempts quarantine every
+/// name the suite has, so the run proves nothing.
+fn every_test_fails_source() -> &'static str {
+    "\
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_test_fails() {
+        assert_eq!(1 + 1, 3, \"the fixture fails every test\");
+    }
+}
+"
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 
@@ -561,5 +575,58 @@ async fn release_suite_fails_structurally_on_a_compile_error() {
         !forge.requests().iter().any(|(method, _)| method == "POST"),
         "{:?}",
         forge.requests()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn release_suite_fails_when_every_test_is_quarantined() {
+    let fixture = Fixture::new("every-test-fails", every_test_fails_source());
+    let forge = StubForge::start().await;
+    fixture.origin(&forge.base);
+    let source = fixture.source();
+    let environment = forge_environment(&forge, None);
+
+    let (code, report) = cli(fixture.root(), environment).await;
+    assert_ne!(code, 0, "{report}");
+    assert!(
+        report.contains("quarantined: src/lib.rs :: tests::only_test_fails"),
+        "{report}"
+    );
+    assert!(
+        report.contains("release suite: every test was quarantined; nothing left to run"),
+        "{report}"
+    );
+    assert!(
+        report.contains("every test was quarantined; nothing ran"),
+        "{report}"
+    );
+    assert!(report.contains("structural failure"), "{report}");
+    assert!(
+        report.contains("attempt 4/9: 0 fail, 0 pass, 1 skip"),
+        "{report}"
+    );
+    assert!(
+        report.contains("release suite: structural failure after 4 attempt(s)"),
+        "{report}"
+    );
+    assert_eq!(fixture.status(), "");
+    assert_eq!(fixture.source(), source);
+
+    // The quarantined test's issue is still filed: it is the only record of
+    // what the failed run saw.
+    let issues = forge.issues();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(
+        issues[0]
+            .title
+            .contains("quarantine(test): tests::only_test_fails"),
+        "{}",
+        issues[0].title
+    );
+    assert_eq!(issues[0].body.matches("### attempt").count(), 3);
+    assert!(
+        issues[0].body.contains("the fixture fails every test"),
+        "{}",
+        issues[0].body
     );
 }

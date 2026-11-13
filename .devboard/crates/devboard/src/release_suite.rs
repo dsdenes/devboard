@@ -63,6 +63,9 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub const RELEASE_SUITE_MAX_ATTEMPTS: u32 = 9;
 /// How many consecutive failed attempts quarantine one test.
 pub const RELEASE_SUITE_CONSECUTIVE_FAILURES: u32 = 3;
+/// The reason an attempt set that quarantined every test reports: the run
+/// proved nothing, so it fails rather than passing with zero executed tests.
+pub const EVERY_TEST_QUARANTINED: &str = "every test was quarantined; nothing ran";
 /// The longest suffix of one failed attempt kept for diagnostics.
 pub const ATTEMPT_OUTPUT_LIMIT: usize = 20_000;
 /// The longest failure text kept for one quarantined test.
@@ -568,7 +571,9 @@ fn failure_key(failure: &AttemptFailure) -> String {
 /// that passed in between, and give up after `max_attempts` whole-suite
 /// attempts. A structural failure ends the run immediately; an attempt whose
 /// test binary the kernel refused to start is retried whole, because another
-/// build was still writing that binary.
+/// build was still writing that binary. A run that quarantined every name in
+/// the universe is a failure, not a pass: its next attempt would execute no
+/// test, so it reports `EVERY_TEST_QUARANTINED` and a nonzero code.
 pub async fn run_quarantine_suite(
     attempts: &mut dyn SuiteAttempts,
     log: &(dyn Fn(&str) + Sync),
@@ -600,13 +605,14 @@ pub async fn run_quarantine_suite(
                     "attempt {index}/{max_attempts}: 0 fail, 0 pass, {} skip",
                     quarantined.len()
                 ));
+                let reason = EVERY_TEST_QUARANTINED.to_string();
                 log("release suite: every test was quarantined; nothing left to run");
                 return SuiteOutcome {
-                    code: 0,
+                    code: 1,
                     attempts: attempt_count,
                     quarantined: quarantined.into_values().collect(),
-                    structural: None,
-                    error_line: None,
+                    structural: Some(reason.clone()),
+                    error_line: Some(reason),
                 };
             }
         }
@@ -1227,36 +1233,26 @@ pub async fn run_suite(options: ReleaseSuiteOptions) -> Result<ReleaseSuiteRepor
 
     let error_line = outcome.error_line.clone();
 
-    if let Some(structural) = &outcome.structural {
-        (log)(&format!(
-            "release suite: structural failure after {} attempt(s); nothing was filed",
-            outcome.attempts
-        ));
-        (log)(structural);
-        return Ok(ReleaseSuiteReport {
-            code: 1,
-            attempts: outcome.attempts,
-            quarantined: outcome.quarantined,
-            structural: outcome.structural,
-            error_line,
-        });
-    }
-    if outcome.code == 0 {
-        (log)(&format!(
-            "release suite: {} attempt(s), {} quarantined, 0 fail",
-            outcome.attempts,
-            outcome.quarantined.len()
-        ));
-    } else {
-        (log)(&format!(
-            "release suite: {} attempt(s) still reported failures",
-            outcome.attempts
-        ));
+    if outcome.structural.is_none() {
+        if outcome.code == 0 {
+            (log)(&format!(
+                "release suite: {} attempt(s), {} quarantined, 0 fail",
+                outcome.attempts,
+                outcome.quarantined.len()
+            ));
+        } else {
+            (log)(&format!(
+                "release suite: {} attempt(s) still reported failures",
+                outcome.attempts
+            ));
+        }
     }
     for report in &outcome.quarantined {
         (log)(&format!("skipped: {} :: {}", report.file, report.full_name));
     }
 
+    // A report is filed whatever the verdict: the run that quarantined every
+    // test fails on exactly the reports an operator has to read.
     if options.file_issues && !outcome.quarantined.is_empty() {
         let context = QuarantineContext {
             commit: commit_sha(&forge_dir),
@@ -1278,6 +1274,26 @@ pub async fn run_suite(options: ReleaseSuiteOptions) -> Result<ReleaseSuiteRepor
                 ));
             }
         }
+    }
+
+    if let Some(structural) = &outcome.structural {
+        (log)(&format!(
+            "release suite: structural failure after {} attempt(s){}",
+            outcome.attempts,
+            if outcome.quarantined.is_empty() {
+                "; nothing was filed"
+            } else {
+                ""
+            }
+        ));
+        (log)(structural);
+        return Ok(ReleaseSuiteReport {
+            code: 1,
+            attempts: outcome.attempts,
+            quarantined: outcome.quarantined,
+            structural: outcome.structural,
+            error_line,
+        });
     }
 
     Ok(ReleaseSuiteReport {
@@ -1785,6 +1801,13 @@ Caused by:
         }
     }
 
+    /// One name failing while the rest of its universe keeps running.
+    fn failing_among(index: u32, name: &str, names: &[&str]) -> AttemptRecord {
+        let mut record = failing(index, names);
+        record.failures = vec![failure(name)];
+        record
+    }
+
     fn clean(index: u32, names: &[&str]) -> AttemptRecord {
         AttemptRecord {
             index,
@@ -1861,10 +1884,10 @@ error: could not parse/generate dep info at: \
     async fn release_suite_skips_only_after_three_consecutive_failures() {
         let outcome = drive(
             vec![
-                failing(1, &["flaky"]),
-                failing(2, &["flaky"]),
-                failing(3, &["flaky"]),
-                clean(4, &["flaky"]),
+                failing_among(1, "flaky", &["flaky", "keeps"]),
+                failing_among(2, "flaky", &["flaky", "keeps"]),
+                failing_among(3, "flaky", &["flaky", "keeps"]),
+                clean(4, &["keeps"]),
             ],
             RELEASE_SUITE_MAX_ATTEMPTS,
         )
@@ -1982,7 +2005,7 @@ error: could not parse/generate dep info at: \
     }
 
     #[tokio::test]
-    async fn release_suite_succeeds_when_every_test_was_quarantined() {
+    async fn release_suite_fails_when_every_test_was_quarantined() {
         let mut attempts = FakeAttempts {
             records: vec![
                 failing(1, &["only"]),
@@ -2000,13 +2023,50 @@ error: could not parse/generate dep info at: \
             RELEASE_SUITE_CONSECUTIVE_FAILURES,
         )
         .await;
-        assert_eq!(outcome.code, 0);
+        assert_eq!(outcome.code, 1);
+        assert_eq!(outcome.structural.as_deref(), Some(EVERY_TEST_QUARANTINED));
+        assert_eq!(outcome.error_line.as_deref(), Some(EVERY_TEST_QUARANTINED));
         assert_eq!(outcome.attempts, 4);
         assert_eq!(outcome.quarantined.len(), 1);
+        assert_eq!(outcome.quarantined[0].full_name, "only");
         assert_eq!(
             attempts.seen_filters.lock().expect("filters").len(),
             3,
             "the empty remaining set needs no fourth process"
+        );
+
+        // The same loop still passes when only some tests are quarantined and
+        // the remaining ones run green.
+        let mut partial = FakeAttempts {
+            records: vec![
+                failing_among(1, "broken", &["broken", "keeps"]),
+                failing_among(2, "broken", &["broken", "keeps"]),
+                failing_among(3, "broken", &["broken", "keeps"]),
+                clean(4, &["keeps"]),
+            ]
+            .into(),
+            skipped: Arc::new(Mutex::new(Vec::new())),
+            seen_filters: Arc::new(Mutex::new(Vec::new())),
+        };
+        let outcome = run_quarantine_suite(
+            &mut partial,
+            &|_line| {},
+            RELEASE_SUITE_MAX_ATTEMPTS,
+            RELEASE_SUITE_CONSECUTIVE_FAILURES,
+        )
+        .await;
+        assert_eq!(outcome.code, 0, "{outcome:?}");
+        assert_eq!(outcome.structural, None);
+        assert_eq!(outcome.quarantined.len(), 1);
+        assert_eq!(outcome.quarantined[0].full_name, "broken");
+        assert_eq!(
+            partial
+                .seen_filters
+                .lock()
+                .expect("filters")
+                .last()
+                .cloned(),
+            Some(Some(vec!["keeps".to_string()]))
         );
     }
 
@@ -2142,11 +2202,11 @@ Caused by:
     async fn release_suite_keeps_a_streak_across_an_unexecuted_attempt() {
         let outcome = drive(
             vec![
-                failing(1, &["flaky"]),
+                failing_among(1, "flaky", &["flaky", "keeps"]),
                 unexecuted(2),
-                failing(3, &["flaky"]),
-                failing(4, &["flaky"]),
-                clean(5, &["flaky"]),
+                failing_among(3, "flaky", &["flaky", "keeps"]),
+                failing_among(4, "flaky", &["flaky", "keeps"]),
+                clean(5, &["keeps"]),
             ],
             RELEASE_SUITE_MAX_ATTEMPTS,
         )

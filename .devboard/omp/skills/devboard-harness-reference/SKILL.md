@@ -743,7 +743,10 @@ Each skipped test files one Gitea issue whose title names the exact test and who
 file, the failed attempt output, the released commit, and the workflow run; a later run comments on
 the open issue instead of filing a second one. Filing failure prints one line and never changes the
 exit code. A suite that cannot compile, or whose output names no test, is structural: it exits
-nonzero, files nothing, and prints the first concrete error line. A build that could not write its
+nonzero, files nothing, and prints the first concrete error line. A run that quarantined every test
+name is structural too, because its next attempt would execute nothing: it exits nonzero with
+`every test was quarantined; nothing ran`, and the quarantine issues it collected are still filed
+so the operator sees the host condition that took the suite. A build that could not write its
 artifacts because the host filesystem is full is structural too, and its reason starts with
 `the host filesystem is full:` and quotes that write failure, never a compile error: no repository
 change frees the disk, and the release is refused until space is available. Every attempt builds
