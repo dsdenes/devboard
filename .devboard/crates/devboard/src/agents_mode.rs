@@ -2986,20 +2986,26 @@ impl AgentsMode {
     }
 
     fn replay_agents(&self, conn: &Conn) {
+        // The connect replay sends each family's activity before the poll's
+        // baseline is settled. Only this replay opens that window: a read is
+        // polled every second while a family runs, and a window armed there
+        // would skip every tick, freezing the snapshot the read answers with.
+        if let Ok(mut settle) = self.settle_until.lock() {
+            *settle = now_millis() + 1_000;
+        }
         self.replay_agents_inner(conn, true, true);
     }
 
     /// `getAgents` answers from the cached projections. The timer read and the
     /// per-family activity replay belong to the connect replay; a read is one
-    /// `agentsState` frame and completes without waiting for them.
+    /// `agentsState` frame and completes without waiting for them. It never
+    /// arms the poll's settle window, so polling the page leaves the cache
+    /// current.
     fn answer_get_agents(&self, conn: &Conn) {
         self.replay_agents_inner(conn, false, false);
     }
 
     fn replay_agents_inner(&self, conn: &Conn, refresh_timer: bool, replay_activity: bool) {
-        if let Ok(mut settle) = self.settle_until.lock() {
-            *settle = now_millis() + 1_000;
-        }
         if refresh_timer {
             for adapter in &self.adapters {
                 if let Adapter::Watchdog(family) = adapter {

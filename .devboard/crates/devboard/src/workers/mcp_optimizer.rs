@@ -1134,6 +1134,61 @@ pub fn tool_value_string(value: &Value, field: &str) -> Option<String> {
     value.as_object()?.get(field)?.as_str().map(str::to_string)
 }
 
+/// The issue-creation outcome one cycle's tool log proves.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct IssueCreationSummary {
+    /// One activity line per proven filing, failure, or filing beyond the
+    /// requested count, in log order.
+    pub lines: Vec<String>,
+    /// How many issues the log proves the cycle filed within its request.
+    pub filed: i64,
+    /// The first filing failure the log names.
+    pub error: Option<String>,
+}
+
+/// The issue-creation outcome the cycle directory's tool log proves.
+pub fn issue_creation_summary(directory: &Path, requested: i64) -> IssueCreationSummary {
+    summarize_issue_creation(&read_tool_log(&directory.join("tool-log.jsonl")), requested)
+}
+
+fn summarize_issue_creation(log: &[Value], requested: i64) -> IssueCreationSummary {
+    let mut summary = IssueCreationSummary::default();
+    for entry in log {
+        if entry.get("tool").and_then(Value::as_str) != Some("issue_create") {
+            continue;
+        }
+        let value = entry.get("value");
+        let number = value.and_then(|value| tool_value_number(value, "number"));
+        let title = value.and_then(|value| tool_value_string(value, "title"));
+        let filed = match (entry.get("ok").and_then(Value::as_bool), number, title) {
+            (Some(true), Some(number), Some(title)) => Some((number, title)),
+            _ => None,
+        };
+        if let Some((number, title)) = filed {
+            if summary.filed >= requested {
+                summary
+                    .lines
+                    .push(format!("filed beyond the requested count: #{number}"));
+                continue;
+            }
+            summary.filed += 1;
+            summary.lines.push(format!("filed #{number} “{title}”"));
+            continue;
+        }
+        let detail = entry
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .unwrap_or("the issue-creation tool failed")
+            .to_string();
+        if summary.error.is_none() {
+            summary.error = Some(detail.clone());
+        }
+        summary.lines.push(format!("failed: {detail}"));
+    }
+    summary
+}
+
 // ---------------------------------------------------------------------------
 // Path arithmetic
 
@@ -3160,10 +3215,15 @@ fn prompt_text(sections: &PromptSections) -> String {
         "- Read the open issues with `issues_list` and `issue_get`. A proposal duplicates an open".to_string(),
         "  issue when that issue carries this family's tag or the same title. A duplicate files and".to_string(),
         "  comments on nothing.".to_string(),
-        "- Address a tool only through its catalog route, written exactly `xd://mcp__devboard_<name>`".to_string(),
-        "  for the name the `MCP catalog` section lists. Before the first write of a turn, resolve each".to_string(),
-        "  route from that catalog: a bare `xd://<name>`, a doubled `mcp__devboard_` prefix, and a".to_string(),
-        "  `path` that is not a device route are not tools. Fix the route and issue the call once.".to_string(),
+        "- Address a tool only through its mounted route: `xd://mcp__devboard_` once, then the catalog".to_string(),
+        "  name without a second `devboard_`. `devboard_status` mounts as `xd://mcp__devboard_status`,".to_string(),
+        "  never `xd://mcp__devboard_devboard_status`; every other name appends verbatim, as in".to_string(),
+        "  `xd://mcp__devboard_issue_create`. Before the first write of a turn, resolve each route that".to_string(),
+        "  way: a bare `xd://<name>`, a route with two `devboard` segments, and a `path` that is not a".to_string(),
+        "  device route are not tools, and a device list that omits an MCP name never means that name".to_string(),
+        "  is unavailable. Fix the route and issue the call once.".to_string(),
+        "- Spell every argument exactly as the tool's schema names it: `mcp_optimizer_proposal_skip`".to_string(),
+        "  takes `family` and `reason`, never `familyKey` or `family_key`.".to_string(),
         "- A Devboard MCP call that times out at the transport gets at most one retry of that exact".to_string(),
         "  call. A second timeout ends that tool path for this cycle: finish through the path that".to_string(),
         "  still answers, or call `mcp_optimizer_proposal_skip` once for this family. Never probe".to_string(),
@@ -7585,6 +7645,65 @@ mod gitea_open_issue_read {
                 body: "body one".to_string(),
                 url: "http://127.0.0.1:3001/acme/fixture/issues/7".to_string(),
             }]
+        );
+    }
+}
+
+#[cfg(test)]
+mod cycle_issue_creation_summary {
+    //! The cycle's filing accounting: what the tool log proves was filed, the
+    //! first failure, and the filing the cap refused.
+
+    use super::*;
+
+    fn created(number: u64, title: &str) -> Value {
+        json!({"tool": "issue_create", "ok": true, "value": {"number": number, "title": title}})
+    }
+
+    fn refused(detail: &str) -> Value {
+        json!({"tool": "issue_create", "ok": false, "error": detail})
+    }
+
+    #[test]
+    fn filings_beyond_the_request_are_reported_once_each() {
+        let log = [
+            created(1, "Split the handler"),
+            created(2, "Move rendering out of the handler"),
+            created(3, "Separate the parser"),
+            refused("the forge refused the request"),
+        ];
+        let summary = summarize_issue_creation(&log, 2);
+        assert_eq!(summary.filed, 2, "only the filings within the request");
+        assert_eq!(
+            summary.lines,
+            vec![
+                "filed #1 “Split the handler”",
+                "filed #2 “Move rendering out of the handler”",
+                "filed beyond the requested count: #3",
+                "failed: the forge refused the request",
+            ]
+        );
+        assert_eq!(
+            summary.error.as_deref(),
+            Some("the forge refused the request")
+        );
+    }
+
+    #[test]
+    fn another_tools_entry_and_an_unnumbered_creation_are_not_filings() {
+        let log = [
+            json!({"tool": "mcp_optimizer_proposal_skip", "ok": true, "value": {"number": 1}}),
+            json!({"tool": "issue_create", "ok": true, "value": {"number": 4}}),
+        ];
+        let summary = summarize_issue_creation(&log, 2);
+        assert_eq!(summary.filed, 0);
+        assert_eq!(
+            summary.lines,
+            vec!["failed: the issue-creation tool failed"]
+        );
+        assert_eq!(
+            summary.error.as_deref(),
+            Some("the issue-creation tool failed")
         );
     }
 }

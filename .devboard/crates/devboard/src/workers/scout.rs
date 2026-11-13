@@ -49,6 +49,9 @@ pub const SCAN_STATUS_INCOMPLETE: &str = "incomplete";
 /// The status line a failed scan publishes. A worker that starts against an
 /// inherited state never republishes it: that worker started no scan.
 pub const SCAN_FAILED_PREFIX: &str = "Scan failed: ";
+/// The status line a capacity block publishes: a family the limits capped is
+/// never mistaken for a repository with nothing to file.
+pub const CAPPED_PREFIX: &str = "Capped: ";
 /// A scan's agent phase ends after this long without a session update, and its
 /// separately timed settle-and-file phase ends after this long in total.
 pub const SCAN_TIMEOUT_MS: i64 = 15 * 60_000;
@@ -552,6 +555,21 @@ impl ScoutState {
             self.notices.truncate(NOTICE_HISTORY);
         }
         self.notice = Some(text);
+    }
+
+    /// Drops a capacity line the moment the block stops binding, so a family
+    /// that can scan again never keeps reading as capped. The history keeps
+    /// the line: a reader still sees what the last cap was.
+    fn clear_capped(&mut self) -> bool {
+        if self
+            .notice
+            .as_deref()
+            .is_some_and(|text| text.starts_with(CAPPED_PREFIX))
+        {
+            self.notice = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -1627,6 +1645,36 @@ pub fn scan_capacity(
         pending_room,
         blocked_until,
     }
+}
+
+/// The line a capacity block publishes: every limit that bound, and what
+/// frees the family. A capped cycle is reported as capped, never as a quiet
+/// repository.
+fn capacity_notice(capacity: &ScanCapacity) -> String {
+    let mut causes: Vec<String> = Vec::new();
+    if capacity.pending_room == 0 {
+        causes.push(format!(
+            "{} open issue(s) reached maxPending",
+            capacity.open_count
+        ));
+    }
+    if capacity.hourly_room == 0 {
+        causes.push(format!(
+            "{} issue(s) filed in the last hour reached maxPerHour",
+            capacity.window_count
+        ));
+    }
+    let cause = if causes.is_empty() {
+        "no scan slot is free".to_string()
+    } else {
+        causes.join(" and ")
+    };
+    let freed = match (capacity.pending_room == 0, capacity.hourly_room == 0) {
+        (true, true) => "no scan starts until an open issue closes and the hourly window rolls",
+        (true, false) => "no scan starts until an open issue closes",
+        _ => "no scan starts until the hourly window rolls",
+    };
+    format!("{CAPPED_PREFIX}{cause}; {freed}.")
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3254,13 +3302,25 @@ impl ScoutWorker {
             .is_some_and(|until| now < until)
     }
 
-    fn block(&self, until: Option<String>) {
+    /// Records one capacity block: the status line names the limit that bound,
+    /// and the state names when a slot frees. A block that left no line would
+    /// read exactly like a repository with nothing to file.
+    fn record_capacity_block(&self, capacity: &ScanCapacity) {
+        let until = capacity.blocked_until.map(iso_from_millis);
+        let text = capacity_notice(capacity);
         let mut runtime = lock_unpoisoned(&self.runtime);
-        if runtime.state.next_attempt_at == until {
-            return;
+        let mut changed = false;
+        if runtime.state.notice.as_deref() != Some(text.as_str()) {
+            runtime.state.note(text);
+            changed = true;
         }
-        runtime.state.next_attempt_at = until;
-        self.publish_locked(&mut runtime);
+        if runtime.state.next_attempt_at != until {
+            runtime.state.next_attempt_at = until;
+            changed = true;
+        }
+        if changed {
+            self.publish_locked(&mut runtime);
+        }
     }
 
     fn mark_stale(&self) {
@@ -3573,6 +3633,7 @@ impl ScoutWorker {
             );
             if runtime.state.sync.state == "ok" && capacity.batch > 0 {
                 runtime.state.next_attempt_at = None;
+                runtime.state.clear_capped();
             }
             self.publish_locked(&mut runtime);
             runtime.syncing = false;
@@ -3649,7 +3710,7 @@ impl ScoutWorker {
             )
         };
         if capacity.batch == 0 {
-            self.block(capacity.blocked_until.map(iso_from_millis));
+            self.record_capacity_block(&capacity);
             return;
         }
         self.begin_scan().await;
@@ -3737,8 +3798,16 @@ impl ScoutWorker {
             )
         };
         if capacity.batch == 0 {
-            self.block(capacity.blocked_until.map(iso_from_millis));
+            self.record_capacity_block(&capacity);
             return;
+        }
+        {
+            // The cap no longer binds, so the card stops reading as capped
+            // before the scan's own publish takes the status line.
+            let mut runtime = lock_unpoisoned(&self.runtime);
+            if runtime.state.clear_capped() {
+                self.publish_locked(&mut runtime);
+            }
         }
         if !self.claim_scan_slot() {
             return;
@@ -5264,6 +5333,50 @@ mod tests {
         assert_eq!(capacity.open_count, 1);
         assert_eq!(capacity.batch, 4);
         assert_eq!(capacity.blocked_until, None);
+    }
+
+    #[test]
+    fn a_capacity_block_names_every_limit_that_bound() {
+        let pending_only = ScanCapacity {
+            batch: 0,
+            window_count: 3,
+            open_count: 5,
+            hourly_room: 7,
+            pending_room: 0,
+            blocked_until: Some(1),
+        };
+        assert_eq!(
+            capacity_notice(&pending_only),
+            "Capped: 5 open issue(s) reached maxPending; no scan starts until an open issue \
+             closes."
+        );
+        let hourly_only = ScanCapacity {
+            batch: 0,
+            window_count: 10,
+            open_count: 0,
+            hourly_room: 0,
+            pending_room: 5,
+            blocked_until: Some(1),
+        };
+        assert_eq!(
+            capacity_notice(&hourly_only),
+            "Capped: 10 issue(s) filed in the last hour reached maxPerHour; no scan starts until \
+             the hourly window rolls."
+        );
+        let both = ScanCapacity {
+            batch: 0,
+            window_count: 10,
+            open_count: 5,
+            hourly_room: 0,
+            pending_room: 0,
+            blocked_until: Some(1),
+        };
+        assert_eq!(
+            capacity_notice(&both),
+            "Capped: 5 open issue(s) reached maxPending and 10 issue(s) filed in the last hour \
+             reached maxPerHour; no scan starts until an open issue closes and the hourly window \
+             rolls."
+        );
     }
 
     #[test]

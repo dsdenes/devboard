@@ -186,6 +186,11 @@ async fn the_stdio_server_answers_initialize_list_and_the_core_tools() {
     assert_eq!(status["dashboardState"], "none");
     assert_eq!(status["dashboardCandidates"], json!([]));
     assert!(status["version"].is_object());
+    assert_eq!(
+        status["version"]["running"],
+        Value::Null,
+        "no dashboard proves which version a process loaded: {status}"
+    );
     assert_eq!(status["git"]["ahead"], 0);
 
     let goal = tool_result(&frames, 4);
@@ -1138,6 +1143,11 @@ async fn two_dashboards_report_ambiguous_instead_of_null() {
     let status = tool_result(&frames, 2);
     assert_eq!(status["dashboard"], Value::Null);
     assert_eq!(status["dashboardState"], "ambiguous");
+    assert_eq!(
+        status["version"]["running"],
+        Value::Null,
+        "neither dashboard is live: {status}"
+    );
     let candidates = status["dashboardCandidates"]
         .as_array()
         .expect("a candidate list");
@@ -1146,4 +1156,108 @@ async fn two_dashboards_report_ambiguous_instead_of_null() {
     assert_eq!(candidates[0]["port"], 18081);
     assert_eq!(candidates[0]["ready"], true);
     assert_eq!(candidates[1]["pid"], 4102);
+}
+
+/// One discovered dashboard that never answers `getVersion` is `silent`: the
+/// status read names its pid and port, and never lends the checkout's version
+/// to a process that did not answer.
+#[tokio::test]
+async fn one_silent_dashboard_names_its_pid_and_port_without_a_running_version() {
+    // A bound-then-released port refuses every connection, so `getVersion`
+    // never answers even though the injected test seam counts the single
+    // candidate ready.
+    let bound = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a listener");
+    let port = bound.local_addr().expect("an address").port();
+    drop(bound);
+    let mut context = fixture("silent");
+    let pid = 4310;
+    context.dashboards = Some(vec![LiveDashboard {
+        pid,
+        port,
+        repo_dir: context.repo_dir.to_string_lossy().into_owned(),
+        harness: context.harness_dir.to_string_lossy().into_owned(),
+        state_dir: context.state_dir.to_string_lossy().into_owned(),
+    }]);
+    let frames = drive(
+        &context,
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-01-01"}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "devboard_status", "arguments": {}}}),
+        ],
+    )
+    .await;
+    let status = tool_result(&frames, 2);
+    assert_eq!(status["dashboardState"], "silent", "{status}");
+    assert_eq!(status["dashboard"], json!({"port": port, "pid": pid}));
+    let candidates = status["dashboardCandidates"]
+        .as_array()
+        .expect("a candidate list");
+    assert_eq!(candidates.len(), 1, "{status}");
+    assert_eq!(candidates[0]["pid"], pid);
+    assert_eq!(candidates[0]["port"], port);
+    assert_eq!(
+        status["version"]["running"],
+        Value::Null,
+        "the checkout's version is not the silent process's: {status}"
+    );
+}
+
+async fn stub_dashboard_version(_request: axum::extract::Request) -> axum::response::Response {
+    let body = json!({
+        "frames": [{
+            "type": "versionState",
+            "running": "9.9.9",
+            "installed": "9.9.9",
+            "latest": "9.9.9",
+            "stale": false,
+            "source": false,
+        }],
+    })
+    .to_string();
+    axum::response::Response::builder()
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+/// The dashboard that answers `getVersion` is `live`, and its own version is
+/// the only one the status read may report as `running`.
+#[tokio::test]
+async fn one_answering_dashboard_reports_live_with_its_own_running_version() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new().fallback(stub_dashboard_version);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let mut context = fixture("live");
+    let pid = 4311;
+    context.dashboards = Some(vec![LiveDashboard {
+        pid,
+        port,
+        repo_dir: context.repo_dir.to_string_lossy().into_owned(),
+        harness: context.harness_dir.to_string_lossy().into_owned(),
+        state_dir: context.state_dir.to_string_lossy().into_owned(),
+    }]);
+    let frames = drive(
+        &context,
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-01-01"}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "devboard_status", "arguments": {}}}),
+        ],
+    )
+    .await;
+    server.abort();
+    let status = tool_result(&frames, 2);
+    assert_eq!(status["dashboardState"], "live", "{status}");
+    assert_eq!(status["dashboard"], json!({"port": port, "pid": pid}));
+    assert_eq!(status["version"]["running"], "9.9.9");
+    assert_eq!(status["version"]["installed"], "9.9.9");
+    assert_eq!(status["versionState"], "latest");
 }

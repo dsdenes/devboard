@@ -1383,6 +1383,19 @@ async fn the_prompt_page_serves_the_workers_synthesis_template() {
         served.contains("- Everything this call needs is above. Do not read, search, list, or run"),
         "{served}"
     );
+    // The route rule spells the one tool whose catalog name already carries the
+    // prefix, and the skip rule names the two argument fields a peer must send.
+    assert!(
+        served.contains("`devboard_status` mounts as `xd://mcp__devboard_status`,")
+            && served.contains("never `xd://mcp__devboard_devboard_status`"),
+        "{served}"
+    );
+    assert!(
+        served.contains(
+            "- Spell every argument exactly as the tool's schema names it: `mcp_optimizer_proposal_skip`\n  takes `family` and `reason`, never `familyKey` or `family_key`."
+        ),
+        "{served}"
+    );
 
     // A save through the page keeps the allowlist the synthesis call reads.
     devboard::agents_mode::handle(
@@ -1905,6 +1918,80 @@ async fn an_unchanged_snapshot_is_not_rebroadcast() {
     assert!(
         find(&all, "agentState").is_empty(),
         "an unchanged snapshot was rebroadcast: {all:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_get_agents_read_never_starves_the_poll() {
+    let root = scratch("read-poll");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let scan = repo.join(".devboard/.tmp/scout/scans/scan-1");
+    std::fs::create_dir_all(&scan).expect("a scan directory");
+    write_json(&scan.join("activity.json"), json!(["first line"]));
+    write_json(
+        &state.join("scout").join(repo_key(&repo)).join("state.json"),
+        json!({
+            "version": 2,
+            "repo": "owner/repo",
+            "root": repo.to_string_lossy(),
+            "lifecycle": "scanning",
+            "enabled": true,
+            "worker": null,
+            "limits": {"maxPerHour": 10, "maxPending": 5},
+            "intervalMinutes": 1,
+            "lastScanStartedAt": "2026-01-02T00:00:00.000Z",
+            "issues": [],
+            "openTitles": [],
+            "releaseSignature": null,
+            "sync": {"state": "ok", "at": "2026-01-02T00:00:00.000Z", "error": null},
+            "scan": {
+                "scanId": "scan-1",
+                "startedAt": "2026-01-02T00:00:00.000Z",
+                "requested": 1
+            },
+            "newestScanId": "scan-1",
+            "nextAttemptAt": null,
+            "lastError": null,
+            "notice": null,
+            "updatedAt": "2026-01-02T00:00:01.000Z",
+        }),
+    );
+    let (conn, mut inbox) = connection_for(&app).await;
+
+    // A running family's page reads `getAgents` every second; that read is
+    // answered from the poll's projection and must leave the poll its tick.
+    devboard::agents_mode::handle(&app, &conn, &Command::GetAgents).await;
+    let _ = frames(&mut inbox);
+    write_json(
+        &scan.join("activity.json"),
+        json!(["first line", "second line"]),
+    );
+    devboard::agents_mode::handle(&app, &conn, &Command::GetAgents).await;
+    let _ = frames(&mut inbox);
+    devboard::agents_mode::poll_once(&app);
+    let _ = frames(&mut inbox);
+
+    devboard::agents_mode::handle(&app, &conn, &Command::GetAgents).await;
+    let all = frames(&mut inbox);
+    let scout = all
+        .iter()
+        .rev()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .and_then(|frame| frame.get("agents"))
+        .and_then(Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(Value::as_str) == Some("scout"))
+        })
+        .expect("a scout snapshot");
+    assert_eq!(scout["detail"]["scanId"], "scan-1");
+    assert_eq!(
+        scout["detail"]["entries"],
+        json!(["first line", "second line"]),
+        "a read deferred the poll, so the activity log froze: {scout:?}"
     );
 }
 
