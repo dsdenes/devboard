@@ -39,7 +39,11 @@
       },
     }));
     mutations[type] = {
-      mutate: (command: Command, onSettled?: () => void) => mutation.mutate(command, { onSettled }),
+      mutate: (
+        command: Command,
+        onSettled?: () => void,
+        onFailure?: (error: Error) => void,
+      ) => mutation.mutate(command, { onSettled, onError: onFailure }),
     };
   }
   registerMutations(mutations);

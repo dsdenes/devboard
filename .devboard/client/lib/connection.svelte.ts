@@ -120,9 +120,15 @@ export class ConnectionStore {
    * Sends one command. A read re-reads the resource through its mounted query;
    * a command is one `createMutation` that writes its answer into the cache
    * and invalidates the resources it changed. The test runtime may install a
-   * transport double, which every send and pushed frame then uses.
+   * transport double, which every send and pushed frame then uses. A refused
+   * answer calls `onFailure`, so the store that sent the command can settle it
+   * without waiting for an answer frame the failed request never produced.
    */
-  send(command: unknown, origin: SlowUiActionOrigin = "operator"): boolean {
+  send(
+    command: unknown,
+    origin: SlowUiActionOrigin = "operator",
+    onFailure?: (error: Error) => void,
+  ): boolean {
     if (this.disposed) return false;
     if (!isObject(command) || typeof command.type !== "string") {
       this.lastError = "This action has no REST operation.";
@@ -169,7 +175,7 @@ export class ConnectionStore {
       action?.complete();
       return false;
     }
-    mutation.mutate(command as Command, () => action?.complete());
+    mutation.mutate(command as Command, () => action?.complete(), onFailure);
     return true;
   }
 

@@ -8,8 +8,17 @@
  */
 import type { Command, Envelope } from "./rest-transport";
 
+/**
+ * One registered mutation. `onSettled` runs either way; `onFailure` runs only
+ * when the answer failed, so the store that sent the command settles it
+ * instead of waiting for a frame a refused request never produces.
+ */
 export interface CommandMutation {
-  mutate: (command: Command, onSettled?: () => void) => void;
+  mutate: (
+    command: Command,
+    onSettled?: () => void,
+    onFailure?: (error: Error) => void,
+  ) => void;
 }
 
 let registry: Record<string, CommandMutation> = {};

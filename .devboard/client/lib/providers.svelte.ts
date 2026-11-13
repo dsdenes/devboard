@@ -177,7 +177,9 @@ export class ProviderStore {
 
   /**
    * Sends one change under a fresh id. A socket that refuses the send leaves
-   * the store idle instead of busy, because no answer can ever arrive.
+   * the store idle instead of busy, because no answer can ever arrive, and a
+   * refused answer abandons its own id for the same reason: the transport
+   * answers over HTTP, so a failed request produces no acknowledgement frame.
    */
   #change(
     kind: ProviderChangeKind,
@@ -185,11 +187,23 @@ export class ProviderStore {
   ): number | null {
     this.error = null;
     const requestId = this.nextRequestId;
-    if (!connection.send(command(requestId))) return null;
+    if (!connection.send(command(requestId), "operator", () => this.#abandon(requestId))) {
+      return null;
+    }
     this.nextRequestId += 1;
     this.pending.set(requestId, kind);
     this.busy = true;
     return requestId;
+  }
+
+  /**
+   * Drops one change whose answer never arrived, so the next change is not
+   * queued behind it. A failure is reported by the transport, never here:
+   * `saveResult` and `saveFeedback` stay untouched so nothing claims success.
+   */
+  #abandon(requestId: number): void {
+    if (!this.pending.delete(requestId)) return;
+    this.busy = this.pending.size > 0;
   }
 
   /** Settles one answered change; a stale id changes nothing. */

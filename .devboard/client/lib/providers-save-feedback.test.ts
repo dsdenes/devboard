@@ -1,8 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { connection } from "./connection.svelte";
 import { notifications } from "./notifications.svelte";
 import { ProviderStore } from "./providers.svelte";
+import { queryClient } from "./query-client";
 import { saveFeedback } from "./save-feedback.svelte";
+
+// The query harness mounts into a document, so it is loaded after the DOM
+// runtime this file installs rather than beside the rune modules above.
+const { cleanup, render } = await import("@testing-library/svelte");
+const { default: QueryHarness } = await import("./components/QueryHarness.svelte");
 
 interface FakeEnvelope {
   data: string;
@@ -71,6 +78,8 @@ function restoreGlobals(): void {
 afterEach(() => {
   FakeSocket.instances = [];
   saveFeedback.dismiss();
+  cleanup();
+  queryClient.clear();
   connection.dispose();
   restoreGlobals();
 });
@@ -84,6 +93,79 @@ function connected(): { store: ProviderStore; socket: FakeSocket } {
   if (socket === undefined) throw new Error("no socket created");
   socket.open();
   return { store, socket };
+}
+
+/**
+ * Installs the DOM runtime the query harness mounts into and remembers it as
+ * the state `restoreGlobals` puts back, so a later test file still finds the
+ * same document.
+ */
+function installDom(): void {
+  if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+  const target = globalThis as unknown as Record<string, unknown>;
+  originalGlobals.window = target.window;
+  originalGlobals.location = target.location;
+  originalGlobals.WebSocket = target.WebSocket;
+}
+
+interface HttpRequest {
+  method: string;
+  url: string;
+  body: Record<string, unknown> | null;
+}
+
+/** Every frame one REST answer carries. */
+function jsonFrames(frames: unknown[], status = 200): Response {
+  return new Response(JSON.stringify({ frames }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** A refused answer, shaped the way the server reports a problem. */
+function refusedAnswer(status: number, detail: string): Response {
+  return new Response(JSON.stringify({ type: "about:blank", title: "Server Error", status, detail }), {
+    status,
+    headers: { "content-type": "application/problem+json" },
+  });
+}
+
+/** Resolves the promise chains one command's answer starts. */
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 40; turn += 1) await Promise.resolve();
+}
+
+/**
+ * A store behind the shipping HTTP transport: the app root's mutations are
+ * mounted, and one command's answer is the response the handler returns
+ * (null keeps the empty answer a read gets).
+ */
+async function httpConnected(
+  answer: (request: HttpRequest) => Response | null,
+): Promise<ProviderStore> {
+  installDom();
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request: HttpRequest = {
+        method: init?.method ?? "GET",
+        url: String(input),
+        body:
+          typeof init?.body === "string"
+            ? (JSON.parse(init.body) as Record<string, unknown>)
+            : null,
+      };
+      return answer(request) ?? jsonFrames([]);
+    },
+  });
+  render(QueryHarness);
+  connection.connect();
+  const store = new ProviderStore();
+  connection.onMessage((message) => {
+    store.handleEvent(message);
+  });
+  return store;
 }
 
 test("a stale state frame neither confirms a save nor clears its wait", () => {
@@ -229,4 +311,58 @@ test("a provider change that failed on the server is still an error notification
   expect(notifications.items.length).toBe(before + 1);
   expect(notifications.items[0]?.source).toBe("Providers");
   expect(notifications.items[0]?.text).toBe("The credentials file could not be written: disk full");
+});
+
+test("a save whose answer fails stops waiting and a later save still confirms", async () => {
+  let saves = 0;
+  const store = await httpConnected(({ method, url, body }) => {
+    if (method !== "POST" || url !== "/providers") return null;
+    saves += 1;
+    if (saves === 1) {
+      return refusedAnswer(500, "The credentials file could not be written: disk full");
+    }
+    return jsonFrames([{ type: "providerChanged", requestId: body?.requestId }]);
+  });
+
+  const refused = store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  if (refused === null) throw new Error("the save was not sent");
+  expect(store.busy).toBe(true);
+  await settle();
+
+  // The refused answer produced no frame, so the failure itself settles it:
+  // no id stays pending and nothing claims the save was applied.
+  expect(store.busy).toBe(false);
+  expect(store.saveResult).toBeNull();
+  expect(saveFeedback.text).toBeNull();
+
+  const confirmed = store.save({ provider: "openrouter", label: "Work", key: "sk-good" });
+  if (confirmed === null) throw new Error("the save was not sent");
+  expect(store.busy).toBe(true);
+  await settle();
+
+  expect(store.busy).toBe(false);
+  expect(store.saveResult).toEqual({ requestId: confirmed, ok: true });
+  expect(saveFeedback.text).toBe("Provider saved.");
+  expect(saveFeedback.scope).toBe("providers.form");
+});
+
+test("a delete and an enable whose answer fails leave the store idle", async () => {
+  let commands = 0;
+  const store = await httpConnected(({ method, url }) => {
+    if (url !== "/providers/subscription-1") return null;
+    if (method !== "DELETE" && method !== "PATCH") return null;
+    commands += 1;
+    return refusedAnswer(500, "The credentials file could not be written: disk full");
+  });
+
+  expect(store.remove("subscription-1")).not.toBeNull();
+  expect(store.busy).toBe(true);
+  await settle();
+  expect(store.busy).toBe(false);
+
+  expect(store.setEnabled("subscription-1", false)).not.toBeNull();
+  expect(store.busy).toBe(true);
+  await settle();
+  expect(store.busy).toBe(false);
+  expect(commands).toBe(2);
 });
