@@ -53,12 +53,10 @@ const CONTROL_POLL_MS: u64 = 250;
 /// How long the release peer may stay silent before the run is treated as
 /// stuck. A release legitimately compiles, rebuilds the client, runs the
 /// workspace suite up to nine times, and waits for the workflow, so the bound
-/// is silence rather than total runtime: a peer that keeps reporting progress
-/// is working and is never failed mid-release.
+/// is silence rather than total runtime: a peer that keeps reporting progress,
+/// by an ACP frame or by a grow of `publish`'s own record, is working and is
+/// never failed mid-release.
 const RUN_SILENCE_MS: u64 = 60 * 60_000;
-/// The outer bound on one release run, however busy its peer stays. It only
-/// stops a peer that reports progress forever without ever finishing.
-const RUN_MAX_MS: u64 = 4 * 60 * 60_000;
 const RUN_BUSY_NOTICE: &str = "Another Release Train run is active; this tick starts nothing.";
 pub const RUN_HISTORY_LIMIT: usize = 20;
 pub const ACTIVITY_MAX_ENTRIES: usize = 200;
@@ -2549,7 +2547,9 @@ impl Default for ReleaseRunTimeouts {
     fn default() -> Self {
         Self {
             silence: Duration::from_millis(RUN_SILENCE_MS),
-            max: Duration::from_millis(RUN_MAX_MS),
+            // The outer bound comes from publish's own budget, so a run is
+            // never settled while publish may legitimately keep working.
+            max: crate::publish::publish_budget(),
         }
     }
 }
@@ -2573,11 +2573,81 @@ fn silence_detail(timeouts: ReleaseRunTimeouts) -> String {
 }
 
 /// What a run records when it hit the outer bound while its peer was busy.
-fn max_detail(timeouts: ReleaseRunTimeouts) -> String {
+pub fn max_detail(timeouts: ReleaseRunTimeouts) -> String {
     format!(
         "the release agent did not finish within {}",
         window_label(timeouts.max)
     )
+}
+
+/// The identity of a run's progress record: its length and modification time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressSignature {
+    pub len: u64,
+    pub modified_ms: i64,
+}
+
+/// The progress record's current identity, when the file exists.
+pub fn progress_signature(path: &Path) -> Option<ProgressSignature> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    Some(ProgressSignature {
+        len: metadata.len(),
+        modified_ms,
+    })
+}
+
+/// One run's silence bound. Every ACP frame moves it out, and so does every
+/// grown progress record: both prove the peer is still working. A peer whose
+/// shell is gone but whose `publish` keeps recording phases is never silent.
+pub struct SilenceWatch {
+    window: Duration,
+    deadline: tokio::time::Instant,
+    signature: Option<ProgressSignature>,
+}
+
+impl SilenceWatch {
+    pub fn new(start: tokio::time::Instant, window: Duration, path: &Path) -> Self {
+        Self {
+            window,
+            deadline: start + window,
+            signature: progress_signature(path),
+        }
+    }
+
+    pub fn deadline(&self) -> tokio::time::Instant {
+        self.deadline
+    }
+
+    /// Moves the bound out after an ACP frame.
+    pub fn touch(&mut self, now: tokio::time::Instant) {
+        self.deadline = now + self.window;
+    }
+
+    /// Moves the bound out when the progress record advanced since the last
+    /// look, and returns whether it did.
+    pub fn observe(&mut self, path: &Path, now: tokio::time::Instant) -> bool {
+        let current = progress_signature(path);
+        if current != self.signature && current.is_some() {
+            self.signature = current;
+            self.touch(now);
+            return true;
+        }
+        false
+    }
+
+    /// True only when the peer is silent: no frame and no new record.
+    pub fn expired(&mut self, path: &Path, now: tokio::time::Instant) -> bool {
+        if self.observe(path, now) {
+            return false;
+        }
+        now >= self.deadline
+    }
 }
 
 pub type RunFuture = Pin<Box<dyn Future<Output = ReleaseRunResult> + Send>>;
@@ -2848,7 +2918,8 @@ async fn run_release_agent(
     // stuck, and one that reports forever still ends at the outer bound.
     let started = tokio::time::Instant::now();
     let max_deadline = started + input.timeouts.max;
-    let mut silence_deadline = started + input.timeouts.silence;
+    let progress_path = input.run_dir.join(crate::publish::PUBLISH_PROGRESS_FILE);
+    let mut silence = SilenceWatch::new(started, input.timeouts.silence, &progress_path);
     let mut agent_error: Option<String> = None;
     let mut text = String::new();
     loop {
@@ -2893,13 +2964,18 @@ async fn run_release_agent(
                     None => {}
                 }
                 if reported {
-                    silence_deadline = tokio::time::Instant::now() + input.timeouts.silence;
+                    silence.touch(tokio::time::Instant::now());
                 }
             }
-            _ = tokio::time::sleep_until(silence_deadline) => {
-                connection.close();
-                agent_error = Some(silence_detail(input.timeouts));
-                break;
+            _ = tokio::time::sleep_until(silence.deadline()) => {
+                // A silent peer is only stuck when its own progress record did
+                // not grow either: publish records every phase into the run
+                // directory, so this bound follows the release, not the shell.
+                if silence.expired(&progress_path, tokio::time::Instant::now()) {
+                    connection.close();
+                    agent_error = Some(silence_detail(input.timeouts));
+                    break;
+                }
             }
             _ = tokio::time::sleep_until(max_deadline) => {
                 connection.close();
@@ -2912,6 +2988,7 @@ async fn run_release_agent(
                     agent_error = Some(STOPPED_DETAIL.to_string());
                     break;
                 }
+                silence.observe(&progress_path, tokio::time::Instant::now());
             }
         }
     }
@@ -3024,7 +3101,8 @@ async fn run_release_and_verify(
     ));
     let mut publish_args = crate::publish::PublishArgs::new(input.repo_dir.clone());
     publish_args.environment = environment.clone();
-    publish_args.wait_timeout = input.timeouts.silence;
+    publish_args.wait_timeout = crate::publish::DEFAULT_WAIT_TIMEOUT;
+    publish_args.progress_path = Some(input.run_dir.join(crate::publish::PUBLISH_PROGRESS_FILE));
     publish_args.log = {
         let activity = input.activity.clone();
         Some(Arc::new(move |line: &str| activity(line)) as Arc<dyn Fn(&str) + Send + Sync>)
@@ -3364,11 +3442,23 @@ impl ReleaseTrainWorker {
         inner.settings = read_settings(&self.directory);
         let prior = read_worker_state(&self.version_worker_path);
         inner.last_run_at = prior.as_ref().and_then(|state| state.last_run_at.clone());
-        inner.next_run_at_ms = prior
+        let stored_next = prior
             .as_ref()
             .and_then(|state| state.next_run_at.as_deref())
             .and_then(parse_iso_millis)
             .unwrap_or(now);
+        // A Start after a settled run gates immediately: a record that carries
+        // no active run cannot still owe the previous cadence. A record that
+        // does carry one keeps its stored tick, so a restart mid-release
+        // cannot start a second release.
+        let carries_run = prior
+            .as_ref()
+            .is_some_and(|state| state.active_run.is_some());
+        inner.next_run_at_ms = if carries_run {
+            stored_next
+        } else {
+            stored_next.min(now)
+        };
         let acquisition = acquire_lock(
             &versioned_lock_path(&self.directory, self.harness_version.as_deref()),
             &self.lock_details(),

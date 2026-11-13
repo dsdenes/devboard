@@ -1880,6 +1880,154 @@ async fn a_failed_release_record_still_raises_the_page_error() {
     assert_eq!(snapshot["error"], json!(detail), "{all:?}");
 }
 
+/// The snapshot carries the active run first-class: which range, target,
+/// version, and peer it releases, the phase publish recorded, the elapsed
+/// times, and the retained records. The gate carries its verdict and the range
+/// it decided it for.
+#[tokio::test]
+async fn the_release_snapshot_carries_the_active_run_and_its_phase() {
+    let root = scratch("release-run-view");
+    let app = app_at(&root);
+    let state = root.join("state");
+    let target = "b".repeat(40);
+    let range = format!("v1.46.13..{target}");
+    let started = devboard::journal::now_iso8601();
+    write_json(
+        &state.join("release-train/state.json"),
+        json!({
+            "version": 1,
+            "repo": "",
+            "root": "",
+            "release": null,
+            "failure": null,
+            "gate": {
+                "at": started,
+                "state": "unreleased",
+                "detail": null,
+                "target": target,
+                "range": range.clone(),
+                "version": "1.47.0",
+            },
+            "runs": [
+                {
+                    "id": "run-1",
+                    "startedAt": started,
+                    "endedAt": null,
+                    "state": "running",
+                    "range": range.clone(),
+                    "target": target,
+                    "version": "1.47.0",
+                    "url": null,
+                    "detail": null,
+                    "commits": 2,
+                    "peer": {
+                        "command": "omp acp",
+                        "pid": 4242,
+                        "argv": ["omp", "acp"],
+                        "startedAt": started,
+                    },
+                },
+            ],
+            "activity": [],
+            "updatedAt": started,
+        }),
+    );
+    let run_dir = state.join("release-train/runs/run-1");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    let records = [
+        json!({
+            "at": "2026-11-13T10:00:00.000Z",
+            "phase": "fetch",
+            "detail": "fetched origin/main at bbbbbbb",
+        }),
+        json!({
+            "at": "2026-11-13T10:01:00.000Z",
+            "phase": "suite",
+            "detail": "attempt 1/9: 2 fail, 98 pass, 0 skip",
+            "attempt": 1,
+            "passed": 98,
+            "failed": 2,
+        }),
+    ];
+    std::fs::write(
+        run_dir.join(devboard::publish::PUBLISH_PROGRESS_FILE),
+        records
+            .iter()
+            .map(|record| record.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("a progress record");
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let snapshot = release_train_snapshot(&all);
+    let run = &snapshot["run"];
+    assert_eq!(run["id"], json!("run-1"), "{all:?}");
+    assert_eq!(run["range"], json!(range));
+    assert_eq!(run["target"], json!(target));
+    assert_eq!(run["version"], json!("1.47.0"));
+    assert_eq!(run["peerPid"], json!(4242));
+    assert!(run["startedAt"].is_string(), "{run:?}");
+    assert!(run["elapsedMs"].is_i64(), "{run:?}");
+    assert_eq!(run["phase"], json!("suite"));
+    assert!(run["phaseElapsedMs"].is_i64(), "{run:?}");
+    assert_eq!(run["records"].as_array().map(Vec::len), Some(2));
+    assert_eq!(run["records"][1]["attempt"], json!(1));
+    assert_eq!(run["records"][1]["passed"], json!(98));
+    assert_eq!(run["records"][1]["failed"], json!(2));
+    assert_eq!(snapshot["gate"]["state"], json!("unreleased"));
+    assert_eq!(snapshot["gate"]["target"], json!(target));
+    assert_eq!(snapshot["gate"]["range"], json!(range));
+    assert_eq!(snapshot["gate"]["version"], json!("1.47.0"));
+}
+
+/// The other side of that shape: a train with no running run carries no run at
+/// all, so the page never renders a stale phase.
+#[tokio::test]
+async fn the_release_snapshot_has_no_run_when_none_is_active() {
+    let root = scratch("release-run-idle");
+    let app = app_at(&root);
+    let state = root.join("state");
+    let target = "c".repeat(40);
+    write_json(
+        &state.join("release-train/state.json"),
+        json!({
+            "version": 1,
+            "repo": "",
+            "root": "",
+            "release": null,
+            "failure": null,
+            "gate": null,
+            "runs": [
+                {
+                    "id": "settled",
+                    "startedAt": "2026-11-12T17:45:38.055Z",
+                    "endedAt": "2026-11-12T18:08:03.869Z",
+                    "state": "released",
+                    "range": format!("v1.46.13..{target}"),
+                    "target": target,
+                    "version": "1.47.0",
+                    "url": "https://forge.test/releases/tag/v1.47.0",
+                    "detail": null,
+                    "commits": 1,
+                    "peer": null,
+                },
+            ],
+            "activity": [],
+            "updatedAt": "2026-11-12T18:08:03.869Z",
+        }),
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let snapshot = release_train_snapshot(&all);
+    assert_eq!(snapshot["run"], Value::Null, "{all:?}");
+    assert_eq!(snapshot["gate"], Value::Null, "{all:?}");
+}
+
 #[tokio::test]
 async fn a_start_that_spawns_nothing_still_answers() {
     let root = scratch("start-refusal");

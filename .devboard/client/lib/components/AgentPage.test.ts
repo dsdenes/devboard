@@ -84,6 +84,8 @@ afterEach(() => {
   connection.dispose();
   FakeSocket.instances = [];
   agents.requestedPrompts = [];
+  agents.releaseRuns = {};
+  agents.releaseGates = {};
   connection.state = "connecting";
   layout.setMode("goal");
 });
@@ -475,6 +477,103 @@ test("an agent page refresh sends once per open, not once per pushed frame", asy
   } finally {
     restoreFetch();
   }
+});
+
+test("the Release Train page renders the live phase and follows new records without a reload", async () => {
+  const started = "2026-11-13T10:00:00.000Z";
+  const fetched = {
+    at: started,
+    phase: "fetch",
+    detail: "fetched origin/main at abc",
+    attempt: null,
+    passed: null,
+    failed: null,
+    ciRun: null,
+    conclusion: null,
+    assets: null,
+  };
+  const suite = {
+    at: started,
+    phase: "suite",
+    detail: "attempt 1/9: 2 fail, 98 pass, 0 skip",
+    attempt: 1,
+    passed: 98,
+    failed: 2,
+    ciRun: null,
+    conclusion: null,
+    assets: null,
+  };
+  const tag = {
+    at: started,
+    phase: "tag",
+    detail: "pushed v1.1.0",
+    attempt: null,
+    passed: null,
+    failed: null,
+    ciRun: null,
+    conclusion: null,
+    assets: null,
+  };
+  const live = (phase: string, phaseElapsedMs: number, records: unknown[]) =>
+    releaseSnapshot({
+      cadence: {
+        minutes: 10,
+        defaultMinutes: 10,
+        lastRunAt: started,
+        nextRunAt: "2026-11-13T10:10:00.000Z",
+      },
+      run: {
+        id: "run-1",
+        state: "running",
+        range: "v1.0.0..abc",
+        target: "abc",
+        version: "1.1.0",
+        peerPid: 4242,
+        startedAt: started,
+        elapsedMs: 125_000,
+        phase,
+        phaseElapsedMs,
+        records,
+      },
+      gate: {
+        state: "unreleased",
+        at: started,
+        detail: null,
+        target: "abc",
+        range: "v1.0.0..abc",
+        version: "1.1.0",
+      },
+    });
+
+  const view = present(live("suite", 45_000, [fetched, suite]));
+  const page = within(view.container);
+  const phase = page.getByTestId("release-run-phase");
+  expect(phase.getAttribute("data-phase")).toBe("suite");
+  expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("45s");
+  expect(page.getByTestId("release-run-elapsed").textContent).toContain("2m 5s");
+  expect(page.getByTestId("release-run-range").textContent).toContain("v1.0.0..abc");
+  expect(page.getByTestId("release-run-target").textContent).toContain("abc");
+  expect(page.getByTestId("release-run-version").textContent).toContain("1.1.0");
+  expect(page.getByTestId("release-run-peer").textContent).toContain("4242");
+  expect(page.getByTestId("release-run-gate-state").textContent).toContain("unreleased");
+  expect(page.getByTestId("release-run-gate-range").textContent).toContain("v1.0.0..abc");
+  expect(page.getByTestId("release-run-gate-version").textContent).toContain("1.1.0");
+  expect(page.getByTestId("release-run-next").textContent).toContain("10:10");
+  expect(page.getByTestId("release-progress-log").querySelectorAll(".release-log__line").length).toBe(
+    2,
+  );
+
+  // A pushed frame is the only thing that changes: no operator reload.
+  agents.handleEvent({
+    type: "agentState",
+    agent: live("tag", 3_000, [fetched, suite, tag]),
+  });
+  await tick();
+  expect(page.getByTestId("release-run-phase").getAttribute("data-phase")).toBe("tag");
+  expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("3s");
+  expect(page.getByTestId("release-progress-log").querySelectorAll(".release-log__line").length).toBe(
+    3,
+  );
 });
 
 test("a page mounted while the connection connects refresh sends once when it opens", async () => {

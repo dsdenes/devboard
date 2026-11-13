@@ -29,9 +29,11 @@ request is the whole unresolved range; never recompute a different one and never
   `cargo run --manifest-path .devboard/Cargo.toml -p devboard -- publish --repo .
   --wait-timeout 1800`. The `--repo .` names the checkout root, not the harness directory.
 
-  Run it in the foreground and keep it alive until it exits, keeping its output in
-  `<run-dir>/publish.log` (for example `... | tee <run-dir>/publish.log` with `set -o pipefail`),
-  so the release log names the CI run and its success before the tag push. It runs the
+  Run it in the foreground and keep it alive until it exits. Publish records each phase of
+  the release — the fetch, the derived version, the bundle rebuild, every suite attempt, the
+  CI run and its conclusion, the tag push, the GitHub assets, and the Gitea manifest — into
+  `<run-dir>/publish-progress.jsonl` itself, so the release log names the CI run and its
+  success before the tag push without any `tee` or shell redirection. It runs the
   release suite before tagging, pushes the branch, waits for that commit's `devboard-ci.yml` run
   to conclude success, then pushes the tag. It dispatches `devboard-build.yml` from the canonical
   commit, verifies the GitHub archives, installer, checksums, and manifest against the Gitea

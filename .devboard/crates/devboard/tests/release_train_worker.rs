@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
@@ -25,13 +26,14 @@ use devboard::workers::release_train::{
     read_settings, read_state, read_worker_state, release_history, release_train_directory,
     release_train_git, release_train_owners, release_train_worker_states, request_path,
     run_directory, runs_directory, state_path, verify_shipped, versioned_control_directory,
-    versioned_lock_path, versioned_worker_state_path, write_command, write_state, AgentLifecycle,
-    Clock, ForgeRelease, GateGit, GitOutcome, PublishFuture, ReadRetry, ReleaseRunInput,
-    ReleaseRunResult, ReleaseRunTimeouts, ReleaseTrainCommand, ReleaseTrainCommit,
-    ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions, ReleaseTrainRelease,
-    ReleaseTrainRequest, ReleaseTrainRun, ReleaseTrainRunState, ReleaseTrainTag,
-    ReleaseTrainWorker, ReleaseTrainWorkerOptions, ReleaseVerification, ReleaseVerificationOptions,
-    ReleaseVerificationPhase, RunFuture, RunReleaseFn, VerifyFn,
+    versioned_lock_path, versioned_worker_state_path, write_command, write_state,
+    write_worker_state, AgentLifecycle, Clock, ForgeRelease, GateGit, GitOutcome, PublishFuture,
+    ReadRetry, ReleaseRunInput, ReleaseRunResult, ReleaseRunTimeouts, ReleaseTrainCommand,
+    ReleaseTrainCommit, ReleaseTrainFailure, ReleaseTrainGate, ReleaseTrainGateOptions,
+    ReleaseTrainRelease, ReleaseTrainRequest, ReleaseTrainRun, ReleaseTrainRunState,
+    ReleaseTrainTag, ReleaseTrainWorker, ReleaseTrainWorkerOptions, ReleaseTrainWorkerRecord,
+    ReleaseVerification, ReleaseVerificationOptions, ReleaseVerificationPhase, RunFuture,
+    RunReleaseFn, SilenceWatch, VerifyFn,
 };
 
 const START_ISO: &str = "2026-11-02T10:00:00.000Z";
@@ -923,6 +925,118 @@ async fn a_thrown_gate_records_the_failure_and_holds_the_cadence() {
         gates.load(Ordering::SeqCst),
         2,
         "the next due tick gates again"
+    );
+    worker.stop().await;
+}
+
+/// A persisted worker record whose next tick is far ahead, with or without a
+/// run it still owes.
+fn prior_worker_record(next_ms: i64, active_run: Option<&str>) -> ReleaseTrainWorkerRecord {
+    ReleaseTrainWorkerRecord {
+        version: 1,
+        pid: std::process::id(),
+        start_ticks: None,
+        started_at: START_ISO.to_string(),
+        root: String::new(),
+        state_dir: String::new(),
+        lifecycle: AgentLifecycle::Running,
+        enabled: true,
+        paused: false,
+        harness_version: Some("clamp-version".to_string()),
+        argv: vec!["devboard".to_string(), "worker".to_string()],
+        last_run_at: None,
+        next_run_at: Some(devboard::workers::release_train::iso_from_millis(next_ms)),
+        last_error: None,
+        notice: None,
+        active_run: active_run.map(str::to_string),
+        updated_at: START_ISO.to_string(),
+    }
+}
+
+/// A Start after a settled run gates immediately: a record that carries no
+/// active run cannot still owe the previous cadence.
+#[tokio::test]
+async fn a_settled_worker_record_clamps_its_next_tick_to_now() {
+    let workspace = workspace("clamp-settled");
+    let clock = FakeClock::new(start_ms());
+    let stored = start_ms() + 30 * 60_000;
+    let directory = release_train_directory(&workspace.state_dir);
+    write_worker_state(
+        &versioned_worker_state_path(&directory, Some("clamp-version")),
+        &prior_worker_record(stored, None),
+    )
+    .expect("a prior worker record");
+    let target = "a".repeat(40);
+    let gates = Arc::new(AtomicUsize::new(0));
+    let gate = {
+        let gates = gates.clone();
+        let gate = nothing_gate(&target);
+        Arc::new(move |_repo: &Path| {
+            gates.fetch_add(1, Ordering::SeqCst);
+            Ok(gate.clone())
+        }) as GateFn
+    };
+    let worker = worker(
+        &workspace,
+        "clamp-version",
+        &clock,
+        gate,
+        run_ok(Arc::new(AtomicUsize::new(0)), "1.0.1"),
+    );
+    assert!(worker.begin());
+    let record = worker.current_worker().expect("a worker record");
+    let next = parse_iso_millis(record.next_run_at.as_deref().expect("a due time"))
+        .expect("a due time parses");
+    assert_eq!(next, start_ms(), "the stored cadence is clamped to now");
+    worker.tick_now(false).await;
+    assert_eq!(
+        gates.load(Ordering::SeqCst),
+        1,
+        "the first tick after Start gates immediately"
+    );
+    worker.stop().await;
+}
+
+/// The other half: a record that still carries an active run keeps its stored
+/// tick, so a restart mid-release cannot start a second release.
+#[tokio::test]
+async fn a_worker_record_with_an_active_run_keeps_its_stored_tick() {
+    let workspace = workspace("clamp-active");
+    let clock = FakeClock::new(start_ms());
+    let stored = start_ms() + 30 * 60_000;
+    let directory = release_train_directory(&workspace.state_dir);
+    write_worker_state(
+        &versioned_worker_state_path(&directory, Some("clamp-version")),
+        &prior_worker_record(stored, Some("run-1")),
+    )
+    .expect("a prior worker record");
+    let target = "a".repeat(40);
+    let gates = Arc::new(AtomicUsize::new(0));
+    let gate = {
+        let gates = gates.clone();
+        let gate = nothing_gate(&target);
+        Arc::new(move |_repo: &Path| {
+            gates.fetch_add(1, Ordering::SeqCst);
+            Ok(gate.clone())
+        }) as GateFn
+    };
+    let worker = worker(
+        &workspace,
+        "clamp-version",
+        &clock,
+        gate,
+        run_ok(Arc::new(AtomicUsize::new(0)), "1.0.1"),
+    );
+    assert!(worker.begin());
+    let record = worker.current_worker().expect("a worker record");
+    let next = parse_iso_millis(record.next_run_at.as_deref().expect("a due time"))
+        .expect("a due time parses");
+    assert_eq!(next, stored, "an active run keeps the stored tick");
+    worker.tick_now(false).await;
+    assert_eq!(
+        gates.load(Ordering::SeqCst),
+        0,
+        "a restart mid-release starts nothing"
     );
     worker.stop().await;
 }
@@ -2430,6 +2544,117 @@ async fn a_release_peer_that_reports_nothing_fails_with_the_silence_detail() {
     assert_eq!(
         result,
         ReleaseRunResult::failed("the release agent produced no output for 300 ms")
+    );
+}
+
+/// The peer's shell may be gone while publish keeps working. Its own record in
+/// the run directory is progress exactly like an ACP frame: the silence bound
+/// moves out, and only a record that stops growing leaves the peer silent.
+#[tokio::test]
+async fn a_growing_progress_record_holds_off_the_silence_bound() {
+    let root = scratch_root("release-progress-watch");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a root");
+    let path = root.join(devboard::publish::PUBLISH_PROGRESS_FILE);
+    std::fs::write(&path, b"{\"phase\":\"start\"}\n").expect("a record");
+    let start = tokio::time::Instant::now();
+    let mut watch = SilenceWatch::new(start, std::time::Duration::from_millis(200), &path);
+    assert!(
+        !watch.expired(&path, tokio::time::Instant::now()),
+        "the run has not been silent yet"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let mut record = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("the record");
+    record
+        .write_all(b"{\"phase\":\"suite\"}\n")
+        .expect("the next phase");
+    drop(record);
+    assert!(
+        !watch.expired(&path, tokio::time::Instant::now()),
+        "a grown record is progress, so the run is never settled for silence"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        watch.expired(&path, tokio::time::Instant::now()),
+        "a record that stops growing leaves the peer silent"
+    );
+}
+
+/// The run's outer bound comes from publish's whole budget, so no constant can
+/// settle a release publish may legitimately keep working in, and the failure
+/// detail names that derived bound.
+#[test]
+fn the_outer_bound_derives_from_publish_budget() {
+    let timeouts = ReleaseRunTimeouts::default();
+    let allowances = devboard::publish::RELEASE_SUITE_BUDGET
+        + devboard::publish::DEFAULT_WAIT_TIMEOUT
+        + devboard::publish::PUBLISH_BUILD_ALLOWANCE
+        + devboard::publish::PUBLISH_BUNDLE_ALLOWANCE
+        + devboard::publish::PUBLISH_WORKFLOW_ALLOWANCE
+        + devboard::publish::PUBLISH_VERIFY_ALLOWANCE
+        + devboard::publish::PUBLISH_RACE_ALLOWANCE
+        + devboard::publish::PUBLISH_LOCK_ALLOWANCE;
+    assert_eq!(devboard::publish::publish_budget(), allowances);
+    assert!(
+        timeouts.max >= allowances,
+        "the run bound {} is shorter than publish's {} budget",
+        timeouts.max.as_secs(),
+        allowances.as_secs()
+    );
+    assert_eq!(
+        devboard::workers::release_train::max_detail(timeouts),
+        format!(
+            "the release agent did not finish within {} minutes",
+            timeouts.max.as_secs() / 60
+        )
+    );
+}
+
+/// A run that reaches the derived bound still reports that bound, not the
+/// silence window it happened to cross.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_reaches_the_outer_bound_reports_the_bound() {
+    let root = scratch_root("release-agent-bound");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let stub = format!(
+        "{} acp-stub --delay-ms=60000",
+        env!("CARGO_BIN_EXE_devboard")
+    );
+    let input = stub_run_input(
+        &root,
+        stub,
+        ReleaseRunTimeouts {
+            silence: std::time::Duration::from_secs(60),
+            max: std::time::Duration::from_millis(300),
+        },
+    );
+    let verify: VerifyFn = Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Failed {
+                phase: ReleaseVerificationPhase::Tag,
+                version: options.version.clone(),
+                detail: format!(
+                    "tag binding: no release tag names or contains {} for v{}",
+                    &options.target[..7],
+                    options.version
+                ),
+            }
+        })
+    });
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), run(input))
+        .await
+        .expect("the bound settles the run");
+    assert_eq!(
+        result,
+        ReleaseRunResult::failed("the release agent did not finish within 300 ms")
     );
 }
 

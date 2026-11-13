@@ -9185,6 +9185,65 @@ fn foreign_worker_notice(state_dir: &str) -> String {
     format!("{FOREIGN_WORKER_NOTICE} (STATE_DIR {state_dir}).")
 }
 
+/// The gate record the Release Train page reads: what the last gate decided
+/// and the range, target, and version it decided it for.
+fn release_gate_view(shared: &Value) -> Value {
+    let Some(gate) = shared.get("gate").filter(|gate| gate.is_object()) else {
+        return Value::Null;
+    };
+    let field = |key: &str| gate.get(key).cloned().unwrap_or(Value::Null);
+    json!({
+        "state": field("state"),
+        "at": field("at"),
+        "detail": field("detail"),
+        "target": field("target"),
+        "range": field("range"),
+        "version": field("version"),
+    })
+}
+
+/// The active run as the page reads it: what it releases, which phase publish
+/// reached, how long that phase and the whole run have taken, and the retained
+/// progress records. Null when no run is running.
+fn release_run_view(shared: &Value, directory: &Path, now: i64) -> Value {
+    let Some(run) = shared
+        .get("runs")
+        .and_then(Value::as_array)
+        .and_then(|runs| runs.first())
+    else {
+        return Value::Null;
+    };
+    if run.get("state").and_then(Value::as_str) != Some("running") {
+        return Value::Null;
+    }
+    let Some(id) = run.get("id").and_then(Value::as_str) else {
+        return Value::Null;
+    };
+    let records = crate::publish::read_publish_progress(
+        &crate::workers::release_train::run_directory(directory, id)
+            .join(crate::publish::PUBLISH_PROGRESS_FILE),
+    );
+    let started_ms = run
+        .get("startedAt")
+        .and_then(Value::as_str)
+        .and_then(parse_millis);
+    let phase = records.last();
+    let phase_at_ms = phase.and_then(|record| parse_millis(&record.at));
+    json!({
+        "id": id,
+        "state": "running",
+        "range": run.get("range").cloned().unwrap_or(Value::Null),
+        "target": run.get("target").cloned().unwrap_or(Value::Null),
+        "version": run.get("version").cloned().unwrap_or(Value::Null),
+        "peerPid": run.pointer("/peer/pid").and_then(Value::as_u64),
+        "startedAt": run.get("startedAt").cloned().unwrap_or(Value::Null),
+        "elapsedMs": started_ms.map(|started| now - started),
+        "phase": phase.map(|record| record.phase.clone()),
+        "phaseElapsedMs": phase_at_ms.map(|at| now - at),
+        "records": records,
+    })
+}
+
 struct ReleaseFamily {
     descriptor: &'static Descriptor,
     repo_dir: PathBuf,
@@ -9447,7 +9506,8 @@ impl ReleaseFamily {
             .cloned()
             .unwrap_or_default();
         let latest_run = runs.first().cloned();
-        let gate = shared.get("gate").cloned().unwrap_or(Value::Null);
+        let gate = release_gate_view(&shared);
+        let run = release_run_view(&shared, &self.directory, now);
         let workers: Vec<Worker> = owners
             .iter()
             .map(|owner| Worker {
@@ -9510,7 +9570,7 @@ impl ReleaseFamily {
                 .unwrap_or("idle"),
             activity.len()
         );
-        project_snapshot(
+        let snapshot = project_snapshot(
             self.descriptor,
             SnapshotInput {
                 source: SnapshotSource::Live,
@@ -9571,7 +9631,13 @@ impl ReleaseFamily {
                 timer: None,
                 workers,
             },
-        )
+        );
+        let mut snapshot = snapshot;
+        if let Some(object) = snapshot.as_object_mut() {
+            object.insert("run".to_string(), run);
+            object.insert("gate".to_string(), gate);
+        }
+        snapshot
     }
 
     fn request_sync(&self) {

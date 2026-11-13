@@ -17,6 +17,7 @@
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
   import AgentReleasesTable from "./AgentReleasesTable.svelte";
+  import ReleaseRunPanel from "./ReleaseRunPanel.svelte";
   import CommandButton from "./CommandButton.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
   import Input from "./ui/input.svelte";
@@ -34,6 +35,13 @@
   const sync = $derived<AgentSync>(snapshot?.sync ?? { state: "stale", at: null, error: null });
   const issues = $derived<AgentIssueRow[]>(snapshot?.issues ?? []);
   const releases = $derived<AgentReleaseRow[]>(snapshot?.releases ?? []);
+  const releaseRun = $derived(agents.releaseRun(agentId));
+  const releaseGate = $derived(agents.releaseGate(agentId));
+  // The run panel belongs to the Release Train page and only when the server
+  // carries a run or a gate verdict; every other agent renders without it.
+  const showReleaseRun = $derived(
+    agentId === "release-train" && (releaseRun !== null || releaseGate !== null),
+  );
   const documentation = $derived<AgentDocumentationEntry[]>(snapshot?.documentation ?? []);
   const detail = $derived(snapshot?.detail ?? null);
   const blocked = $derived(snapshot?.timer?.blocked === true);
@@ -400,6 +408,14 @@
           </p>
         {/if}
       </div>
+    {/if}
+
+    {#if showReleaseRun}
+      <ReleaseRunPanel
+        run={releaseRun}
+        gate={releaseGate}
+        nextRunAt={snapshot?.cadence.nextRunAt ?? null}
+      />
     {/if}
 
     <div class="agent-page__main">

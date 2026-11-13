@@ -12,13 +12,15 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -53,6 +55,53 @@ pub const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(1_800);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// The interval between lock attempts.
 pub const DEFAULT_LOCK_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// The environment variable naming one release run's directory.
+pub const RELEASE_RUN_DIR_VARIABLE: &str = "DEVBOARD_RELEASE_RUN_DIR";
+/// The progress record publish appends inside that directory. The harness owns
+/// this path: the release agent never writes it, so the account of a release
+/// survives a silent peer, a dead shell, and a page reconnect.
+pub const PUBLISH_PROGRESS_FILE: &str = "publish-progress.jsonl";
+/// How many progress records a reader retains, newest last.
+pub const PUBLISH_PROGRESS_LIMIT: usize = 200;
+/// One release-suite attempt's bound.
+pub const RELEASE_SUITE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3_600);
+/// The whole release-suite budget: every attempt may use its own bound.
+pub const RELEASE_SUITE_BUDGET: Duration =
+    Duration::from_secs(3_600 * release_suite::RELEASE_SUITE_MAX_ATTEMPTS as u64);
+/// The client bundle rebuild and embed allowance.
+pub const PUBLISH_BUNDLE_ALLOWANCE: Duration = Duration::from_secs(1_800);
+/// The release build workflow's allowance.
+pub const PUBLISH_BUILD_ALLOWANCE: Duration = Duration::from_secs(1_800);
+/// The workflow dispatch allowance.
+pub const PUBLISH_WORKFLOW_ALLOWANCE: Duration = Duration::from_secs(1_800);
+/// The asset verification allowance.
+pub const PUBLISH_VERIFY_ALLOWANCE: Duration = Duration::from_secs(1_800);
+/// How often a running suite records that it is still working. The suite
+/// reports a whole attempt only when the attempt ends, and one attempt may
+/// last an hour, so this heartbeat keeps the run's progress record growing and
+/// the Release Train's silence bound out for as long as publish works.
+pub const PUBLISH_SUITE_HEARTBEAT: Duration = Duration::from_secs(300);
+/// The window in which a moving `main` may make publish integrate and derive
+/// again.
+pub const PUBLISH_RACE_ALLOWANCE: Duration = RACE_INTEGRATION_BUDGET;
+/// The wait for the shared release lock.
+pub const PUBLISH_LOCK_ALLOWANCE: Duration = Duration::from_millis(RELEASE_LOCK_WAIT_MS as u64);
+
+/// The whole budget one publish may legitimately spend: the suite's whole
+/// budget plus the CI wait, the build, bundle, workflow, and verification
+/// allowances, the retry window a moving `main` may use, and the shared-lock
+/// wait. The Release Train derives a run's outer bound from this, so no
+/// constant there can settle a run publish is still allowed to work in.
+pub fn publish_budget() -> Duration {
+    RELEASE_SUITE_BUDGET
+        + DEFAULT_WAIT_TIMEOUT
+        + PUBLISH_BUILD_ALLOWANCE
+        + PUBLISH_BUNDLE_ALLOWANCE
+        + PUBLISH_WORKFLOW_ALLOWANCE
+        + PUBLISH_VERIFY_ALLOWANCE
+        + PUBLISH_RACE_ALLOWANCE
+        + PUBLISH_LOCK_ALLOWANCE
+}
 /// How often one idempotent Gitea read is attempted while the forge answers a
 /// transient refusal, such as a busy database.
 const GITEA_READ_ATTEMPTS: usize = 6;
@@ -316,6 +365,154 @@ pub fn iso_from_millis(millis: i64) -> String {
         Ok(moment) => moment.format(FORMAT).unwrap_or_else(|_| millis.to_string()),
         Err(_) => millis.to_string(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Release progress
+
+/// One phase of a release, as `devboard publish` records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishProgressRecord {
+    /// When the phase was recorded, ISO 8601.
+    pub at: String,
+    /// `start`, `fetch`, `version`, `bundle`, `suite`, `ci`, `tag`, `assets`,
+    /// or `manifest`.
+    pub phase: String,
+    /// One line naming what the phase did.
+    pub detail: String,
+    /// The suite attempt this record describes, when it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<u64>,
+    /// The CI run this record describes, when it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_run: Option<u64>,
+    /// That run's conclusion, when the record names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conclusion: Option<String>,
+    /// How many GitHub assets the check verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<usize>,
+}
+
+impl PublishProgressRecord {
+    pub fn new(phase: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            at: String::new(),
+            phase: phase.into(),
+            detail: detail.into(),
+            attempt: None,
+            passed: None,
+            failed: None,
+            ci_run: None,
+            conclusion: None,
+            assets: None,
+        }
+    }
+
+    /// One release-suite attempt with its passed and failed counts.
+    pub fn attempt(mut self, attempt: u32, passed: u64, failed: u64) -> Self {
+        self.attempt = Some(attempt);
+        self.passed = Some(passed);
+        self.failed = Some(failed);
+        self
+    }
+
+    /// One CI run and its conclusion.
+    pub fn ci(mut self, run: u64, conclusion: &str) -> Self {
+        self.ci_run = Some(run);
+        self.conclusion = Some(conclusion.to_string());
+        self
+    }
+
+    /// One GitHub asset check with the asset count it verified.
+    pub fn assets(mut self, amount: usize) -> Self {
+        self.assets = Some(amount);
+        self
+    }
+}
+
+/// The progress record one release appends into its run directory. A write
+/// that fails never fails the release: this record is evidence, not a gate.
+#[derive(Clone)]
+pub struct PublishProgress {
+    path: Option<PathBuf>,
+    clock: Arc<dyn Clock>,
+    warned: Arc<Mutex<bool>>,
+}
+
+impl PublishProgress {
+    pub fn new(path: Option<PathBuf>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            path,
+            clock,
+            warned: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Appends one record. The timestamp comes from the injected clock, so a
+    /// test sees exactly the phases it drove.
+    pub fn record(&self, mut record: PublishProgressRecord) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        record.at = iso_from_millis(self.clock.now_millis());
+        let Ok(mut line) = serde_json::to_string(&record) else {
+            return;
+        };
+        line.push('\n');
+        let written = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(line.as_bytes()));
+        if let Err(error) = written {
+            let mut warned = self
+                .warned
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !*warned {
+                *warned = true;
+                eprintln!(
+                    "publish: could not record progress into {}: {error}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Reads a release's retained progress records, newest last. A partial line
+/// left by a crash is dropped rather than failing the read.
+pub fn read_publish_progress(path: &Path) -> Vec<PublishProgressRecord> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut records: Vec<PublishProgressRecord> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<PublishProgressRecord>(line).ok())
+        .collect();
+    if records.len() > PUBLISH_PROGRESS_LIMIT {
+        records.drain(..records.len() - PUBLISH_PROGRESS_LIMIT);
+    }
+    records
+}
+
+/// The release suite reports one whole attempt as
+/// `attempt 2/9: 3 fail, 100 pass, 4 skip`; that line is the attempt's record.
+fn parse_suite_attempt(line: &str) -> Option<PublishProgressRecord> {
+    let rest = line.strip_prefix("attempt ")?;
+    let (index, rest) = rest.split_once('/')?;
+    let attempt: u32 = index.trim().parse().ok()?;
+    let (_, counts) = rest.split_once(": ")?;
+    let mut parts = counts.split(", ");
+    let failed: u64 = parts.next()?.strip_suffix(" fail")?.trim().parse().ok()?;
+    let passed: u64 = parts.next()?.strip_suffix(" pass")?.trim().parse().ok()?;
+    Some(PublishProgressRecord::new("suite", line.to_string()).attempt(attempt, passed, failed))
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +871,8 @@ pub struct PublishArgs {
     pub release_suite: Option<Arc<dyn release_suite::ReleaseSuiteGate>>,
     /// Receives each progress line; stderr when absent.
     pub log: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    /// The record this release appends its phases to, when the run names one.
+    pub progress_path: Option<PathBuf>,
 }
 
 impl PublishArgs {
@@ -683,6 +882,9 @@ impl PublishArgs {
         let repo_dir = repo_dir.into();
         let harness_root = repo_dir.join(".devboard");
         let release_suite_dir = Some(harness_root.clone());
+        let progress_path = std::env::var(RELEASE_RUN_DIR_VARIABLE)
+            .ok()
+            .map(|run_dir| PathBuf::from(run_dir).join(PUBLISH_PROGRESS_FILE));
         Self {
             repo_dir,
             harness_root,
@@ -698,6 +900,7 @@ impl PublishArgs {
             release_suite_dir,
             release_suite: None,
             log: None,
+            progress_path,
         }
     }
 }
@@ -2016,6 +2219,7 @@ struct VerifiedAssets {
 async fn run_release_suite_gate(
     args: &PublishArgs,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
+    progress: &PublishProgress,
     runner: Arc<dyn CommandRunner>,
     suite_dir: PathBuf,
 ) -> Result<()> {
@@ -2024,20 +2228,56 @@ async fn run_release_suite_gate(
         .clone()
         .unwrap_or_else(|| Arc::new(release_suite::ProcessSuiteGate));
     (log)("release suite: the workspace suite runs before the tag");
-    let report = gate
-        .run(release_suite::ReleaseSuiteOptions {
-            dir: suite_dir,
-            forge_dir: Some(args.repo_dir.clone()),
-            environment: args.environment.clone(),
-            runner: Some(runner),
-            transport: None,
-            log: Some(log.clone()),
-            max_attempts: release_suite::RELEASE_SUITE_MAX_ATTEMPTS,
-            consecutive_failures: release_suite::RELEASE_SUITE_CONSECUTIVE_FAILURES,
-            file_issues: true,
-            attempt_timeout: Duration::from_secs(3_600),
+    progress.record(PublishProgressRecord::new(
+        "suite",
+        "the workspace suite runs before the tag",
+    ));
+    // The suite reports each whole attempt on the log. That line is the
+    // attempt's progress record: its number and its passed and failed counts.
+    let suite_log: Arc<dyn Fn(&str) + Send + Sync> = {
+        let log = log.clone();
+        let progress = progress.clone();
+        Arc::new(move |line: &str| {
+            log(line);
+            if let Some(record) = parse_suite_attempt(line) {
+                progress.record(record);
+            }
         })
-        .await?;
+    };
+    let report = {
+        // One attempt can outlast a silence window, so the suite's own record
+        // grows while it works even when the attempt reports nothing yet.
+        let heartbeat = tokio::spawn({
+            let progress = progress.clone();
+            async move {
+                let mut ticker = tokio::time::interval(PUBLISH_SUITE_HEARTBEAT);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    progress.record(PublishProgressRecord::new(
+                        "suite",
+                        "the workspace suite is still running",
+                    ));
+                }
+            }
+        });
+        let outcome = gate
+            .run(release_suite::ReleaseSuiteOptions {
+                dir: suite_dir,
+                forge_dir: Some(args.repo_dir.clone()),
+                environment: args.environment.clone(),
+                runner: Some(runner),
+                transport: None,
+                log: Some(suite_log),
+                max_attempts: release_suite::RELEASE_SUITE_MAX_ATTEMPTS,
+                consecutive_failures: release_suite::RELEASE_SUITE_CONSECUTIVE_FAILURES,
+                file_issues: true,
+                attempt_timeout: RELEASE_SUITE_ATTEMPT_TIMEOUT,
+            })
+            .await;
+        heartbeat.abort();
+        outcome?
+    };
     if report.code != 0 {
         let reason = report
             .error_line
@@ -2081,6 +2321,11 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             eprintln!("publish: {line}");
         })
     });
+    let progress = PublishProgress::new(args.progress_path.clone(), clock.clone());
+    progress.record(PublishProgressRecord::new(
+        "start",
+        format!("publishing from {}", args.repo_dir.display()),
+    ));
 
     let mut preflight = preflight(&args, runner.as_ref()).await?;
 
@@ -2150,11 +2395,28 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             &sleeper,
         )
         .await?;
+        progress.record(PublishProgressRecord::new(
+            "fetch",
+            format!(
+                "fetched {}/main at {} (attempt {attempt})",
+                preflight.remote,
+                short_sha(&preflight.published)
+            ),
+        ));
         let git = Git::new(runner.as_ref(), &args.repo_dir, &git_environment);
         // A client bundle older than the checkout is rebuilt from the released
         // sources before anything is proven or tagged.
         if dist_is_stale(&args.harness_root)? {
             rebuild_client(&args, runner.as_ref(), &log).await?;
+            progress.record(PublishProgressRecord::new(
+                "bundle",
+                "rebuilt and embedded the client bundle",
+            ));
+        } else {
+            progress.record(PublishProgressRecord::new(
+                "bundle",
+                "the client bundle was current",
+            ));
         }
         // The bundle, the staged manifest, and the tag are proven before
         // anything is tagged, pushed, or written, and only after the checkout
@@ -2212,6 +2474,10 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             bail!("computed an invalid version: {version}");
         }
         let tag = format!("v{version}");
+        progress.record(PublishProgressRecord::new(
+            "version",
+            format!("derived {tag} for {}", derivation.range),
+        ));
 
         // A tag already naming this commit means the tag push and the release step
         // of a previous run happened (or an external release named it). A rerun
@@ -2238,7 +2504,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             api.gitea_verify_write_credential().await?;
             // Nothing is pushed or dispatched before the suite passes.
             if let Some(suite_dir) = args.release_suite_dir.clone() {
-                run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
+                run_release_suite_gate(&args, &log, &progress, runner.clone(), suite_dir).await?;
             }
             published_head.clone()
         } else {
@@ -2314,7 +2580,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             // Nothing is bumped, tagged, pushed, or dispatched before the suite
             // passes.
             if let Some(suite_dir) = args.release_suite_dir.clone() {
-                run_release_suite_gate(&args, &log, runner.clone(), suite_dir).await?;
+                run_release_suite_gate(&args, &log, &progress, runner.clone(), suite_dir).await?;
             }
             if let Some(head) = head_moved_after_proof(&git, &published_head).await? {
                 if race_spent(race_started, &clock) {
@@ -2474,7 +2740,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         // the tag is dropped locally, and the next tick derives it again.
         if !existing_at_head {
             if let Err(error) =
-                wait_for_ci_success(&api, &clock, &sleeper, &args, &commit, &log).await
+                wait_for_ci_success(&api, &clock, &sleeper, &args, &commit, &log, &progress).await
             {
                 let _ = git.run(&["tag", "-d", &tag]).await;
                 return Err(error);
@@ -2519,6 +2785,14 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
                 );
             }
         }
+        progress.record(PublishProgressRecord::new(
+            "tag",
+            format!(
+                "pushed {tag} to {} at {}",
+                preflight.remote,
+                short_sha(&commit)
+            ),
+        ));
         break (version, tag, commit, existing_at_head);
     };
     // The release tail runs in the transport the attempt settled on: a build
@@ -2550,8 +2824,22 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
 
         let verified =
             verify_github_assets(&api, &clock, &sleeper, &args, &tag, &version, &log).await?;
+        progress.record(
+            PublishProgressRecord::new(
+                "assets",
+                format!(
+                    "verified {} GitHub asset(s) for {tag}",
+                    verified.names.len()
+                ),
+            )
+            .assets(verified.names.len()),
+        );
 
         write_gitea_release(&api, &git, &version, &tag, &commit, &verified, &log).await?;
+        progress.record(PublishProgressRecord::new(
+            "manifest",
+            format!("the Gitea release {tag} carries the manifest and its checksums"),
+        ));
 
         // The public GitHub release carries the same manifest, so a host that
         // cannot reach Gitea installs from GitHub alone.
@@ -2770,8 +3058,7 @@ const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(5);
 /// landings in twelve minutes and gave up with a quiet window a few minutes
 /// away. This budget rides out a burst and still leaves the run's own bound
 /// room for the last suite, the CI gate, and the asset propagation.
-const RACE_INTEGRATION_BUDGET: Duration = Duration::from_secs(90 * 60);
-
+pub const RACE_INTEGRATION_BUDGET: Duration = Duration::from_secs(90 * 60);
 /// The pause before an attempt derives again, so a landing's in-flight push
 /// settles before the next suite starts.
 const RACE_INTEGRATION_PAUSE: Duration = Duration::from_secs(5);
@@ -3538,11 +3825,19 @@ async fn wait_for_ci_success(
     args: &PublishArgs,
     commit: &str,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
+    progress: &PublishProgress,
 ) -> Result<u64> {
     let bound = args.wait_timeout.as_secs();
     (log)(&format!(
         "waiting up to {bound}s for the {CI_WORKFLOW} run of {}",
         short_sha(commit)
+    ));
+    progress.record(PublishProgressRecord::new(
+        "ci",
+        format!(
+            "waiting up to {bound}s for the {CI_WORKFLOW} run of {}",
+            short_sha(commit)
+        ),
     ));
     let mut deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
     let mut last_error: Option<String> = None;
@@ -3567,6 +3862,17 @@ async fn wait_for_ci_success(
                         success.id,
                         short_sha(commit)
                     ));
+                    progress.record(
+                        PublishProgressRecord::new(
+                            "ci",
+                            format!(
+                                "CI run {} for {} concluded success",
+                                success.id,
+                                short_sha(commit)
+                            ),
+                        )
+                        .ci(success.id, "success"),
+                    );
                     return Ok(success.id);
                 }
                 if let Some(unfinished) = runs
@@ -3596,6 +3902,17 @@ async fn wait_for_ci_success(
                             }
                             Err(error) => {
                                 let detail = ci_failed_jobs(api, settled.id).await;
+                                progress.record(
+                                    PublishProgressRecord::new(
+                                        "ci",
+                                        format!(
+                                            "the {CI_WORKFLOW} run {} for {} concluded {conclusion}; its re-run was refused",
+                                            settled.id,
+                                            short_sha(commit)
+                                        ),
+                                    )
+                                    .ci(settled.id, &conclusion),
+                                );
                                 bail!(
                                     "the {CI_WORKFLOW} run {} for {} concluded {conclusion}{detail}; its re-run was refused: {error:#}; no tag was pushed",
                                     settled.id,
@@ -3606,6 +3923,17 @@ async fn wait_for_ci_success(
                         Some(_) if !rerun_live => {}
                         Some(_) => {
                             let detail = ci_failed_jobs(api, settled.id).await;
+                            progress.record(
+                                PublishProgressRecord::new(
+                                    "ci",
+                                    format!(
+                                        "the {CI_WORKFLOW} run {} for {} concluded {conclusion} after one re-run",
+                                        settled.id,
+                                        short_sha(commit)
+                                    ),
+                                )
+                                .ci(settled.id, &conclusion),
+                            );
                             bail!(
                                 "the {CI_WORKFLOW} run {} for {} concluded {conclusion} after one re-run{detail}; no tag was pushed",
                                 settled.id,
@@ -3635,6 +3963,17 @@ async fn wait_for_ci_success(
                             success.id,
                             short_sha(commit)
                         ));
+                        progress.record(
+                            PublishProgressRecord::new(
+                                "ci",
+                                format!(
+                                    "CI run {} for {} concluded success",
+                                    success.id,
+                                    short_sha(commit)
+                                ),
+                            )
+                            .ci(success.id, "success"),
+                        );
                         return Ok(success.id);
                     }
                     if let Some(settled) = runs
@@ -3644,6 +3983,17 @@ async fn wait_for_ci_success(
                     {
                         let conclusion = ci_conclusion(settled);
                         let detail = ci_failed_jobs(api, settled.id).await;
+                        progress.record(
+                            PublishProgressRecord::new(
+                                "ci",
+                                format!(
+                                    "the {CI_WORKFLOW} run {} for {} concluded {conclusion}",
+                                    settled.id,
+                                    short_sha(commit)
+                                ),
+                            )
+                            .ci(settled.id, &conclusion),
+                        );
                         bail!(
                             "the {CI_WORKFLOW} run {} for {} concluded {conclusion}{detail}; no tag was pushed",
                             settled.id,
@@ -3668,6 +4018,19 @@ async fn wait_for_ci_success(
             match last_seen {
                 Some(run) => {
                     let detail = ci_unfinished_detail(api, run.id).await;
+                    let conclusion = ci_conclusion(&run);
+                    progress.record(
+                        PublishProgressRecord::new(
+                            "ci",
+                            format!(
+                                "the {CI_WORKFLOW} run {} for {} was still {} after {bound}s",
+                                run.id,
+                                short_sha(commit),
+                                conclusion.replace('_', " ")
+                            ),
+                        )
+                        .ci(run.id, &conclusion),
+                    );
                     bail!(
                         "the {CI_WORKFLOW} run {} for {} was still {} after {bound}s{detail}{read}; no tag was pushed",
                         run.id,
@@ -3675,14 +4038,32 @@ async fn wait_for_ci_success(
                         ci_conclusion(&run).replace('_', " ")
                     )
                 }
-                None if last_error.is_some() => bail!(
-                    "no {CI_WORKFLOW} run for {} could be read within {bound}s{read}; no tag was pushed",
-                    short_sha(commit)
-                ),
-                None => bail!(
-                    "no {CI_WORKFLOW} run for {} concluded success within {bound}s; no tag was pushed",
-                    short_sha(commit)
-                ),
+                None if last_error.is_some() => {
+                    progress.record(PublishProgressRecord::new(
+                        "ci",
+                        format!(
+                            "no {CI_WORKFLOW} run for {} could be read within {bound}s",
+                            short_sha(commit)
+                        ),
+                    ));
+                    bail!(
+                        "no {CI_WORKFLOW} run for {} could be read within {bound}s{read}; no tag was pushed",
+                        short_sha(commit)
+                    )
+                }
+                None => {
+                    progress.record(PublishProgressRecord::new(
+                        "ci",
+                        format!(
+                            "no {CI_WORKFLOW} run for {} concluded success within {bound}s",
+                            short_sha(commit)
+                        ),
+                    ));
+                    bail!(
+                        "no {CI_WORKFLOW} run for {} concluded success within {bound}s; no tag was pushed",
+                        short_sha(commit)
+                    )
+                }
             }
         }
         sleeper.sleep(args.poll_interval).await;

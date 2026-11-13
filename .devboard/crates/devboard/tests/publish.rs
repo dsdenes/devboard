@@ -2094,6 +2094,109 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
 type LogLines = Arc<Mutex<Vec<String>>>;
 type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// A suite gate that reports whole attempts on the log, the shape the
+/// production suite uses for every attempt it runs.
+struct LoggingSuiteGate;
+
+impl ReleaseSuiteGate for LoggingSuiteGate {
+    fn run<'a>(
+        &'a self,
+        options: ReleaseSuiteOptions,
+    ) -> BoxFuture<'a, anyhow::Result<ReleaseSuiteReport>> {
+        let log = options.log.clone();
+        Box::pin(async move {
+            if let Some(log) = log {
+                log("attempt 1/9: 2 fail, 98 pass, 0 skip");
+                log("attempt 2/9: 0 fail, 100 pass, 2 skip");
+            }
+            Ok(ReleaseSuiteReport {
+                code: 0,
+                attempts: 2,
+                quarantined: Vec::new(),
+                structural: None,
+                error_line: None,
+            })
+        })
+    }
+}
+
+/// The harness owns the run's progress record: publish appends one timestamped
+/// line per phase by itself, so the account survives a silent agent and a dead
+/// shell without any `tee`. The record names every phase in the order the
+/// release performs them.
+#[tokio::test]
+async fn publish_records_every_phase_into_the_run_directory() {
+    let live = live("release-progress", release_assets()).await;
+    let progress = live
+        .state_dir
+        .join(devboard::publish::PUBLISH_PROGRESS_FILE);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.progress_path = Some(progress.clone());
+    args.release_suite = Some(Arc::new(LoggingSuiteGate));
+    let report = publish(args).await.expect("a release");
+
+    let records = devboard::publish::read_publish_progress(&progress);
+    let phases: Vec<&str> = records.iter().map(|record| record.phase.as_str()).collect();
+    assert_eq!(
+        phases,
+        [
+            "start", "fetch", "bundle", "version", "suite", "suite", "suite", "ci", "ci", "tag",
+            "assets", "manifest",
+        ],
+        "publish records every phase in the order it performs them: {records:?}"
+    );
+    assert!(
+        records.iter().all(|record| !record.at.is_empty()),
+        "every record carries its own timestamp: {records:?}"
+    );
+
+    let attempts: Vec<_> = records
+        .iter()
+        .filter(|record| record.phase == "suite" && record.attempt.is_some())
+        .collect();
+    assert_eq!(attempts.len(), 2, "{records:?}");
+    assert_eq!(
+        (attempts[0].attempt, attempts[0].passed, attempts[0].failed),
+        (Some(1), Some(98), Some(2))
+    );
+    assert_eq!(
+        (attempts[1].attempt, attempts[1].passed, attempts[1].failed),
+        (Some(2), Some(100), Some(0))
+    );
+
+    let version = records
+        .iter()
+        .find(|record| record.phase == "version")
+        .expect("a derived version");
+    assert!(version.detail.contains("v1.1.0"), "{}", version.detail);
+
+    let ci = records
+        .iter()
+        .find(|record| record.phase == "ci" && record.conclusion.as_deref() == Some("success"))
+        .expect("the CI verdict");
+    assert!(ci.ci_run.is_some(), "{ci:?}");
+    assert!(ci.detail.contains("concluded success"), "{}", ci.detail);
+
+    let tag = records
+        .iter()
+        .find(|record| record.phase == "tag")
+        .expect("the tag push");
+    assert!(tag.detail.contains("pushed v1.1.0"), "{}", tag.detail);
+
+    let assets = records
+        .iter()
+        .find(|record| record.phase == "assets")
+        .expect("the GitHub asset check");
+    assert_eq!(assets.assets, Some(report.github_assets.len()));
+
+    let manifest = records
+        .iter()
+        .find(|record| record.phase == "manifest")
+        .expect("the Gitea manifest check");
+    assert!(manifest.detail.contains("v1.1.0"), "{}", manifest.detail);
+}
+
 /// A publish log a test can read after the run.
 fn recording_log() -> (LogLines, LogSink) {
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

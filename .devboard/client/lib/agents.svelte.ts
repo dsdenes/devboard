@@ -11,6 +11,12 @@ import type {
   AgentSnapshotInput,
   RunQuestion,
 } from "./types";
+import {
+  releaseGateFrom,
+  releaseRunFrom,
+  type ReleaseGateView,
+  type ReleaseRunView,
+} from "./release-run";
 import { connection } from "./connection.svelte";
 import { queryClient } from "./query-client";
 import { notifications } from "./notifications.svelte";
@@ -70,6 +76,9 @@ export class AgentsStore {
   activity = $state<Record<string, string[]>>({});
   activityScan = $state<Record<string, string | null>>({});
   prompts = $state<Record<string, AgentPromptState>>({});
+  /** The Release Train's active run and gate, absent for every other agent. */
+  releaseRuns = $state<Record<string, ReleaseRunView | null>>({});
+  releaseGates = $state<Record<string, ReleaseGateView | null>>({});
   /** Agents whose prompt section is open: one document read per agent. */
   requestedPrompts = $state<string[]>([]);
   /** A refused prompt read's text, cleared when that agent's prompt arrives. */
@@ -139,6 +148,16 @@ export class AgentsStore {
   detail(id: string): AgentActivityDetail | null {
     const detail = this.snapshots[id]?.detail;
     return detail?.panel === "activity" ? detail : null;
+  }
+
+  /** The Release Train's active run, or null when none is running. */
+  releaseRun(id: string): ReleaseRunView | null {
+    return this.releaseRuns[id] ?? null;
+  }
+
+  /** The gate verdict that produced the newest Release Train run. */
+  releaseGate(id: string): ReleaseGateView | null {
+    return this.releaseGates[id] ?? null;
   }
 
   start(id: string): void {
@@ -272,6 +291,11 @@ export class AgentsStore {
     this.revisions[snapshot.id] = (this.revisions[snapshot.id] ?? 0) + 1;
     const previousError = this.lastError.get(snapshot.id) ?? null;
     this.snapshots[snapshot.id] = snapshot;
+    // The registry projection carries the shared shape only; the Release Train
+    // run and gate ride beside it in the same frame.
+    const frame = value as Record<string, unknown>;
+    this.releaseRuns[snapshot.id] = releaseRunFrom(frame.run);
+    this.releaseGates[snapshot.id] = releaseGateFrom(frame.gate);
     if (snapshot.detail.panel === "activity") {
       const currentScan = this.activityScan[snapshot.id] ?? null;
       this.activityScan[snapshot.id] = snapshot.detail.scanId;
