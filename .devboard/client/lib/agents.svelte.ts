@@ -38,6 +38,19 @@ function applyActivity(lines: string[], entries: ActivityEntry[], replay: boolea
   return next;
 }
 
+/**
+ * A snapshot carries the whole activity log, so it refreshes the client's copy
+ * inside one scan too: the backend polls the log every 250 ms while the page
+ * reads its snapshot every second. A snapshot the poll built before a delta
+ * this socket already applied is a strict prefix of the client's newer lines,
+ * so it never truncates them.
+ */
+function snapshotActivity(lines: string[], entries: string[]): string[] {
+  const clientIsNewer =
+    lines.length > entries.length && entries.every((line, index) => line === lines[index]);
+  return clientIsNewer ? lines : [...entries];
+}
+
 /** One comparable key for the three settings a save sends. */
 function settingsSignature(
   minutes: number,
@@ -261,10 +274,11 @@ export class AgentsStore {
     this.snapshots[snapshot.id] = snapshot;
     if (snapshot.detail.panel === "activity") {
       const currentScan = this.activityScan[snapshot.id] ?? null;
-      if (currentScan !== snapshot.detail.scanId) {
-        this.activityScan[snapshot.id] = snapshot.detail.scanId;
-        this.activity[snapshot.id] = [...snapshot.detail.entries];
-      }
+      this.activityScan[snapshot.id] = snapshot.detail.scanId;
+      this.activity[snapshot.id] =
+        currentScan === snapshot.detail.scanId
+          ? snapshotActivity(this.activity[snapshot.id] ?? [], snapshot.detail.entries)
+          : [...snapshot.detail.entries];
     }
     if (snapshot.error !== previousError) {
       this.lastError.set(snapshot.id, snapshot.error);

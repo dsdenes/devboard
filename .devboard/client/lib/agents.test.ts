@@ -193,3 +193,79 @@ test("a starting frame leaves the page neither busy nor waiting for the ceiling"
   expect(start.hasAttribute("disabled")).toBe(true);
   expect(view.container.textContent).not.toContain("Start received no answer.");
 });
+test("a snapshot that grows one scan's log refreshes the page's activity", () => {
+  const store = new AgentsStore();
+  const scan = (entries: string[], scanId = "scan-1") =>
+    snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId, entries },
+    });
+
+  store.handleEvent({ type: "agentState", agent: scan(["first line"]) });
+  store.handleEvent({
+    type: "agentState",
+    agent: scan(["first line", "second line"]),
+  });
+
+  expect(store.activity["dead-code"]).toEqual(["first line", "second line"]);
+  expect(store.activityScan["dead-code"]).toBe("scan-1");
+});
+
+test("a snapshot the poll has not caught up with keeps the newer streamed lines", () => {
+  const store = new AgentsStore();
+  store.handleEvent({
+    type: "agentState",
+    agent: snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId: "scan-1", entries: ["first line"] },
+    }),
+  });
+  store.handleEvent({
+    type: "agentActivity",
+    id: "dead-code",
+    scanId: "scan-1",
+    replay: true,
+    entries: [
+      { text: "first line", append: false },
+      { text: "second line", append: false },
+    ],
+  });
+
+  store.handleEvent({
+    type: "agentState",
+    agent: snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId: "scan-1", entries: ["first line"] },
+    }),
+  });
+
+  expect(store.activity["dead-code"]).toEqual(["first line", "second line"]);
+});
+
+test("the expanded log grows while one scan is still running", async () => {
+  installGlobals();
+  openSocket();
+  const scan = (entries: string[]) =>
+    snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId: "scan-1", entries },
+    });
+  agents.handleEvent({ type: "agentState", agent: scan(["first line"]) });
+
+  const view = render(AgentPage, { props: { agentId: "dead-code" } });
+  await fireEvent.click(within(view.container).getByTestId("agent-activity-toggle"));
+  await tick();
+  expect(
+    within(view.container).getByTestId("agent-activity-last").textContent?.trim(),
+  ).toBe("first line");
+
+  agents.handleEvent({ type: "agentState", agent: scan(["first line", "second line"]) });
+  await tick();
+
+  const log = within(view.container).getByTestId("agent-activity-log");
+  expect(log.textContent).toContain("first line");
+  expect(log.textContent).toContain("second line");
+  expect(
+    within(view.container).getByTestId("agent-activity-last").textContent?.trim(),
+  ).toBe("second line");
+});

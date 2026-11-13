@@ -317,6 +317,9 @@ Activating `data-testid="agent-activity-toggle"` expands an inline
 content. It holds every retained activity line, newest last, in a scrollable region that follows
 the newest line only while the operator is at the bottom. Activating the toggle again collapses it;
 another tab, mode, or a reload starts collapsed. The expanded panel never contains a run identifier.
+The lines follow the polled snapshot inside one scan, not only when a new scan starts, so a running
+agent's output appears as it is written; a snapshot the poll has not caught up with yet never
+truncates lines a streamed delta already applied.
 
 Each existing control moved into `data-testid="agent-activity-control"` keeps its test id, command,
 label, disabled conditions, title, and effect, and the page no longer renders a second copy:
@@ -2553,7 +2556,9 @@ with an error naming it before spawning anything.
 A Start answers its `starting` snapshot before the preflight, and the 1000 ms poll fingerprints
 each family's durable state and serializes a snapshot only after the fingerprint changes; an idle
 dashboard rebroadcasts nothing. A `GET /agents` read is answered from the same current snapshots
-and does not wait for a provider or a worker.
+and does not wait for a provider or a worker. Only the connect replay defers the poll, inside its
+one-second settle window; a read never does, because a running family's page polls that read every
+second and a deferred poll would freeze the snapshot the read answers with.
 A REST reply carries only the frames the command's own task wrote. A request handle joins the
 client map so a mutation can answer through a broadcast, but its fan-out is attributed to that
 task: a worker's activity line or the poll's republished snapshot reaches every durable page and
