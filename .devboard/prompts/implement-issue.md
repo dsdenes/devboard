@@ -41,11 +41,15 @@ comment on, close, or reopen another issue.
   `agent_sessions_list` — never by spawning the harness's `call-tool` bridge or any other
   subprocess that wraps them: the bridge starts a second Bun process and duplicates a capability
   the session already has. Never reach for that bridge for a Devboard state read.
-- Address every Devboard tool through its mounted route, and write that route exactly
-  `xd://mcp__devboard_<catalog name>` with the name the MCP catalog lists. Before the first write
-  of a turn, resolve each route from that catalog: `xd://devboard_status` and
-  `xd://mcp__devboard_devboard_status` are not routes, and a `write` whose `path` is not a device
-  route — `conflict://1`, for example — is never a probe. Fix the route and issue the call once.
+- Address every Devboard tool through its mounted route, copied from the tool list the session
+  carries and never inferred: a route is `xd://` plus the mount name exactly as that list prints
+  it, so the status tool's route is `xd://mcp__devboard_status`, one `devboard` segment.
+  `xd://mcp__devboard_devboard_status` repeats the server prefix on top of the tool's own
+  `devboard_` prefix, and bare `xd://devboard_status` drops the mount; each fails with
+  `No such tool` and costs a turn, so issue the status read once, on the correct route. Before the
+  first write of a turn, resolve each route from that list; a `write` whose `path` is not a listed
+  device route — `conflict://1`, for example — is never a probe. Fix the route and issue the call
+  once.
 - Never orient the session with a shell probe, and never chain orientation probes: no
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
