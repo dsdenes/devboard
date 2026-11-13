@@ -257,24 +257,29 @@ export class IssuesStore {
     return this.enabled && !this.paused;
   }
 
-  start(): void {
-    connection.send({ type: "startIssues" });
+  /**
+   * Starts the worker. Returns false when the command never reached the
+   * server, so the control releases its label instead of waiting out the
+   * ceiling for an answer nothing asked for.
+   */
+  start(): boolean {
+    return connection.send({ type: "startIssues" });
   }
 
-  pause(): void {
-    connection.send({ type: "pauseIssues" });
+  pause(): boolean {
+    return connection.send({ type: "pauseIssues" });
   }
 
-  resume(): void {
-    connection.send({ type: "resumeIssues" });
+  resume(): boolean {
+    return connection.send({ type: "resumeIssues" });
   }
 
-  stop(): void {
-    connection.send({ type: "stopIssues" });
+  stop(): boolean {
+    return connection.send({ type: "stopIssues" });
   }
 
-  check(): void {
-    connection.send({ type: "checkIssues" });
+  check(): boolean {
+    return connection.send({ type: "checkIssues" });
   }
 
   /**

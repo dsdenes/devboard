@@ -24,7 +24,11 @@ export interface CommandDef {
   keywords?: string;
   shortcut?: string;
   disabled?: () => string | null;
-  run: () => void | Promise<void>;
+  /**
+   * Runs the command. A store command answers `false` when the dispatch never
+   * reached the server, so the row forwards that answer instead of dropping it.
+   */
+  run: () => void | boolean | Promise<void>;
 }
 
 export interface CommandContext {

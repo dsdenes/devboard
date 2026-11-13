@@ -909,8 +909,8 @@ async fn a_start_answers_before_its_preflight_finishes() {
     );
 }
 
-/// A Stop during an accepted Start supersedes it: the start answers no worker,
-/// and its preflight's outcome is never published.
+/// A Stop during an accepted Start supersedes it: the preflight's outcome is
+/// never published, and the worker that Start spawned is ended.
 #[tokio::test]
 async fn a_stop_supersedes_an_accepted_start() {
     let (repo, state) = scratch("start-superseded");
@@ -953,6 +953,8 @@ async fn a_stop_supersedes_an_accepted_start() {
         StartOutcome::Started { attached: false }
     );
     assert_eq!(bridge.snapshot()["starting"], json!(true));
+    // The worker exists before the preflight is asked; the answer names it.
+    assert_eq!(bridge.snapshot()["worker"]["pid"], json!(42));
     bridge.command(&IssuesCommand::Stop).expect("the stop");
     assert_eq!(bridge.snapshot()["starting"], json!(false));
 
@@ -961,9 +963,10 @@ async fn a_stop_supersedes_an_accepted_start() {
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(
-        spawns.lock().expect("spawns").is_empty(),
-        "a stop answers no worker"
+    assert_eq!(
+        spawns.lock().expect("spawns").len(),
+        1,
+        "the Stop supersedes the start; it starts no second worker"
     );
     assert_eq!(bridge.snapshot()["startError"], Value::Null);
 }
@@ -1509,8 +1512,9 @@ async fn a_dispatched_start_answers_inside_the_budget_while_its_preflight_is_pen
     let config = app_config(&repo, &state);
     let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
     let app = App::new(config, journal);
-    // A preflight that never settles: no forge, no `omp`, and no spawn can
-    // follow, so nothing outlives the test's own runtime.
+    // A preflight that never settles and a spawn that starts no process: the
+    // Start answers its state from the spawn seam, so nothing outlives the
+    // test's own runtime.
     devboard::issues_mode::set_preflight(
         &app,
         Arc::new(|_request| {
@@ -1522,6 +1526,8 @@ async fn a_dispatched_start_answers_inside_the_budget_while_its_preflight_is_pen
             })
         }),
     );
+    devboard::issues_mode::set_spawn(&app, Arc::new(|_argv, _environment| Some(4_242_424)));
+    devboard::issues_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
 
     let started = Instant::now();
     let frames = app.dispatch_captured(Command::StartIssues).await;
@@ -1532,6 +1538,8 @@ async fn a_dispatched_start_answers_inside_the_budget_while_its_preflight_is_pen
     );
     assert_eq!(frames[0]["type"], "issuesState");
     assert_eq!(frames[0]["starting"], json!(true));
+    // The answer names the worker it spawned, not a start with nothing to show.
+    assert_eq!(frames[0]["worker"]["pid"], json!(4_242_424));
 }
 
 /// A read replays each running agent's activity to the page that asked, and
@@ -1693,4 +1701,313 @@ async fn one_tracker_read_per_interval_serves_the_worker_and_the_bridge() {
     let snapshot = bridge.snapshot();
     assert_eq!(snapshot["queue"][0]["number"], json!(4));
     assert!(snapshot["sync"]["lastSyncAt"].is_string());
+}
+
+/* ------------------------------------------------------------------------ */
+/* Start answers                                                             */
+/* ------------------------------------------------------------------------ */
+
+/// One live worker process a Start can answer with: a real child whose pid
+/// stays alive until the fixture drops it, as the worker a spawn names.
+struct WorkerProcess {
+    child: Child,
+    pid: u32,
+}
+
+impl Drop for WorkerProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn spawn_worker_process(repo: &Path) -> WorkerProcess {
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .current_dir(repo)
+        .spawn()
+        .expect("a worker child");
+    let pid = child.id();
+    WorkerProcess { child, pid }
+}
+
+/// The lock one live worker holds in this checkout, in this state directory.
+fn write_worker_lock(repo: &Path, state: &Path, pid: u32) {
+    let path = lock_path(repo);
+    std::fs::create_dir_all(path.parent().expect("a lock directory")).expect("a lock directory");
+    let lock = json!({
+        "pid": pid,
+        "startedAt": devboard::journal::now_iso8601(),
+        "repo": repo.display().to_string(),
+        "stateDir": state.display().to_string(),
+        "harnessVersion": "1.2.3",
+        "argv": ["sleep", "60"],
+    });
+    std::fs::write(&path, serde_json::to_string(&lock).expect("lock JSON")).expect("a lock");
+}
+
+/// Every record text the dashboard journal holds.
+fn journal_records(repo: &Path, state: &Path) -> Vec<String> {
+    let path = devboard::journal::journal_file(state, repo);
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter_map(|record| record["text"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn wait_for_journal(repo: &Path, state: &Path, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !journal_records(repo, state)
+        .iter()
+        .any(|text| text.contains(needle))
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the refusal was never journaled: {needle}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A Start never publishes a frame that names neither its worker nor its
+/// refusal.
+///
+/// The accepted answer names the start in flight. The spawn that follows is
+/// not an outcome yet: until the worker's own state names its pid, the frame
+/// stays `starting`, so a page never reads a finished start with no worker
+/// and no reason. On the parent commit the spawn's own frame cleared
+/// `starting` while the worker had published nothing yet.
+#[tokio::test]
+async fn a_start_publishes_its_worker_or_its_refusal_without_a_gap() {
+    let (repo, state) = scratch("start-no-gap");
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let spawned: Arc<Mutex<Option<WorkerProcess>>> = Arc::new(Mutex::new(None));
+    let held = Arc::clone(&spawned);
+    let spawn_repo = repo.clone();
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(move |_argv, _env| {
+                let worker = spawn_worker_process(&spawn_repo);
+                let pid = worker.pid;
+                *held.lock().expect("worker") = Some(worker);
+                Some(pid)
+            }),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    let mut frames: Vec<Value> = Vec::new();
+
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: false }
+    );
+    // The answer the command handler writes to the page that pressed Start.
+    bridge.reply(&conn);
+
+    // The spawn runs after the answer. Its frame must not clear `starting`
+    // before the worker publishes anything.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while spawned.lock().expect("worker").is_none() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The worker now publishes the lock and the state that name it.
+    let pid = spawned
+        .lock()
+        .expect("worker")
+        .as_ref()
+        .expect("a spawned worker")
+        .pid;
+    write_worker_lock(&repo, &state, pid);
+    let mut document = state_document(&repo, "idle", json!([]));
+    document["worker"] = attached_worker(&pid, &state);
+    write_state(&repo, &state, &document);
+    bridge.refresh();
+
+    while let Ok(text) = inbox.try_recv() {
+        frames.push(serde_json::from_str(&text).expect("frame JSON"));
+    }
+    frames.extend(sink.lock().expect("sink").iter().cloned());
+    assert!(!frames.is_empty(), "the Start published no frame");
+    for frame in &frames {
+        if frame["type"] != "issuesState" {
+            continue;
+        }
+        let starting = frame["starting"] == json!(true);
+        let named = frame["worker"]["pid"].is_u64();
+        let refused = frame["startError"].is_string();
+        assert!(
+            starting || named || refused,
+            "a Start frame names neither its worker nor its refusal: {frame}"
+        );
+    }
+    let settled = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "issuesState")
+        .expect("a state frame");
+    assert_eq!(settled["starting"], json!(false), "{settled}");
+    assert_eq!(settled["worker"]["pid"], json!(pid), "{settled}");
+    // The spawn names its worker before that worker publishes, so the page
+    // shows a pid without waiting for a poll or the ceiling.
+    assert!(
+        frames.iter().any(|frame| {
+            frame["type"] == "issuesState"
+                && frame["starting"] == json!(true)
+                && frame["worker"]["pid"] == json!(pid)
+        }),
+        "the spawned worker is never named before it publishes: {frames:?}"
+    );
+}
+
+/// A synchronous refusal answers with state, not only an error frame.
+///
+/// The card renders `startError` persistently and offers Start again; an
+/// `error` frame would raise a server notification and file a board issue
+/// against an operator-owned fact instead.
+#[tokio::test]
+async fn a_refused_issues_start_publishes_its_reason_on_the_card() {
+    let (repo, state) = scratch("start-refusal-card");
+    let config = app_config(&repo, &state);
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+
+    // Another dashboard's STATE_DIR owns this checkout's worker lock.
+    let worker = spawn_worker_process(&repo);
+    let foreign_state = repo.join(".devboard").join(".tmp").join("foreign-state");
+    let lock = lock_path(&repo);
+    std::fs::create_dir_all(lock.parent().expect("a lock directory")).expect("a lock directory");
+    let record = json!({
+        "pid": worker.pid,
+        "startedAt": devboard::journal::now_iso8601(),
+        "repo": repo.display().to_string(),
+        "stateDir": foreign_state.display().to_string(),
+        "harnessVersion": null,
+        "argv": ["sleep", "60"],
+    });
+    std::fs::write(&lock, serde_json::to_string(&record).expect("lock JSON")).expect("a lock");
+
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    app.command(&conn, Command::StartIssues).await;
+
+    let refusal = format!(
+        "this checkout already has an issues worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
+        worker.pid,
+        foreign_state.display(),
+        state.display()
+    );
+    let frame = next_frame(&mut inbox).await;
+    assert_eq!(frame["type"], "issuesState", "{frame}");
+    assert_eq!(frame["starting"], json!(false), "{frame}");
+    assert!(frame["enabled"].is_boolean(), "{frame}");
+    assert_eq!(frame["startError"], json!(refusal), "{frame}");
+    assert!(
+        inbox.try_recv().is_err(),
+        "the refusal is the card's state, not an error frame"
+    );
+
+    drop(worker);
+    let _ = std::fs::remove_file(&lock);
+
+    // A dashboard that never registered an Issues bridge answers the same way.
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    devboard::issues_mode::answer_start_without_bridge(&app, &conn);
+    let frame = next_frame(&mut inbox).await;
+    assert_eq!(frame["type"], "issuesState", "{frame}");
+    assert_eq!(frame["starting"], json!(false), "{frame}");
+    assert!(frame["enabled"].is_boolean(), "{frame}");
+    assert_eq!(
+        frame["startError"],
+        json!(devboard::issues_mode::NO_ISSUES_BRIDGE_REFUSAL),
+        "{frame}"
+    );
+    assert!(
+        inbox.try_recv().is_err(),
+        "no bridge is still the card's state, not an error frame"
+    );
+}
+
+/// A failed Start leaves one journal record naming why it failed.
+#[tokio::test]
+async fn a_failed_issues_start_is_journaled_with_its_reason() {
+    let (repo, state) = scratch("start-journal");
+    let preflight_reason = "missing prerequisite: omp is not on PATH".to_string();
+    let spawn_reason = "the issues worker could not be started";
+    let attempt = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&attempt);
+    let refusal = preflight_reason.clone();
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let spawn_count = Arc::clone(&spawned);
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(move || {
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    PreflightResult::Refused {
+                        message: refusal.clone(),
+                    }
+                } else {
+                    PreflightResult::Ok {
+                        repository: "acme/app".into(),
+                    }
+                }
+            }),
+            // The first Start spawns a worker its preflight then refuses; the
+            // second reaches a spawn that fails.
+            Arc::new(move |_argv, _env| {
+                if spawn_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Some(4_242_424)
+                } else {
+                    None
+                }
+            }),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: false }
+    );
+    wait_for_journal(&repo, &state, &preflight_reason).await;
+
+    let failed = bridge.start().await;
+    assert_eq!(failed.message(), Some(spawn_reason), "{failed:?}");
+    wait_for_journal(&repo, &state, spawn_reason).await;
+
+    let records = journal_records(&repo, &state);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|text| text.contains(&preflight_reason))
+            .count(),
+        1,
+        "one record per refused attempt: {records:?}"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|text| text.contains(spawn_reason))
+            .count(),
+        1,
+        "one record per failed attempt: {records:?}"
+    );
 }

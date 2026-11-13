@@ -2906,6 +2906,17 @@ impl StartOutcome {
     }
 }
 
+/// What one Start owes its caller before any slow work runs.
+enum StartAcceptance {
+    /// The start ended before it began, naming the reason.
+    Refused { message: String },
+    /// A live worker serves the checkout, or this Start shares another's spawn.
+    Answered { attached: bool },
+    /// This call accepted the start and owes its spawn. `inline` means no
+    /// worker has to stop first, so the spawn runs on the answer's own turn.
+    Accepted { generation: u64, inline: bool },
+}
+
 /// Everything a dashboard bridge needs.
 #[derive(Clone)]
 pub struct IssuesOptions {
@@ -2997,6 +3008,12 @@ struct BridgeInner {
     /// Why the last accepted Start spawned nothing. Cleared by the next
     /// accepted Start, so a refusal never outlives the attempt it answered.
     start_error: Option<String>,
+    /// The worker one accepted Start spawned, until that worker publishes the
+    /// state naming it. The pid exists the moment the spawn returns, so the
+    /// projection names it instead of showing a start with no worker; a spawn
+    /// whose process exits before publishing is refused by name instead of
+    /// leaving `starting` in force for the page forever.
+    start_worker: Option<WorkerRecord>,
 }
 
 /// The dashboard half of Issues mode.
@@ -3011,6 +3028,12 @@ pub struct IssuesBridge {
     /// A Start preflight a test installed, answering instead of the hooks'.
     /// A test drives a slow preflight without a forge or an `omp` install.
     preflight_override: Mutex<Option<PreflightFn>>,
+    /// A worker spawn a test installed, answering instead of the hooks'. A
+    /// test drives a Start without starting a process.
+    spawn_override: Mutex<Option<SpawnFn>>,
+    /// The provider environment a test installed, answering instead of the
+    /// hooks'. A test drives a Start without a configured provider.
+    environment_override: Mutex<Option<EnvironmentFn>>,
     send: SendFn,
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
     poll_ms: u64,
@@ -3110,6 +3133,8 @@ impl IssuesBridge {
             environment: options.environment,
             hooks: options.hooks,
             preflight_override: Mutex::new(None),
+            spawn_override: Mutex::new(None),
+            environment_override: Mutex::new(None),
             send: options.send,
             has_clients: options.has_clients,
             poll_ms: options.poll_ms.max(50),
@@ -3523,11 +3548,34 @@ impl IssuesBridge {
             && lifecycle != "stopped"
             && live_states.iter().any(|state| state.enabled);
         let paused = lifecycle == "pausing" || lifecycle == "paused";
-        let worker = if attached && !attached_pairs.is_empty() {
+        let attached_worker = if attached && !attached_pairs.is_empty() {
             active.as_ref().and_then(|state| state.worker.clone())
         } else {
             None
         };
+        // A Start this dashboard accepted is its own fact, not a worker's: it
+        // exists before the spawned worker has published any state. `starting`
+        // stays in force until the projection can name that worker's pid, and
+        // a worker this dashboard spawned is named from the spawn itself, so
+        // no frame ever clears `starting` with neither a worker nor a reason.
+        let (starting, start_error, spawned) = {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            let answered = attached_worker
+                .as_ref()
+                .map(|worker| !inner.stopping.contains_key(&worker.pid))
+                .unwrap_or(false);
+            if inner.starting && answered {
+                inner.starting = false;
+                inner.start_error = None;
+                inner.start_worker = None;
+            }
+            (
+                inner.starting,
+                inner.start_error.clone(),
+                inner.start_worker.clone(),
+            )
+        };
+        let worker = attached_worker.or_else(|| spawned.filter(|_| starting));
         let poll = active.as_ref().map(|state| state.poll.clone());
         // A deferral belongs to a worker this dashboard is attached to: the
         // line a stopped worker left behind describes nothing that still waits.
@@ -3551,12 +3599,6 @@ impl IssuesBridge {
                 ),
                 None => (None, None, None, None, None, None),
             };
-        // A Start this dashboard accepted is its own fact, not a worker's:
-        // it exists before the spawned worker has published any state.
-        let (starting, start_error) = {
-            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            (inner.starting, inner.start_error.clone())
-        };
         let mut map = Map::new();
         map.insert(
             "present".into(),
@@ -3803,6 +3845,7 @@ impl IssuesBridge {
 
     /// Recomputes the state and publishes a changed snapshot and activity.
     pub fn refresh(&self) {
+        self.settle_vanished_start();
         let (snapshot, frame_text) = self.refresh_projection();
         let signature = frame_text;
         let changed = {
@@ -3844,21 +3887,54 @@ impl IssuesBridge {
     pub async fn start(self: &Arc<Self>) -> StartOutcome {
         self.auto_resume_suspended.store(false, Ordering::SeqCst);
         let _guard = self.start_lock.lock().await;
-        self.accept_start()
+        match self.begin_start() {
+            StartAcceptance::Refused { message } => self.refuse_start(message),
+            StartAcceptance::Answered { attached } => StartOutcome::Started { attached },
+            StartAcceptance::Accepted { inline: true, .. } => {
+                match self.start_after_stop_proof().await {
+                    StartOutcome::Refused { message } => self.refuse_start(message),
+                    started => started,
+                }
+            }
+            StartAcceptance::Accepted { generation, .. } => {
+                self.start_in_background(generation);
+                StartOutcome::Started { attached: false }
+            }
+        }
     }
 
-    /// Accepts one Start and answers the state it changed, before the stop
-    /// proof, the preflight, or the spawn runs.
+    /// Applies one operator Start and answers the page that asked.
     ///
-    /// Both of those steps are slow by nature: the preflight reads the forge
-    /// and the spawn starts a process. Holding an operator action's answer
-    /// until they finish is what made a Start answer a second late, so the
-    /// continuation runs in its own task and publishes its outcome as the
-    /// snapshot's `startError` and a cleared `starting`.
-    fn accept_start(self: &Arc<Self>) -> StartOutcome {
+    /// The answer is one `issuesState` frame: the refusal when the start ended
+    /// before it began, else the state that names the worker this Start
+    /// spawned. A spawn that refuses still answers the state the start
+    /// changed; its refusal and journal record follow.
+    pub async fn start_answering(self: &Arc<Self>, conn: &Conn) {
+        self.auto_resume_suspended.store(false, Ordering::SeqCst);
+        let _guard = self.start_lock.lock().await;
+        match self.begin_start() {
+            StartAcceptance::Refused { message } => {
+                self.refuse_start(message);
+                self.answer_start_refusal(conn);
+            }
+            StartAcceptance::Answered { .. } => self.reply(conn),
+            StartAcceptance::Accepted { generation, inline } => {
+                let accepted = self.refresh_projection().1;
+                self.answer_accepted(conn, accepted, generation, inline)
+                    .await;
+            }
+        }
+    }
+
+    /// Accepts one Start: the state it changes, or the fact that a worker
+    /// already serves it.
+    ///
+    /// `inline` is true when no worker has to stop first, so the spawn can run
+    /// on the answer's own turn and name its pid.
+    fn begin_start(&self) -> StartAcceptance {
         let owners = self.owners();
         if let Some(foreign) = owners.iter().find(|owner| self.foreign_owner(owner)) {
-            return StartOutcome::Refused {
+            return StartAcceptance::Refused {
                 message: format!(
                     "this checkout already has an issues worker (pid {}) using {}; this dashboard's STATE_DIR is {}",
                     foreign.pid,
@@ -3867,31 +3943,75 @@ impl IssuesBridge {
                 ),
             };
         }
-        let generation = {
-            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-            let live = owners
-                .iter()
-                .any(|owner| !inner.stopping.contains_key(&owner.pid));
-            if live {
-                // A live worker already serves this checkout; the answer is
-                // the state it is in, and nothing runs in the background.
-                return StartOutcome::Started { attached: true };
-            }
-            if inner.starting {
-                // Concurrent Starts share one preflight and spawn; a second
-                // one is answered instead of starting a second worker.
-                return StartOutcome::Started { attached: false };
-            }
-            inner.starting = true;
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let live = owners
+            .iter()
+            .any(|owner| !inner.stopping.contains_key(&owner.pid));
+        if live {
+            // A live worker already serves this checkout; the answer is the
+            // state it is in, and nothing runs in the background.
+            inner.starting = false;
             inner.start_error = None;
-            self.start_generation.fetch_add(1, Ordering::SeqCst) + 1
-        };
+            inner.start_worker = None;
+            return StartAcceptance::Answered { attached: true };
+        }
+        if inner.starting {
+            // Concurrent Starts share one spawn and preflight; a second one is
+            // answered instead of starting a second worker.
+            return StartAcceptance::Answered { attached: false };
+        }
+        inner.starting = true;
+        inner.start_error = None;
+        inner.start_worker = None;
+        let generation = self.start_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        StartAcceptance::Accepted {
+            generation,
+            inline: owners.is_empty(),
+        }
+    }
+
+    /// Runs one accepted Start's stop proof, spawn, and preflight in its own
+    /// task; its outcome reaches the state and the journal as it settles.
+    fn start_in_background(self: &Arc<Self>, generation: u64) {
         let bridge = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = bridge.run_start(generation).await;
             bridge.finish_start(generation, outcome);
         });
-        StartOutcome::Started { attached: false }
+    }
+
+    /// Answers one accepted Start with a single state frame.
+    ///
+    /// With no worker to stop first, the spawn runs before the answer, so a
+    /// spawned worker is named by the pid in it. A spawn that refuses still
+    /// answers the state the Start changed; its refusal and journal record
+    /// follow, and the page reads them on its next state read.
+    async fn answer_accepted(
+        self: &Arc<Self>,
+        conn: &Conn,
+        accepted: String,
+        generation: u64,
+        inline: bool,
+    ) {
+        if !inline {
+            self.start_in_background(generation);
+            conn.send_payload(accepted);
+            return;
+        }
+        match self.start_after_stop_proof().await {
+            StartOutcome::Refused { message } => {
+                self.refuse_start(message);
+                conn.send_payload(accepted);
+            }
+            StartOutcome::Started { attached } => {
+                if attached {
+                    conn.send_payload(accepted);
+                } else {
+                    // The state that names the worker this Start spawned.
+                    self.reply(conn);
+                }
+            }
+        }
     }
 
     /// True once a Stop or a later Start owns the attempt `generation` named.
@@ -3899,8 +4019,14 @@ impl IssuesBridge {
         self.start_generation.load(Ordering::SeqCst) != generation
     }
 
-    /// The slow half of an accepted Start: wait out a stopping worker, run the
-    /// preflight, then spawn.
+    /// Records one synchronous Start refusal and answers it.
+    fn refuse_start(&self, message: String) -> StartOutcome {
+        self.record_start_refusal(&message);
+        StartOutcome::Refused { message }
+    }
+
+    /// The stop proof, then the spawn: the half a worker that still has to
+    /// exit makes slow. A Start with nothing to stop skips this loop entirely.
     async fn run_start(self: &Arc<Self>, generation: u64) -> StartOutcome {
         loop {
             if self.start_superseded(generation) {
@@ -3958,43 +4084,143 @@ impl IssuesBridge {
         if self.start_superseded(generation) {
             return StartOutcome::Started { attached: false };
         }
-        match self.preflight().await {
-            Ok(()) => {}
-            Err(message) => return StartOutcome::Refused { message },
+        self.start_after_stop_proof().await
+    }
+
+    /// Spawns this version's worker, then asks the preflight beside it.
+    ///
+    /// The worker exists before the preflight is asked: a forge read slower
+    /// than the page's budget must not hold the observable start back. A
+    /// refusal settles beside it, stopping that worker and leaving the named
+    /// reason on the card.
+    async fn start_after_stop_proof(self: &Arc<Self>) -> StartOutcome {
+        let outcome = self.spawn().await;
+        if !outcome.is_ok() {
+            return outcome;
         }
-        if self.start_superseded(generation) {
-            return StartOutcome::Started { attached: false };
+        let worker = {
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            inner.start_worker.clone()
+        };
+        if let Some(worker) = worker {
+            self.begin_start_preflight(worker.pid);
         }
-        self.spawn().await
+        StartOutcome::Started { attached: false }
+    }
+
+    /// Runs one accepted Start's preflight beside the worker it spawned.
+    fn begin_start_preflight(self: &Arc<Self>, pid: u32) {
+        let generation = self.start_generation.load(Ordering::SeqCst);
+        let bridge = Arc::clone(self);
+        tokio::spawn(async move {
+            let message = match bridge.preflight().await {
+                Ok(()) => return,
+                Err(message) => message,
+            };
+            if bridge.start_superseded(generation) {
+                return;
+            }
+            bridge.terminate_spawned(pid).await;
+            bridge.finish_start(generation, StartOutcome::Refused { message });
+        });
     }
 
     /// Publishes one accepted Start's outcome to every page.
+    ///
+    /// A refusal names its reason and reaches the journal. A spawn that
+    /// succeeded is not an outcome yet: its worker answers the start with the
+    /// state that names its pid, so `starting` stays in force until then and
+    /// no frame ever clears it with neither a worker nor a reason.
     fn finish_start(&self, generation: u64, outcome: StartOutcome) {
         if self.start_superseded(generation) {
             return;
         }
-        let error = outcome.message().map(str::to_string);
+        match &outcome {
+            StartOutcome::Refused { message } => self.record_start_refusal(message),
+            StartOutcome::Started { attached } => {
+                let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+                inner.starting = !attached;
+                inner.start_error = None;
+                if *attached {
+                    inner.start_worker = None;
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    /// Records one refused Start: the page's own state names the reason, and
+    /// the dashboard journal keeps the record. A refusal that wrote no worker
+    /// leaves no other trace, so this record is what `journal_search` finds.
+    fn record_start_refusal(&self, message: &str) {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             inner.starting = false;
-            inner.start_error = error.clone();
+            inner.start_error = Some(message.to_string());
+            inner.start_worker = None;
         }
-        if let Some(message) = &error {
-            eprintln!("could not start the issues worker: {message}");
+        crate::journal::Journal::open(&self.state_dir, &self.repo_dir, 0).write(
+            "activity",
+            &format!("could not start the issues worker: {message}"),
+            Some("issues"),
+        );
+    }
+
+    /// Answers one refused Start with the state that names the reason. [`Self::start`]
+    /// already recorded the refusal; this is only the answer, and it is one
+    /// frame: every other page reads the same state on its own next read. The
+    /// refusal is never an `error` frame: that channel raises a server
+    /// notification and files a board issue against a fact the operator owns.
+    fn answer_start_refusal(&self, conn: &Conn) {
+        self.reply(conn);
+    }
+
+    /// Refuses a Start whose worker process exited before publishing the state
+    /// that would answer it. Without this the page would keep the busy word
+    /// and a Start it can never press again, which is not an answer.
+    fn settle_vanished_start(&self) {
+        let generation = self.start_generation.load(Ordering::SeqCst);
+        let pid = {
+            let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            if !inner.starting {
+                return;
+            }
+            inner.start_worker.as_ref().map(|worker| worker.pid)
+        };
+        let Some(pid) = pid else {
+            return;
+        };
+        if pid_alive(pid) || !self.owners().is_empty() {
+            return;
         }
-        self.refresh();
+        self.finish_start(
+            generation,
+            StartOutcome::Refused {
+                message: format!(
+                    "the issues worker (pid {pid}) exited before it published its state; press Start to retry."
+                ),
+            },
+        );
     }
 
     /// Forgets an accepted Start a Stop has superseded, so the state names no
     /// start that no longer runs. True when one was still pending.
     fn cancel_start(&self) -> bool {
-        let pending = {
+        let (pending, spawned) = {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             let pending = inner.starting;
             inner.starting = false;
             inner.start_error = None;
-            pending
+            (pending, inner.start_worker.take())
         };
+        if let Some(worker) = spawned {
+            // A Stop ends the worker an accepted Start spawned before it
+            // published a lock: no control file can reach an owner that does
+            // not exist yet.
+            unsafe {
+                libc::kill(worker.pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
         if pending {
             self.start_generation.fetch_add(1, Ordering::SeqCst);
             self.refresh();
@@ -4091,12 +4317,41 @@ impl IssuesBridge {
         !pid_alive(pid)
     }
 
+    /// Ends a worker this dashboard spawned, for a preflight that refused it
+    /// before any lock existed for a control file to reach.
+    async fn terminate_spawned(&self, pid: u32) {
+        if !pid_alive(pid) {
+            return;
+        }
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while pid_alive(pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if pid_alive(pid) {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
+
     async fn spawn(self: &Arc<Self>) -> StartOutcome {
         let argv = match worker_argv(&self.repo_dir, &self.state_dir) {
             Ok(argv) => argv,
             Err(message) => return StartOutcome::Refused { message },
         };
-        let base = match (self.hooks.agent_environment)().await {
+        let override_environment = self
+            .environment_override
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let pending = match override_environment {
+            Some(callback) => callback(),
+            None => (self.hooks.agent_environment)(),
+        };
+        let base = match pending.await {
             Ok(environment) => environment,
             Err(message) => return StartOutcome::Refused { message },
         };
@@ -4107,7 +4362,27 @@ impl IssuesBridge {
         if let Some(version) = &self.running_version {
             environment.insert("DEVBOARD_HARNESS_VERSION".into(), version.clone());
         }
-        match (self.hooks.spawn_worker)(&argv, &environment) {
+        let override_spawn = self
+            .spawn_override
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let spawned = match override_spawn {
+            Some(callback) => callback(&argv, &environment),
+            None => (self.hooks.spawn_worker)(&argv, &environment),
+        };
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            inner.start_worker = spawned.map(|pid| WorkerRecord {
+                pid,
+                start_ticks: crate::supervision::start_ticks(pid),
+                started_at: crate::journal::now_iso8601(),
+                state_dir: self.state_dir.display().to_string(),
+                harness_version: self.running_version.clone(),
+                argv: argv.clone(),
+            });
+        }
+        match spawned {
             Some(_pid) => StartOutcome::Started { attached: false },
             None => StartOutcome::Refused {
                 message: "the issues worker could not be started".to_string(),
@@ -4706,6 +4981,29 @@ pub fn set_preflight(app: &Arc<App>, callback: PreflightFn) {
     }
 }
 
+/// Answers every later Start spawn with `callback` instead of the hooks'. A
+/// test drives a Start through its answer without starting a process.
+pub fn set_spawn(app: &Arc<App>, callback: SpawnFn) {
+    if let Some(bridge) = bridge_for(app) {
+        if let Ok(mut slot) = bridge.spawn_override.lock() {
+            *slot = Some(callback);
+        }
+    }
+}
+
+/// Resolves every later Start's worker environment with `callback` instead of
+/// the hooks'. A test drives a Start without a configured provider.
+pub fn set_agent_environment(
+    app: &Arc<App>,
+    callback: impl Fn() -> EnvironmentFuture + Send + Sync + 'static,
+) {
+    if let Some(bridge) = bridge_for(app) {
+        if let Ok(mut slot) = bridge.environment_override.lock() {
+            *slot = Some(Arc::new(callback));
+        }
+    }
+}
+
 /// The Issues gate: live runs are work a reset preempts.
 struct IssuesGate {
     bridge: Weak<IssuesBridge>,
@@ -4849,6 +5147,58 @@ fn issues_error(conn: &Conn, message: impl Into<String>) {
     conn.send(json!({"type": "error", "message": message.into()}));
 }
 
+/// The refusal a Start answers with when this dashboard never registered an
+/// Issues bridge.
+pub const NO_ISSUES_BRIDGE_REFUSAL: &str =
+    "this dashboard has no Issues mode; restart the dashboard and press Start again.";
+
+/// Answers a Start in a dashboard that never registered an Issues bridge.
+///
+/// The answer is the card's own state, never the generic `error` channel: that
+/// channel raises a server notification and files a board issue, and this
+/// refusal is a fact about this dashboard that the operator can read and
+/// retry from.
+pub fn answer_start_without_bridge(app: &Arc<App>, conn: &Conn) {
+    app.shared.journal.write(
+        "activity",
+        &format!("could not start the issues worker: {NO_ISSUES_BRIDGE_REFUSAL}"),
+        Some("issues"),
+    );
+    conn.send(start_refusal_state(
+        &app.config().repo_dir,
+        NO_ISSUES_BRIDGE_REFUSAL,
+    ));
+}
+
+/// One `issuesState` frame that names a refused Start and no worker.
+fn start_refusal_state(repo_dir: &Path, message: &str) -> Value {
+    json!({
+        "type": "issuesState",
+        "present": false,
+        "repo": null,
+        "root": repo_dir.display().to_string(),
+        "lifecycle": "stopped",
+        "enabled": false,
+        "paused": false,
+        "attached": false,
+        "worker": null,
+        "poll": null,
+        "queue": [],
+        "runs": [],
+        "agents": [],
+        "cooldowns": {},
+        "lastError": null,
+        "lastExitCode": null,
+        "finishedAt": null,
+        "notice": null,
+        "deferral": null,
+        "starting": false,
+        "startError": message,
+        "updatedAt": null,
+        "workers": [],
+    })
+}
+
 /// Applies one command; `false` when it belongs to another mode.
 pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
     match command {
@@ -4879,18 +5229,13 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
         }
         Command::StartIssues => {
             let Some(bridge) = bridge_for(app) else {
-                issues_error(conn, "No issues worker is running for this checkout.");
+                answer_start_without_bridge(app, conn);
                 return true;
             };
-            match bridge.start().await {
-                StartOutcome::Refused { message } => issues_error(conn, message),
-                // The answer is the state the Start changed, written before
-                // its preflight runs, and never the whole activity a page's
-                // own read replays: one run's activity reaches 1 MiB, so the
-                // action's answer waited on megabytes the page never needed to
-                // render this change.
-                StartOutcome::Started { .. } => bridge.reply(conn),
-            }
+            // The answer is one state frame: the refusal, or the state that
+            // names the worker this Start spawned. It is never an `error`
+            // frame and never the whole activity a page's own read replays.
+            bridge.start_answering(conn).await;
             true
         }
         Command::PauseIssues

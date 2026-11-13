@@ -223,7 +223,7 @@
           <dl class="issues-facts">
             <div>
               <dt>Worker</dt>
-              <dd class="mono">
+              <dd class="mono" data-testid="issues-worker-pid">
                 {issues.snapshot?.worker === null || issues.snapshot?.worker === undefined
                   ? "none"
                   : `pid ${issues.snapshot.worker.pid} · ${versionLabel(issues.snapshot.worker.harnessVersion)}`}
