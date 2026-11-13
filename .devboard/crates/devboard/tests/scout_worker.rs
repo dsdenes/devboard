@@ -117,6 +117,16 @@ impl FixtureForge {
         }
         data.issues.push(issue);
     }
+
+    /// Closes every issue the fixture serves, the way an operator closing the
+    /// open rows frees a `maxPending` block.
+    fn close_all(&self) {
+        let mut data = self.data.lock().expect("the fixture forge");
+        for issue in data.issues.iter_mut() {
+            issue.state = "closed".to_string();
+        }
+        data.open_titles.clear();
+    }
 }
 
 impl ClosingCommitClient for FixtureForge {
@@ -789,6 +799,99 @@ async fn the_open_issue_cap_blocks_a_scan_and_names_when_it_clears() {
         .expect("a blocked instant");
     assert!(blocked > now, "the block names a future instant");
     assert!(scan_ids(&repo).is_empty(), "no scan directory is created");
+    assert_eq!(
+        state.notice.as_deref(),
+        Some(
+            "Capped: 5 open issue(s) reached maxPending; no scan starts until an open issue \
+             closes."
+        ),
+        "a capped family reports the limit that bound"
+    );
+    assert_eq!(
+        state.notices.first(),
+        state.notice.as_ref(),
+        "the capped line joins the history"
+    );
+    assert!(state.last_scan.is_none(), "a capped cycle is not a scan");
+
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn the_hourly_cap_reports_the_limit_that_bound() {
+    let repo = scratch("hourly-cap");
+    let now = devboard::workers::scout::now_millis();
+    let created = devboard::workers::scout::iso_from_millis(now - 60_000);
+    let issues: Vec<ScoutForgeIssue> = (1..=10)
+        .map(|number| {
+            let mut issue = pending_issue(number, &format!("Finding {number}"), &created);
+            issue.state = "closed".to_string();
+            issue
+        })
+        .collect();
+    let forge = FixtureForge::with_issues(issues);
+    let worker = worker(
+        &repo,
+        forge.clone(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+
+    let state = worker.current_state();
+    assert_eq!(state.issues.len(), 10);
+    let notice = state.notice.as_deref().expect("a capped status line");
+    assert!(
+        notice.starts_with("Capped: 10 issue(s) filed in the last hour reached maxPerHour;"),
+        "the hourly cap is named: {notice}"
+    );
+    assert!(
+        state.scan.is_none() && scan_ids(&repo).is_empty(),
+        "the hourly cap admits no scan"
+    );
+
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn the_capped_line_clears_when_the_cap_lifts_and_stays_in_the_history() {
+    let repo = scratch("cap-clears");
+    let now = devboard::workers::scout::now_millis();
+    let created = devboard::workers::scout::iso_from_millis(now - 60_000);
+    let issues: Vec<ScoutForgeIssue> = (1..=5)
+        .map(|number| pending_issue(number, &format!("Finding {number}"), &created))
+        .collect();
+    let forge = FixtureForge::with_issues(issues);
+    let worker = worker(
+        &repo,
+        forge.clone(),
+        Arc::new(|_context| Box::pin(async { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    worker.tick_now().await;
+    let capped = worker.current_state();
+    assert!(
+        capped
+            .notice
+            .as_deref()
+            .is_some_and(|line| line.starts_with("Capped: ")),
+        "the capped cycle reports itself: {:?}",
+        capped.notice
+    );
+
+    forge.close_all();
+    worker.refresh().await;
+
+    let freed = worker.current_state();
+    assert_eq!(freed.notice, None, "a family that can scan is not capped");
+    assert!(
+        freed
+            .notices
+            .iter()
+            .any(|line| line.starts_with("Capped: 5 open issue(s)")),
+        "the history keeps the cap: {:?}",
+        freed.notices
+    );
 
     worker.stop().await;
 }
