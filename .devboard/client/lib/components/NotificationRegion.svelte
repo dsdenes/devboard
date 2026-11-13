@@ -93,10 +93,10 @@
     }
     if (filing !== null || filed[item.id] !== undefined) return;
     filing = item.id;
-    failed = { ...failed, [item.id]: "" };
     const outcome = await notificationFiler.submit(item, () => captureContext(item));
     if (outcome.status === "filed") {
       filed = { ...filed, [item.id]: outcome.href };
+      failed = { ...failed, [item.id]: "" };
     } else if (outcome.status === "failed") {
       failed = { ...failed, [item.id]: outcome.detail };
     }
@@ -120,7 +120,8 @@
       if (outcome === undefined && !feedbackenabled) return REPORTING_DISABLED_DETAIL;
       return null;
     }
-    return failed[item.id] ?? null;
+    const detail = failed[item.id];
+    return detail === undefined || detail === "" ? null : detail;
   }
 
   /** The filed issue this card links to, from the shared or the manual state. */

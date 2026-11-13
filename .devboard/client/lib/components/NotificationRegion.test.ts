@@ -128,6 +128,34 @@ test("a warning keeps the manual File issue control and filing flow", async () =
   });
 });
 
+test("a warning's failed manual filing is cleared by a successful retry", async () => {
+  notifications.push("Connection", "warning", "Connection lost. Reconnecting…");
+  const view = render(NotificationRegion, { props: { feedbackenabled: true } });
+  await tick();
+  expect(pending).toHaveLength(0);
+
+  const button = view.getByLabelText("File an issue from this notification") as HTMLButtonElement;
+  await fireEvent.click(button);
+  expect(pending).toHaveLength(1);
+  expect(view.container.querySelector(".notification__error")).toBeNull();
+
+  pending[0]!.resolve(refuse("The issue could not be filed."));
+  await waitFor(() => {
+    expect(view.container.querySelector(".notification__error")?.textContent).toContain(
+      "Issue not filed: The issue could not be filed.",
+    );
+  });
+  expect(view.container.querySelector(".notification__link")).toBeNull();
+
+  await fireEvent.click(button);
+  expect(pending).toHaveLength(2);
+  pending[1]!.resolve(reply({ links: { issue: { href: issueHref } } }));
+  await waitFor(() => {
+    expect(view.container.querySelector(".notification__link")?.getAttribute("href")).toBe(issueHref);
+  });
+  expect(view.container.querySelector(".notification__error")).toBeNull();
+});
+
 test("notice and success notifications carry no filing control and send nothing", async () => {
   notifications.push("Flow", "notice", "Flow restored.");
   notifications.push("Issues", "success", "Closed issue #12.");
