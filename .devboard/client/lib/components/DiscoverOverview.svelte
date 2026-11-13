@@ -51,10 +51,11 @@
   /** Platform leaves that name technologies rather than facts about them. */
   const TECHNOLOGY_FIELDS = new Set(["languages", "runtimes"]);
 
-  /** The answer form's in-flight state; the run's next output line confirms it. */
+  /** The answer form's in-flight state; the snapshot that drops the question confirms it. */
   const answerPending = createCommandBusy({
     label: "Answer",
-    evidence: () => discover.activity.length,
+    evidence: () => discover.question,
+    refusal: () => discover.errorRevision,
   });
 
   /** The remote start form's in-flight state; the clone or a refusal answers it. */
@@ -275,7 +276,7 @@
                 class="choice"
                 label={option.label}
                 busyLabel="Answering…"
-                evidence={() => discover.activity.length}
+                evidence={() => discover.question}
                 command={() => discover.answer(option.label)}
                 data-testid="discover-choice"
                 data-command="discover.answer.submit"
@@ -299,7 +300,7 @@
             event.preventDefault();
             if (discover.answerDraft.trim().length === 0) return;
             answerPending.start();
-            discover.answer(discover.answerDraft);
+            if (!discover.answer(discover.answerDraft)) answerPending.refuse();
           }}
         >
           <Input

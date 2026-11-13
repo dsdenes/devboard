@@ -6,21 +6,23 @@ import { DiscoverStore } from "./discover.svelte";
 class RecordingSocket {
   sent: Record<string, unknown>[] = [];
 
+  constructor(private readonly accepts = true) {}
+
   send(command: unknown): boolean {
     this.sent.push(command as Record<string, unknown>);
-    return true;
+    return this.accepts;
   }
 }
 
-function connect(): { discover: DiscoverStore; socket: RecordingSocket } {
-  const socket = new RecordingSocket();
+function connect(accepts = true): { discover: DiscoverStore; socket: RecordingSocket } {
+  const socket = new RecordingSocket(accepts);
   const discover = new DiscoverStore(socket as unknown as ConnectionStore);
   return { discover, socket };
 }
 
 /** Starts a sheet run, then delivers its one pending question. */
-function asking(): { discover: DiscoverStore; socket: RecordingSocket } {
-  const { discover, socket } = connect();
+function asking(accepts = true): { discover: DiscoverStore; socket: RecordingSocket } {
+  const { discover, socket } = connect(accepts);
   discover.handleEvent({ type: "discoverStarted", agent: "sheet" });
   discover.handleEvent({
     type: "discoverQuestion",
@@ -36,16 +38,37 @@ function asking(): { discover: DiscoverStore; socket: RecordingSocket } {
 }
 
 describe("discover pending questions", () => {
-  test("answering clears the agent's card entry and sends one answer", () => {
+  test("an accepted answer sends one answer and keeps the panel until a snapshot confirms it", () => {
     const { discover, socket } = asking();
+    discover.answerDraft = "Aurora";
+
+    expect(discover.answer("Alpha")).toBe(true);
+
     expect(discover.question?.id).toBe(1);
     expect(discover.agentQuestionOf("sheet")?.id).toBe(1);
+    expect(discover.answerDraft).toBe("Aurora");
+    expect(socket.sent).toEqual([{ type: "answerDiscover", id: 1, value: "Alpha" }]);
 
-    discover.answer("Alpha");
+    discover.handleEvent({
+      type: "discoverState",
+      state: { active: true, activeAgent: "sheet", questionId: null },
+    });
 
     expect(discover.question).toBeNull();
     expect(discover.agentQuestionOf("sheet")).toBeNull();
-    expect(socket.sent).toEqual([{ type: "answerDiscover", id: 1, value: "Alpha" }]);
+    expect(discover.answerDraft).toBe("");
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  test("a dispatch the socket refused keeps the panel, the entry, and the typed draft", () => {
+    const { discover } = asking(false);
+    discover.answerDraft = "Aurora";
+
+    expect(discover.answer("Alpha")).toBe(false);
+
+    expect(discover.question?.id).toBe(1);
+    expect(discover.agentQuestionOf("sheet")?.id).toBe(1);
+    expect(discover.answerDraft).toBe("Aurora");
   });
 
   test("a blank answer keeps the question pending and sends nothing", () => {

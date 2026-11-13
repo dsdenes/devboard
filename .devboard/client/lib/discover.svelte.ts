@@ -408,25 +408,18 @@ export class DiscoverStore {
     this.socket.send({ type: "stopDiscover" });
   }
 
-  answer(value: string): void {
-    if (this.question === null) return;
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return;
-    const id = this.question.id;
-    this.question = null;
-    this.clearAgentQuestion(id);
-    this.answerDraft = "";
-    this.socket.send({ type: "answerDiscover", id, value: trimmed });
-  }
-
   /**
-   * Drops every per-agent entry for one answered question, so no card keeps
-   * rendering dead choices after the global question is gone.
+   * Sends one answer to the run that asked it. Returns false when nothing was
+   * sent, so the control keeps the draft and shows no busy word. The panel, the
+   * agent's entry, and the typed draft stay until a snapshot stops naming the
+   * question, so a refused or undelivered answer costs neither.
    */
-  private clearAgentQuestion(id: string | number): void {
-    for (const [agent, question] of Object.entries(this.agentQuestions)) {
-      if (question !== null && question.id === id) this.agentQuestions[agent] = null;
-    }
+  answer(value: string): boolean {
+    if (this.question === null) return false;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return false;
+    const id = this.question.id;
+    return this.socket.send({ type: "answerDiscover", id, value: trimmed });
   }
 
   setGlossarySearch(value: string): void {
