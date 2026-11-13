@@ -26,7 +26,7 @@ disappears, does the operator lose a decision or a journey step declared in `bri
 | C19 | Queued question, options, recommended flag, free text | `goal.question`, `goal.draft` | 1, 3, 4, 6, 7 | Unblock the run | Keep | P0: the run waits on it |
 | C20 | Lane list with label, kind, attempt, status | `goal.lanes` | 8, 4 | Find a lane, spot a retry or failure | Keep | Navigation for lane detail; status is the failing signal |
 | C21 | Lane epic link | `lane.epic.url` | 8 | Open the upstream epic | Keep | The only external verification of an epic |
-| C22 | Lane activity and lane question | `lane.activity`, `lane.question` | 8, 6 | Diagnose the lane; unblock it | Keep | A lane question is invisible on other pages |
+| C22 | Lane activity and lane question | `lane.activity`, `lane.question` | 8, 6 | Diagnose the lane; unblock it | Keep | Only the lane page shows the question text; the rail dot and the sidebar Run entry carry the cue |
 | C23 | Open epic count | `goal.openEpics` | 4 | Confirm epic generation finished | Omit | The lifecycle stage and the epic lane already say this; a bare count invites a false precision |
 | C24 | Running lane count | `goal.runningLanes` | 4, 7 | See that lanes are active before opening the list | Keep | Group-head summary of the lane navigation; one place only |
 | C25 | Reset armed, running, and result | `goal.resetArmed`, `goal.resetting`, `goal.resetStatus` | 10, 13 | Confirm a destructive action; know the commit | Keep | Irreversible; needs an explicit second step and a report |

@@ -50,7 +50,9 @@ never both. `Resolve next ADR` is an outline button beside it. `Pause`/`Resume` 
 button whose label follows the paused state; the palette still offers both commands. A queued
 question renders directly under the header, before the stage track, and also above every other
 Goal page, because the run cannot advance until it is answered. The sidebar's Run entry carries an
-`answer` badge whenever a question waits.
+`answer` badge and the mode rail's Goal dot reads attention whenever a question waits — the
+run-level question or any lane's, whether or not the lifecycle is paused. Only the answering
+surface renders a lane question's text; every other page carries the cue alone.
 
 Desktop layout: full-width header and stage track, then the activity panel fills the remaining
 height. The danger zone is the last panel of the scroll column, below the activity panel, so it is

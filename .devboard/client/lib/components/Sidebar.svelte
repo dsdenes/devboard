@@ -98,11 +98,14 @@
     return tab.skill === null ? "idle" : agentRun(tab.skill);
   }
 
-  /** The Goal implementation entry: a manual run or the lifecycle's live step. */
+  /**
+   * The Goal implementation entry: a manual run or the lifecycle's live step.
+   * A waiting question wins over idle and running, because a paused lane keeps
+   * its question and the run cannot advance until it is answered.
+   */
   function implementationRun(): RunState {
-    const executing = goal.running || (goal.lifecycleActive && !goal.lifecycle.paused);
-    if (goal.question !== null && executing) return "answer";
-    if (executing) return "running";
+    if (goal.questionWaiting) return "answer";
+    if (goal.running || (goal.lifecycleActive && !goal.lifecycle.paused)) return "running";
     return "idle";
   }
 

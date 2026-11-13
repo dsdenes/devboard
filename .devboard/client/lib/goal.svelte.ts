@@ -206,6 +206,14 @@ export class GoalStore {
     return this.runState === "active";
   }
 
+  /**
+   * A question the run cannot advance past: the run-level one, or any lane's.
+   * A paused lifecycle keeps a lane's question, so pause never hides it.
+   */
+  get questionWaiting(): boolean {
+    return this.question !== null || this.lanes.some((lane) => lane.question !== null);
+  }
+
   get lifecycleActive(): boolean {
     return (
       this.lifecycleSeen &&

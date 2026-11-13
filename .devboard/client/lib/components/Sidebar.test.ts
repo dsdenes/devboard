@@ -418,7 +418,7 @@ test("the Goal entries read only the Goal store", async () => {
   goal.question = { id: "prep", message: "Which standard?", options: [] };
   await tick();
   expect(document.querySelector('[data-testid="open-implementation"]')?.getAttribute("data-run-state")).toBe(
-    "idle",
+    "answer",
   );
   goal.question = null;
   goal.skillsPrepActive = false;
@@ -466,6 +466,25 @@ test("the Goal entries read only the Goal store", async () => {
     "idle",
   );
   expect(badgeText(document.querySelector('[data-testid="open-implementation"]'))).toBe("");
+
+  goal.lanes = [
+    {
+      id: "lane-a",
+      kind: "implementation",
+      epic: { number: 7, title: "Epic", url: "" },
+      record: null,
+      attempt: 1,
+      status: "running",
+      activity: [],
+      question: { id: "lane-q", message: "Which epic?", options: [] },
+    },
+  ];
+  await tick();
+  expect(document.querySelector('[data-testid="open-implementation"]')?.getAttribute("data-run-state")).toBe(
+    "answer",
+  );
+  expect(badgeText(document.querySelector('[data-testid="open-implementation"]'))).toBe("answer");
+  goal.lanes = [];
 });
 
 test("the Issues entries read only the issues snapshot and draft runs", async () => {

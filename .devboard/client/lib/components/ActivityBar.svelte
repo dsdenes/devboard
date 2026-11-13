@@ -47,7 +47,7 @@
   type ModeState = "running" | "attention" | "idle" | "stale" | null;
 
   const goalState = $derived<ModeState>(
-    goal.question !== null || goal.runState === "stopped"
+    goal.questionWaiting || goal.runState === "stopped"
       ? "attention"
       : goal.lifecycleActive && goal.lifecycle.paused
         ? "attention"
