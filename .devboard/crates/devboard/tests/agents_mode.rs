@@ -1774,6 +1774,112 @@ async fn the_release_list_names_the_newest_release_whose_run_is_not_settled() {
     assert_eq!(releases[1]["version"], json!("1.41.5"));
 }
 
+/// The Release Train's snapshot as the `agentsState` frame carries it.
+fn release_train_snapshot(frames: &[Value]) -> Value {
+    frames
+        .iter()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .and_then(|frame| frame.get("agents"))
+        .and_then(Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("id").and_then(Value::as_str) == Some("release-train"))
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("a release-train snapshot: {frames:?}"))
+}
+
+/// The release-train shared state one failure record produces, with the runs
+/// the page reads beside it.
+fn write_release_failure(state: &Path, failure: Value) {
+    let target = "a".repeat(40);
+    write_json(
+        &state.join("release-train/state.json"),
+        json!({
+            "version": 1,
+            "repo": "",
+            "root": "",
+            "release": null,
+            "failure": failure,
+            "gate": null,
+            "runs": [
+                {
+                    "id": "only",
+                    "startedAt": "2026-11-12T17:45:38.055Z",
+                    "endedAt": "2026-11-12T18:08:03.869Z",
+                    "state": "stopped",
+                    "range": format!("v1.46.13..{target}"),
+                    "target": target,
+                    "version": "1.47.0",
+                    "url": null,
+                    "detail": "stopped during the release run",
+                    "commits": 5,
+                    "peer": null,
+                },
+            ],
+            "activity": [],
+            "updatedAt": "2026-11-12T18:08:03.869Z",
+        }),
+    );
+}
+
+/// A stopped run keeps its unverified record as the retry handle a tag the
+/// stop left pushed still needs, and the operator's stop is not a release
+/// error, so the page shows none.
+#[tokio::test]
+async fn a_stopped_release_record_raises_no_page_error() {
+    let root = scratch("release-stopped");
+    let app = app_at(&root);
+    let state = root.join("state");
+    let target = "a".repeat(40);
+    write_release_failure(
+        &state,
+        json!({
+            "at": "2026-11-12T18:08:03.869Z",
+            "detail": "stopped during the release run; GitHub assets: the release v1.47.0 does not exist",
+            "sha": target,
+            "range": format!("v1.46.13..{target}"),
+            "version": "1.47.0",
+            "stopped": true,
+        }),
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let snapshot = release_train_snapshot(&all);
+    assert_eq!(snapshot["error"], Value::Null, "{all:?}");
+}
+
+/// The other side of that rule: a record that a release failed still reads as
+/// the error it is.
+#[tokio::test]
+async fn a_failed_release_record_still_raises_the_page_error() {
+    let root = scratch("release-failed");
+    let app = app_at(&root);
+    let state = root.join("state");
+    let target = "a".repeat(40);
+    let detail = "GitHub assets: the release v1.47.0 does not exist";
+    write_release_failure(
+        &state,
+        json!({
+            "at": "2026-11-12T18:08:03.869Z",
+            "detail": detail,
+            "sha": target,
+            "range": format!("v1.46.13..{target}"),
+            "version": "1.47.0",
+            "stopped": false,
+        }),
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let snapshot = release_train_snapshot(&all);
+    assert_eq!(snapshot["error"], json!(detail), "{all:?}");
+}
+
 #[tokio::test]
 async fn a_start_that_spawns_nothing_still_answers() {
     let root = scratch("start-refusal");

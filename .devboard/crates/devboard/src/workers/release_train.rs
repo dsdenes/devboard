@@ -432,6 +432,10 @@ pub enum ReleaseTrainRunState {
     Running,
     Released,
     Failed,
+    /// A run an operator stopped before it proved a release. The range it held
+    /// is unpublished, not failed: the stop is the cause and the missing
+    /// release is its consequence, so the page never reports an error for it.
+    Stopped,
     Nothing,
     Error,
 }
@@ -442,6 +446,7 @@ impl ReleaseTrainRunState {
             ReleaseTrainRunState::Running => "running",
             ReleaseTrainRunState::Released => "released",
             ReleaseTrainRunState::Failed => "failed",
+            ReleaseTrainRunState::Stopped => "stopped",
             ReleaseTrainRunState::Nothing => "nothing",
             ReleaseTrainRunState::Error => "error",
         }
@@ -466,7 +471,7 @@ pub struct ReleaseTrainRelease {
     pub range: String,
 }
 
-/// The newest failed release, kept until a later run succeeds.
+/// The newest unverified release, kept until a later run verifies it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReleaseTrainFailure {
@@ -476,6 +481,11 @@ pub struct ReleaseTrainFailure {
     pub range: String,
     /// The version the failed range would have released, when known.
     pub version: Option<String>,
+    /// True when an operator stop, not a release failure, produced this
+    /// record. It is kept as the retry handle a tag the stop left pushed still
+    /// needs, and the page never presents it as an error.
+    #[serde(default)]
+    pub stopped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -587,6 +597,10 @@ fn parse_failure(value: &Value) -> Option<ReleaseTrainFailure> {
             .get("version")
             .and_then(Value::as_str)
             .map(str::to_string),
+        stopped: object
+            .get("stopped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -640,6 +654,7 @@ fn parse_run_state(text: &str) -> Option<ReleaseTrainRunState> {
         "running" => ReleaseTrainRunState::Running,
         "released" => ReleaseTrainRunState::Released,
         "failed" => ReleaseTrainRunState::Failed,
+        "stopped" => ReleaseTrainRunState::Stopped,
         "nothing" => ReleaseTrainRunState::Nothing,
         "error" => ReleaseTrainRunState::Error,
         _ => return None,
@@ -2598,13 +2613,29 @@ pub struct ReleaseRunInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseRunResult {
-    Ok { version: String, url: String },
-    Failed { detail: String },
+    Ok {
+        version: String,
+        url: String,
+    },
+    Failed {
+        detail: String,
+    },
+    /// An operator stop ended the run before it proved a release. The range is
+    /// unpublished rather than failed, so the next tick recovers it.
+    Stopped {
+        detail: String,
+    },
 }
 
 impl ReleaseRunResult {
     pub fn failed(detail: impl Into<String>) -> Self {
         ReleaseRunResult::Failed {
+            detail: detail.into(),
+        }
+    }
+
+    pub fn stopped(detail: impl Into<String>) -> Self {
+        ReleaseRunResult::Stopped {
             detail: detail.into(),
         }
     }
@@ -2674,6 +2705,9 @@ pub fn default_release_agent_runner(
     })
 }
 
+/// The sentence an operator stop contributes to a run's detail.
+const STOPPED_DETAIL: &str = "stopped during the release run";
+
 /// The detail one failed verification records, composed with what the run
 /// already reported.
 ///
@@ -2699,7 +2733,7 @@ fn failed_release_detail(
         }
     };
     if stopped {
-        add("stopped during the release run");
+        add(STOPPED_DETAIL);
     }
     let tag_withdrawn = cause.is_some() || reported.is_some();
     if let Some(cause) = cause {
@@ -2714,13 +2748,30 @@ fn failed_release_detail(
     parts.join("; ")
 }
 
+/// Whether a failed verification describes only an operator stop.
+///
+/// A stopped publish never reaches the tag push, the GitHub release, or the
+/// Gitea manifest, so verification reads that absence back as its failure. The
+/// stop is the cause, and the range is unpublished rather than failed: the run
+/// settles as `stopped`, and the retry record it keeps still verifies a tag the
+/// stop left pushed. A peer that reported a failed publish, a publish error, or
+/// a proven release keeps its failure, because the stop did not produce those.
+fn stopped_before_a_published_release(
+    stopped: bool,
+    published: bool,
+    cause: Option<&str>,
+    reported: Option<&str>,
+) -> bool {
+    stopped && !published && reported.is_none() && cause.is_none_or(|cause| cause == STOPPED_DETAIL)
+}
+
 async fn run_release_agent(
     input: ReleaseRunInput,
     verify: VerifyFn,
     environment: HashMap<String, String>,
 ) -> ReleaseRunResult {
     if (input.stopping)() {
-        return ReleaseRunResult::failed("stopped before the release agent started");
+        return ReleaseRunResult::stopped(format!("{STOPPED_DETAIL}; the release never started"));
     }
     (input.activity)(&format!(
         "starting {} for {}",
@@ -2803,7 +2854,7 @@ async fn run_release_agent(
     loop {
         if (input.stopping)() {
             connection.close();
-            agent_error = Some("stopped during the release run".to_string());
+            agent_error = Some(STOPPED_DETAIL.to_string());
             break;
         }
         tokio::select! {
@@ -2858,7 +2909,7 @@ async fn run_release_agent(
             _ = tokio::time::sleep(Duration::from_millis(100)) => {
                 if (input.stopping)() {
                     connection.close();
-                    agent_error = Some("stopped during the release run".to_string());
+                    agent_error = Some(STOPPED_DETAIL.to_string());
                     break;
                 }
             }
@@ -2868,7 +2919,7 @@ async fn run_release_agent(
     let _ = text;
     let stopped = (input.stopping)();
     if stopped {
-        (input.activity)("stopped during the release run; verifying what it shipped");
+        (input.activity)(&format!("{STOPPED_DETAIL}; verifying what it shipped"));
     }
     let result = read_result(&input.run_dir);
     // A peer's publish may prove a version other than the range this run was
@@ -2892,6 +2943,7 @@ async fn run_release_agent(
             .filter(|version| !version.is_empty())?;
         Some((sha.to_string(), version.to_string()))
     });
+    let proven = published.is_some();
     let (target, version) = match published {
         Some((sha, version)) => {
             if version != input.request.version {
@@ -2936,13 +2988,23 @@ async fn run_release_agent(
             // A peer that reports a failed publish withdraws the tag it
             // created just as the native publish does, so its report is the
             // cause this tag phase reads back.
-            ReleaseRunResult::failed(failed_release_detail(
+            let detail = failed_release_detail(
                 stopped,
                 agent_error.as_deref(),
                 reported.as_deref(),
                 phase,
                 &detail,
-            ))
+            );
+            if stopped_before_a_published_release(
+                stopped,
+                proven,
+                agent_error.as_deref(),
+                reported.as_deref(),
+            ) {
+                ReleaseRunResult::stopped(detail)
+            } else {
+                ReleaseRunResult::failed(detail)
+            }
         }
     }
 }
@@ -2954,7 +3016,7 @@ async fn run_release_and_verify(
     environment: HashMap<String, String>,
 ) -> ReleaseRunResult {
     if (input.stopping)() {
-        return ReleaseRunResult::failed("stopped before the release agent started");
+        return ReleaseRunResult::stopped(format!("{STOPPED_DETAIL}; the release never started"));
     }
     (input.activity)(&format!(
         "starting {} for {}",
@@ -2978,7 +3040,7 @@ async fn run_release_and_verify(
     // published, so the record must say whether the release actually shipped.
     let stopped = (input.stopping)();
     if stopped {
-        (input.activity)("stopped during the release run; verifying what it shipped");
+        (input.activity)(&format!("{STOPPED_DETAIL}; verifying what it shipped"));
     }
     // Verify the release publish actually proved, not the version this run was
     // handed. A retry whose tag was superseded releases the newer range at the
@@ -3031,13 +3093,23 @@ async fn run_release_and_verify(
             // publish error is the cause, and naming the tag phase beside it
             // would report a phantom second failure. A GitHub or Gitea phase
             // failure still says something the publish error did not.
-            ReleaseRunResult::failed(failed_release_detail(
+            let detail = failed_release_detail(
                 stopped,
                 agent_error.as_deref(),
                 reported.as_deref(),
                 phase,
                 &detail,
-            ))
+            );
+            if stopped_before_a_published_release(
+                stopped,
+                published.is_some(),
+                agent_error.as_deref(),
+                reported.as_deref(),
+            ) {
+                ReleaseRunResult::stopped(detail)
+            } else {
+                ReleaseRunResult::failed(detail)
+            }
         }
     }
 }
@@ -3516,6 +3588,7 @@ impl ReleaseTrainWorker {
                     .map(|run| run.range.clone())
                     .unwrap_or_default(),
                 version: run.as_ref().and_then(|run| run.version.clone()),
+                stopped: false,
             });
             if let Some(mut run) = run {
                 run.ended_at = Some(at);
@@ -3830,6 +3903,7 @@ impl ReleaseTrainWorker {
                         sha: target.to_string(),
                         range: range.to_string(),
                         version,
+                        stopped: false,
                     });
                     run.state = ReleaseTrainRunState::Failed;
                     run.detail = Some(detail.clone());
@@ -3839,6 +3913,30 @@ impl ReleaseTrainWorker {
                     }
                 }
                 self.activity(&format!("release failed: {detail}"));
+            }
+            ReleaseRunResult::Stopped { detail } => {
+                notice = format!("release stopped: {detail}");
+                {
+                    let mut inner = lock_unpoisoned(&self.inner);
+                    // The record is the retry handle a tag the stop left
+                    // pushed still needs; the page reads `stopped` and never
+                    // reports it as an error, because the operator's stop is
+                    // the cause and the range is unpublished, not failed.
+                    inner.shared.failure = Some(ReleaseTrainFailure {
+                        at: ended_at,
+                        detail: detail.clone(),
+                        sha: target.to_string(),
+                        range: range.to_string(),
+                        version,
+                        stopped: true,
+                    });
+                    run.state = ReleaseTrainRunState::Stopped;
+                    run.detail = Some(detail.clone());
+                    if let Some(worker) = inner.worker.as_mut() {
+                        worker.last_error = None;
+                    }
+                }
+                self.activity(&format!("release stopped: {detail}"));
             }
         }
         {
@@ -4287,7 +4385,51 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{failed_release_detail, ReleaseVerificationPhase};
+    use super::{
+        failed_release_detail, stopped_before_a_published_release, ReleaseVerificationPhase,
+    };
+
+    /// The incident this rule answers: a stop closed the peer before its
+    /// publish pushed a tag, so GitHub had no release to read. The run is
+    /// stopped; the missing release is the stop's consequence.
+    #[test]
+    fn a_stop_before_a_proven_release_is_stopped_not_failed() {
+        assert!(stopped_before_a_published_release(
+            true,
+            false,
+            Some("stopped during the release run"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn a_stop_keeps_every_failure_the_stop_did_not_produce() {
+        // A proven publish whose release is missing later is a real failure.
+        assert!(!stopped_before_a_published_release(
+            true,
+            true,
+            Some("stopped during the release run"),
+            None,
+        ));
+        // A peer that reported its publish failed names the cause.
+        assert!(!stopped_before_a_published_release(
+            true,
+            false,
+            Some("stopped during the release run"),
+            Some("the release suite failed"),
+        ));
+        // A peer closed by the silence bound did not stop: it failed.
+        assert!(!stopped_before_a_published_release(
+            true,
+            false,
+            Some("the release agent produced no output for 60 minutes"),
+            None,
+        ));
+        // Nothing was stopped at all.
+        assert!(!stopped_before_a_published_release(
+            false, false, None, None,
+        ));
+    }
 
     #[test]
     fn a_reported_failure_does_not_repeat_the_withdrawn_tag_phase() {

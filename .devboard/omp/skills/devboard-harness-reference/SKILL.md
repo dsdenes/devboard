@@ -2202,6 +2202,12 @@ component that dispatches it.
   step that failed, so a cancelled run never hides its cause — ships nothing, and leaves the range
   unreleased. The next due tick starts a new run without operator action; a failed run is never
   recorded as released.
+- Stop ends the peer before its publish finishes. That run settles as `stopped`, not as a failed
+  release, and the page raises no error for it: the stop is the cause, and a release absent at that
+  moment is its consequence. The record the stopped run keeps is the retry handle a tag the stop
+  already pushed still needs, so a later tick verifies that release and records it once it ships. A
+  peer that reported its publish failed, a publish error, or a bound that closed the peer keeps its
+  failure.
 - A tick that throws — an unreadable gate, a run-directory or request write that the state
   directory refuses, a lease that cannot be taken — settles like a failed run: the thrown detail
   reaches the shared failure and the worker's last error, the run it opened is closed, and the

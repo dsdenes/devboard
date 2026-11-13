@@ -190,6 +190,12 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   `main` has moved past the failed version's tag, that retry releases the range at the current tip
   and verifies the release publish actually proved, so a superseded version is never re-reported
   as a failure after a successful release. A failed run is never recorded as released.
+- **Stop.** Stop ends the peer before its publish finishes. The run settles as `stopped`, never as
+  a failed release, and the page raises no error for it: the operator's stop is the cause, and a
+  release absent at that moment is its consequence. The record the stopped run keeps is the retry
+  handle a tag the stop already pushed still needs, so a later tick verifies that release and
+  records it once it ships. A peer that reported its publish failed, a publish error, or a bound
+  that closed the peer keeps its failure, because the stop did not produce it.
 - **Agent.** `.devboard/prompts/release-train.md` instructs one run to release the collected range
   through `devboard publish` from the integration checkout, which fetches canonical `main` itself,
   verify the GitHub assets and the Gitea manifest, and report the version and release URL.

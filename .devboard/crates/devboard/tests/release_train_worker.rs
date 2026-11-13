@@ -1237,6 +1237,50 @@ async fn a_stop_command_reaches_a_run_that_is_still_in_flight() {
     assert!(!record.enabled);
 }
 
+/// A run an operator stops before its publish proves a release is stopped, not
+/// failed: the page raises no error, the range stays unpublished, and the
+/// record that survives is the retry handle a tag the stop left pushed needs.
+#[tokio::test]
+async fn a_stopped_run_records_stopped_and_raises_no_release_error() {
+    let workspace = workspace("stopped-run");
+    let clock = FakeClock::new(start_ms());
+    let target = "e".repeat(40);
+    let detail = "stopped during the release run; GitHub assets: the release v1.0.1 does not exist";
+    let worker = worker(
+        &workspace,
+        "test-version",
+        &clock,
+        gate_ok(unreleased(&target, "1.0.1")),
+        Arc::new(move |_input: ReleaseRunInput| -> RunFuture {
+            Box::pin(async move { ReleaseRunResult::stopped(detail) })
+        }),
+    );
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    let state = worker.current_state();
+    assert_eq!(state.runs.len(), 1);
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Stopped);
+    assert_eq!(state.runs[0].detail.as_deref(), Some(detail));
+    assert!(state.release.is_none());
+    let failure = state.failure.clone().expect("the retry record");
+    assert!(failure.stopped, "{failure:?}");
+    assert_eq!(failure.version.as_deref(), Some("1.0.1"));
+    let directory = release_train_directory(&workspace.state_dir);
+    let record = read_worker_state(&versioned_worker_state_path(
+        &directory,
+        Some("test-version"),
+    ))
+    .expect("the worker record");
+    assert_eq!(record.last_error, None);
+    assert_ne!(record.lifecycle, AgentLifecycle::Failed);
+    let activity = state.activity.join("\n");
+    assert!(
+        activity.contains(&format!("release stopped: {detail}")),
+        "{activity}"
+    );
+    worker.stop().await;
+}
+
 #[tokio::test]
 async fn two_versions_coexist_and_a_takeover_keeps_the_older_release() {
     let workspace = workspace("takeover");
@@ -1342,6 +1386,7 @@ async fn a_recorded_failure_whose_tag_now_exists_is_verified_not_re_released() {
         sha: first.clone(),
         range: format!("v1.0.0..{first}"),
         version: Some("1.0.1".to_string()),
+        stopped: false,
     });
     write_state(&directory, &state).expect("the seeded state");
 
@@ -1425,6 +1470,7 @@ async fn a_recovery_verifies_the_release_publish_actually_proved() {
         sha: first.clone(),
         range: format!("v1.0.0..{first}"),
         version: Some("1.0.1".to_string()),
+        stopped: false,
     });
     write_state(&directory, &state).expect("the seeded state");
 
@@ -2384,5 +2430,63 @@ async fn a_release_peer_that_reports_nothing_fails_with_the_silence_detail() {
     assert_eq!(
         result,
         ReleaseRunResult::failed("the release agent produced no output for 300 ms")
+    );
+}
+
+/// The incident report's case: an operator stop closes the peer while its
+/// publish is still building, so nothing proved a release and GitHub has none
+/// to read. The stop is the cause, so the run records stopped rather than a
+/// failed release, and the page raises no error for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_before_the_publish_proves_a_release_records_a_stopped_run() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let root = scratch_root("release-agent-stopped");
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let stub = format!(
+        "{} acp-stub --delay-ms=60000",
+        env!("CARGO_BIN_EXE_devboard")
+    );
+    let stopped = Arc::new(AtomicBool::new(false));
+    let mut input = stub_run_input(
+        &root,
+        stub,
+        ReleaseRunTimeouts {
+            silence: std::time::Duration::from_secs(60),
+            max: std::time::Duration::from_secs(60),
+        },
+    );
+    input.stopping = {
+        let stopped = stopped.clone();
+        Arc::new(move || stopped.load(Ordering::SeqCst))
+    };
+    let verify: VerifyFn = Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Failed {
+                phase: ReleaseVerificationPhase::Github,
+                version: options.version.clone(),
+                detail: format!(
+                    "GitHub assets: the release v{} does not exist",
+                    options.version
+                ),
+            }
+        })
+    });
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify,
+        std::collections::HashMap::new(),
+    );
+    let handle = tokio::spawn(run(input));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    stopped.store(true, Ordering::SeqCst);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), handle)
+        .await
+        .expect("Stop ends the peer")
+        .expect("the run joins");
+    assert_eq!(
+        result,
+        ReleaseRunResult::stopped(
+            "stopped during the release run; GitHub assets: the release v1.1.0 does not exist"
+        )
     );
 }

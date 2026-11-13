@@ -9489,9 +9489,15 @@ impl ReleaseFamily {
             })
             .or_else(|| active.as_ref().and_then(|record| record.last_error.clone()))
             .or_else(|| {
-                shared
-                    .get("failure")
-                    .and_then(|failure| failure.get("detail"))
+                // A stopped run keeps its unverified record as the retry handle
+                // a tag the stop left pushed still needs, and the stop is the
+                // operator's action, so it is not a release error.
+                let failure = shared.get("failure")?;
+                if failure.get("stopped").and_then(Value::as_bool) == Some(true) {
+                    return None;
+                }
+                failure
+                    .get("detail")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             });
