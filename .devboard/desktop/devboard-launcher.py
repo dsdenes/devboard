@@ -915,17 +915,15 @@ def run_indicator() -> int:
     stop_item.connect("activate", lambda *_: run_action(actions["stop"]))
     quit_item.connect("activate", lambda *_: Gtk.main_quit())
 
-    signal_add = getattr(GLib, "unix_signal_add", None)
     try:
         gi.require_version("GLibUnix", "2.0")
         from gi.repository import GLibUnix
 
         signal_add = GLibUnix.signal_add
     except (ImportError, ValueError):
-        pass
-    if signal_add is not None:
-        for signum in (signal.SIGTERM, signal.SIGINT):
-            signal_add(GLib.PRIORITY_DEFAULT, signum, Gtk.main_quit)
+        signal_add = GLib.unix_signal_add
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal_add(GLib.PRIORITY_DEFAULT, signum, Gtk.main_quit)
 
     schedule_check()
     GLib.timeout_add_seconds(INDICATOR_POLL_SECONDS, schedule_check)
