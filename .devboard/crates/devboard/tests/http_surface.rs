@@ -540,11 +540,15 @@ async fn mutating_endpoints_refuse_a_misdirected_host() {
     let instance = start("endpoint-host").await;
     for (method, path, expected) in [
         (Method::POST, "/reports", StatusCode::MISDIRECTED_REQUEST),
-        (Method::POST, "/goal-proposals", StatusCode::FORBIDDEN),
+        (
+            Method::POST,
+            "/goal-proposals",
+            StatusCode::MISDIRECTED_REQUEST,
+        ),
         (
             Method::GET,
             "/goal-proposals/missing.md",
-            StatusCode::FORBIDDEN,
+            StatusCode::MISDIRECTED_REQUEST,
         ),
         (Method::GET, "/records", StatusCode::MISDIRECTED_REQUEST),
     ] {
@@ -554,12 +558,30 @@ async fn mutating_endpoints_refuse_a_misdirected_host() {
             send(method, &format!("{}{path}", instance.base), headers).await;
         assert_eq!(status, expected, "{path}");
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
-        assert!(parsed["title"].is_string());
+        assert_eq!(parsed["title"], "Misdirected Request", "{path}");
         assert_eq!(
             parsed["detail"],
             "The request host is not served by this dashboard."
         );
     }
+    // The same path still answers a cross-origin request with 403, so a
+    // misdirected request and a cross-origin request stay distinguishable.
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HOST,
+        HeaderValue::from_str(instance.base.trim_start_matches("http://")).expect("a served host"),
+    );
+    headers.insert(ORIGIN, HeaderValue::from_static("http://evil.test"));
+    let (status, _headers, body) = send(
+        Method::POST,
+        &format!("{}/goal-proposals", instance.base),
+        headers,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert_eq!(parsed["title"], "Forbidden");
+    assert_eq!(parsed["detail"], "Cross-origin requests are refused.");
     let mut headers = HeaderMap::new();
     headers.insert(HOST, HeaderValue::from_static("evil.test"));
     let (status, _headers, _body) =

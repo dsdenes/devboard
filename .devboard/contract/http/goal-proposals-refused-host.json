@@ -2,11 +2,11 @@
   "name": "goal-proposals-refused-host",
   "method": "POST",
   "path": "/goal-proposals",
-  "status": 403,
+  "status": 421,
   "body": {
     "type": "about:blank",
-    "title": "Forbidden",
-    "status": 403,
+    "title": "Misdirected Request",
+    "status": 421,
     "detail": "The request host is not served by this dashboard."
   }
 }

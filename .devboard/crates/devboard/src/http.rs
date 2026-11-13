@@ -544,16 +544,6 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
     // Every route answers a host this listener does not serve and a
     // cross-origin browser request with Problem JSON before any handler runs.
     if let Some(refusal) = request_refusal(&headers, &url, &server.allowed_hostnames) {
-        if refusal == RequestRefusal::Host
-            && (uri.path() == "/goal-proposals" || uri.path().starts_with("/goal-proposals/"))
-        {
-            return reply(Replies::problem(
-                &headers,
-                403,
-                "The request host is not served by this dashboard.",
-                &[],
-            ));
-        }
         return reply(refusal_answer(&headers, refusal));
     }
 

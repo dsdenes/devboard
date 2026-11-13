@@ -270,7 +270,7 @@ pub fn cases() -> Vec<Case> {
             Method::POST,
             "/goal-proposals",
             HeaderSpec::Host("evil.test"),
-            403,
+            421,
             None,
             false,
         ),
