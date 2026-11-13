@@ -240,6 +240,10 @@ enum CiState {
     RerunRefused(&'static str),
     /// No run for the commit.
     Absent,
+    /// A run the forge never starts and no runner claims a job for.
+    Queued,
+    /// A refused `actions/runs` read, so the gate never reaches the forge.
+    ReadRefused,
 }
 
 /// How the stub answers the repository read the publish preflight makes.
@@ -350,6 +354,13 @@ fn gitea_route(
     if request.method == "GET" && path == format!("{repo}/actions/runs") {
         let mut data = state.lock().expect("gitea");
         data.ci_reads += 1;
+        if data.ci == CiState::ReadRefused {
+            return StubResponse {
+                status: 404,
+                headers: vec![("content-type".to_string(), "application/json".to_string())],
+                body: br#"{"message":"the actions read is refused"}"#.to_vec(),
+            };
+        }
         if data.rerun_count > 0 {
             data.reads_since_rerun += 1;
         }
@@ -372,6 +383,8 @@ fn gitea_route(
             CiState::RerunFails(conclusion) => ("completed", Some(conclusion.to_string())),
             CiState::RerunRefused(conclusion) => ("completed", Some(conclusion.to_string())),
             CiState::Absent => ("completed", Some("success".to_string())),
+            CiState::Queued => ("waiting", None),
+            CiState::ReadRefused => ("completed", None),
         };
         let runs = if data.ci == CiState::Absent {
             vec![json!({
@@ -441,7 +454,8 @@ fn gitea_route(
             || path == format!("{repo}/actions/runs/778/jobs"))
     {
         // The gate reads a run's jobs only for a run it refuses, so the stub
-        // reports the job and the step that failed.
+        // reports the job and the step that failed. A run no runner ever
+        // claimed has no job to report.
         let data = state.lock().expect("gitea");
         if data.jobs_refused {
             return StubResponse {
@@ -449,6 +463,9 @@ fn gitea_route(
                 headers: vec![("content-type".to_string(), "application/json".to_string())],
                 body: br#"{"message":"the run's jobs cannot be read"}"#.to_vec(),
             };
+        }
+        if data.ci == CiState::Queued {
+            return json_response(json!({"total_count": 0, "jobs": []}));
         }
         return json_response(json!({
             "total_count": 1,
@@ -2278,6 +2295,59 @@ async fn ci_gate_times_out_without_a_run() {
     assert!(git_output(&live.seed, &["tag", "--list", "v1.1.0"])
         .trim()
         .is_empty());
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+}
+
+/// A run the forge accepted but never started names itself in the refusal,
+/// with its state and the job the forge never registered, so an operator sees
+/// which run and which side of the CI gate has to be looked at.
+#[tokio::test]
+async fn ci_gate_names_the_run_that_never_settled() {
+    let live = live("ci-queued", release_assets()).await;
+    live.gitea_stub.set_ci(CiState::Queued);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_millis(60);
+    args.poll_interval = Duration::from_millis(10);
+    let error = publish(args)
+        .await
+        .expect_err("a queued run leaves the range unreleased");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("devboard-ci.yml run 777")
+            && message.contains("was still waiting")
+            && message.contains("no job registered")
+            && !message.contains("read failed")
+            && message.contains("no tag was pushed"),
+        "{message}"
+    );
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+}
+
+/// A forge that refuses every run read is named as the cause, so the refusal
+/// never reports an unreadable forge as a run that simply did not succeed.
+#[tokio::test]
+async fn ci_gate_names_a_refused_run_read() {
+    let live = live("ci-read-refused", release_assets()).await;
+    live.gitea_stub.set_ci(CiState::ReadRefused);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_millis(60);
+    args.poll_interval = Duration::from_millis(10);
+    let error = publish(args)
+        .await
+        .expect_err("an unreadable forge leaves the range unreleased");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("could be read within")
+            && message.contains("the devboard-ci.yml read failed")
+            && message.contains("HTTP 404")
+            && !message.contains("concluded success within")
+            && message.contains("no tag was pushed"),
+        "{message}"
+    );
     assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
         .trim()
         .is_empty());

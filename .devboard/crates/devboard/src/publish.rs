@@ -226,6 +226,26 @@ impl Default for ReqwestTransport {
     }
 }
 
+/// One transport error with its whole cause chain.
+///
+/// `reqwest`'s own text names the request and stops at it, which leaves a
+/// refused connection and an expired timeout reading alike. Its cause chain
+/// names what actually happened, so a refusal built from this text tells an
+/// operator which side of the request failed.
+fn describe_error(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let part = cause.to_string();
+        if !part.is_empty() && !text.contains(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 impl HttpTransport for ReqwestTransport {
     fn send<'a>(&'a self, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, String>> {
         Box::pin(async move {
@@ -238,12 +258,15 @@ impl HttpTransport for ReqwestTransport {
             if !request.body.is_empty() {
                 builder = builder.body(request.body.clone());
             }
-            let response = builder.send().await.map_err(|error| error.to_string())?;
+            let response = builder
+                .send()
+                .await
+                .map_err(|error| describe_error(&error))?;
             let status = response.status().as_u16();
             let body = response
                 .bytes()
                 .await
-                .map_err(|error| error.to_string())?
+                .map_err(|error| describe_error(&error))?
                 .to_vec();
             Ok(HttpResponse { status, body })
         })
@@ -3504,7 +3527,10 @@ async fn dispatch_and_wait(
 /// the same range forever. The re-run gets the same bound; a refusal, or a
 /// re-run that settles without success, refuses the release without pushing
 /// the tag. A commit with no run yet is waited for; after the documented
-/// bound the release is refused the same way.
+/// bound the release is refused the same way. A run that never settled is
+/// named in that refusal with its id and its state, and a read that never
+/// answered is named with the transport cause, so an unreachable forge never
+/// reads back as a bare "no run concluded success".
 async fn wait_for_ci_success(
     api: &Api,
     clock: &Arc<dyn Clock>,
@@ -3520,6 +3546,10 @@ async fn wait_for_ci_success(
     ));
     let mut deadline = clock.now_millis() + args.wait_timeout.as_millis() as i64;
     let mut last_error: Option<String> = None;
+    // The newest run read without a success. An operator has to look at that
+    // run, so the refusal names it even when the read that ends the wait never
+    // answered.
+    let mut last_seen: Option<WorkflowRun> = None;
     // The run already restarted in this call, and whether its fresh attempt
     // has been visible since. The snapshot that still describes the settled
     // run right after the restart is never the re-run's verdict.
@@ -3538,6 +3568,13 @@ async fn wait_for_ci_success(
                         short_sha(commit)
                     ));
                     return Ok(success.id);
+                }
+                if let Some(unfinished) = runs
+                    .iter()
+                    .filter(|run| !workflow_finished(run))
+                    .max_by_key(|run| run.id)
+                {
+                    last_seen = Some(unfinished.clone());
                 }
                 if runs.iter().any(|run| !workflow_finished(run)) {
                     if rerun.is_some() {
@@ -3587,32 +3624,66 @@ async fn wait_for_ci_success(
             }
         }
         if clock.now_millis() >= deadline {
-            if let Ok(runs) = api.gitea_ci_runs(commit).await {
-                if let Some(success) = runs
-                    .iter()
-                    .find(|run| run.conclusion.as_deref() == Some("success"))
-                {
-                    (log)(&format!(
-                        "CI run {} for {} concluded success",
-                        success.id,
-                        short_sha(commit)
-                    ));
-                    return Ok(success.id);
+            match api.gitea_ci_runs(commit).await {
+                Ok(runs) => {
+                    if let Some(success) = runs
+                        .iter()
+                        .find(|run| run.conclusion.as_deref() == Some("success"))
+                    {
+                        (log)(&format!(
+                            "CI run {} for {} concluded success",
+                            success.id,
+                            short_sha(commit)
+                        ));
+                        return Ok(success.id);
+                    }
+                    if let Some(settled) = runs
+                        .iter()
+                        .filter(|run| workflow_finished(run))
+                        .max_by_key(|run| run.id)
+                    {
+                        let conclusion = ci_conclusion(settled);
+                        let detail = ci_failed_jobs(api, settled.id).await;
+                        bail!(
+                            "the {CI_WORKFLOW} run {} for {} concluded {conclusion}{detail}; no tag was pushed",
+                            settled.id,
+                            short_sha(commit)
+                        );
+                    }
+                    if let Some(unfinished) = runs.iter().max_by_key(|run| run.id) {
+                        last_seen = Some(unfinished.clone());
+                    }
                 }
-                if let Some(settled) = runs.iter().find(|run| workflow_finished(run)) {
-                    let conclusion = ci_conclusion(settled);
-                    let detail = ci_failed_jobs(api, settled.id).await;
-                    bail!(
-                        "the {CI_WORKFLOW} run {} for {} concluded {conclusion}{detail}; no tag was pushed",
-                        settled.id,
-                        short_sha(commit)
-                    );
-                }
+                Err(error) => last_error = Some(format!("{error:#}")),
             }
-            bail!(
-                "no {CI_WORKFLOW} run for {} concluded success within {bound}s; no tag was pushed",
-                short_sha(commit)
-            );
+            // The refusal names what the wait actually saw. A run that never
+            // settled is named with its state and whether the forge registered
+            // a job for it, and a read that never answered is named with its
+            // cause beside it, so a forge the gate never reached is never
+            // reported as a run that simply did not succeed.
+            let read = match &last_error {
+                Some(error) => format!("; the {CI_WORKFLOW} read failed: {error}"),
+                None => String::new(),
+            };
+            match last_seen {
+                Some(run) => {
+                    let detail = ci_unfinished_detail(api, run.id).await;
+                    bail!(
+                        "the {CI_WORKFLOW} run {} for {} was still {} after {bound}s{detail}{read}; no tag was pushed",
+                        run.id,
+                        short_sha(commit),
+                        ci_conclusion(&run).replace('_', " ")
+                    )
+                }
+                None if last_error.is_some() => bail!(
+                    "no {CI_WORKFLOW} run for {} could be read within {bound}s{read}; no tag was pushed",
+                    short_sha(commit)
+                ),
+                None => bail!(
+                    "no {CI_WORKFLOW} run for {} concluded success within {bound}s; no tag was pushed",
+                    short_sha(commit)
+                ),
+            }
         }
         sleeper.sleep(args.poll_interval).await;
     }
@@ -3626,6 +3697,18 @@ async fn ci_failed_jobs(api: &Api, run_id: u64) -> String {
     match failed_jobs_detail(&jobs) {
         Some(detail) => format!(": {detail}"),
         None => String::new(),
+    }
+}
+
+/// What a run that never settled adds to its refusal: whether the forge
+/// registered any job for it, so a run no runner ever claimed reads apart from
+/// one whose job is still working. A refused job read adds nothing, like every
+/// other job read in this gate.
+async fn ci_unfinished_detail(api: &Api, run_id: u64) -> String {
+    match api.gitea_ci_jobs(run_id).await {
+        Ok(jobs) if jobs.is_empty() => " with no job registered".to_string(),
+        Ok(_) => " with its job still unfinished".to_string(),
+        Err(_) => String::new(),
     }
 }
 
@@ -5011,6 +5094,47 @@ mod tests {
         fn sleep<'a>(&'a self, _duration: Duration) -> BoxFuture<'a, ()> {
             Box::pin(async {})
         }
+    }
+
+    /// An error whose chain names the failure under the request text.
+    #[derive(Debug)]
+    struct ChainError {
+        text: &'static str,
+        source: Option<Box<ChainError>>,
+    }
+
+    impl std::fmt::Display for ChainError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.text)
+        }
+    }
+
+    impl std::error::Error for ChainError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_deref()
+                .map(|cause| cause as &(dyn std::error::Error))
+        }
+    }
+
+    #[test]
+    fn a_transport_error_names_its_cause_chain() {
+        let error = ChainError {
+            text:
+                "error sending request for url (http://localhost:3001/api/v1/repos/x/actions/runs)",
+            source: Some(Box::new(ChainError {
+                text: "client error (Connect)",
+                source: Some(Box::new(ChainError {
+                    text: "tcp connect error: Connection refused (os error 111)",
+                    source: None,
+                })),
+            })),
+        };
+        assert_eq!(
+            describe_error(&error),
+            "error sending request for url (http://localhost:3001/api/v1/repos/x/actions/runs): \
+client error (Connect): tcp connect error: Connection refused (os error 111)"
+        );
     }
 
     /// A checkout whose `origin` is the Gitea SSH remote this host refused,
