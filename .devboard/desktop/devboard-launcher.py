@@ -12,21 +12,31 @@ invocation. Every mode shares the same lifecycle:
   --indicator  run the resident panel indicator that offers these four actions
   (no args)    start or restart, and open the page of a fresh start
 
-The lifecycle rebuilds the harness from this checkout, so the process that
-starts is the binary the current source builds; restarts a dashboard that
-already serves this checkout through the dashboard's own `restartServer`
-handoff, so a live agentic run survives the replacement; starts a detached
-dashboard when none serves this checkout; and reports every step and every
-failure through the desktop's native notification service.
+A source checkout never runs its own working tree. The lifecycle enumerates
+the origin's `v<major>.<minor>.<patch>` tags newest first and selects the first
+one whose release is fully published: the public GitHub release manifest for
+that tag names exactly its version, and when GitHub is unreachable the Gitea
+release manifest for the same tag does. With no such tag nothing is built and
+nothing is started, so the stack never runs unpublished code.
 
-A source checkout builds `target/debug/devboard`; an installed host starts its
-own `bin/devboard` and is never rebuilt.
+The selected tag is checked out in an isolated git worktree under
+`.devboard/published/v<version>`, built there with
+`cargo build --release -p devboard` from the tag's committed files only, and
+the release binary replaces the dashboard that already serves this checkout.
+The worktree is reused, never deleted, and lies outside every retention sweep,
+so the build the stack runs from cannot be collected. Replacing a dashboard
+stops the previous pid and starts the new binary on the same port, and every
+step and failure is reported through the desktop's native notification
+service.
+
+An installed host starts its own `bin/devboard` and is never rebuilt.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import filecmp
 import json
 import math
 import os
@@ -52,7 +62,19 @@ LOG = CONTROL_DIR / "launcher.log"
 CREDENTIALS = CONTROL_DIR / "credentials.json"
 TITLE = "Devboard"
 READY_TIMEOUT = 60.0
-RESTART_TIMEOUT = 60.0
+
+# Every published release this launcher may run is a worktree of its tag under
+# this directory. It sits outside the state directories and `.worktree`, so no
+# retention sweep, worktree cleanup, or watchdog pass ever names it, and no
+# launcher action deletes a tree here.
+PUBLISHED = HARNESS / "published"
+MANIFEST_ASSET = "devboard-manifest.json"
+# The public download root a GitHub release manifest is read from.
+GITHUB_URL = "https://github.com"
+RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+MANIFEST_TIMEOUT = 20.0
+FETCH_TIMEOUT = 300.0
+BUILD_TIMEOUT = 3600.0
 
 # The names that describe one live dashboard instance rather than the process
 # that carries them. The server resolves each for itself, so nothing this
@@ -254,48 +276,6 @@ def running_dashboard() -> tuple[int, int] | None:
     return None
 
 
-def rest_restart(port: int, token: str) -> str | None:
-    """Ask the running dashboard to replace itself with one HTTP POST.
-
-    ``None`` means the dashboard accepted the handoff. The restart resource is
-    documented in ``openapi.yaml``; no WebSocket handshake or frame is sent.
-    """
-    del token
-    request = Request(
-        f"http://127.0.0.1:{port}/server-restarts",
-        data=b"{}",
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urlopen(request, timeout=5) as response:
-            response.read()
-        return None
-    except HTTPError as error:
-        detail = ""
-        try:
-            payload = json.loads(error.read())
-            if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
-                detail = payload["detail"]
-        except (ValueError, OSError):
-            detail = ""
-        if detail:
-            return detail
-        return f"the dashboard refused the restart: HTTP {error.code}"
-    except (URLError, OSError) as error:
-        reason = getattr(error, "reason", error)
-        # The old process may exit before its 202 response is written. A
-        # closed connection after this one POST is an accepted handoff.
-        if isinstance(
-            reason, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
-        ) or "Remote end closed" in str(reason):
-            return None
-        return f"the dashboard is unreachable: {error}"
-
-
 def stop_dashboard(pid: int, timeout: float = 15.0) -> bool:
     try:
         os.kill(pid, signal.SIGTERM)
@@ -341,24 +321,261 @@ def wait_ready(
     return None
 
 
-def build() -> tuple[Path | None, str | None]:
-    """The binary to start and a failure description, never both."""
-    installed = REPO / ".devboard" / "bin" / "devboard"
-    if not (HARNESS / "Cargo.toml").is_file():
-        if installed.is_file():
-            return installed, None
-        return None, f"no harness source under {HARNESS} and no installed binary"
-    cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
-    if not Path(cargo).is_file():
-        return None, "cargo is not on PATH"
+def first_line(text: str) -> str:
+    """The one line of a command's output a notification can carry."""
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def run_git(*arguments: str, cwd: Path | None = None, timeout: float = 120.0):
+    """One git command: its exit status and both streams, never raising."""
     try:
         result = subprocess.run(
-            [cargo, "build", "-p", "devboard"],
-            cwd=str(HARNESS),
+            ["git", *arguments],
+            cwd=str(cwd or REPO),
             check=False,
             capture_output=True,
             text=True,
-            timeout=3600,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return 127, "", str(error)
+    return result.returncode, result.stdout, result.stderr
+
+
+def remote_reference(remote: str) -> tuple[str, str] | None:
+    """The host and `owner/repo` path one git remote names, when it names both."""
+    code, out, _ = run_git("remote", "get-url", remote)
+    url = out.strip()
+    if code != 0 or not url:
+        return None
+    if "://" in url:
+        _, rest = url.split("://", 1)
+        host, _, path = rest.partition("/")
+        host = host.rsplit("@", 1)[-1]
+    elif "@" in url and ":" in url:
+        host, _, path = url.split("@", 1)[1].partition(":")
+    else:
+        return None
+    host = host.split("/", 1)[0]
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [part for part in path.split("/") if part]
+    if not host or len(parts) < 2:
+        return None
+    return host, f"{parts[-2]}/{parts[-1]}"
+
+
+def github_repository() -> str | None:
+    """The public GitHub `owner/repo` whose releases prove this checkout."""
+    explicit = (os.environ.get("DEVBOARD_RELEASE_REPOSITORY") or "").strip().strip("/")
+    if explicit.endswith(".git"):
+        explicit = explicit[:-4]
+    if explicit:
+        return explicit
+    for remote in ("github", "origin"):
+        reference = remote_reference(remote)
+        if reference is not None and reference[0] == "github.com":
+            return reference[1]
+    return None
+
+
+def published_manifest_urls(version: str, github: bool = True) -> list[tuple[str, str]]:
+    """Every address that can prove one release is fully published, and the
+    forge each one reads.
+
+    The public GitHub release is the proof. The Gitea release for the same tag
+    is the fallback the caller uses only when GitHub cannot be reached.
+    """
+    urls: list[tuple[str, str]] = []
+    repository = github_repository() if github else None
+    if repository:
+        urls.append(
+            (
+                f"{GITHUB_URL.rstrip('/')}/{repository}/releases/download/"
+                f"v{version}/{MANIFEST_ASSET}",
+                "github",
+            )
+        )
+    gitea = (os.environ.get("DEVBOARD_GITEA_URL") or "").strip().rstrip("/")
+    origin = remote_reference("origin")
+    if gitea and origin is not None:
+        urls.append(
+            (
+                f"{gitea}/{origin[1]}/releases/download/v{version}/{MANIFEST_ASSET}",
+                "gitea",
+            )
+        )
+    return urls
+
+
+def read_manifest(url: str) -> tuple[dict | None, str, bool]:
+    """One manifest read: the document, why it was unusable, and whether the
+    forge could not be reached at all."""
+    request = Request(url, headers={"Accept": "application/octet-stream"})
+    try:
+        with urlopen(request, timeout=MANIFEST_TIMEOUT) as response:
+            body = response.read()
+    except HTTPError as error:
+        return None, f"{url} answered HTTP {error.code}", False
+    except (URLError, OSError, ValueError) as error:
+        return None, f"{url} is unreachable: {getattr(error, 'reason', error)}", True
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        return None, f"{url} is not JSON: {error}", False
+    if not isinstance(document, dict):
+        return None, f"{url} is not a release manifest", False
+    return document, "", False
+
+
+def release_proof(
+    version: str, github: bool = True
+) -> tuple[bool, str, bool, bool]:
+    """Whether one release is fully published, the concrete reason, whether any
+    address gave a verdict, and whether GitHub was unreachable."""
+    urls = published_manifest_urls(version, github)
+    if not urls:
+        return (
+            False,
+            "no public release address is known for this checkout",
+            False,
+            False,
+        )
+    reason = ""
+    answered = False
+    github_down = False
+    for url, forge in urls:
+        document, detail, unreachable = read_manifest(url)
+        if document is not None:
+            named = document.get("version")
+            if named == version:
+                return True, "", True, github_down
+            return (
+                False,
+                f"{url} names version {named!r}, not {version!r}",
+                True,
+                github_down,
+            )
+        reason = detail
+        if unreachable:
+            # The next address may still prove this same tag.
+            github_down = github_down or forge == "github"
+            continue
+        answered = True
+        break
+    return False, reason or "no release manifest answered", answered, github_down
+
+
+def release_tags() -> tuple[list[str], str]:
+    """The origin's release tags, newest first, and a failure description."""
+    code, _, error = run_git("fetch", "--tags", "--quiet", "origin",
+                             timeout=FETCH_TIMEOUT)
+    if code != 0:
+        return [], f"git fetch --tags origin failed: {first_line(error) or code}"
+    code, out, error = run_git("tag", "--list", "v*")
+    if code != 0:
+        return [], f"the release tags could not be read: {first_line(error)}"
+
+    def order(tag: str) -> tuple[int, int, int]:
+        return tuple(int(part) for part in RELEASE_TAG.match(tag).groups())
+
+    tags = [tag for tag in out.split() if RELEASE_TAG.match(tag)]
+    tags.sort(key=order, reverse=True)
+    return tags, ""
+
+
+def select_published_tag() -> tuple[str | None, str]:
+    """The newest tag whose release is fully published, never HEAD or a branch."""
+    tags, error = release_tags()
+    if error:
+        return None, error
+    if not tags:
+        return None, "the origin publishes no v<major>.<minor>.<patch> tag"
+    reasons = []
+    github = True
+    for tag in tags:
+        version = tag[1:]
+        published, detail, answered, github_down = release_proof(version, github)
+        if published:
+            log(f"release: {tag} is published")
+            return version, ""
+        log(f"release: skipping {tag}: {detail}")
+        reasons.append(f"{tag}: {detail}")
+        if github_down:
+            # One unreachable public read proves GitHub is down. The Gitea
+            # manifest is then the only proof, and no read of GitHub repeats.
+            github = False
+            if not answered:
+                return None, f"{tag}: the release manifest is unreachable: {detail}"
+    return None, (
+        f"no published release among {len(tags)} tag(s); newest: {reasons[0]}"
+    )
+
+
+def checkout_problem(path: Path, commit: str, tag: str) -> str:
+    """Why one tag worktree is not a clean checkout of its commit, or ''."""
+    code, head, error = run_git("rev-parse", "HEAD", cwd=path)
+    if code != 0:
+        return f"{path} is not a git worktree: {first_line(error)}"
+    if head.strip() != commit:
+        return f"{path} is checked out at {head.strip()[:12]}, not {tag}"
+    code, status, error = run_git("status", "--porcelain", cwd=path)
+    if code != 0:
+        return f"{path} has no readable status: {first_line(error)}"
+    if status.strip():
+        return f"{path} carries local changes; refusing to build unpublished code"
+    return ""
+
+
+def worktree_for(version: str) -> tuple[Path | None, str, str]:
+    """The clean checkout of one release tag, created once and then reused."""
+    tag = f"v{version}"
+    path = PUBLISHED / tag
+    code, out, _ = run_git("rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}")
+    commit = out.strip()
+    if code != 0 or not commit:
+        return None, "", f"this checkout carries no commit for the tag {tag}"
+    if path.exists():
+        problem = checkout_problem(path, commit, tag)
+        if problem:
+            return None, "", problem
+        log(f"release: reusing {path}")
+        return path, commit, ""
+    PUBLISHED.mkdir(parents=True, exist_ok=True)
+    code, _, error = run_git(
+        "worktree", "add", "--detach", str(path), tag, timeout=FETCH_TIMEOUT
+    )
+    if code != 0:
+        return None, "", f"git worktree add {path} failed: {first_line(error) or code}"
+    problem = checkout_problem(path, commit, tag)
+    if problem:
+        return None, "", problem
+    log(f"release: checked out {tag} at {path}")
+    return path, commit, ""
+
+
+def build_release(version: str) -> tuple[Path | None, str]:
+    """Builds one published tag's harness and names its release binary."""
+    worktree, commit, error = worktree_for(version)
+    if error or worktree is None:
+        return None, error
+    harness = worktree / ".devboard"
+    cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
+    if not Path(cargo).is_file():
+        return None, "cargo is not on PATH"
+    log(f"build: {cargo} build --release -p devboard in {harness}")
+    try:
+        result = subprocess.run(
+            [cargo, "build", "--release", "-p", "devboard"],
+            cwd=str(harness),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=BUILD_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError) as error:
         return None, f"the build did not run: {error}"
@@ -371,10 +588,47 @@ def build() -> tuple[Path | None, str | None]:
             tail[-1].strip() if tail else "the build failed",
         )
         return None, reason
-    binary = HARNESS / "target" / "debug" / "devboard"
+    binary = harness / "target" / "release" / "devboard"
     if not binary.is_file():
         return None, f"the build produced no binary at {binary}"
-    return binary, None
+    problem = checkout_problem(worktree, commit, f"v{version}")
+    if problem:
+        return None, problem
+    return binary, ""
+
+
+def install_canonical(binary: Path) -> str:
+    """Copies the built release beside the checkout, where the harness reads it."""
+    canonical = HARNESS / "target" / "release" / "devboard"
+    try:
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(binary, canonical)
+        os.chmod(canonical, 0o755)
+    except OSError as error:
+        return f"the release binary could not be copied to {canonical}: {error}"
+    try:
+        identical = filecmp.cmp(binary, canonical, shallow=False)
+    except OSError as error:
+        return f"{canonical} could not be compared: {error}"
+    if not identical:
+        return f"{canonical} differs from {binary}"
+    return ""
+
+
+def prepare_release() -> tuple[str | None, Path | None, str]:
+    """The published version, its release binary, and a failure description."""
+    version, error = select_published_tag()
+    if error or version is None:
+        return None, None, error
+    notify(TITLE, f"Building Devboard {version} from v{version}…")
+    binary, error = build_release(version)
+    if error or binary is None:
+        return version, None, error
+    problem = install_canonical(binary)
+    if problem:
+        return version, None, problem
+    log(f"release: {version} built from v{version} at {binary}")
+    return version, binary, ""
 
 
 def start(binary: Path, tokens: dict[str, str]) -> subprocess.Popen:
@@ -454,27 +708,6 @@ def acquire_lock(path: Path):
     return handle
 
 
-def wait_replacement(
-    old_pid: int, port: int, tokens: dict[str, str]
-) -> tuple[int, int, dict[str, str]] | None:
-    deadline = time.time() + RESTART_TIMEOUT
-    while time.time() < deadline:
-        marker = version_marker()
-        candidate = marker.get("pid")
-        if (
-            isinstance(candidate, int)
-            and candidate != old_pid
-            and process_alive(candidate)
-        ):
-            adopted = adopt_credentials(candidate)
-            settled_port = int(marker.get("port") or port)
-            remaining = max(1.0, min(10.0, deadline - time.time()))
-            if wait_ready(settled_port, adopted["token"], candidate, remaining):
-                return candidate, settled_port, adopted
-        time.sleep(0.25)
-    return None
-
-
 def sweep_dashboards(binary: Path) -> dict:
     """Keep this host's newest ready dashboard and stop every other one.
 
@@ -520,6 +753,22 @@ def sweep_dashboards(binary: Path) -> dict:
     return report
 
 
+def resolve_start() -> tuple[str | None, Path | None, str]:
+    """The release version, the binary to start, and a failure description.
+
+    An installed host runs the binary its prefix carries and is never built.
+    A source checkout only ever runs a fully published release tag.
+    """
+    installed = REPO / ".devboard" / "bin" / "devboard"
+    if not (HARNESS / "Cargo.toml").is_file():
+        if installed.is_file():
+            return None, installed, ""
+        return None, None, (
+            f"no harness source under {HARNESS} and no installed binary"
+        )
+    return prepare_release()
+
+
 def run_lifecycle(open_when_started: bool) -> int:
     CONTROL_DIR.mkdir(parents=True, exist_ok=True)
     load_dotenv(REPO / ".env")
@@ -534,75 +783,35 @@ def run_lifecycle(open_when_started: bool) -> int:
         "launcher: repo=%s harness=%s state=%s port=%s running=%s"
         % (REPO, HARNESS, STATE, PORT, running)
     )
-    notify(TITLE, "Building the latest Devboard from source…")
-    binary, error = build()
+    version, binary, error = resolve_start()
     if error or binary is None:
-        return fail("Devboard did not build", error or "unknown build failure")
+        return fail(
+            "Devboard has no published release to run"
+            if version is None
+            else f"Devboard {version} release could not be prepared",
+            error or "the release could not be prepared",
+        )
+    notify(
+        TITLE,
+        f"Replacing the dashboard with Devboard {version}…"
+        if version is not None
+        else "Starting Devboard…",
+    )
 
-    report = sweep_dashboards(binary)
+    # The build and its publication proof are done; only now may an existing
+    # dashboard leave its port.
+    sweep_dashboards(binary)
     running = running_dashboard()
-    kept = report.get("keptPid")
-    if isinstance(kept, int) and process_alive(kept):
-        kept_port = report.get("keptPort")
-        port = kept_port if isinstance(kept_port, int) and kept_port > 0 else PORT
-        if running is None or running[0] != kept:
-            running = (kept, port)
-    elif running is not None and not process_alive(running[0]):
-        running = None
-
     if running is not None:
         old_pid, old_port = running
         tokens = adopt_credentials(old_pid)
-        notify(TITLE, f"Restarting Devboard (pid {old_pid})…")
-        refusal = rest_restart(old_port, tokens["token"])
-        if refusal is not None and "already in progress" in refusal.lower():
-            log(f"restart: another restart holds the dashboard ({refusal})")
-            refusal = None
-        if refusal is None:
-            log(f"restart: the dashboard at pid {old_pid} accepted the handoff")
-            settled = wait_replacement(old_pid, old_port, tokens)
-            if settled is None:
-                return fail(
-                    "Devboard did not restart",
-                    "the replacement never became ready; the old process keeps serving",
-                )
-            new_pid, settled_port, tokens = settled
-            version = version_marker().get("running") or "unknown"
-            log(f"restart: pid {old_pid} -> {new_pid} on port {settled_port} ({version})")
-            notify(
-                "Devboard restarted",
-                f"Version {version} · pid {new_pid} · http://127.0.0.1:{settled_port}",
-            )
-            return 0
-
-        log(f"restart: handoff refused ({refusal}); stopping pid {old_pid}")
+        log(f"restart: stopping pid {old_pid} on port {old_port}")
         if not stop_dashboard(old_pid):
             return fail(
                 "Devboard is still running",
-                f"pid {old_pid} did not stop after the refused handoff: {refusal}",
+                f"pid {old_pid} on port {old_port} did not stop",
             )
-        process = start(binary, tokens)
-        ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT, process)
-        if ready is None:
-            status = process.poll()
-            detail = (
-                f"the dashboard exited with status {status} before it became ready"
-                if status is not None
-                else f"the dashboard on port {PORT} never became ready"
-            )
-            return fail(
-                "Devboard did not start",
-                f"{detail} ({refusal}); see {LOG}",
-            )
-        tokens = adopt_credentials(ready)
-        version = version_marker().get("running") or "unknown"
-        notify(
-            "Devboard restarted",
-            f"Version {version} · pid {ready} · http://127.0.0.1:{PORT}",
-        )
-        return 0
 
-    notify(TITLE, "Starting Devboard…")
     process = start(binary, tokens)
     ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT, process)
     if ready is None:
@@ -612,14 +821,25 @@ def run_lifecycle(open_when_started: bool) -> int:
             if status is not None
             else f"the dashboard on port {PORT} never became ready"
         )
-        return fail("Devboard did not start", f"{detail}; see {LOG}")
+        if status is None:
+            # A process that never answered /ready must not keep the port.
+            stop_dashboard(process.pid)
+        return fail(
+            f"Devboard {version} did not start" if version else "Devboard did not start",
+            f"{detail}; see {LOG}",
+        )
     tokens = adopt_credentials(ready)
-    version = version_marker().get("running") or "unknown"
-    log(f"start: pid {ready} on port {PORT} ({version})")
+    served = version_marker().get("running")
+    log(f"start: pid {ready} on port {PORT} ({served or 'unknown'})")
     notify(
         "Devboard is running",
-        f"Version {version} · pid {ready} · http://127.0.0.1:{PORT}",
+        f"Version {served or 'unknown'} · pid {ready} · http://127.0.0.1:{PORT}",
     )
+    if version is not None and served != version:
+        return fail(
+            f"Devboard {version} reports another version",
+            f"pid {ready} answers running {served!r}, not {version!r}",
+        )
     if open_when_started:
         open_page(PORT, tokens["bootstrap"])
     return 0

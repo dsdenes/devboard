@@ -1,4 +1,5 @@
 /target/
+/published/
 /contract/.work/
 /contract/.test-work/
 /.bench-work/
