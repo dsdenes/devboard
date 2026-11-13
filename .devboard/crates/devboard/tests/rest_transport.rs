@@ -137,7 +137,12 @@ fn scratch(label: &str) -> PathBuf {
 }
 
 async fn start(label: &str) -> Instance {
-    let root = scratch(label);
+    start_at(scratch(label)).await
+}
+
+/// Starts one dashboard over an already prepared scratch root, so a test can
+/// seed the state directory before the dashboard reads it.
+async fn start_at(root: PathBuf) -> Instance {
     let repo = root.join("repo");
     let state = root.join("state");
     let config = Config {
@@ -459,6 +464,79 @@ async fn a_retry_answers_no_location_and_its_get_is_still_refused() {
             .and_then(|value| value.to_str().ok()),
         Some("POST")
     );
+}
+
+/// Seeds a stored Flow session and the restore hold in a fresh scratch root,
+/// so the dashboard restores that session and then waits on the hold. Returns
+/// the hold file, whose removal lets the restore finish.
+fn seed_held_flow_restore(root: &Path) -> PathBuf {
+    let repo = root.join("repo");
+    let flow_root = root
+        .join("state")
+        .join("flow")
+        .join(devboard::journal::repo_key(&repo));
+    let directory = flow_root.join("seeded-session");
+    std::fs::create_dir_all(&directory).expect("a Flow session directory");
+    let session = json!({
+        "id": "seeded-session",
+        "version": 1,
+        "worktree": repo.join(".worktree/flow-seeded-session").to_string_lossy(),
+        "branch": "flow/seeded-session",
+        "status": "idle",
+        "goal": "The stored session",
+    });
+    std::fs::write(directory.join("session.json"), session.to_string()).expect("session.json");
+    let hold = flow_root.join(devboard::flow_mode::RESTORE_HOLD_FILE);
+    std::fs::write(&hold, "").expect("the restore hold");
+    hold
+}
+
+/// A dashboard whose durable Flow restore is still running answers a frame
+/// that names the restore, never the empty envelope that means no session; once
+/// the restore finishes the same read answers the stored session.
+#[tokio::test]
+async fn a_read_mid_restore_names_the_restore_and_then_the_stored_session() {
+    let root = scratch("flows-restoring");
+    let hold = seed_held_flow_restore(&root);
+    let instance = start_at(root).await;
+
+    let (status, _, body) = send(&instance.base, Method::GET, "/flows", HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let restoring = frames(&body);
+    assert_eq!(restoring.len(), 1, "{restoring:?}");
+    assert_eq!(restoring[0]["type"], "flowSnapshot");
+    assert_eq!(
+        restoring[0]["status"], "restoring",
+        "a stored session mid-restore is never reported as none"
+    );
+
+    std::fs::remove_file(&hold).expect("the hold is released");
+    let mut restored = Vec::new();
+    for _ in 0..100 {
+        let (status, _, body) = send(&instance.base, Method::GET, "/flows", HeaderMap::new()).await;
+        assert_eq!(status.as_u16(), 200);
+        let read = frames(&body);
+        if read.first().and_then(|frame| frame["status"].as_str()) == Some("idle") {
+            restored = read;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(restored[0]["status"], "idle", "{restored:?}");
+    assert_eq!(restored[0]["sessionId"], "seeded-session");
+    assert_eq!(restored[0]["goal"], "The stored session");
+    // The restoring frame is the same representation the restored snapshot is,
+    // so a field added to one cannot go missing from the other and leave the
+    // client reading a frame it renders differently.
+    let fields = |frame: &Value| -> BTreeSet<String> {
+        frame
+            .as_object()
+            .expect("a frame object")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_eq!(fields(&restoring[0]), fields(&restored[0]));
 }
 
 #[tokio::test]

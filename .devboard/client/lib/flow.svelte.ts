@@ -76,8 +76,19 @@ export class FlowStore {
   refusingId = $state<string | null>(null);
   refuseReason = $state("");
 
+  /** A stored session this dashboard is still restoring: its state is not
+   *  settled yet, so no control that edits it is offered. */
+  get restoring(): boolean {
+    return this.status === "restoring";
+  }
+
   get startDisabled(): boolean {
-    return this.status === "merged" || this.status === "running" || this.goal.trim().length === 0;
+    return (
+      this.restoring ||
+      this.status === "merged" ||
+      this.status === "running" ||
+      this.goal.trim().length === 0
+    );
   }
 
   get stopDisabled(): boolean {
@@ -143,6 +154,7 @@ export class FlowStore {
   }
 
   createGoal(): void {
+    if (this.restoring) return;
     connection.send({ type: "createFlowGoal" });
   }
 

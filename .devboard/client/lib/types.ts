@@ -286,7 +286,7 @@ export interface Lane {
   question: RunQuestion | null;
 }
 
-export type FlowStatus = "none" | "idle" | "running" | "stopped" | "merged";
+export type FlowStatus = "none" | "restoring" | "idle" | "running" | "stopped" | "merged";
 export type FlowCategory =
   | "contract"
   | "entity"

@@ -1208,8 +1208,10 @@ The workspace representation carries `flowSnapshot`, `flowGoalStarted`, `flowGoa
 `flowConversationActivity`, `flowConversationQuestion`, `flowConversationMessage`, and
 `flowConversationStopped`. A page load with a Flow session receives one `flowSnapshot` holding the
 whole state, so a reload never loses a widget, checkpoint, verification result, blocker, steering
-note, decision board, or pull-request state; a server with no Flow work answers an empty
-representation and the view starts empty.
+note, decision board, or pull-request state. While a stored session is still being restored, the
+same read answers one `flowSnapshot` whose `status` is `restoring` instead of the empty
+representation, so a restore in progress is never reported as no Flow work; a server that holds no
+Flow session answers an empty representation and the view starts empty.
 
 Flow's four agent commands are `/flow-goal <session-dir>`, `/flow-implement <session-dir>`,
 `/flow-change <session-dir>`, and `/flow-widget <session-dir> <widget-id>`. The server spawns each

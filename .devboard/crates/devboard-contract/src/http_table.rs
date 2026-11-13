@@ -26,6 +26,9 @@ pub struct Case {
     pub answer: Answer,
     /// What a live dashboard over a served checkout answers for the row.
     pub live: Live,
+    /// True for the row whose fixture holds its Flow restore open, so the
+    /// answer a read gives mid-restore is recorded and replayed.
+    pub hold_flow_restore: bool,
 }
 
 /// What a live dashboard over a served checkout answers for one row.
@@ -105,6 +108,7 @@ fn row(
         expect_gzip,
         answer: Answer::Exact,
         live: Live::Recorded,
+        hold_flow_restore: false,
     }
 }
 
@@ -370,6 +374,15 @@ pub fn cases() -> Vec<Case> {
             false,
         ),
         row(
+            "flows-get-restoring",
+            Method::GET,
+            "/flows",
+            HeaderSpec::None,
+            200,
+            None,
+            false,
+        ),
+        row(
             "flows-head",
             Method::HEAD,
             "/flows",
@@ -432,11 +445,14 @@ pub fn cases() -> Vec<Case> {
     for case in &mut rows {
         case.live = match case.name {
             "records-get" => Live::RecordsDocument,
-            "reports-disabled" | "static-document" | "flows-get" | "agent-runs-get" => {
-                Live::Fixture
-            }
+            "reports-disabled"
+            | "static-document"
+            | "flows-get"
+            | "flows-get-restoring"
+            | "agent-runs-get" => Live::Fixture,
             _ => Live::Recorded,
         };
+        case.hold_flow_restore = case.name == "flows-get-restoring";
     }
     rows
 }
@@ -1268,6 +1284,7 @@ mod tests {
             "static-document",
             "reports-disabled",
             "flows-get",
+            "flows-get-restoring",
             "agent-runs-get",
             "getSkills",
             "getInstalledSkills",

@@ -88,6 +88,31 @@ fn git(repo: &Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Seeds a fixture dashboard's Flow root with one stored session and the
+/// restore hold: the dashboard restores the session and then waits on the hold
+/// file, so a read answers while the restore is still running. The file stays
+/// for the fixture's whole life, exactly as the recorded row needs it.
+fn seed_held_restore(state: &Path, repo: &Path) -> Result<(), String> {
+    let root = state.join("flow").join(devboard::journal::repo_key(repo));
+    let id = "seeded-session";
+    let directory = root.join(id);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("{}: {error}", directory.display()))?;
+    let session = serde_json::json!({
+        "id": id,
+        "version": 1,
+        "worktree": repo.join(format!(".worktree/flow-{id}")).to_string_lossy(),
+        "branch": format!("flow/{id}"),
+        "status": "idle",
+        "goal": "The stored session the fixture holds.",
+    });
+    let path = directory.join("session.json");
+    let text = serde_json::to_vec_pretty(&session).map_err(|error| error.to_string())?;
+    std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+    let hold = root.join(devboard::flow_mode::RESTORE_HOLD_FILE);
+    std::fs::write(&hold, "").map_err(|error| format!("{}: {error}", hold.display()))
+}
+
 /// One fixture dashboard over a copied repository, removed when it is dropped.
 ///
 /// The dashboard runs on a runtime of its own, so dropping the fixture ends
@@ -108,7 +133,9 @@ impl Fixture {
     }
 
     /// Starts one dashboard over a fresh copy of the repository fixture.
-    pub async fn start(label: &str) -> Result<Self, String> {
+    /// `hold_flow_restore` seeds a stored Flow session and the restore hold
+    /// first, so the dashboard's restore cannot finish before a row reads it.
+    pub async fn start(label: &str, hold_flow_restore: bool) -> Result<Self, String> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let root = harness_root().join(".test-tmp").join(format!(
             "contract-{label}-{}-{}",
@@ -121,6 +148,12 @@ impl Fixture {
         if let Err(error) = prepare_repository(&repo) {
             let _ = std::fs::remove_dir_all(&root);
             return Err(error);
+        }
+        if hold_flow_restore {
+            if let Err(error) = seed_held_restore(&state, &repo) {
+                let _ = std::fs::remove_dir_all(&root);
+                return Err(error);
+            }
         }
         let config = Config {
             hostname: "127.0.0.1".to_string(),
@@ -233,7 +266,7 @@ pub async fn record(contract: &Path) -> Result<usize, String> {
     let client = http_table::client();
     let mut corpus = Corpus::default();
     for case in http_table::all_cases() {
-        let fixture = Fixture::start(case.name).await?;
+        let fixture = Fixture::start(case.name, case.hold_flow_restore).await?;
         let observed = http_table::send(&client, &fixture.base, &case).await?;
         corpus.insert(recording(&case, &observed, &allowlist));
     }
@@ -249,7 +282,7 @@ pub async fn replay(
     let client = http_table::client();
     let mut results = Vec::new();
     for case in http_table::all_cases() {
-        let fixture = Fixture::start(case.name).await?;
+        let fixture = Fixture::start(case.name, case.hold_flow_restore).await?;
         let recording = corpus
             .get(case.name)
             .ok_or_else(|| format!("{}: no recording", case.name))?;

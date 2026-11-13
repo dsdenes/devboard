@@ -4,6 +4,7 @@ import { statusTone, verificationTone } from "./status-tone";
 describe("status tone", () => {
   test("marks active work as accent", () => {
     expect(statusTone("running")).toBe("accent");
+    expect(statusTone("restoring")).toBe("accent");
     expect(statusTone("scanning")).toBe("accent");
     expect(statusTone("pausing")).toBe("accent");
     expect(statusTone("retrying")).toBe("accent");

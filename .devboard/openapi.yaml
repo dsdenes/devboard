@@ -659,7 +659,9 @@ paths:
       tags: ["Flow"]
       responses:
         "200":
-          description: "The Flow workspace representation."
+          description: >-
+            The Flow workspace representation. A frame whose status is restoring names a stored
+            session that is still being restored.
           headers:
             ETag: {schema: {type: string}}
           content:

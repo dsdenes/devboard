@@ -12,6 +12,7 @@ import type { BadgeTone } from "./record-status";
 export function statusTone(status: string): BadgeTone | undefined {
   switch (status.trim().toLowerCase()) {
     case "running":
+    case "restoring":
     case "scanning":
     case "pausing":
     case "retrying":

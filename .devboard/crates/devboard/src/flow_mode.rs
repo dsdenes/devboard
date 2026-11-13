@@ -48,6 +48,13 @@ pub const FLOW_CATEGORIES: &[&str] = &[
 
 /// The marker an implementation peer streams to report a blocker.
 const BLOCKER_MARKER: &str = "DEVBOARD-BLOCKED:";
+/// The file a flow root may hold to keep the connect-time restore open. The
+/// contract corpus writes it so the row that pins a restoring read answers
+/// before the restore finishes; a dashboard never creates one.
+pub const RESTORE_HOLD_FILE: &str = "restore-hold";
+/// The bound on a connect-time restore: a command waits at most this long for
+/// it, and a held restore never outlasts it.
+const RESTORE_BOUND: Duration = Duration::from_secs(120);
 /// Bound on the text the watcher keeps for one untracked file.
 pub const UNTRACKED_BODY_MAX_BYTES: u64 = 1_048_576;
 const DEFAULT_WATCH_MS: u64 = 400;
@@ -1891,6 +1898,51 @@ pub fn replay(app: &Arc<App>, conn: &Conn) {
     }
 }
 
+/// The frame a read answers while the connect-time restore is still running:
+/// one `flowSnapshot` whose status names the wait and whose content is empty,
+/// because none of the stored state is settled yet. A dashboard that holds a
+/// session is therefore never reported as no session during its restore. The
+/// field set is exactly the one `snapshot` answers — a test pins the two equal —
+/// so a field added to one cannot go missing from the other.
+pub fn restoring_frame(app: &Arc<App>) -> Option<Value> {
+    let mode = controller(app)?;
+    let restoring = {
+        let inner = mode.lock();
+        inner.restoring
+    };
+    if !restoring {
+        return None;
+    }
+    let frame = json!({
+        "status": "restoring",
+        "sessionId": null,
+        "goal": "",
+        "decisions": "",
+        "worktree": null,
+        "branch": null,
+        "baseRevision": null,
+        "files": [],
+        "widgets": [],
+        "steering": [],
+        "checkpoints": [],
+        "verification": null,
+        "blockers": [],
+        "pr": null,
+        "prError": null,
+        "leftover": null,
+        "question": null,
+        "goalCreation": null,
+        "conversation": null,
+        "activity": [],
+        "notice": null,
+        "history": [],
+    });
+    let Value::Object(object) = frame else {
+        return None;
+    };
+    Some(ordered_frame("flowSnapshot", object))
+}
+
 /// Whether a Flow session exists whose worktree or pull request is not
 /// merged. A reset refuses while this is true.
 pub fn has_unmerged_session(app: &Arc<App>) -> bool {
@@ -2021,8 +2073,7 @@ impl FlowMode {
         if *receiver.borrow() {
             return;
         }
-        let _ =
-            tokio::time::timeout(Duration::from_secs(120), receiver.wait_for(|value| *value)).await;
+        let _ = tokio::time::timeout(RESTORE_BOUND, receiver.wait_for(|value| *value)).await;
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -2073,6 +2124,10 @@ impl FlowMode {
             let _ = inner.restore_tx.send(true);
             return;
         }
+        // The read that reaches this dashboard before the spawn below runs
+        // already knows a restore is coming, so no request sees the empty
+        // answer in the gap between the spawn and the task's first poll.
+        self.lock().restoring = true;
         let mode = Arc::clone(self);
         tokio::spawn(async move {
             mode.restore().await;
@@ -2611,6 +2666,7 @@ impl FlowMode {
             inner.restoring = true;
         }
         self.restore_sessions().await;
+        self.hold_restore_open().await;
         let waiters = {
             let mut inner = self.lock();
             inner.restoring = false;
@@ -2619,6 +2675,21 @@ impl FlowMode {
         };
         for waiter in waiters {
             self.replay_to(Some(&waiter));
+        }
+    }
+
+    /// Keeps the restore open while the flow root holds [`RESTORE_HOLD_FILE`],
+    /// so the contract corpus can pin what a read answers mid-restore. The
+    /// bound is the one `wait_restored` allows, so a marker left behind cannot
+    /// hold a dashboard's restore past it.
+    async fn hold_restore_open(&self) {
+        let Some(root) = self.live_flow_root() else {
+            return;
+        };
+        let marker = root.join(RESTORE_HOLD_FILE);
+        let deadline = tokio::time::Instant::now() + RESTORE_BOUND;
+        while marker.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 

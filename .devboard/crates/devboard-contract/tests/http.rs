@@ -306,7 +306,7 @@ fn a_served_discover_error_diverges_where_the_recording_names_none() {
 
 #[tokio::test]
 async fn a_dropped_fixture_removes_its_root() {
-    let fixture = Fixture::start("dropped").await.expect("a fixture");
+    let fixture = Fixture::start("dropped", false).await.expect("a fixture");
     let root = fixture.root().to_path_buf();
     assert!(
         root.is_dir(),

@@ -94,6 +94,9 @@
 
   const hasGoal = $derived(flow.goal.trim().length > 0);
   const goalHeaderState = $derived.by(() => {
+    if (flow.restoring) {
+      return { state: "restoring", tone: "accent", label: "Restoring" };
+    }
     if (flow.goalCreation !== null) {
       return { state: "running", tone: "accent", label: "Interview running" };
     }
@@ -456,6 +459,8 @@
           variant={hasGoal ? "outline" : "default"}
           data-command="flow.goal.create"
           data-testid="create-flow-goal"
+          title={flow.restoring ? "A stored Flow session is still being restored." : undefined}
+          disabled={flow.restoring}
           onclick={() => flow.createGoal()}
         >
           {hasGoal ? "Recreate flow goal" : "Create flow goal"}
@@ -466,6 +471,13 @@
       {#if hasGoal}
         <div class="panel__body flow-goal-editor">
           <pre class="flow-document__text mono" data-testid="flow-goal-text" aria-label="Flow goal">{flow.goal}</pre>
+        </div>
+      {:else if flow.restoring}
+        <div class="panel__body flow-goal-onboarding" data-testid="flow-restoring">
+          <p style="margin: 0;">
+            This dashboard holds a Flow session that is still being restored. Its goal, decisions,
+            and widgets appear as soon as the restore finishes.
+          </p>
         </div>
       {:else}
         <div class="panel__body flow-goal-onboarding" data-testid="flow-goal-onboarding">

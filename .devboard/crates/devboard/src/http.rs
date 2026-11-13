@@ -597,6 +597,19 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
                 &[("Allow", "GET, HEAD")],
             ));
         }
+        // A stored session whose restore is still running answers one frame
+        // that names it. The empty envelope would report no Flow work for a
+        // dashboard that holds a session, which is the answer a page renders
+        // as an invitation to start over one.
+        if let Some(frame) = crate::flow_mode::restoring_frame(&server.app) {
+            return reply(crate::rest::representation(
+                &method,
+                &headers,
+                200,
+                crate::rest::envelope(vec![frame]),
+                &[],
+            ));
+        }
         let frames = server
             .app
             .dispatch_captured(crate::command::Command::GetFlow)

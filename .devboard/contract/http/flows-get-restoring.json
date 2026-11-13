@@ -1,0 +1,35 @@
+{
+  "name": "flows-get-restoring",
+  "method": "GET",
+  "path": "/flows",
+  "status": 200,
+  "body": {
+    "frames": [
+      {
+        "type": "flowSnapshot",
+        "status": "restoring",
+        "sessionId": null,
+        "goal": "",
+        "decisions": "",
+        "worktree": null,
+        "branch": null,
+        "baseRevision": null,
+        "files": [],
+        "widgets": [],
+        "steering": [],
+        "checkpoints": [],
+        "verification": null,
+        "blockers": [],
+        "pr": null,
+        "prError": null,
+        "leftover": null,
+        "question": null,
+        "goalCreation": null,
+        "conversation": null,
+        "activity": [],
+        "notice": null,
+        "history": []
+      }
+    ]
+  }
+}
