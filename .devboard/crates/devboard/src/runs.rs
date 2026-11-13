@@ -672,6 +672,13 @@ impl RunJournal {
     }
 
     /// One `activity.json` array: read only when its stamp changed.
+    ///
+    /// A delta that replays replaces the log rather than extending it, so it
+    /// is introduced by the journal's one replacement marker: the retained
+    /// lines that follow are the whole new log, never an append to the copy a
+    /// subscriber already holds. An empty read — a torn non-atomic write —
+    /// tells a subscriber nothing, so it leaves the delivered log in place and
+    /// the whole file replays instead of reading back as brand-new lines.
     fn sync_activity_file(&mut self, run: &RunSource, path: &Path) {
         let Some(stamp) = stamp_of(path) else {
             return;
@@ -681,12 +688,20 @@ impl RunJournal {
         }
         self.activity_stamp = Some(stamp);
         let activity = read_activity(path);
-        if activity.len() < self.worker_activity.len() {
-            self.worker_activity.clear();
+        if activity.is_empty() {
+            return;
         }
         let previous = std::mem::take(&mut self.worker_activity);
         let delta = crate::activity::activity_delta(&previous, &activity);
+        // A first fill is new to every subscriber and needs no marker; only a
+        // log that already reached one can replace what it holds.
+        let replaced = delta.replay && !previous.is_empty();
         self.worker_activity = activity;
+        if replaced {
+            let mut frame = Map::new();
+            frame.insert("type".to_string(), Value::String("reset".to_string()));
+            self.push(frame, &run.id);
+        }
         for entry in delta.entries {
             let mut frame = Map::new();
             frame.insert("type".to_string(), Value::String("activity".to_string()));
@@ -1544,6 +1559,76 @@ mod tests {
         assert_eq!(reset, None);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["cursor"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn a_shortened_activity_file_replaces_the_log_once_and_a_grown_one_appends() {
+        let directory = scratch("activity-replacement");
+        let activity = directory.join("activity.json");
+        std::fs::write(&activity, "[\"one\", \"two\"]\n").expect("an activity file");
+        let run = RunSource {
+            id: "replacement-run".to_string(),
+            kind: "worker".to_string(),
+            label: "replacement-run".to_string(),
+            lifecycle: "running".to_string(),
+            live: true,
+            updated_at: None,
+            source: Source::Worker {
+                state_path: directory.join("state.json"),
+                activity_path: Some(activity.clone()),
+                family: "worker".to_string(),
+            },
+        };
+        let hub = RunHub::new();
+        let now = Instant::now();
+        let (_, first) = hub.read_tick(&run, None, now, true);
+        assert_eq!(
+            first
+                .iter()
+                .map(|frame| (frame["type"].clone(), frame["text"].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (json!("activity"), json!("one")),
+                (json!("activity"), json!("two"))
+            ],
+            "a first fill needs no marker: {first:?}"
+        );
+        let consumed = first.last().and_then(|frame| frame["cursor"].as_u64());
+
+        std::fs::write(&activity, "[\"one\"]\n").expect("a shortened activity file");
+        let (_, second) = hub.read_tick(
+            &run,
+            consumed,
+            now + Duration::from_millis(RUN_ACTIVITY_MS),
+            false,
+        );
+        let kinds: Vec<&str> = second
+            .iter()
+            .filter_map(|frame| frame["type"].as_str())
+            .collect();
+        assert_eq!(kinds, ["reset", "activity"], "{second:?}");
+        assert_eq!(second[0]["run"], json!(run.id));
+        assert_eq!(second[1]["text"], json!("one"));
+        assert_eq!(
+            second[1]["append"],
+            json!(false),
+            "the retained line is the whole new log, not an append: {second:?}"
+        );
+
+        let consumed = second.last().and_then(|frame| frame["cursor"].as_u64());
+        std::fs::write(&activity, "[\"one\", \"two\"]\n").expect("a grown activity file");
+        let (_, third) = hub.read_tick(
+            &run,
+            consumed,
+            now + Duration::from_millis(RUN_ACTIVITY_MS * 2),
+            false,
+        );
+        assert!(
+            third.iter().all(|frame| frame["type"] == "activity"),
+            "a grown log appends with no marker: {third:?}"
+        );
+        assert_eq!(third.len(), 1, "{third:?}");
+        assert_eq!(third[0]["text"], json!("two"));
     }
 
     #[test]

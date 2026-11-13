@@ -4588,14 +4588,16 @@ The dashboard's only WebSocket belongs to one live ACP run:
 - A socket replays the run's retained journal from a cursor and then follows it live. Without a
   cursor it replays every retained entry in order; with `after=<cursor>` it replays exactly the
   entries after that cursor; a cursor older than the retained window yields one `reset` marker
-  naming the retained window start and then the retained entries. Reconnecting with the last
-  cursor delivers no duplicate and no gap.
+  naming the retained window start and then the retained entries. An `activity.json` that was
+  trimmed, rewritten, or shortened yields that same marker once, followed by the whole retained
+  log, so the lines after it replace the copy a subscriber holds instead of appending to it.
+  Reconnecting with the last cursor delivers no duplicate and no gap.
 - Every frame carries the run's `run` identity, and every output entry carries a monotonically
   increasing `cursor`. The only frame kinds are that run's `state`, `question`, `activity`,
-  assistant `text`, `stderr`, and terminal `status`. No frame carries version, replacement,
-  project, providers, resources, skills, records, issues, drafts, flow or discover workspace
-  state, goal state, another agent's state, or another run's output. A stopped run holds no open
-  socket.
+  assistant `text`, `stderr`, terminal `status`, and the `reset` marker above. No frame carries
+  version, replacement, project, providers, resources, skills, records, issues, drafts, flow or
+  discover workspace state, goal state, another agent's state, or another run's output. A stopped
+  run holds no open socket.
 - One sample serves every viewer. A run's state is sampled once per 500 ms and its activity
   journals are checked once per 250 ms, however many sockets are open; the sample fans out to
   each socket's own cursor. Every state file is read through one `(mtime, len)` cache, so an
