@@ -19,6 +19,17 @@ pub const MANIFEST_ASSET: &str = "devboard-manifest.json";
 pub const INSTALLED_MANIFEST: &str = "devboard.json";
 /// The release repository the updater reads.
 pub const RELEASE_REPOSITORY: &str = "dsdenes/devboard";
+/// The phrase a release read reports when the newest release exists but its
+/// manifest asset has not been uploaded yet.
+///
+/// `publish` creates the Gitea release and uploads its assets in separate
+/// calls, so a check that lands in that window reads a release that is still
+/// being written: it carries the new tag and no manifest. The next interval
+/// reads the manifest the publish writes, so `updates::is_transient_update_failure`
+/// recognizes this phrase and the journal records activity rather than an
+/// update error. A release that never receives its manifest is a failed
+/// publish, which `publish` itself reports.
+pub const RELEASE_STILL_BEING_WRITTEN: &str = "is still being written";
 
 /// The project `DEVBOARD_RELEASE_REPO` names: the trimmed value, or `None`
 /// when the variable is unset or blank.
@@ -336,7 +347,11 @@ async fn gitea_manifest_from_document(
         .iter()
         .find(|asset| asset.get("name").and_then(Value::as_str) == Some(MANIFEST_ASSET))
         .and_then(|asset| asset.get("browser_download_url").and_then(Value::as_str))
-        .ok_or_else(|| format!("the release carries no {MANIFEST_ASSET}"))?;
+        .ok_or_else(|| {
+            format!(
+                "the release {tag} {RELEASE_STILL_BEING_WRITTEN}: it carries no {MANIFEST_ASSET} yet"
+            )
+        })?;
     let response = get_release_response(
         &client,
         manifest_url,

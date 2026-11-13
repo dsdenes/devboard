@@ -81,6 +81,8 @@ struct StubState {
     requests: RecordedRequests,
     release: String,
     manifest_url: String,
+    /// False for a release whose assets `publish` has not uploaded yet.
+    manifest_uploaded: bool,
 }
 
 async fn stub_entry(
@@ -104,14 +106,19 @@ async fn stub_entry(
         .expect("requests")
         .push((path.clone(), headers));
     let (status, body) = if path.ends_with("/releases/latest") {
+        let assets = if state.manifest_uploaded {
+            serde_json::json!([{
+                "name": "devboard-manifest.json",
+                "browser_download_url": state.manifest_url,
+            }])
+        } else {
+            serde_json::json!([])
+        };
         (
             200,
             serde_json::json!({
                 "tag_name": state.release,
-                "assets": [{
-                    "name": "devboard-manifest.json",
-                    "browser_download_url": state.manifest_url,
-                }],
+                "assets": assets,
             })
             .to_string(),
         )
@@ -143,6 +150,16 @@ struct StubServer {
 
 impl StubServer {
     async fn start(release: &str) -> Self {
+        Self::start_with_upload(release, true).await
+    }
+
+    /// A release that exists before its assets do: the window `publish` opens
+    /// between creating the Gitea release and uploading its manifest.
+    async fn start_before_assets(release: &str) -> Self {
+        Self::start_with_upload(release, false).await
+    }
+
+    async fn start_with_upload(release: &str, manifest_uploaded: bool) -> Self {
         let requests = std::sync::Arc::new(Mutex::new(Vec::new()));
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -155,6 +172,7 @@ impl StubServer {
             manifest_url: format!(
                 "{base}/dsdenes/devboard/releases/download/{release}/devboard-manifest.json"
             ),
+            manifest_uploaded,
         };
         let app = axum::Router::new().fallback(stub_entry).with_state(state);
         let handle = tokio::spawn(async move {
@@ -215,6 +233,29 @@ async fn a_newer_tag_downloads_exactly_one_manifest() {
     for (_, headers) in &requests {
         assert!(!headers.contains_key("authorization"));
     }
+}
+
+/// `publish` creates the Gitea release first and uploads its assets second, so
+/// one check that lands between those two calls reads a release that exists
+/// without a manifest. That release is still being written: the next interval
+/// reads the manifest, so the failure is transient and the journal records
+/// activity rather than an update error.
+#[tokio::test]
+async fn a_release_that_precedes_its_assets_is_a_transient_failure() {
+    let server = StubServer::start_before_assets("v1.2.4").await;
+    let error = devboard::release::latest_manifest_for(&server.source(), Some("1.2.3"))
+        .await
+        .expect_err("the manifest is not uploaded yet");
+    assert!(
+        error.contains("v1.2.4"),
+        "the failure names the release: {error}"
+    );
+    assert!(
+        devboard::updates::is_transient_update_failure(&error),
+        "the next interval retries an unwritten manifest: {error}"
+    );
+    let requests = server.requests.lock().expect("requests").clone();
+    assert_eq!(requests.len(), 1, "no manifest is downloaded: {requests:?}");
 }
 
 /// A Gitea manifest source never carries the operator's credential.

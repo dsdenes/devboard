@@ -288,9 +288,10 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
     }
 }
 
-/// True for a check failure the transport causes: an unreachable,
-/// rate-limited, or overloaded forge, or a release body that arrived empty,
-/// unreadable, or unparsable. The next interval retries it and the journal
+/// True for a check failure the next interval resolves on its own: an
+/// unreachable, rate-limited, or overloaded forge, a release body that arrived
+/// empty, unreadable, or unparsable, or a release whose manifest asset the
+/// publisher has not uploaded yet. The next interval retries it and the journal
 /// records only activity.
 pub fn is_transient_update_failure(error: &str) -> bool {
     let text = error.to_ascii_lowercase();
@@ -316,6 +317,7 @@ pub fn is_transient_update_failure(error: &str) -> bool {
         "empty body",
         "not json",
         "cannot read the body",
+        release::RELEASE_STILL_BEING_WRITTEN,
     ]
     .iter()
     .any(|token| text.contains(token))
