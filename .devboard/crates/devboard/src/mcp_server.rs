@@ -99,6 +99,10 @@ pub struct McpContext {
 #[derive(Clone, Debug)]
 pub struct LiveDashboard {
     pub pid: u32,
+    /// The kernel start tick read when the pid was discovered: the proof that
+    /// a later signal still reaches the process discovery saw, because the
+    /// kernel reuses a dead pid. `None` where the kernel reports none.
+    pub start_ticks: Option<i64>,
     pub port: u16,
     pub repo_dir: String,
     pub harness: String,
@@ -184,6 +188,7 @@ pub fn discover_dashboards(repo_dir: &Path) -> Vec<LiveDashboard> {
         .filter(|instance| real_path(Path::new(&instance.repo_dir)) == target)
         .map(|instance| LiveDashboard {
             pid: instance.pid,
+            start_ticks: crate::supervision::start_ticks(instance.pid),
             port: u16::try_from(instance.port).unwrap_or(0),
             repo_dir: instance.repo_dir,
             harness: instance.harness,

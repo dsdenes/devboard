@@ -1684,7 +1684,7 @@ fn read_version_marker(state_dir: &Path) -> Option<crate::instances::GuardOwner>
 /// directory, or `argv[0]` a wrapper leaves behind is consulted. A platform
 /// that reports none has only the live pid, exactly as the worker locks accept
 /// it there.
-fn recorded_start_matches(recorded: &str, started: Option<i64>) -> bool {
+pub(crate) fn recorded_start_matches(recorded: &str, started: Option<i64>) -> bool {
     let Some(recorded) = parse_iso_ms(recorded) else {
         return false;
     };

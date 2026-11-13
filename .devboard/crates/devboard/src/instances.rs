@@ -21,8 +21,8 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::mcp_server::{discover_dashboards, LiveDashboard};
-use crate::supervision::{live_process, supervision_directory};
-use crate::workers::watchdog::process_started_at;
+use crate::supervision::{live_identity, live_process, supervision_directory};
+use crate::workers::watchdog::{process_started_at, recorded_start_matches};
 
 /// Where the guard lives under the host directory.
 pub const GUARD_DIRECTORY: &str = ".devboard/.tmp";
@@ -236,8 +236,12 @@ fn refusal_message(host: &Path, owner_path: &Path) -> String {
     let deadline = Instant::now() + Duration::from_millis(REFUSAL_WAIT_MS);
     loop {
         // A stale record from a dashboard that already exited never names a
-        // live instance; only a live owner (or discovery) does.
-        let owner = read_owner(owner_path).filter(|owner| live_process(owner.pid));
+        // live instance: only an owner whose recorded start instant still
+        // matches the pid's — the proof the watchdog's marker check makes —
+        // does. A bare pid would name a process the kernel handed the number.
+        let owner = read_owner(owner_path).filter(|owner| {
+            recorded_start_matches(&owner.started_at, process_started_at(owner.pid))
+        });
         let dashboards = discover_dashboards(host);
         let named = owner.as_ref().and_then(|owner| {
             dashboards
@@ -424,16 +428,9 @@ pub async fn sweep_host_dir(repo_dir: &Path, state_dir: &Path) -> SweepReport {
         .map(|dashboard| dashboard.pid)
         .collect();
 
-    let mut stops: Vec<u32> = dashboards
-        .iter()
-        .filter(|dashboard| Some(dashboard.pid) != keeper)
-        .filter(|dashboard| live_process(dashboard.pid))
-        .map(|dashboard| dashboard.pid)
-        .collect();
-    stops.sort_unstable();
-    stops.dedup();
+    let targets = stop_targets(&dashboards, keeper);
 
-    signal_and_wait(&stops);
+    let stops = signal_and_wait(&targets);
 
     let remaining = discover_dashboards(&host)
         .into_iter()
@@ -473,12 +470,7 @@ fn newest_ready(dashboards: &[LiveDashboard], ready: &HashSet<u32>) -> Option<u3
     dashboards
         .iter()
         .filter(|dashboard| ready.contains(&dashboard.pid))
-        .max_by_key(|dashboard| {
-            (
-                process_started_at(dashboard.pid).unwrap_or(0),
-                dashboard.pid,
-            )
-        })
+        .max_by_key(|dashboard| (dashboard.start_ticks, dashboard.pid))
         .map(|dashboard| dashboard.pid)
 }
 
@@ -499,32 +491,70 @@ fn protected_fixture(dashboard: &LiveDashboard) -> bool {
     crate::workers::watchdog::is_verification_fixture(&dashboard.repo_dir, &snapshot.env)
 }
 
-/// `SIGTERM`, the existing kill grace, then `SIGKILL` for what is still alive.
-fn signal_and_wait(pids: &[u32]) {
-    if pids.is_empty() {
-        return;
+/// One pid a sweep may stop, with the kernel start tick discovery read for it.
+///
+/// The tick is what makes the signal safe. The sweep waits out a readiness
+/// grace between discovery and the signal, and a dashboard that exits inside
+/// that window leaves its pid to the kernel, which may hand the number to an
+/// unrelated process; only a pid whose tick still matches is signalled.
+#[derive(Clone, Copy, Debug)]
+struct StopTarget {
+    pid: u32,
+    start_ticks: Option<i64>,
+}
+
+/// Every discovered dashboard except the keeper, carrying the identity proof
+/// that later decides whether a signal may reach it.
+fn stop_targets(dashboards: &[LiveDashboard], keeper: Option<u32>) -> Vec<StopTarget> {
+    let mut targets: Vec<StopTarget> = dashboards
+        .iter()
+        .filter(|dashboard| Some(dashboard.pid) != keeper)
+        .map(|dashboard| StopTarget {
+            pid: dashboard.pid,
+            start_ticks: dashboard.start_ticks,
+        })
+        .collect();
+    targets.sort_by_key(|target| target.pid);
+    targets.dedup_by_key(|target| target.pid);
+    targets
+}
+
+/// True only while the pid still names the process discovery recorded: an
+/// existence check alone would accept a recycled pid.
+fn should_stop(target: &StopTarget) -> bool {
+    live_identity(target.pid, target.start_ticks)
+}
+
+/// `SIGTERM`, the existing kill grace, then `SIGKILL` for what is still alive
+/// as the same process. Returns the pids that were signalled.
+fn signal_and_wait(targets: &[StopTarget]) -> Vec<u32> {
+    if targets.is_empty() {
+        return Vec::new();
     }
     #[cfg(unix)]
     {
-        for pid in pids {
+        let signalled: Vec<StopTarget> = targets.iter().copied().filter(should_stop).collect();
+        for target in &signalled {
             unsafe {
-                libc::kill(*pid as libc::pid_t, libc::SIGTERM);
+                libc::kill(target.pid as libc::pid_t, libc::SIGTERM);
             }
         }
         let deadline =
             Instant::now() + Duration::from_millis(crate::supervision::SUPERVISION_KILL_GRACE_MS);
-        while Instant::now() < deadline && pids.iter().any(|pid| live_process(*pid)) {
+        while Instant::now() < deadline && signalled.iter().any(should_stop) {
             std::thread::sleep(Duration::from_millis(50));
         }
-        for pid in pids.iter().filter(|pid| live_process(**pid)) {
+        for target in signalled.iter().filter(|target| should_stop(target)) {
             unsafe {
-                libc::kill(*pid as libc::pid_t, libc::SIGKILL);
+                libc::kill(target.pid as libc::pid_t, libc::SIGKILL);
             }
         }
+        signalled.iter().map(|target| target.pid).collect()
     }
     #[cfg(not(unix))]
     {
-        let _ = pids;
+        let _ = targets;
+        Vec::new()
     }
 }
 
@@ -633,4 +663,60 @@ fn option_path(args: &[String], name: &str) -> Option<PathBuf> {
         index += 1;
     }
     None
+}
+
+#[cfg(test)]
+mod stop_target_tests {
+    use super::*;
+
+    fn dashboard(pid: u32, start_ticks: Option<i64>) -> LiveDashboard {
+        LiveDashboard {
+            pid,
+            start_ticks,
+            port: 0,
+            repo_dir: String::new(),
+            harness: String::new(),
+            state_dir: String::new(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stop_target_is_signalled_only_while_its_start_tick_matches() {
+        let pid = std::process::id();
+        let ticks = crate::supervision::start_ticks(pid).expect("a live pid has a start tick");
+        assert!(should_stop(&StopTarget {
+            pid,
+            start_ticks: Some(ticks),
+        }));
+        assert!(!should_stop(&StopTarget {
+            pid,
+            start_ticks: Some(ticks + 1),
+        }));
+        assert!(!should_stop(&StopTarget {
+            pid,
+            start_ticks: Some(ticks - 1),
+        }));
+    }
+
+    #[test]
+    fn a_target_without_a_captured_tick_follows_this_kernel() {
+        let pid = std::process::id();
+        assert_eq!(
+            should_stop(&StopTarget {
+                pid,
+                start_ticks: None,
+            }),
+            !cfg!(target_os = "linux")
+        );
+    }
+
+    #[test]
+    fn the_stop_list_carries_each_tick_and_drops_the_keeper() {
+        let dashboards = vec![dashboard(41, Some(7)), dashboard(42, Some(9))];
+        let targets = stop_targets(&dashboards, Some(42));
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].pid, 41);
+        assert_eq!(targets[0].start_ticks, Some(7));
+    }
 }

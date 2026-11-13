@@ -990,6 +990,7 @@ async fn a_refused_issues_control_answers_the_dashboards_error_frame() {
     let state_dir = context.state_dir.to_string_lossy().into_owned();
     context.dashboards = Some(vec![LiveDashboard {
         pid: std::process::id(),
+        start_ticks: None,
         port,
         repo_dir,
         harness,
@@ -1274,6 +1275,7 @@ async fn two_dashboards_report_ambiguous_instead_of_null() {
     let mut context = fixture("ambiguous");
     let dashboard = |pid: u32, port: u16| LiveDashboard {
         pid,
+        start_ticks: None,
         port,
         repo_dir: context.repo_dir.to_string_lossy().into_owned(),
         harness: context.harness_dir.to_string_lossy().into_owned(),
@@ -1324,6 +1326,7 @@ async fn one_silent_dashboard_names_its_pid_and_port_without_a_running_version()
     let pid = 4310;
     context.dashboards = Some(vec![LiveDashboard {
         pid,
+        start_ticks: None,
         port,
         repo_dir: context.repo_dir.to_string_lossy().into_owned(),
         harness: context.harness_dir.to_string_lossy().into_owned(),
@@ -1388,6 +1391,7 @@ async fn one_answering_dashboard_reports_live_with_its_own_running_version() {
     let pid = 4311;
     context.dashboards = Some(vec![LiveDashboard {
         pid,
+        start_ticks: None,
         port,
         repo_dir: context.repo_dir.to_string_lossy().into_owned(),
         harness: context.harness_dir.to_string_lossy().into_owned(),
