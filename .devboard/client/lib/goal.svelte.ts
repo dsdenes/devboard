@@ -142,6 +142,8 @@ export class GoalStore {
   goalReady = $state(false);
   creationActive = $state(false);
   revisionActive = $state(false);
+  /** Guidance typed for the next revision; one revision consumes the draft. */
+  revisionRequest = $state("");
   skillsPrepActive = $state(false);
 
   runFile = $state<string | null>(null);
@@ -330,7 +332,8 @@ export class GoalStore {
   }
 
   reviseGoal(): void {
-    connection.send({ type: "reviseGoal" });
+    const request = this.revisionRequest.trim();
+    connection.send(request.length > 0 ? { type: "reviseGoal", request } : { type: "reviseGoal" });
   }
 
   prepareSkills(): void {
@@ -467,6 +470,7 @@ export class GoalStore {
     }
     if (type === "goalRevisionStarted") {
       this.revisionActive = true;
+      this.revisionRequest = "";
       this.activity = [];
       this.question = null;
       this.draft = "";
@@ -474,6 +478,7 @@ export class GoalStore {
     }
     if (type === "goalRevisionStopped") {
       this.revisionActive = false;
+      this.revisionRequest = "";
       this.question = null;
       this.draft = "";
       if (message.completed === true && typeof message.text === "string") {

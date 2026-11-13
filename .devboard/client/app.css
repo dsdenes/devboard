@@ -2700,6 +2700,24 @@ a.code-chip--link:focus-visible {
   justify-content: space-between;
 }
 
+.goal-revision__input {
+  background: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--foreground);
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-height: 28px;
+  min-width: 0;
+  padding: 4px 8px;
+}
+
+.goal-revision__input:focus-visible {
+  border-color: var(--ring);
+  outline: 2px solid var(--ring);
+}
+
 .goal-revision__hint {
   color: var(--muted-foreground);
   font-size: 11px;

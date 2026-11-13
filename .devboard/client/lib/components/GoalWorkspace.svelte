@@ -612,6 +612,14 @@
         </div>
         <div class="panel__footer goal-revision">
           <div class="goal-revision__heading">
+            <input
+              class="goal-revision__input"
+              type="text"
+              bind:value={goal.revisionRequest}
+              placeholder="Guidance for the revision (optional)"
+              aria-label="Revision guidance"
+              data-testid="revision-request"
+            />
             <CommandButton
               variant="secondary"
               label="Revise goal"
@@ -625,7 +633,8 @@
             </CommandButton>
           </div>
           <p class="goal-revision__hint">
-            Revision rewrites the document through the revision agent.
+            Revision rewrites the document through the revision agent. Guidance steers it; an empty
+            field leaves the rewrite to the agent.
           </p>
         </div>
       </section>
