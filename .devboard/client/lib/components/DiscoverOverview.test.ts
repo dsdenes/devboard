@@ -153,6 +153,55 @@ test("a stack chip keeps its repository link and target", () => {
   expect(stack?.getAttribute("target")).toBe("_blank");
 });
 
+function stackValue(value: unknown): void {
+  (discover.state!.sheet as Record<string, unknown>).stack = leaf(value);
+}
+
+function stackSubtitle(container: HTMLElement): string {
+  const subtitle = container.querySelector('[data-field="stack"] .panel__subtitle');
+  return subtitle?.textContent?.trim().replace(/\s+/g, " ") ?? "";
+}
+
+test("an observed empty stack renders no Stack card and no sentinel chip", () => {
+  discover.state = state({});
+  stackValue([]);
+  const view = render(DiscoverOverview);
+
+  expect(card(view.container, "stack")).toBeNull();
+  expect(chip(view.container, "None detected.")).toBeNull();
+  expect(view.container.textContent).not.toContain("1 entries");
+});
+
+test("a stack whose only entry is the sentinel renders no Stack card", () => {
+  discover.state = state({});
+  stackValue(["None detected."]);
+  const view = render(DiscoverOverview);
+
+  expect(card(view.container, "stack")).toBeNull();
+  expect(chip(view.container, "None detected.")).toBeNull();
+});
+
+test("a one-entry stack counts one entry and renders one chip", () => {
+  discover.state = state({});
+  stackValue(["Redis 7"]);
+  const view = render(DiscoverOverview);
+  const stack = card(view.container, "stack");
+
+  expect(stackSubtitle(view.container)).toBe("1 entry");
+  expect(stack?.querySelectorAll(".code-chip")).toHaveLength(1);
+  expect(chip(view.container, "Redis")).not.toBeNull();
+});
+
+test("a three-entry stack counts three entries and one chip each", () => {
+  discover.state = state({});
+  stackValue(["TypeScript", "Bun", "Vite"]);
+  const view = render(DiscoverOverview);
+  const stack = card(view.container, "stack");
+
+  expect(stackSubtitle(view.container)).toBe("3 entries");
+  expect(stack?.querySelectorAll(".code-chip")).toHaveLength(3);
+});
+
 test("an absolute or escaping value stays plain text", () => {
   discover.state = state({});
   const payload = discover.state as DiscoverStatePayload;

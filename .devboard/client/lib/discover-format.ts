@@ -179,6 +179,36 @@ export function technologyName(line: string): string {
   return stripped.length > 0 ? stripped : trimmed;
 }
 
+/** The text an observed-empty list renders; a value carrying it is never an entry. */
+const EMPTY_LIST_TEXT = "none detected";
+
+/**
+ * A text-list leaf's entries: trimmed, without the empty-observed sentinel, and
+ * de-duplicated after `display`. An absent, unknown, or non-list value yields no
+ * entries, so a caller renders no card instead of a fabricated one.
+ */
+export function observedTexts(
+  leaf: Leaf | null | undefined,
+  display: (text: string) => string = (text) => text,
+): string[] {
+  if (
+    leaf === null ||
+    leaf === undefined ||
+    leaf.confidence === "unknown" ||
+    !Array.isArray(leaf.value)
+  ) {
+    return [];
+  }
+  const texts = leaf.value
+    .map((value) => scalarText(value).trim())
+    .filter(
+      (text) => text.length > 0 && text.toLowerCase().replace(/\.$/, "") !== EMPTY_LIST_TEXT,
+    )
+    .map(display)
+    .filter((text) => text.length > 0);
+  return [...new Set(texts)];
+}
+
 export function recordItems(leaf: Leaf | null | undefined): Array<Record<string, unknown>> {
   if (leaf === null || leaf === undefined || !Array.isArray(leaf.value)) return [];
   return leaf.value.filter(

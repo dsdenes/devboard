@@ -6,6 +6,7 @@ import {
   filterContexts,
   glossaryHasSignificance,
   implementedTiers,
+  observedTexts,
   pyramidTiers,
   relativeTime,
   SIGNIFICANCE_FLOOR,
@@ -217,6 +218,48 @@ describe("test levels", () => {
     expect(commandAlias(aliases, " node  --test   test/unit/*.js ")).toBe("npm run test:unit");
     expect(commandAlias(aliases, "pytest tests")).toBe("pytest tests");
     expect(commandAlias(undefined, "pytest tests")).toBe("pytest tests");
+  });
+});
+
+describe("observed text lists", () => {
+  test("drops the empty-observed sentinel and the blank entries around it", () => {
+    const leaf: Leaf = {
+      value: ["Redis 7", "   ", "None detected."],
+      evidence: ["package.json"],
+      confidence: "observed",
+    };
+    expect(observedTexts(leaf, technologyName)).toEqual(["Redis"]);
+  });
+
+  test("de-duplicates after the display name, so two versions name one entry", () => {
+    const leaf: Leaf = {
+      value: ["TypeScript 5.4", "TypeScript"],
+      evidence: ["package.json"],
+      confidence: "declared",
+    };
+    expect(observedTexts(leaf, technologyName)).toEqual(["TypeScript"]);
+  });
+
+  test("keeps every entry of a list that carries real names", () => {
+    const leaf: Leaf = {
+      value: ["src/shared", "src/orders"],
+      evidence: ["."],
+      confidence: "observed",
+    };
+    expect(observedTexts(leaf)).toEqual(["src/shared", "src/orders"]);
+  });
+
+  test("an observed empty list yields no entry", () => {
+    const leaf: Leaf = { value: [], evidence: ["."], confidence: "observed" };
+    expect(observedTexts(leaf)).toEqual([]);
+  });
+
+  test("an absent, unknown, or non-list leaf yields no entry", () => {
+    expect(observedTexts(undefined)).toEqual([]);
+    expect(
+      observedTexts({ value: null, evidence: ["."], confidence: "unknown" }),
+    ).toEqual([]);
+    expect(observedTexts({ value: "Redis", evidence: ["."], confidence: "observed" })).toEqual([]);
   });
 });
 

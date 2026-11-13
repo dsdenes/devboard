@@ -6,6 +6,7 @@
     implementedTiers,
     isLeaf,
     leafLines,
+    observedTexts,
     pyramidTiers,
     pyramidTestCount,
     recordItems,
@@ -146,11 +147,7 @@
     );
 
   const stackLeaf = $derived(sectionLeaf(sheet, "stack"));
-  const stackLines = $derived(
-    stackLeaf === undefined || stackLeaf.confidence === "unknown"
-      ? []
-      : [...new Set(leafLines(stackLeaf.value).map(technologyName))],
-  );
+  const stackLines = $derived(observedTexts(stackLeaf, technologyName));
 
   const architectureSection = $derived(sheet?.architecture);
   const hasArchitecture = $derived(
@@ -158,14 +155,7 @@
   );
   const contextsLeaf = $derived(sectionLeaf(architectureSection, "contexts"));
   const sharedKernelsLeaf = $derived(sectionLeaf(architectureSection, "sharedKernels"));
-  const sharedKernelValues: string[] = $derived.by(() => {
-    const leaf = sharedKernelsLeaf;
-    if (leaf === undefined || leaf.confidence === "unknown" || !Array.isArray(leaf.value)) {
-      return [];
-    }
-    const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
-    return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
-  });
+  const sharedKernelValues = $derived(observedTexts(sharedKernelsLeaf));
   const contextRows: ContextRow[] = $derived(
     recordItems(contextsLeaf)
       .map((record) => {
@@ -184,14 +174,8 @@
     sectionLeaf(architectureSection, "externalBoundaries"),
   );
   /** The external systems the crawl observed; an empty list keeps its own line. */
-  const externalBoundarySystems: string[] = $derived.by(() => {
-    const leaf = externalBoundariesLeaf;
-    if (leaf === undefined || leaf.confidence === "unknown" || !Array.isArray(leaf.value)) {
-      return [];
-    }
-    const values = leaf.value.map((value) => scalarText(value).trim()).filter(Boolean);
-    return [...new Set(values)].filter((value) => value.toLowerCase() !== "none detected");
-  });
+  const externalBoundarySystems = $derived(observedTexts(externalBoundariesLeaf));
+
   function baseName(value: string): string {
     const trimmed = value.replace(/[\\/]+$/, "");
     const parts = trimmed.split(/[\\/]+/);
@@ -482,7 +466,10 @@
       <section class="panel discover-card" data-testid="discover-card" data-field="stack">
         <div class="panel__header">
           <h2 class="panel__title">Stack</h2>
-          <span class="panel__subtitle">{stackLines.length} entries</span>
+          <span class="panel__subtitle">
+            {stackLines.length}
+            {stackLines.length === 1 ? "entry" : "entries"}
+          </span>
         </div>
         <div class="panel__body">
           {@render chipList(stackLines)}
