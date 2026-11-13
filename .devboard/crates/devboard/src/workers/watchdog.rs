@@ -3491,6 +3491,20 @@ fn denied_codex_account(event: &EvidenceEvent) -> bool {
         && normalize_evidence_line(&event.text).starts_with(CODEX_ACCOUNT_DENIED)
 }
 
+const SESSION_EXIT_RECORDED: &str = "Session exit recorded";
+
+/// omp records the exit of a session it hosted — the signal it received, the
+/// session file, and the tool calls still in flight — as one warning. Every peer
+/// a supervisor stops ends that way, so the record is omp's own shutdown
+/// bookkeeping, never a failure: no repository change can prevent an operator's
+/// Stop or a replacement's signal, and filing would spend a cycle's budget on an
+/// issue nothing here can fix. It is therefore not a finding.
+fn session_exit_recorded(event: &EvidenceEvent) -> bool {
+    event.kind == "omp-log"
+        && event.level.as_deref() == Some("warn")
+        && normalize_evidence_line(&event.text) == SESSION_EXIT_RECORDED
+}
+
 fn event_key(event: &EvidenceEvent) -> String {
     match &event.instance {
         Some(instance) => format!("{}:{}", instance.repo_dir, instance.port),
@@ -3608,6 +3622,7 @@ pub fn analyze_evidence(
                     && !locked_agent_storage(event)
                     && !skipped_judgment_candidate(event)
                     && !denied_codex_account(event)
+                    && !session_exit_recorded(event)
                 {
                     add(&format!("omp-{level}"), event, &mut findings);
                 }

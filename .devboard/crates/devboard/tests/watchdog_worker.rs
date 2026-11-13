@@ -1340,6 +1340,36 @@ fn a_denied_account_record_in_the_omp_log_files_nothing() {
 }
 
 #[test]
+fn a_session_exit_record_is_not_a_finding() {
+    let root = production_root("session-exit");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let mut record = event(now, 1, "Session exit recorded", "omp-log", &instance);
+    record.level = Some("warn".to_string());
+    let mut failed = event(
+        now,
+        2,
+        "Session exit recorded: Unexpected end of JSON input",
+        "omp-log",
+        &instance,
+    );
+    failed.level = Some("warn".to_string());
+
+    let findings = analyze_evidence(&[record, failed], window, window);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].category, "omp-warn");
+    assert!(
+        findings[0].quote.starts_with("Session exit recorded:"),
+        "{findings:?}"
+    );
+}
+
+#[test]
 fn filing_caps_limit_the_room_and_keep_the_rest_pending() {
     let root = production_root("caps");
     let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);
