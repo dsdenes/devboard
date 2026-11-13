@@ -1383,6 +1383,19 @@ async fn the_prompt_page_serves_the_workers_synthesis_template() {
         served.contains("- Everything this call needs is above. Do not read, search, list, or run"),
         "{served}"
     );
+    // The route rule spells the one tool whose catalog name already carries the
+    // prefix, and the skip rule names the two argument fields a peer must send.
+    assert!(
+        served.contains("`devboard_status` mounts as `xd://mcp__devboard_status`,")
+            && served.contains("never `xd://mcp__devboard_devboard_status`"),
+        "{served}"
+    );
+    assert!(
+        served.contains(
+            "- Spell every argument exactly as the tool's schema names it: `mcp_optimizer_proposal_skip`\n  takes `family` and `reason`, never `familyKey` or `family_key`."
+        ),
+        "{served}"
+    );
 
     // A save through the page keeps the allowlist the synthesis call reads.
     devboard::agents_mode::handle(
