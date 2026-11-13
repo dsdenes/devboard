@@ -3006,16 +3006,49 @@ async fn production_preflight(request: PreflightRequest) -> PreflightResult {
 }
 
 /// Closes one issue as `not planned` on the checkout's own forge origin.
+///
+/// A GitHub or Gitea close goes through the shared forge client, which resolves
+/// the one write credential the close needs. A resolution ahead of it validated
+/// the same account a second time, spending two more authenticated repository
+/// and account round trips — hundreds of milliseconds each — on every close.
 async fn production_close_issue(request: CloseIssueRequest) -> Result<(), String> {
     let source = crate::forge::TrackerSource::resolve(&request.repo_dir, &request.environment);
     let Some(remote) = source.remote.as_ref() else {
         return Err(source.operation("issue close"));
     };
-    let forge = remote.forge;
-    // A close runs with a write-capable account, exactly like the TypeScript
-    // bridge: resolve the credential first, then perform the forge mutation.
+    if remote.forge == crate::forge::Forge::GitLab {
+        return close_gitlab_issue(request, remote).await;
+    }
+    // `gh`/`glab` argv and the Gitea PATCH live in the shared client, which
+    // resolves the one write credential this close needs. Resolving a
+    // credential ahead of it validated the same account a second time: two
+    // more authenticated round trips, hundreds of milliseconds each, before
+    // the close's own write.
+    let mut options = crate::forge::ForgeIssuesOptions::new(&request.repo_dir);
+    options.environment = request.environment.clone();
+    let client = crate::forge::ForgeIssuesClient::new(options).map_err(|error| error.message)?;
+    client
+        .close(request.number as i64, crate::forge::CloseReason::NotPlanned)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Could not close issue #{}: {}",
+                request.number,
+                first_line_of(&error.message).unwrap_or_else(|| "no diagnostic".to_string())
+            )
+        })
+}
+
+/// Closes one GitLab issue through `glab`, which has no `--reason` and must
+/// never fall through to `gh`. The CLI carries no credential of its own, so the
+/// write credential is resolved here before the close runs.
+async fn close_gitlab_issue(
+    request: CloseIssueRequest,
+    remote: &crate::forge::ForgeRemote,
+) -> Result<(), String> {
     let mut resolve = crate::forge::ResolveOptions::new(
-        forge,
+        remote.forge,
         remote.host.clone(),
         request.repository.clone(),
         request.repo_dir.clone(),
@@ -3036,37 +3069,18 @@ async fn production_close_issue(request: CloseIssueRequest) -> Result<(), String
     resolved
         .into_result()
         .map_err(|failure| first_line_of(&failure.error).unwrap_or(failure.error))?;
-    if forge == crate::forge::Forge::GitLab {
-        // `glab` has no issue-close reason and must never fall through to `gh`.
-        return run_forge_close(
-            "glab",
-            vec![
-                "issue".to_string(),
-                "close".to_string(),
-                request.number.to_string(),
-                "--repo".to_string(),
-                request.repository.clone(),
-            ],
-            &request,
-        )
-        .await;
-    }
-    // The shared forge client performs the forge's own close; `gh`/`glab`
-    // argv and the Gitea PATCH live there.
-    let mut options = crate::forge::ForgeIssuesOptions::new(&request.repo_dir);
-    options.environment = request.environment.clone();
-    let client = crate::forge::ForgeIssuesClient::new(options).map_err(|error| error.message)?;
-    client
-        .close(request.number as i64, crate::forge::CloseReason::NotPlanned)
-        .await
-        .map(|_| ())
-        .map_err(|error| {
-            format!(
-                "Could not close issue #{}: {}",
-                request.number,
-                first_line_of(&error.message).unwrap_or_else(|| "no diagnostic".to_string())
-            )
-        })
+    run_forge_close(
+        "glab",
+        vec![
+            "issue".to_string(),
+            "close".to_string(),
+            request.number.to_string(),
+            "--repo".to_string(),
+            request.repository.clone(),
+        ],
+        &request,
+    )
+    .await
 }
 
 async fn run_forge_close(
@@ -7889,6 +7903,119 @@ mod tests {
             labels: labels.iter().map(|label| label.to_string()).collect(),
             body: None,
         }
+    }
+
+    /// A checkout whose `origin` names a Gitea repository, so the shared forge
+    /// client resolves that forge instead of a real one.
+    fn forge_checkout(label: &str, remote: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("issues-forge-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a checkout");
+        for args in [vec!["init", "-q"], vec!["remote", "add", "origin", remote]] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        }
+        root
+    }
+
+    /// The slow path this pins: the hook resolved the write credential itself
+    /// and then handed the same work to the shared client, and the client read
+    /// the closed issue back after its write. One operator click therefore
+    /// spent seven forge round trips where three suffice — and on the loaded
+    /// tracker this dashboard talks to, every authenticated one costs about as
+    /// much as the whole 1000 ms budget allows for all of them.
+    #[tokio::test]
+    async fn a_close_hook_spends_one_credential_resolution_and_one_write() {
+        const ANSWER_MS: u64 = 200;
+        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let recorded = Arc::clone(&recorded);
+            async move {
+                let method = request.method().as_str().to_string();
+                let path = request.uri().path().to_string();
+                recorded
+                    .lock()
+                    .expect("calls")
+                    .push((method.clone(), path.clone()));
+                tokio::time::sleep(Duration::from_millis(ANSWER_MS)).await;
+                let body = if method == "PATCH" {
+                    json!({
+                        "number": 7,
+                        "title": "Seven",
+                        "html_url": "http://gitea.test/owner/name/issues/7",
+                        "created_at": "2024-01-02T03:04:05Z",
+                        "state": "closed",
+                        "body": "body 7",
+                        "labels": [],
+                    })
+                } else if path.ends_with("/user") {
+                    json!({"login": "alice"})
+                } else {
+                    json!({
+                        "full_name": "owner/name",
+                        "private": false,
+                        "permissions": {"pull": true, "push": true, "admin": false},
+                    })
+                };
+                axum::response::Response::builder()
+                    .status(200)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .expect("a stub answer")
+            }
+        });
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a stub listener");
+        let port = listener.local_addr().expect("an address").port();
+        let serving = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://127.0.0.1:{port}");
+        let repo = forge_checkout("close", "git@localhost:owner/name.git");
+        let environment = crate::forge::environment(&[
+            ("DEVBOARD_GITEA_URL", base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]);
+
+        let started = std::time::Instant::now();
+        production_close_issue(CloseIssueRequest {
+            repo_dir: repo,
+            repository: "owner/name".to_string(),
+            number: 7,
+            environment,
+        })
+        .await
+        .expect("a close");
+        let elapsed = started.elapsed();
+        serving.abort();
+
+        let calls = calls.lock().expect("calls").clone();
+        assert_eq!(
+            calls,
+            vec![
+                ("GET".to_string(), "/api/v1/repos/owner/name".to_string()),
+                ("GET".to_string(), "/api/v1/user".to_string()),
+                (
+                    "PATCH".to_string(),
+                    "/api/v1/repos/owner/name/issues/7".to_string()
+                ),
+            ],
+            "one credential resolution, the close write, and nothing else"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1000),
+            "one close took {elapsed:?} against a forge answering in {ANSWER_MS} ms"
+        );
     }
 
     fn worker(repo: &Path, state: &Path) -> IssuesWorker {

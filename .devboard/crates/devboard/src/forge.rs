@@ -1713,14 +1713,21 @@ pub async fn gitea_create_issue(
         .ok_or_else(|| GiteaError::new("the created issue has no number or URL", None))
 }
 
+/// Closes one Gitea issue and returns the document the write answered with.
+///
+/// Gitea's `PATCH …/issues/{number}` answers with the updated issue, so the
+/// close hands its caller the document it already read: a follow-up
+/// `GET …/issues/{number}` is one more authenticated round trip for a document
+/// the write carried. A forge that answers without that document yields `None`,
+/// and the caller reads the issue back exactly once.
 pub async fn gitea_close_issue(
     target: &GiteaTarget,
     number: i64,
     transport: &Transport,
     options: &GiteaCallOptions,
-) -> Result<(), GiteaError> {
+) -> Result<Option<GiteaIssueDocument>, GiteaError> {
     let path = format!("{}/issues/{number}", repo_path(target));
-    gitea_request(
+    let response = gitea_request(
         target,
         &path,
         Some(GiteaRequestInit::patch(json_body(
@@ -1731,7 +1738,8 @@ pub async fn gitea_close_issue(
         options,
     )
     .await?;
-    Ok(())
+    let document = serde_json::from_slice::<Value>(&response.body).ok();
+    Ok(document.as_ref().and_then(issue_from_document))
 }
 
 pub async fn gitea_comment_issue(
@@ -5716,14 +5724,19 @@ impl ForgeIssuesClient {
     ) -> Result<ForgeIssueDocument, ForgeIssueError> {
         if self.forge == Forge::Gitea {
             let target = self.gitea_target(RequiredAccess::Write).await?;
-            gitea_close_issue(
+            let closed = gitea_close_issue(
                 &target,
                 number,
                 &self.transport,
                 &GiteaCallOptions::default(),
             )
             .await?;
-            return self.get(number).await;
+            // The write itself answered with the closed issue. Only a forge
+            // that answered without one pays the follow-up read.
+            return match closed {
+                Some(document) => Ok(gitea_document(document)),
+                None => self.get(number).await,
+            };
         }
         let outcome = self
             .github(

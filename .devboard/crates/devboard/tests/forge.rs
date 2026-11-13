@@ -666,7 +666,9 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
             ("POST", "/api/v1/repos/owner/name/issues") => {
                 json_response(issue_value(11, "Created", "open"))
             }
-            ("PATCH", "/api/v1/repos/owner/name/issues/7") => json_response(json!({})),
+            ("PATCH", "/api/v1/repos/owner/name/issues/7") => {
+                json_response(issue_value(7, "Seven", "closed"))
+            }
             ("POST", "/api/v1/repos/owner/name/issues/7/labels") => json_response(json!({})),
             ("DELETE", "/api/v1/repos/owner/name/issues/7/labels/3") => json_response(json!({})),
             ("GET", "/api/v1/repos/owner/name/labels") => {
@@ -802,9 +804,11 @@ async fn gitea_rest_uses_the_contract_paths_headers_and_bodies() {
         r#"{"title":"T","body":"B","labels":[3]}"#
     );
 
-    gitea_close_issue(&target, 7, &transport, &options)
+    let closed = gitea_close_issue(&target, 7, &transport, &options)
         .await
-        .expect("close");
+        .expect("close")
+        .expect("the close answers with the closed issue");
+    assert_eq!(closed.state, IssueState::Closed);
     let close_request = server
         .find("PATCH", "/api/v1/repos/owner/name/issues/7")
         .expect("close request");
@@ -1393,9 +1397,12 @@ async fn public_reads_present_no_credential_and_every_write_presents_it() {
     )
     .await
     .expect("create issue");
-    gitea_close_issue(&write_target, 1, &transport, &options)
+    let closed = gitea_close_issue(&write_target, 1, &transport, &options)
         .await
-        .expect("close issue");
+        .expect("close issue")
+        .expect("the close answers with the closed issue");
+    assert_eq!(closed.number, 1);
+    assert_eq!(closed.state, IssueState::Closed);
     gitea_create_label(&write_target, "goal", "1d76db", "", &transport, &options)
         .await
         .expect("create label");
@@ -2651,10 +2658,9 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
                         json_response(json!([]))
                     }
                 }
-                ("GET", "/api/v1/repos/owner/name/issues/7") => {
+                ("PATCH", "/api/v1/repos/owner/name/issues/7") => {
                     json_response(issue_value(7, "Seven", "closed"))
                 }
-                ("PATCH", "/api/v1/repos/owner/name/issues/7") => json_response(json!({})),
                 _ => text_response(500, "unexpected"),
             },
         )
@@ -2694,17 +2700,84 @@ async fn forge_issue_client_reads_closes_and_caches_its_credential() {
         .close(7, CloseReason::NotPlanned)
         .await
         .expect("close");
+    assert_eq!(closed.number, 7);
     assert_eq!(closed.state, IssueState::Closed);
     // The read resolves from the anonymous repository view; the write resolves
-    // the credential once (repository and user) and then patches and reads the
-    // closed issue back.
-    assert_eq!(server.count(), 6);
+    // the credential once (repository and user) and patches. The PATCH answered
+    // with the closed issue, so nothing reads it back: the close costs three
+    // forge round trips, and each authenticated one costs hundreds of
+    // milliseconds on a loaded tracker.
+    assert_eq!(server.count(), 5);
+    assert!(
+        server
+            .find("GET", "/api/v1/repos/owner/name/issues/7")
+            .is_none(),
+        "the close reads the document its write already answered with"
+    );
     let patch = server
         .find("PATCH", "/api/v1/repos/owner/name/issues/7")
         .expect("close request");
     assert_eq!(
         String::from_utf8(patch.body).expect("utf8"),
         r#"{"state":"closed"}"#
+    );
+}
+
+/// The slow path this pins: the close read the closed issue back after its
+/// write, so one operator click spent five forge round trips where three
+/// suffice, and every authenticated one of them costs hundreds of milliseconds
+/// on the tracker this dashboard talks to.
+#[tokio::test]
+async fn a_close_spends_one_write_resolution_and_no_follow_up_read() {
+    let server =
+        StubServer::start(
+            |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": true, "admin": false},
+                })),
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("PATCH", "/api/v1/repos/owner/name/issues/7") => {
+                    json_response(issue_value(7, "Seven", "closed"))
+                }
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo("close-cost", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    client
+        .close(7, CloseReason::NotPlanned)
+        .await
+        .expect("close");
+
+    let requests = server.requests();
+    let sequence: Vec<(String, String)> = requests
+        .iter()
+        .map(|request| (request.method.clone(), request.path.clone()))
+        .collect();
+    assert_eq!(
+        sequence,
+        vec![
+            ("GET".to_string(), "/api/v1/repos/owner/name".to_string()),
+            ("GET".to_string(), "/api/v1/user".to_string()),
+            (
+                "PATCH".to_string(),
+                "/api/v1/repos/owner/name/issues/7".to_string()
+            ),
+        ],
+        "one resolution, the close write, and nothing else"
     );
 }
 
