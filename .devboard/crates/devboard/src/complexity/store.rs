@@ -147,19 +147,25 @@ pub fn parse_snapshot(value: &Value) -> Option<ComplexitySnapshot> {
     })
 }
 
-/// Every readable snapshot in the directory, oldest first. A missing directory
-/// is an empty history; an unreadable or malformed file is skipped so one
-/// damaged day never hides the days around it.
-pub fn read_snapshots(directory: &Path) -> Vec<ComplexitySnapshot> {
+/// Every readable snapshot in the directory, oldest first, reduced to what a
+/// page renders: one summary per day plus the newest day's detail. A missing
+/// directory is an empty history; an unreadable or malformed file is skipped
+/// so one damaged day never hides the days around it.
+///
+/// Each file is read once, straight from the filesystem. The sampling cache is
+/// not consulted: it retains every path it read for the life of the process,
+/// and a stored day is never sampled again, so caching it would pin the whole
+/// history's bytes beside the parsed history.
+pub fn read_snapshots(directory: &Path) -> ComplexityFrame {
     let mut names: Vec<String> = match std::fs::read_dir(directory) {
         Ok(reader) => reader
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect(),
-        Err(_) => return Vec::new(),
+        Err(_) => return ComplexityFrame::default(),
     };
     names.sort();
-    let mut snapshots = Vec::new();
+    let mut frame = ComplexityFrame::default();
     for name in names {
         let Some(date) = name.strip_suffix(".json") else {
             continue;
@@ -167,9 +173,9 @@ pub fn read_snapshots(directory: &Path) -> Vec<ComplexitySnapshot> {
         if !is_date(date) || name.len() != date.len() + 5 {
             continue;
         }
-        let text = match crate::sampling::text(&directory.join(&name)) {
-            Some(text) => text,
-            None => continue,
+        let text = match std::fs::read_to_string(directory.join(&name)) {
+            Ok(text) => text,
+            Err(_) => continue,
         };
         let parsed: Value = match serde_json::from_str(&text) {
             Ok(value) => value,
@@ -181,10 +187,11 @@ pub fn read_snapshots(directory: &Path) -> Vec<ComplexitySnapshot> {
         if snapshot.date != date {
             continue;
         }
-        snapshots.push(snapshot);
+        // Names sort chronologically, and `snapshot.date == date`, so the last
+        // parsed file is the newest day and its detail is the one a page reads.
+        frame.record(&snapshot);
     }
-    snapshots.sort_by(|left, right| left.date.cmp(&right.date));
-    snapshots
+    frame
 }
 
 /// Writes one day's snapshot atomically; the whole file replaces the last one.
@@ -205,6 +212,16 @@ pub struct SnapshotSummary {
     pub project: ProjectMeasure,
 }
 
+impl SnapshotSummary {
+    pub(crate) fn of(snapshot: &ComplexitySnapshot) -> SnapshotSummary {
+        SnapshotSummary {
+            date: snapshot.date.clone(),
+            recorded_at: snapshot.recorded_at.clone(),
+            project: snapshot.project.clone(),
+        }
+    }
+}
+
 /// The newest snapshot as the page renders it: its date, project figures, and
 /// per-file rows. The per-function rows stay in the stored snapshot; no page
 /// reads them, and shipping them made every poll serialize about a megabyte.
@@ -217,34 +234,45 @@ pub struct LatestDetail {
     pub files: Vec<FileMeasure>,
 }
 
+impl LatestDetail {
+    pub(crate) fn of(snapshot: &ComplexitySnapshot) -> LatestDetail {
+        LatestDetail {
+            date: snapshot.date.clone(),
+            recorded_at: snapshot.recorded_at.clone(),
+            project: snapshot.project.clone(),
+            files: snapshot.files.clone(),
+        }
+    }
+}
+
 /// The frame the server pushes: every recorded date, plus the newest detail.
-#[derive(Clone, Debug, PartialEq)]
+/// It is also the whole history the process keeps: one stored day contributes
+/// a summary and, only while it is the newest day, its per-file rows. A
+/// snapshot's function rows are dropped as soon as its file is parsed.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ComplexityFrame {
     pub snapshots: Vec<SnapshotSummary>,
     pub latest: Option<LatestDetail>,
 }
 
 impl ComplexityFrame {
-    /// The page payload for a history ending at `latest`.
-    pub fn build(
-        snapshots: &[ComplexitySnapshot],
-        latest: Option<&ComplexitySnapshot>,
-    ) -> ComplexityFrame {
-        ComplexityFrame {
-            snapshots: snapshots
-                .iter()
-                .map(|snapshot| SnapshotSummary {
-                    date: snapshot.date.clone(),
-                    recorded_at: snapshot.recorded_at.clone(),
-                    project: snapshot.project.clone(),
-                })
-                .collect(),
-            latest: latest.map(|snapshot| LatestDetail {
-                date: snapshot.date.clone(),
-                recorded_at: snapshot.recorded_at.clone(),
-                project: snapshot.project.clone(),
-                files: snapshot.files.clone(),
-            }),
+    /// Adds one measured day, oldest first, and keeps its detail only while it
+    /// is the newest day.
+    pub fn record(&mut self, snapshot: &ComplexitySnapshot) {
+        let summary = SnapshotSummary::of(snapshot);
+        match self
+            .snapshots
+            .binary_search_by(|stored| stored.date.as_str().cmp(summary.date.as_str()))
+        {
+            Ok(_) => return,
+            Err(index) => self.snapshots.insert(index, summary),
+        }
+        let newest = self
+            .snapshots
+            .last()
+            .is_some_and(|stored| stored.date == snapshot.date);
+        if newest {
+            self.latest = Some(LatestDetail::of(snapshot));
         }
     }
 

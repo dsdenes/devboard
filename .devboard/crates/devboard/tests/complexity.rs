@@ -9,8 +9,8 @@ use std::time::Duration;
 use devboard::complexity::{
     analyze_complexity, build_complexity_snapshot, complexity_clock_from_env, complexity_directory,
     measure_source, parse_snapshot, read_snapshots, snapshot_file, utc_date, write_snapshot,
-    ComplexityOptions, ComplexitySnapshot, ComplexitySnapshots, FileMeasure, FunctionMeasure,
-    FunctionRow, Language, ProjectMeasure,
+    ComplexityFrame, ComplexityOptions, ComplexitySnapshot, ComplexitySnapshots, FileMeasure,
+    FunctionMeasure, FunctionRow, Language, ProjectMeasure,
 };
 use serde_json::json;
 use time::macros::datetime;
@@ -672,7 +672,16 @@ async fn snapshot_persistence_round_trips_every_level() {
     let text = std::fs::read_to_string(snapshot_file(&directory, "2026-11-01"))
         .expect("the snapshot file");
     assert!(text.contains("\"version\":1"));
-    assert_eq!(read_snapshots(&directory), vec![stored.clone()]);
+    let frame = read_snapshots(&directory);
+    assert_eq!(frame.snapshots.len(), 1);
+    assert_eq!(frame.snapshots[0].date, "2026-11-01");
+    assert_eq!(frame.snapshots[0].recorded_at, stored.recorded_at);
+    assert_eq!(frame.snapshots[0].project, stored.project);
+    let latest = frame.latest.expect("the newest day");
+    assert_eq!(latest.date, "2026-11-01");
+    assert_eq!(latest.recorded_at, stored.recorded_at);
+    assert_eq!(latest.project, stored.project);
+    assert_eq!(latest.files, stored.files);
     assert_eq!(
         parse_snapshot(&serde_json::to_value(&stored).expect("JSON")),
         Some(stored)
@@ -702,6 +711,7 @@ async fn reads_recorded_days_oldest_first_and_skips_damaged_files() {
 
     assert_eq!(
         read_snapshots(&directory)
+            .snapshots
             .into_iter()
             .map(|entry| entry.date)
             .collect::<Vec<_>>(),
@@ -715,7 +725,10 @@ async fn reads_recorded_days_oldest_first_and_skips_damaged_files() {
 #[tokio::test]
 async fn a_missing_directory_is_an_empty_history() {
     let root = scratch("missing");
-    assert_eq!(read_snapshots(&root.join("absent")), Vec::new());
+    assert_eq!(
+        read_snapshots(&root.join("absent")),
+        ComplexityFrame::default()
+    );
 }
 
 fn controller(
@@ -793,6 +806,7 @@ async fn records_one_snapshot_per_day_across_repeats_and_restarts() {
     assert_eq!(measurements.load(Ordering::SeqCst), 2);
     assert_eq!(
         read_snapshots(&complexity_directory(&state_dir, &repo_dir))
+            .snapshots
             .into_iter()
             .map(|entry| entry.date)
             .collect::<Vec<_>>(),
@@ -827,7 +841,7 @@ async fn overlapping_checks_share_one_measurement_and_one_file() {
         Some("2026-11-01".to_string())
     );
     assert_eq!(right, None);
-    assert_eq!(read_snapshots(controller.directory()).len(), 1);
+    assert_eq!(read_snapshots(controller.directory()).snapshots.len(), 1);
 }
 
 #[tokio::test]
@@ -931,6 +945,82 @@ async fn the_state_frame_omits_the_function_rows_a_page_never_reads() {
     );
 }
 
+/// The retained history is the rendered frame, not the stored snapshots: two
+/// stored days of 4,000 function rows each leave the controller with the two
+/// summaries and the newest day's file rows, and the startup read never enters
+/// the sampling cache. The base controller read each file through
+/// `sampling::text`, whose entry for a path is never evicted, so both halves of
+/// this test fail there.
+#[tokio::test]
+async fn the_history_keeps_only_the_rendered_frame_and_never_samples_stored_days() {
+    let root = scratch("history-frame");
+    let state_dir = root.join("state");
+    let repo_dir = root.join("checkout");
+    let directory = complexity_directory(&state_dir, &repo_dir);
+    for date in ["2026-11-01", "2026-11-02"] {
+        let mut stored = summary(date, 10);
+        stored.functions = (0..4_000)
+            .map(|index| FunctionRow {
+                path: format!(".devboard/crates/app/src/file-{index}.rs"),
+                measure: FunctionMeasure {
+                    name: format!("function_{index}"),
+                    line: index + 1,
+                    lines: 3,
+                    cyclomatic: 2,
+                    nesting: 0,
+                    parameters: 1,
+                },
+            })
+            .collect();
+        write_snapshot(&directory, &stored)
+            .await
+            .expect("a stored day");
+    }
+
+    let controller = controller(
+        &state_dir,
+        &repo_dir,
+        Arc::new(Mutex::new(datetime!(2026 - 11 - 02 12:00:00 UTC))),
+        |now| Ok(summary(&utc_date(now), 10)),
+        None,
+        None,
+    );
+
+    let frame = controller.frame();
+    assert_eq!(
+        frame
+            .snapshots
+            .iter()
+            .map(|entry| entry.date.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-11-01", "2026-11-02"]
+    );
+    assert_eq!(
+        frame
+            .snapshots
+            .iter()
+            .map(|entry| entry.project.loc)
+            .collect::<Vec<_>>(),
+        vec![10, 10]
+    );
+    let latest = frame.latest.as_ref().expect("the newest day");
+    assert_eq!(latest.date, "2026-11-02");
+    assert_eq!(latest.project.loc, 10);
+    assert_eq!(latest.files.len(), 1);
+    assert!(
+        frame.to_json()["latest"].get("functions").is_none(),
+        "the retained history carries per-function rows no page reads"
+    );
+
+    for date in ["2026-11-01", "2026-11-02"] {
+        assert_eq!(
+            devboard::sampling::reads(&snapshot_file(&directory, date)),
+            0,
+            "a stored day is read once from the filesystem, never retained in the sampling cache"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_failed_measurement_records_nothing_and_is_reported_once() {
     let root = scratch("failure");
@@ -949,7 +1039,7 @@ async fn a_failed_measurement_records_nothing_and_is_reported_once() {
         *errors.lock().expect("the errors"),
         vec!["complexity: measurement for 2026-11-01 failed: unreadable source"]
     );
-    assert!(controller.snapshots().is_empty());
+    assert!(controller.frame().snapshots.is_empty());
 }
 
 #[test]

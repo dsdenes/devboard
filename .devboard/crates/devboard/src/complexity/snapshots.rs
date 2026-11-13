@@ -18,7 +18,9 @@ use time::macros::format_description;
 use time::OffsetDateTime;
 
 use super::analyze::{build_complexity_snapshot, utc_date, ComplexitySnapshot};
-use super::store::{complexity_directory, read_snapshots, write_snapshot, ComplexityFrame};
+use super::store::{
+    complexity_directory, read_snapshots, write_snapshot, ComplexityFrame, SnapshotSummary,
+};
 use crate::app::Conn;
 
 /// One minute is enough for a midnight rollover to land within a minute.
@@ -177,7 +179,7 @@ pub struct ComplexitySnapshots {
     analyze: Analyze,
     interval: Duration,
     report_error: ReportError,
-    snapshots: Mutex<Vec<ComplexitySnapshot>>,
+    history: Mutex<ComplexityFrame>,
     pending: tokio::sync::Mutex<()>,
     subscribers: Mutex<HashMap<u64, Conn>>,
     started: AtomicBool,
@@ -187,7 +189,7 @@ pub struct ComplexitySnapshots {
 impl ComplexitySnapshots {
     pub fn new(options: ComplexityOptions) -> Self {
         let directory = complexity_directory(&options.state_dir, &options.repo_dir);
-        let snapshots = read_snapshots(&directory);
+        let history = read_snapshots(&directory);
         Self {
             directory,
             now: options.now,
@@ -196,7 +198,7 @@ impl ComplexitySnapshots {
                 .interval
                 .max(Duration::from_millis(COMPLEXITY_MIN_INTERVAL_MS)),
             report_error: options.report_error,
-            snapshots: Mutex::new(snapshots),
+            history: Mutex::new(history),
             pending: tokio::sync::Mutex::new(()),
             subscribers: Mutex::new(HashMap::new()),
             started: AtomicBool::new(false),
@@ -209,27 +211,14 @@ impl ComplexitySnapshots {
         &self.directory
     }
 
-    /// Every recorded snapshot, oldest to newest.
-    pub fn snapshots(&self) -> Vec<ComplexitySnapshot> {
-        self.snapshots
-            .lock()
-            .map(|snapshots| snapshots.clone())
-            .unwrap_or_default()
-    }
-
-    /// The newest recorded snapshot, or `None` before the first one.
-    pub fn latest(&self) -> Option<ComplexitySnapshot> {
-        self.snapshots().into_iter().next_back()
-    }
-
-    /// The page payload: every recorded date plus the newest detail. It reads
-    /// the recorded snapshots under their lock and copies only the fields the
-    /// page renders, so a poll never clones each snapshot's function rows.
+    /// The page payload: every recorded date plus the newest detail. The
+    /// retained history already holds only the fields a page renders, so a
+    /// poll copies summaries and one day's file rows, never a function row.
     pub fn frame(&self) -> ComplexityFrame {
-        let Ok(snapshots) = self.snapshots.lock() else {
-            return ComplexityFrame::build(&[], None);
-        };
-        ComplexityFrame::build(&snapshots, snapshots.last())
+        self.history
+            .lock()
+            .map(|history| history.clone())
+            .unwrap_or_default()
     }
 
     /// The `complexityState` frame's `state` object.
@@ -288,14 +277,14 @@ impl ComplexitySnapshots {
     /// Records a snapshot for the current UTC day when none exists.
     /// Overlapping calls share one measurement, so a tick that lands while the
     /// first one runs can never write a second file.
-    pub async fn check(&self) -> Option<ComplexitySnapshot> {
+    pub async fn check(&self) -> Option<SnapshotSummary> {
         let _pending = self.pending.lock().await;
         let now = (self.now)();
         let date = utc_date(now);
         if self
-            .snapshots
+            .history
             .lock()
-            .map(|snapshots| snapshots.iter().any(|snapshot| snapshot.date == date))
+            .map(|history| history.snapshots.iter().any(|entry| entry.date == date))
             .unwrap_or(false)
         {
             return None;
@@ -317,11 +306,11 @@ impl ComplexitySnapshots {
             ));
             return None;
         }
-        if let Ok(mut snapshots) = self.snapshots.lock() {
-            snapshots.push(snapshot.clone());
-            snapshots.sort_by(|left, right| left.date.cmp(&right.date));
+        let summary = SnapshotSummary::of(&snapshot);
+        if let Ok(mut history) = self.history.lock() {
+            history.record(&snapshot);
         }
-        Some(snapshot)
+        Some(summary)
     }
 
     async fn check_and_publish(&self) {
