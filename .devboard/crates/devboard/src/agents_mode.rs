@@ -518,8 +518,8 @@ impl SnapshotSource {
 }
 
 struct SnapshotInput {
-    /// Which read produced this snapshot.
-    provenance: SnapshotSource,
+    /// Which read produced this snapshot: `live` or `persisted`.
+    source: SnapshotSource,
     /// When that read observed the family; `None` when it names no instant.
     as_of: Option<String>,
     /// The lifecycle a source actually names. `None` is a fact too: neither the
@@ -570,20 +570,22 @@ fn lifecycle_in_vocabulary(value: &str) -> &str {
 
 /// The snapshot lifecycle a persisted state file's own word maps onto.
 ///
-/// A family file names its work (`scanning`, `auditing`, `idle`); a snapshot
-/// names whether the family runs. An unrecognized word is `None` — the snapshot
-/// reports that nothing named a lifecycle instead of inventing `stopped`.
-fn persisted_lifecycle(raw: &str, attached: bool, enabled: bool) -> Option<&'static str> {
+/// A family file names its work (`scanning`, `auditing`, `idle`) and sometimes
+/// its state; a snapshot names the state the family was in when that file was
+/// written. The word is never defaulted, and never narrowed to `stopped` by the
+/// absence of a live worker: a family that was scanning when its worker died is
+/// a family whose last write says so, and `asOf` carries when that write
+/// happened. Only a file that says `stopped` reports one. An unrecognized word
+/// is `None` — the snapshot reports that nothing named a lifecycle instead of
+/// inventing `stopped`.
+fn persisted_lifecycle(raw: &str) -> Option<&'static str> {
     match raw {
-        "failed" => Some(if attached || enabled {
-            "failed"
-        } else {
-            "stopped"
-        }),
         "stopped" => Some("stopped"),
-        "idle" | "scanning" | "auditing" | "releasing" | "detecting" => {
-            Some(if attached { "running" } else { "stopped" })
-        }
+        "failed" => Some("failed"),
+        "starting" => Some("starting"),
+        "stopping" => Some("stopping"),
+        "running" => Some("running"),
+        "idle" | "scanning" | "auditing" | "releasing" | "detecting" => Some("running"),
         _ => None,
     }
 }
@@ -715,7 +717,7 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
         "label": descriptor.label,
         "description": descriptor.description,
         "scope": descriptor.scope,
-        "provenance": input.provenance.as_str(),
+        "source": input.source.as_str(),
         "asOf": nullable_text(input.as_of),
         "lifecycle": match input.lifecycle {
             Some(value) => Value::String(lifecycle_in_vocabulary(&value).to_string()),
@@ -3511,11 +3513,11 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             .map(PathBuf::from)
             .map(|path| resolved(&path) == resolved(state_dir))
             .unwrap_or(false);
-    // A file's own word is mapped, never defaulted: an unrecognized lifecycle
-    // leaves the snapshot saying nothing rather than claiming `stopped`.
+    // A file's own word is mapped, never defaulted and never narrowed by a
+    // missing live worker: only a file that says `stopped` reports one.
     let lifecycle = raw_lifecycle
         .as_deref()
-        .and_then(|raw| persisted_lifecycle(raw, attached, enabled))
+        .and_then(persisted_lifecycle)
         .map(str::to_string);
     let minutes = object_limit(value_of(&worker), "intervalMinutes")
         .or_else(|| object_limit(value_of(&state), "intervalMinutes"))
@@ -3684,7 +3686,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
     project_snapshot(
         descriptor,
         SnapshotInput {
-            provenance: SnapshotSource::Persisted,
+            source: SnapshotSource::Persisted,
             as_of,
             lifecycle,
             paused,
@@ -4944,7 +4946,7 @@ impl RepoFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                provenance: SnapshotSource::Live,
+                source: SnapshotSource::Live,
                 as_of: None,
                 lifecycle: Some(lifecycle),
                 paused: false,
@@ -6131,7 +6133,7 @@ impl RepoFamily {
 
 fn empty_repo_input(descriptor: &Descriptor) -> SnapshotInput {
     SnapshotInput {
-        provenance: SnapshotSource::Live,
+        source: SnapshotSource::Live,
         as_of: None,
         lifecycle: Some("stopped".to_string()),
         paused: false,
@@ -7275,7 +7277,7 @@ impl WatchdogFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                provenance: SnapshotSource::Live,
+                source: SnapshotSource::Live,
                 as_of: None,
                 lifecycle: Some(lifecycle),
                 paused: false,
@@ -8534,7 +8536,7 @@ impl McpFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                provenance: SnapshotSource::Live,
+                source: SnapshotSource::Live,
                 as_of: None,
                 lifecycle: Some(lifecycle),
                 paused: false,
@@ -9442,7 +9444,7 @@ impl ReleaseFamily {
         project_snapshot(
             self.descriptor,
             SnapshotInput {
-                provenance: SnapshotSource::Live,
+                source: SnapshotSource::Live,
                 as_of: None,
                 lifecycle: Some(lifecycle.clone()),
                 paused: active.as_ref().map(|record| record.paused).unwrap_or(false),

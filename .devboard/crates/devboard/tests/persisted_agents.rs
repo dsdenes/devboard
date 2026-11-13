@@ -239,7 +239,7 @@ fn persisted_workers_answer_without_a_dashboard() {
     };
 
     let watchdog = find("watchdog");
-    assert_eq!(watchdog["provenance"], "persisted");
+    assert_eq!(watchdog["source"], "persisted");
     assert!(
         watchdog["asOf"]
             .as_str()
@@ -262,7 +262,7 @@ fn persisted_workers_answer_without_a_dashboard() {
     assert!(watchdog["detail"]["entries"].is_array());
 
     let scout = find("scout");
-    assert_eq!(scout["provenance"], "persisted");
+    assert_eq!(scout["source"], "persisted");
     assert_eq!(
         scout["lifecycle"],
         Value::Null,
@@ -307,6 +307,43 @@ fn persisted_workers_answer_without_a_dashboard() {
         serde_json::to_string(&single).unwrap(),
         serde_json::to_string(&optimizer).unwrap(),
         "get returns the same record as the list"
+    );
+}
+
+#[test]
+fn a_persisted_active_word_never_becomes_stopped() {
+    let fixture = Fixture::new("lifecycle");
+    fixture.write(
+        "scout/state.json",
+        json!({"version": 2, "lifecycle": "scanning", "enabled": true}),
+    );
+    fixture.write(
+        "dead-code/state.json",
+        json!({"version": 2, "lifecycle": "pausing", "enabled": true}),
+    );
+    let frames = fixture.mcp(&[
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-01-01"}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "background_agent_get", "arguments": {"id": "scout"}}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "background_agent_get", "arguments": {"id": "dead-code"}}}),
+    ]);
+
+    let scout = tool(&frames, 2);
+    assert_eq!(scout["source"], "persisted");
+    assert_eq!(
+        scout["lifecycle"], "running",
+        "the file's own active word is reported, not narrowed to stopped: {scout}"
+    );
+    assert!(
+        scout["asOf"].as_str().is_some_and(|text| !text.is_empty()),
+        "and the snapshot names when it was written: {scout}"
+    );
+
+    let dead_code = tool(&frames, 3);
+    assert_eq!(
+        dead_code["lifecycle"],
+        Value::Null,
+        "a word no lifecycle covers claims nothing rather than stopped: {dead_code}"
     );
 }
 
