@@ -176,11 +176,16 @@ export class GoalStore {
    * The server replays the started frame of an operation that is still active
    * before answering getGoal and getSkills, so a live operation returns, and
    * it replays a finished run's terminal frame, so that one returns stopped.
+   * A reset that ended during the disconnect replays neither frame, so the
+   * clear below re-enables Reset, Start/Stop, and skill delete; the replay's
+   * started frame restores the flag for a reset that is still live, and the
+   * completed reset's report in `resetStatus` survives.
    */
   resetActiveOperations(): void {
     this.creationActive = false;
     this.revisionActive = false;
     this.skillsPrepActive = false;
+    this.resetting = false;
     this.runFile = null;
     this.runTitle = null;
     this.runState = "idle";

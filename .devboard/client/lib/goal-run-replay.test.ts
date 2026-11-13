@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { connection } from "./connection.svelte";
 import { GoalStore } from "./goal.svelte";
 
 /** The started frame the polled `/goal` read replays for a live manual run. */
@@ -53,4 +54,34 @@ test("a reconnect forgets a run it cannot prove live", () => {
   expect(store.manualRunActive).toBe(false);
   expect(store.activity).toEqual([]);
   expect(store.runStartDisabled).toBe(false);
+});
+
+test("a reconnect clears a reset that ended while the page was away", () => {
+  const was = connection.state;
+  connection.state = "open";
+  try {
+    const store = new GoalStore();
+    store.handleEvent({ type: "implementationResetStarted" });
+    store.resetStatus = "Reset committed as abc1234.";
+    expect(store.resetting).toBe(true);
+    expect(store.resetDisabled).toBe(true);
+    expect(store.skillDeleteDisabled).toBe(true);
+
+    // The reset finished during the outage: its stop frame reached no page,
+    // and the replay sends the started frame only for a reset still running,
+    // so the reconnect's own clear is the only thing that frees the controls.
+    store.resetActiveOperations();
+    expect(store.resetting).toBe(false);
+    expect(store.resetDisabled).toBe(false);
+    expect(store.skillDeleteDisabled).toBe(false);
+    expect(store.resetStatus).toBe("Reset committed as abc1234.");
+
+    // A reset that is still live replays its started frame in that same
+    // reconnect, so the flag comes back and the controls stay busy.
+    store.handleEvent({ type: "implementationResetStarted" });
+    expect(store.resetting).toBe(true);
+    expect(store.resetDisabled).toBe(true);
+  } finally {
+    connection.state = was;
+  }
 });
