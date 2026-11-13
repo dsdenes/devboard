@@ -76,6 +76,11 @@ export class FlowStore {
   refusingId = $state<string | null>(null);
   refuseReason = $state("");
 
+  /** The note this dashboard sent and the server has not confirmed yet. The
+   *  draft survives until a `flowSteering` frame carries that exact text, so a
+   *  refused send never discards the operator's words. */
+  pendingSteering: string | null = null;
+
   /** A stored session this dashboard is still restoring: its state is not
    *  settled yet, so no control that edits it is offered. */
   get restoring(): boolean {
@@ -195,10 +200,13 @@ export class FlowStore {
   }
 
   sendSteering(): void {
+    if (this.restoring) return;
     const text = this.steeringDraft;
     if (text.trim().length === 0) return;
-    connection.send({ type: "sendFlowSteering", text });
-    this.steeringDraft = "";
+    this.pendingSteering = text;
+    if (!connection.send({ type: "sendFlowSteering", text })) {
+      this.pendingSteering = null;
+    }
   }
 
   dismissBlocker(blocker: FlowBlocker): void {
@@ -349,6 +357,11 @@ export class FlowStore {
     }
     if (type === "flowSteering" && Array.isArray(message.notes)) {
       this.steering = message.notes as FlowSteeringNote[];
+      const pending = this.pendingSteering;
+      if (pending !== null && this.steering.some((note) => note.text === pending)) {
+        this.pendingSteering = null;
+        this.steeringDraft = "";
+      }
       return;
     }
     if (type === "flowDecisions" && typeof message.text === "string") {

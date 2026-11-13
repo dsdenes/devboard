@@ -29,6 +29,7 @@ const context = {
     goal: "",
     startDisabled: false,
     stopDisabled: false,
+    restoring: false,
     steeringDraft: "",
     prError: null,
     readyDisabled: false,
@@ -109,4 +110,14 @@ test("registers every Discover page once, keeping the sidebar ids", () => {
       ids.has(id),
     ),
   ).toEqual([]);
+});
+
+test("a restoring Flow session disables the steering command despite a typed note", () => {
+  const restoring = {
+    ...context,
+    flow: { ...context.flow, restoring: true, steeringDraft: "Steer left" },
+  } as unknown as CommandContext;
+  const command = buildCommands(restoring).find((entry) => entry.id === "flow.steering.send");
+
+  expect(command?.disabled?.()).toBe("Wait for the stored Flow session to finish restoring.");
 });

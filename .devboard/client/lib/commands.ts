@@ -593,7 +593,13 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     id: "flow.steering.send",
     title: "Send Flow steering note",
     group: "Flow",
-    disabled: () => disabledWhen(flow.steeringDraft.trim().length === 0, "Type a steering note first."),
+    disabled: () =>
+      disabledWhen(
+        flow.restoring || flow.steeringDraft.trim().length === 0,
+        flow.restoring
+          ? "Wait for the stored Flow session to finish restoring."
+          : "Type a steering note first.",
+      ),
     run: () => flow.sendSteering(),
   });
   add({
