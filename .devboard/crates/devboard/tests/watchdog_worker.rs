@@ -1143,6 +1143,54 @@ fn a_locked_agent_storage_perf_record_is_not_a_finding() {
 }
 
 #[test]
+fn a_locked_skill_description_cache_is_not_a_finding() {
+    let root = production_root("skill-cache-locked");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let mut locked = event(
+        now,
+        1,
+        "Skill description cache unavailable: SQLiteError: database is locked",
+        "omp-log",
+        &instance,
+    );
+    locked.level = Some("warn".to_string());
+    let mut other = event(
+        now,
+        2,
+        "Skill description cache unavailable: SQLiteError: disk I/O error",
+        "omp-log",
+        &instance,
+    );
+    other.level = Some("warn".to_string());
+    let mut read_failed = event(
+        now,
+        3,
+        "Skill description cache read failed: SQLiteError: database is locked",
+        "omp-log",
+        &instance,
+    );
+    read_failed.level = Some("warn".to_string());
+
+    let findings = analyze_evidence(&[locked, other, read_failed], window, window);
+
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings
+        .iter()
+        .all(|finding| finding.category == "omp-warn"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.quote.contains("disk I/O error")));
+    assert!(findings.iter().any(|finding| finding
+        .quote
+        .starts_with("Skill description cache read failed")));
+}
+
+#[test]
 fn a_skipped_judgment_candidate_is_not_a_finding() {
     let root = production_root("judgment-candidate");
     let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));

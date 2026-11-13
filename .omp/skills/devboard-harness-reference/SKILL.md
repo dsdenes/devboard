@@ -3092,7 +3092,11 @@ persistence failure with any other cause still files its `omp-error` record. An
 `AgentStorage failed to record model perf: SQLiteError: database is locked` warning is the peer's
 own best-effort performance bookkeeping losing a write lock to another concurrent peer on the same
 host, and the turn continues, so it is never a finding; the same record failing for any other
-reason still files its `omp-warn` record. An omp
+reason still files its `omp-warn` record. A `Skill description cache unavailable` warning whose
+cause is `database is locked` is the same contention on the peer's lazy local skill-description
+cache: the description is truncated locally instead of cached, and the turn continues, so it is
+never a finding; the same cache failing for any other reason, and a `Skill description cache read
+failed` warning, still file their `omp-warn` record. An omp
 `judgment candidate failed` warning that names the interval omp skips that candidate for is its
 judge stepping past a model provider that rejects the account's credential — operator state no
 repository change can configure — and the judge continues with another candidate, so it is never a
@@ -3101,6 +3105,10 @@ record. A Codex account the backend denies is the operator's provider configurat
 repository defect: discovery continues for every other account, no repository change grants that
 account access, and the `Codex model discovery skipped an account denied by the backend` warning is
 therefore never a finding; every other model-discovery warning still files its `omp-warn` record.
+An omp `Session exit recorded` warning is that peer writing down the exit of a session it hosted —
+the signal it received, its session file, and the tool calls still in flight — whenever a
+supervisor stops it, so it is omp's own shutdown bookkeeping rather than a failure and is never a
+finding; the same record carrying an attached error still files its `omp-warn` record.
 
 The ledger outlives a forge change: an entry may name an issue filed through another forge, or
 through the same project under a different instance. The delivery reports the URLs its configured

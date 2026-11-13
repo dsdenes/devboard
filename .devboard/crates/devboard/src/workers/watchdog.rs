@@ -3444,20 +3444,26 @@ fn host_storage_failure(event: &EvidenceEvent) -> bool {
 }
 
 const AGENT_STORAGE_PERF_FAILED: &str = "AgentStorage failed to record model perf: ";
+const SKILL_DESCRIPTION_CACHE_UNAVAILABLE: &str = "Skill description cache unavailable";
 const SQLITE_LOCKED: &str = "database is locked";
 
-/// Recording a model's performance is best-effort bookkeeping omp writes to its
-/// own local SQLite store. Concurrent peers on one host open that database
-/// together, so a write can lose the lock; omp warns once and the turn
-/// continues. That is transient host contention plus a recovery omp performs
-/// itself, never a repository defect, so it is not a finding. The same record
-/// failing for any other reason still files its `omp-warn` record.
+/// omp keeps best-effort bookkeeping in its own local SQLite store: a model's
+/// performance record, and the skill-description cache it opens lazily.
+/// Concurrent peers on one host open those files together, so a write, or the
+/// open of the cache, can lose the lock; omp warns once and the turn continues
+/// — the perf record is skipped, and an uncached skill description falls back
+/// to the description truncated locally. That is transient host contention
+/// plus a recovery omp performs itself, never a repository defect, so it is not
+/// a finding. The same store failing for any other reason still files its
+/// `omp-warn` record.
 fn locked_agent_storage(event: &EvidenceEvent) -> bool {
     if event.kind != "omp-log" || event.level.as_deref() != Some("warn") {
         return false;
     }
     let line = normalize_evidence_line(&event.text);
-    line.starts_with(AGENT_STORAGE_PERF_FAILED) && line.contains(SQLITE_LOCKED)
+    let best_effort_store = line.starts_with(AGENT_STORAGE_PERF_FAILED)
+        || line.starts_with(SKILL_DESCRIPTION_CACHE_UNAVAILABLE);
+    best_effort_store && line.contains(SQLITE_LOCKED)
 }
 
 const JUDGMENT_CANDIDATE_FAILED: &str = "judgment candidate failed";

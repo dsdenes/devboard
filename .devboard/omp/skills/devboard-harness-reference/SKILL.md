@@ -3092,7 +3092,11 @@ persistence failure with any other cause still files its `omp-error` record. An
 `AgentStorage failed to record model perf: SQLiteError: database is locked` warning is the peer's
 own best-effort performance bookkeeping losing a write lock to another concurrent peer on the same
 host, and the turn continues, so it is never a finding; the same record failing for any other
-reason still files its `omp-warn` record. An omp
+reason still files its `omp-warn` record. A `Skill description cache unavailable` warning whose
+cause is `database is locked` is the same contention on the peer's lazy local skill-description
+cache: the description is truncated locally instead of cached, and the turn continues, so it is
+never a finding; the same cache failing for any other reason, and a `Skill description cache read
+failed` warning, still file their `omp-warn` record. An omp
 `judgment candidate failed` warning that names the interval omp skips that candidate for is its
 judge stepping past a model provider that rejects the account's credential — operator state no
 repository change can configure — and the judge continues with another candidate, so it is never a
