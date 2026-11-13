@@ -95,12 +95,12 @@ fn marked_skills(root: &Path) -> Vec<String> {
 /// files only.
 fn tree_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(base: &Path, directory: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
-        for entry in std::fs::read_dir(directory).expect("a skill directory") {
-            let entry = entry.expect("a skill entry");
+        for entry in std::fs::read_dir(directory).expect("a shipped directory") {
+            let entry = entry.expect("a shipped entry");
             let path = entry.path();
             let relative = path
                 .strip_prefix(base)
-                .expect("a path under the skill root")
+                .expect("a path under the shipped root")
                 .to_string_lossy()
                 .into_owned();
             let meta = std::fs::symlink_metadata(&path).expect("a skill entry");
@@ -118,44 +118,64 @@ fn tree_files(root: &Path) -> BTreeMap<String, Vec<u8>> {
 }
 
 /// The tracked `.omp/` tree is the copy omp loads at this root, and no install
-/// or update path refreshes it: every shipped marked skill must match byte for
-/// byte, and a skill the package dropped must not linger in the mirror.
+/// or update path refreshes it: every path the package ships under `omp/` must
+/// match byte for byte, and a marked skill the package dropped must not linger
+/// in the mirror. Entries the package does not ship belong to the host — its
+/// own unmarked skills and `.omp/config.yml` — and stay out of scope.
 #[test]
-fn the_tracked_mirror_matches_every_shipped_skill() {
-    let canonical_root = package_dir().join("omp/skills");
-    let mirror_root = package_dir().join("../.omp/skills");
-    let shipped = marked_skills(&canonical_root);
+fn the_tracked_mirror_matches_every_shipped_path() {
+    let canonical_root = package_dir().join("omp");
+    let mirror_root = package_dir().join("../.omp");
+
+    let shipped = tree_files(&canonical_root);
+    assert!(!shipped.is_empty(), "the package ships no file under omp/");
+    for (relative, bytes) in &shipped {
+        let label = format!(".omp/{relative}");
+        let mirrored = mirror_root.join(relative);
+        let metadata = std::fs::symlink_metadata(&mirrored).unwrap_or_else(|error| {
+            panic!("{label} is missing ({error}); run `.devboard/install.sh --force`")
+        });
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "{label} is a symlink, not an installed copy"
+        );
+        assert!(metadata.is_file(), "{label} is not a real file");
+        let installed = std::fs::read(&mirrored).expect("an installed copy");
+        assert_eq!(
+            bytes.len(),
+            installed.len(),
+            "{label} differs in length from .devboard/omp/{relative}"
+        );
+        if let Some(offset) = bytes
+            .iter()
+            .zip(&installed)
+            .position(|(left, right)| left != right)
+        {
+            panic!("{label} differs from .devboard/omp/{relative} at byte {offset}");
+        }
+    }
+
+    let canonical_skills = canonical_root.join("skills");
+    let mirror_skills = mirror_root.join("skills");
+    let shipped = marked_skills(&canonical_skills);
     assert!(!shipped.is_empty(), "the package ships no marked skill");
     assert_eq!(
         shipped,
-        marked_skills(&mirror_root),
+        marked_skills(&mirror_skills),
         ".omp/skills does not mirror the marked skills the package ships"
     );
 
+    // The bytes of every shipped file are already compared above; what remains
+    // is an extra file inside a shipped skill, which an install prunes.
     for name in shipped {
         let label = format!(".omp/skills/{name}");
-        let expected = tree_files(&canonical_root.join(&name));
-        let actual = tree_files(&mirror_root.join(&name));
+        let expected = tree_files(&canonical_skills.join(&name));
+        let actual = tree_files(&mirror_skills.join(&name));
         let expected_paths: Vec<&String> = expected.keys().collect();
         let actual_paths: Vec<&String> = actual.keys().collect();
         assert_eq!(
             expected_paths, actual_paths,
             "{label} lists a different set of files than the canonical skill"
         );
-        for (relative, bytes) in &expected {
-            let mirrored = &actual[relative];
-            assert_eq!(
-                bytes.len(),
-                mirrored.len(),
-                "{label}/{relative} differs in length from the canonical skill"
-            );
-            if let Some(offset) = bytes
-                .iter()
-                .zip(mirrored)
-                .position(|(left, right)| left != right)
-            {
-                panic!("{label}/{relative} differs from the canonical skill at byte {offset}");
-            }
-        }
     }
 }
