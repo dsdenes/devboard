@@ -600,7 +600,7 @@ async fn a_lane_question_is_answered_through_its_lane() {
         },
     )
     .await;
-    frame_matching(
+    let accepted = collect_until(
         &mut inbox,
         |frame| {
             frame["type"] == "activity"
@@ -610,6 +610,16 @@ async fn a_lane_question_is_answered_through_its_lane() {
         10_000,
     )
     .await;
+    // The accepted answer is the only thing that clears the prompt: the page
+    // keeps the question and its draft until this frame names both.
+    assert!(
+        accepted
+            .iter()
+            .any(|frame| frame["type"] == "questionCleared"
+                && frame["id"] == question["id"]
+                && frame["lane"] == Value::String(lane_id.clone())),
+        "the accepted answer clears the lane's question: {accepted:?}"
+    );
     let stopped = frame_matching(
         &mut inbox,
         |frame| frame["type"] == "runStopped" && frame["lane"] == Value::String(lane_id.clone()),
@@ -728,12 +738,22 @@ async fn a_manual_run_resolves_a_pending_record_with_an_answer() {
         },
     )
     .await;
-    frame_matching(
+    let accepted = collect_until(
         &mut inbox,
         |frame| frame["type"] == "activity" && frame["text"] == "Answer received: Alpha",
         5_000,
     )
     .await;
+    // The manual run publishes no lane snapshot, so this frame is what proves
+    // the answer landed and clears the prompt on every open page.
+    assert!(
+        accepted
+            .iter()
+            .any(|frame| frame["type"] == "questionCleared"
+                && frame["id"] == question["id"]
+                && frame.get("lane").is_none()),
+        "the accepted answer clears the run's question: {accepted:?}"
+    );
 
     let stopped = frame_matching(&mut inbox, |frame| frame["type"] == "runStopped", 10_000).await;
     assert_eq!(stopped["file"], "a.md");

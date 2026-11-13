@@ -158,6 +158,16 @@ export class GoalStore {
   question = $state<RunQuestion | null>(null);
   draft = $state("");
   laneDraft = $state("");
+  /**
+   * Bumped by the frame that answers a dispatched answer: the
+   * `questionCleared` broadcast of an accepted one, or the `error` frame of a
+   * refused one. An answer control latches this as its confirming evidence, so
+   * a refusal releases its busy word at once instead of waiting for the
+   * ceiling, and neither event costs the prompt or the draft.
+   */
+  private answers = $state(0);
+  /** Answer dispatches that reached the server and await their reply. */
+  private answering = 0;
 
   lifecycle = $state<LifecycleState>({ stage: "goal", pass: 1, work: null, paused: false });
   lifecycleSeen = $state(false);
@@ -196,6 +206,9 @@ export class GoalStore {
     this.activity = [];
     this.question = null;
     this.draft = "";
+    // A frame lost to the closed socket answers no dispatch on this connection
+    // generation, so the reconnect owes none.
+    this.answering = 0;
   }
 
   get pendingCount(): number {
@@ -405,25 +418,120 @@ export class GoalStore {
     this.armReset();
   }
 
-  submitAnswer(value: string): void {
-    if (this.question === null) return;
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return;
-    const id = this.question.id;
-    this.question = null;
-    this.draft = "";
-    connection.send({ type: "answer", id, value: trimmed });
+  /**
+   * The number of frames that answered a dispatched answer. It never changes
+   * until an answer is sent, so an idle control never leaves its resting label.
+   */
+  get answerRevision(): number {
+    return this.answers;
   }
 
-  submitLaneAnswer(laneId: string, value: string): void {
+  /** Settles one dispatched answer the server has now answered. */
+  private settleAnswer(): void {
+    if (this.answering === 0) return;
+    this.answering -= 1;
+    this.answers += 1;
+  }
+
+  /**
+   * Shows the manual run's question. The draft belongs to the question it
+   * answers, so it clears only when a different question replaces the one it
+   * was typed for; a poll that repeats the same question keeps it.
+   */
+  private showQuestion(pending: RunQuestion): void {
+    if (this.question === null || String(this.question.id) !== String(pending.id)) {
+      this.draft = "";
+      this.settleAnswer();
+    }
+    this.question = pending;
+  }
+
+  /** Revokes the manual run's question, whose answer was accepted. */
+  private dropQuestion(): void {
+    this.question = null;
+    this.draft = "";
+    this.settleAnswer();
+  }
+
+  /**
+   * Revokes the manual run's question when it is the one an accepted answer
+   * named, and reports whether it was. Another question that arrived since is
+   * left alone.
+   */
+  private clearQuestion(id: unknown): boolean {
+    if (this.question === null || String(this.question.id) !== String(id)) return false;
+    this.dropQuestion();
+    return true;
+  }
+
+  /** Shows one lane's question, keeping the draft typed for the same one. */
+  private showLaneQuestion(laneId: string, pending: RunQuestion): void {
     const lane = this.lane(laneId);
-    if (lane === null || lane.question === null) return;
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return;
-    const id = lane.question.id;
-    lane.question = null;
+    if (lane === null) return;
+    if (lane.question === null || String(lane.question.id) !== String(pending.id)) {
+      this.laneDraft = "";
+      this.settleAnswer();
+    }
+    this.lanes = this.lanes.map((entry) =>
+      entry.id === laneId ? { ...entry, question: pending } : entry,
+    );
+  }
+
+  /** Revokes one lane's question an accepted answer named. */
+  private clearLaneQuestion(laneId: string, id: unknown): boolean {
+    const lane = this.lane(laneId);
+    if (lane === null || lane.question === null) return false;
+    if (String(lane.question.id) !== String(id)) return false;
+    this.lanes = this.lanes.map((entry) =>
+      entry.id === laneId ? { ...entry, question: null } : entry,
+    );
     this.laneDraft = "";
-    connection.send({ type: "answer", lane: laneId, id, value: trimmed });
+    this.settleAnswer();
+    return true;
+  }
+
+  /**
+   * Applies the question a `*Started` snapshot carries. A live start names
+   * none because it holds none, and the polled replay of a live operation
+   * carries the question it still holds or null, so a prompt returns after a
+   * reload and one whose answer landed goes away.
+   */
+  private applySnapshotQuestion(value: unknown): void {
+    if (value === undefined || value === null) {
+      this.dropQuestion();
+      return;
+    }
+    if (isQuestion(value)) this.showQuestion(value);
+  }
+
+  /**
+   * Sends one answer to the run that asked it. Returns false when nothing was
+   * sent, so the control keeps the draft and shows no busy word. The prompt and
+   * the draft stay until a frame proves the answer was accepted, so a refused
+   * answer costs neither.
+   */
+  submitAnswer(value: string): boolean {
+    if (this.question === null) return false;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return false;
+    const id = this.question.id;
+    if (!connection.send({ type: "answer", id, value: trimmed })) return false;
+    this.answering += 1;
+    return true;
+  }
+
+  /** The lane counterpart of `submitAnswer`. */
+  submitLaneAnswer(laneId: string, value: string): boolean {
+    const lane = this.lane(laneId);
+    if (lane === null || lane.question === null) return false;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return false;
+    const id = lane.question.id;
+    if (!connection.send({ type: "answer", lane: laneId, id, value: trimmed })) {
+      return false;
+    }
+    this.answering += 1;
+    return true;
   }
 
   laneLabel(lane: Lane): string {
@@ -447,6 +555,14 @@ export class GoalStore {
   handleEvent(message: Message): void {
     const type = message.type;
 
+    if (type === "error") {
+      // The generic error frame is a command's refusal. An answer dispatch that
+      // still awaits its reply is refused by it, so its control is released at
+      // once and the prompt and the draft stay for the retry.
+      this.settleAnswer();
+      return;
+    }
+
     if (type === "records" && Array.isArray(message.records) && message.records.every(isRecord)) {
       this.records = message.records;
       this.next = typeof message.next === "string" ? message.next : null;
@@ -462,14 +578,12 @@ export class GoalStore {
     if (type === "goalCreationStarted") {
       this.creationActive = true;
       this.activity = [];
-      this.question = null;
-      this.draft = "";
+      this.applySnapshotQuestion(message.question);
       return;
     }
     if (type === "goalCreationStopped") {
       this.creationActive = false;
-      this.question = null;
-      this.draft = "";
+      this.dropQuestion();
       if (message.completed === true && typeof message.text === "string") {
         this.goalText = message.text;
         this.goalReady = message.text.trim().length > 0;
@@ -480,15 +594,13 @@ export class GoalStore {
       this.revisionActive = true;
       this.revisionRequest = "";
       this.activity = [];
-      this.question = null;
-      this.draft = "";
+      this.applySnapshotQuestion(message.question);
       return;
     }
     if (type === "goalRevisionStopped") {
       this.revisionActive = false;
       this.revisionRequest = "";
-      this.question = null;
-      this.draft = "";
+      this.dropQuestion();
       if (message.completed === true && typeof message.text === "string") {
         this.goalText = message.text;
         this.goalReady = message.text.trim().length > 0;
@@ -512,14 +624,12 @@ export class GoalStore {
     if (type === "skillsPreparationStarted") {
       this.skillsPrepActive = true;
       this.activity = [];
-      this.question = null;
-      this.draft = "";
+      this.applySnapshotQuestion(message.question);
       return;
     }
     if (type === "skillsPreparationStopped") {
       this.skillsPrepActive = false;
-      this.question = null;
-      this.draft = "";
+      this.dropQuestion();
       if (
         message.completed === true &&
         Array.isArray(message.skills) &&
@@ -540,6 +650,21 @@ export class GoalStore {
         typeof message.openEpics === "number" &&
         typeof message.runningLanes === "number"
       ) {
+        // A lane snapshot is authoritative for the question each lane holds:
+        // an answer accepted elsewhere, or before a reload, arrives only as a
+        // lane without its question, so the draft that answered it goes too.
+        const dropped = message.lanes.some((lane) => {
+          const before = this.lanes.find((entry) => entry.id === lane.id);
+          return (
+            before?.question != null &&
+            (lane.question === null ||
+              String(lane.question.id) !== String(before.question.id))
+          );
+        });
+        if (dropped) {
+          this.laneDraft = "";
+          this.settleAnswer();
+        }
         this.lanes = message.lanes;
         this.openEpics = message.openEpics;
         this.runningLanes = message.runningLanes;
@@ -571,8 +696,7 @@ export class GoalStore {
         this.runStartedAt = new Date().toISOString();
         this.manualRunActive = message.manual === true;
         this.activity = [];
-        this.question = null;
-        this.draft = "";
+        this.applySnapshotQuestion(message.question);
       }
       return;
     }
@@ -601,14 +725,21 @@ export class GoalStore {
         options: message.options,
       };
       if (typeof message.lane === "string") {
-        const laneId = message.lane;
-        this.lanes = this.lanes.map((lane) =>
-          lane.id === laneId ? { ...lane, question: pending } : lane,
-        );
+        this.showLaneQuestion(message.lane, pending);
       } else {
-        this.question = pending;
-        this.draft = "";
+        this.showQuestion(pending);
       }
+      return;
+    }
+
+    if (type === "questionCleared") {
+      // The accepted answer's own frame. A refused one sends only an `error`,
+      // so neither the prompt nor the draft leaves before this arrives.
+      const cleared =
+        typeof message.lane === "string"
+          ? this.clearLaneQuestion(message.lane, message.id)
+          : this.clearQuestion(message.id);
+      if (!cleared) this.settleAnswer();
       return;
     }
 
@@ -618,8 +749,7 @@ export class GoalStore {
       this.runState = "stopped";
       this.runStartedAt = null;
       this.manualRunActive = false;
-      this.question = null;
-      this.draft = "";
+      this.dropQuestion();
       // The polled replay of a finished run carries its last activity lines,
       // because the stop broadcast that would have shown them reaches no page.
       // Assigning them whole keeps every poll from appending a second copy.

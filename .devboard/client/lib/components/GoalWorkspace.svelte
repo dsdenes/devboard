@@ -35,11 +35,13 @@
 
   const answerPending = createCommandBusy({
     label: "Submit answer",
-    evidence: () => goal.activity.length,
+    // The answering frame confirms it: the `questionCleared` broadcast of an
+    // accepted answer, or the `error` frame of a refused one.
+    evidence: () => goal.answerRevision,
   });
   const laneAnswerPending = createCommandBusy({
     label: "Submit answer",
-    evidence: () => goal.activity.length,
+    evidence: () => goal.answerRevision,
   });
 
   const createGoalTitle = $derived(
@@ -156,8 +158,11 @@
     };
   }
 
-  function submitAnswer(value: string): void {
-    goal.submitAnswer(value);
+  /** Dispatches one answer; a dispatch that sent nothing releases its label. */
+  function submitAnswer(value: string): boolean {
+    const sent = goal.submitAnswer(value);
+    if (!sent) answerPending.refuse();
+    return sent;
   }
 
   function clearFilters(): void {
@@ -232,7 +237,7 @@
                 class="choice"
                 label={option.label}
                 busyLabel="Answering…"
-                evidence={() => goal.activity.length}
+                evidence={() => goal.answerRevision}
                 command={() => submitAnswer(option.label)}
                 data-testid="choice"
                 data-command="goal.answer.submit"
@@ -256,7 +261,7 @@
             event.preventDefault();
             if (goal.draft.trim().length === 0) return;
             answerPending.start();
-            goal.submitAnswer(goal.draft);
+            submitAnswer(goal.draft);
           }}
         >
           <input
@@ -1011,7 +1016,7 @@
                       class="choice"
                       label={option.label}
                       busyLabel="Answering…"
-                      evidence={() => goal.activity.length}
+                      evidence={() => goal.answerRevision}
                       command={() => goal.submitLaneAnswer(lane.id, option.label)}
                       data-testid="lane-choice"
                       data-command={`goal.lane.answer.submit.${lane.id}`}
@@ -1035,7 +1040,9 @@
                   event.preventDefault();
                   if (goal.laneDraft.trim().length === 0) return;
                   laneAnswerPending.start();
-                  goal.submitLaneAnswer(lane.id, goal.laneDraft);
+                  if (!goal.submitLaneAnswer(lane.id, goal.laneDraft)) {
+                    laneAnswerPending.refuse();
+                  }
                 }}
               >
                 <input
