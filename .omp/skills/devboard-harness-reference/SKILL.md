@@ -3168,7 +3168,11 @@ reason still files its `omp-warn` record. A `Skill description cache unavailable
 cause is `database is locked` is the same contention on the peer's lazy local skill-description
 cache: the description is truncated locally instead of cached, and the turn continues, so it is
 never a finding; the same cache failing for any other reason, and a `Skill description cache read
-failed` warning, still file their `omp-warn` record. An omp
+failed` warning, still file their `omp-warn` record. A `Skill description compression failed`
+warning whose cause is `database is locked` is that same contention on the cache's background
+description compression: the peer keeps the description it already truncated locally and the turn
+continues, so it is never a finding; the same compression failing for any other reason still files
+its `omp-warn` record. An omp
 `judgment candidate failed` warning that names the interval omp skips that candidate for is its
 judge stepping past a model provider that rejects the account's credential — operator state no
 repository change can configure — and the judge continues with another candidate, so it is never a
