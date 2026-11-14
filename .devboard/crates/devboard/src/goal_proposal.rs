@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use crate::feedback::{
     captured_context, conversation_section, js_len, GoalProposalSubmission, RequestError,
+    CAPTURED_CONTEXT_MARKER, NO_CAPTURED_CONTEXT,
 };
 
 /// Where a draft lives, relative to the repository root.
@@ -19,7 +20,6 @@ const MAX_NAME_WORDS: usize = 6;
 const MAX_SLUG_LENGTH: usize = 64;
 const FALLBACK_NAME: &str = "ui-goal";
 const UNPROCESSED_NOTICE: &str = "> Unprocessed draft. Elaborate it to turn it into a goal.";
-const NO_CAPTURED_CONTEXT: &str = "No page context was captured.";
 const MAX_NAME_ATTEMPTS: usize = 1000;
 
 /// The report's first non-empty line, trimmed, or the empty string.
@@ -100,7 +100,7 @@ pub fn goal_proposal_body(submission: &GoalProposalSubmission) -> String {
         lines.extend(ask_turns);
         lines.push(String::new());
     }
-    lines.push("## Captured UI context".to_string());
+    lines.push(CAPTURED_CONTEXT_MARKER.to_string());
     lines.push(String::new());
     lines.extend(context);
     lines.push(String::new());

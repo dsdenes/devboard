@@ -1,28 +1,67 @@
 import { describe, expect, test } from "bun:test";
-import { draftProposal } from "./draft-format";
+import { readFileSync } from "node:fs";
+import {
+  CAPTURED_OPENINGS,
+  CONTEXT_MARKER,
+  NO_CAPTURED_CONTEXT,
+  draftProposal,
+} from "./draft-format";
+
+interface CapturedContextContract {
+  marker: string;
+  populated: { fields: Record<string, string>; lines: string[] };
+  empty: { lines: string[] };
+}
+
+/**
+ * The writers' captured-context block: the same bytes the Rust writers' test
+ * asserts, so neither side can drift from the other unseen.
+ */
+const CONTRACT: CapturedContextContract = JSON.parse(
+  readFileSync(new URL("../../contract/fixtures/captured-context.json", import.meta.url), "utf8"),
+) as CapturedContextContract;
+
+const POPULATED = CONTRACT.populated.lines;
+
+const HEADINGS = POPULATED.filter((line) => line.startsWith("### "));
+
+/** The contract's heading at `index`, or a failure naming the missing line. */
+function heading(index: number): string {
+  const line = HEADINGS[index];
+  if (line === undefined) throw new Error(`the contract names no heading ${index}`);
+  return line;
+}
+
+/** Every line a populated block opens with: each fact's label and each heading. */
+function openingsFrom(lines: readonly string[]): string[] {
+  const openings: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("- ")) {
+      const colon = line.indexOf(": ");
+      openings.push(colon === -1 ? line : line.slice(0, colon + 1));
+    } else if (line.startsWith("### ")) {
+      openings.push(line);
+    }
+  }
+  return openings;
+}
 
 const DRAFT = `# Proposed goal: persist remote discoveries
 
 Persist every remote project and offer a switcher.
 
-## Captured UI context
+${CONTRACT.marker}
 
-- Route: \`/\`
-- URL: \`http://127.0.0.1:8081/\`
-- Selected element: \`section.panel:nth-of-type(2)\`
-- Viewport: \`2101x1017 @1.21875x\`
-- Captured at: \`2026-10-28T10:30:03.635Z\`
-
-### Visible text
-
-The remote clone is missing.
-
-### DOM excerpt
-
-\`\`\`html
-<section class="panel"></section>
-\`\`\`
+${POPULATED.join("\n")}
 `;
+
+describe("captured-context contract", () => {
+  test("the fold opens only what the writers emit", () => {
+    expect(CONTEXT_MARKER).toBe(CONTRACT.marker);
+    expect(NO_CAPTURED_CONTEXT).toBe(CONTRACT.empty.lines[0] ?? "");
+    expect(CAPTURED_OPENINGS).toEqual(openingsFrom(POPULATED));
+  });
+});
 
 describe("draft proposal", () => {
   test("drops the captured context and the heading the panel shows", () => {
@@ -39,13 +78,15 @@ describe("draft proposal", () => {
   });
 
   test("returns nothing for a draft that is only captured context", () => {
-    expect(draftProposal("# Draft\n\n## Captured UI context\n\nNo page context was captured.\n")).toBe("");
+    expect(
+      draftProposal(`# Draft\n\n${CONTRACT.marker}\n\n${CONTRACT.empty.lines.join("\n")}\n`),
+    ).toBe("");
   });
 
   test("drops a section that opens with the visible-text evidence heading", () => {
     expect(
       draftProposal(
-        "# Proposed goal: x\n\nReport.\n\n## Captured UI context\n\n### Visible text\n\nHello.\n",
+        `# Proposed goal: x\n\nReport.\n\n${CONTRACT.marker}\n\n${heading(0)}\n\nHello.\n`,
       ),
     ).toBe("Report.");
   });
@@ -53,7 +94,7 @@ describe("draft proposal", () => {
   test("drops a section that opens with the DOM-excerpt evidence heading", () => {
     expect(
       draftProposal(
-        "# Proposed goal: x\n\nReport.\n\n## Captured UI context\n\n### DOM excerpt\n\n```html\n<main></main>\n```\n",
+        `# Proposed goal: x\n\nReport.\n\n${CONTRACT.marker}\n\n${heading(1)}\n\n\`\`\`html\n<main></main>\n\`\`\`\n`,
       ),
     ).toBe("Report.");
   });

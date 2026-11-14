@@ -1,14 +1,18 @@
-const CONTEXT_MARKER = "## Captured UI context";
+/** The heading both writers put above their captured-context block. */
+export const CONTEXT_MARKER = "## Captured UI context";
 
 /** What a captured-context section opens with when the capture held no page facts. */
-const NO_CAPTURED_CONTEXT = "No page context was captured.";
+export const NO_CAPTURED_CONTEXT = "No page context was captured.";
 
 /**
  * Every line the writer's captured-context section can open with: the page
  * facts, and the evidence headings both writers emit when no page fact was
- * captured.
+ * captured. `contract/fixtures/captured-context.json` holds the block these
+ * names mirror; the Rust writers' test and this module's test both read it, so
+ * a relabelled fact fails a test instead of hiding the writer's own section
+ * behind the operator's report.
  */
-const CAPTURED_OPENINGS = [
+export const CAPTURED_OPENINGS = [
   "- Route:",
   "- URL:",
   "- Selected element:",

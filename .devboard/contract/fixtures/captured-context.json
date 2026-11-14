@@ -1,0 +1,34 @@
+{
+  "marker": "## Captured UI context",
+  "populated": {
+    "fields": {
+      "route": "/",
+      "url": "http://127.0.0.1:8081/",
+      "selector": "section.panel:nth-of-type(2)",
+      "viewport": "2101x1017 @1.21875x",
+      "captured_at": "2026-10-28T10:30:03.635Z",
+      "visible_text": "The remote clone is missing.",
+      "dom_excerpt": "<section class=\"panel\"></section>"
+    },
+    "lines": [
+      "- Route: `/`",
+      "- URL: `http://127.0.0.1:8081/`",
+      "- Selected element: `section.panel:nth-of-type(2)`",
+      "- Viewport: `2101x1017 @1.21875x`",
+      "- Captured at: `2026-10-28T10:30:03.635Z`",
+      "",
+      "### Visible text",
+      "",
+      "The remote clone is missing.",
+      "",
+      "### DOM excerpt",
+      "",
+      "```html",
+      "<section class=\"panel\"></section>",
+      "```"
+    ]
+  },
+  "empty": {
+    "lines": ["No page context was captured."]
+  }
+}

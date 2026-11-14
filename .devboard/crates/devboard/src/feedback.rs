@@ -489,7 +489,17 @@ pub fn conversation_section(turns: &[FeedbackTurn]) -> Vec<String> {
     out
 }
 
+/// The heading both writers put above the captured-context block.
+pub const CAPTURED_CONTEXT_MARKER: &str = "## Captured UI context";
+
+/// What the captured-context block holds when the capture carried no page fact.
+pub const NO_CAPTURED_CONTEXT: &str = "No page context was captured.";
+
 /// The captured-context block shared by the draft and the issue body.
+///
+/// `contract/fixtures/captured-context.json` records the bytes this emits, and
+/// `both_writers_emit_the_captured_context_the_client_fold_reads` below fails
+/// when they differ, so a relabelled fact cannot reach a shipped panel unseen.
 pub fn captured_context(captured: &CapturedFields) -> Vec<String> {
     let mut context: Vec<String> = Vec::new();
     for (label, value) in [
@@ -528,6 +538,7 @@ pub fn captured_context(captured: &CapturedFields) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn rfc3339_accepts_the_grammar_and_refuses_a_space() {
@@ -583,6 +594,82 @@ mod tests {
         let over = json!({ "selector": "s".repeat(MAX_CONTEXT_FIELD + 1) });
         let error = parse_captured_fields(over.as_object().expect("object")).expect_err("refused");
         assert_eq!(error.message, "selector is longer than 2000 characters.");
+    }
+
+    /// The captured-context contract both writers and the client fold read.
+    fn captured_context_contract() -> Value {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../contract/fixtures/captured-context.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        serde_json::from_str(&text).expect("contract JSON")
+    }
+
+    fn contract_lines(fixture: &Value, section: &str) -> Vec<String> {
+        fixture[section]["lines"]
+            .as_array()
+            .expect("contract lines")
+            .iter()
+            .map(|line| line.as_str().expect("a line").to_string())
+            .collect()
+    }
+
+    fn captured_from(fixture: &Value) -> CapturedFields {
+        let fields = &fixture["populated"]["fields"];
+        let field = |name: &str| fields[name].as_str().expect("a contract field").to_string();
+        CapturedFields {
+            route: field("route"),
+            url: field("url"),
+            selector: field("selector"),
+            viewport: field("viewport"),
+            captured_at: field("captured_at"),
+            visible_text: field("visible_text"),
+            dom_excerpt: field("dom_excerpt"),
+        }
+    }
+
+    #[test]
+    fn both_writers_emit_the_captured_context_the_client_fold_reads() {
+        let fixture = captured_context_contract();
+        let marker = fixture["marker"].as_str().expect("contract marker");
+        assert_eq!(marker, CAPTURED_CONTEXT_MARKER);
+        let section = |lines: &[String]| format!("{marker}\n\n{}", lines.join("\n"));
+        let tail = |body: &str| {
+            let index = body.find(marker).expect("the writer's marker");
+            body[index..].to_string()
+        };
+
+        let populated = contract_lines(&fixture, "populated");
+        let captures = captured_from(&fixture);
+        let feedback = feedback_body(&FeedbackSubmission {
+            action: FeedbackAction::Report,
+            report: "The panel jumps on every save.".to_string(),
+            turns: Vec::new(),
+            captured: captures.clone(),
+        });
+        assert_eq!(tail(&feedback), section(&populated));
+        let goal = crate::goal_proposal::goal_proposal_body(&GoalProposalSubmission {
+            report: "Make the header calm".to_string(),
+            turns: Vec::new(),
+            captured: captures,
+        });
+        assert_eq!(tail(&goal), format!("{}\n", section(&populated)));
+
+        let empty = contract_lines(&fixture, "empty");
+        assert_eq!(empty, vec![NO_CAPTURED_CONTEXT.to_string()]);
+        let feedback = feedback_body(&FeedbackSubmission {
+            action: FeedbackAction::Remove,
+            report: String::new(),
+            turns: Vec::new(),
+            captured: CapturedFields::default(),
+        });
+        assert_eq!(tail(&feedback), section(&empty));
+        let goal = crate::goal_proposal::goal_proposal_body(&GoalProposalSubmission {
+            report: "x".to_string(),
+            turns: Vec::new(),
+            captured: CapturedFields::default(),
+        });
+        assert_eq!(tail(&goal), format!("{}\n", section(&empty)));
     }
 }
 
@@ -684,14 +771,14 @@ pub fn feedback_body(submission: &FeedbackSubmission) -> String {
     lines.push(String::new());
     let mut context = captured_context(&submission.captured);
     if context.is_empty() {
-        context.push("No page context was captured.".to_string());
+        context.push(NO_CAPTURED_CONTEXT.to_string());
     }
     let ask_turns = conversation_section(&submission.turns);
     if !ask_turns.is_empty() {
         lines.extend(ask_turns);
         lines.push(String::new());
     }
-    lines.push("## Captured UI context".to_string());
+    lines.push(CAPTURED_CONTEXT_MARKER.to_string());
     lines.push(String::new());
     lines.extend(context);
     lines.join("\n")
