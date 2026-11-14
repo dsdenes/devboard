@@ -284,12 +284,6 @@ fn release_version_of(line: &str) -> Option<String> {
     Some(version.to_string())
 }
 
-/// The newest release version reachable from `head`; the source-checkout rule.
-pub async fn newest_release_version(directory: &Path, head: &str) -> Option<String> {
-    let tags = release_tags(directory, head).await;
-    highest_version(tags.iter().map(|tag| tag.version.as_str()))
-}
-
 /// The highest release tag reachable from `head`.
 pub async fn previous_release_tag(directory: &Path, head: &str) -> Option<ReleaseTag> {
     let mut previous: Option<ReleaseTag> = None;
