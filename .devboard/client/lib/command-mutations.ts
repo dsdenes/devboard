@@ -6,7 +6,7 @@
  * command to that mutation. The mutation writes its answer into the cache and
  * invalidates exactly the resources that answer changed.
  */
-import type { Command, Envelope } from "./rest-transport";
+import type { Command } from "./rest-transport";
 
 /**
  * One registered mutation. `onSettled` runs either way; `onFailure` runs only
@@ -32,5 +32,3 @@ export function registerMutations(mutations: Record<string, CommandMutation>): v
 export function mutationFor(type: string): CommandMutation | undefined {
   return registry[type];
 }
-
-export type MutationAnswer = ReadonlyArray<Envelope>;

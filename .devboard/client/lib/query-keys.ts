@@ -6,15 +6,11 @@
  * dashboard pushes is written into the entry its type names, so a pushed
  * snapshot and a fetched one are the same data.
  */
-import { REST_OPERATIONS, resourcePath, type RestOperation } from "./rest-map";
+import { REST_OPERATIONS, resourcePath } from "./rest-map";
 
 export type Command = Record<string, unknown> & { type: string };
 
 export type QueryKey = readonly [type: string, path: string];
-
-export function operationOf(type: string): RestOperation | undefined {
-  return REST_OPERATIONS[type];
-}
 
 /** The cache key for one command, or null when it is not a REST read. */
 export function queryKeyFor(command: Command): QueryKey | null {
