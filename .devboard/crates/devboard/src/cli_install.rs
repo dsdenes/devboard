@@ -47,18 +47,6 @@ pub enum AgentsOutcome {
     Skipped,
 }
 
-impl AgentsOutcome {
-    /// The word an install prints for this outcome.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AgentsOutcome::Installed => "installed",
-            AgentsOutcome::Current => "current",
-            AgentsOutcome::Drift => "drift",
-            AgentsOutcome::Skipped => "unchanged",
-        }
-    }
-}
-
 /// What one install did.
 #[derive(Debug)]
 pub struct InstallReport {
@@ -74,10 +62,21 @@ pub struct InstallReport {
     pub agents: AgentsOutcome,
     /// The `.gitignore` entries this run appended.
     pub gitignore_added: Vec<String>,
-    /// Git-tracked host files the package left byte-identical.
+    /// Git-tracked host content the package left as the host had it, one
+    /// complete sentence per entry, printed and journaled verbatim.
     pub drift: Vec<String>,
     /// Package files the host no longer receives.
     pub removed: usize,
+}
+
+impl InstallReport {
+    /// True when a git-tracked `AGENTS.md` is absent because the host deleted
+    /// it: the install leaves it absent and reports the deletion as drift.
+    pub fn agents_deleted(&self) -> bool {
+        self.drift
+            .iter()
+            .any(|line| line.as_str() == AGENTS_DELETED_DRIFT)
+    }
 }
 
 /// What one doctor run found.
@@ -423,6 +422,16 @@ fn tracked_files_under(host: &Path, path: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The drift a git-tracked `AGENTS.md` the host deleted is reported with. The
+/// install and doctor paths word it identically, and every consumer prints or
+/// journals the entry verbatim.
+pub const AGENTS_DELETED_DRIFT: &str = "AGENTS.md is tracked by the host; left deleted";
+
+/// One drift entry: a host-tracked file the install left exactly as it was.
+fn tracked_drift(label: &str) -> String {
+    format!("{label} is tracked by the host; left unchanged")
+}
+
 fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     if is_canonical_checkout(host) {
         bail!(
@@ -456,7 +465,7 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
         if is_git_tracked(host, &label) {
             // A host-tracked file belongs to the host: leave its bytes and
             // report the drift instead of silently overwriting it.
-            drift.push(label);
+            drift.push(tracked_drift(&label));
             continue;
         }
         if !force && fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_dir()) {
@@ -545,7 +554,7 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     for relative in stale {
         let label = format!(".devboard/extensions/{relative}");
         if is_git_tracked(host, &label) {
-            drift.push(label);
+            drift.push(tracked_drift(&label));
             continue;
         }
         remove_entry(&extensions_dir.join(&relative))?;
@@ -558,7 +567,7 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
             // A tracked AGENTS.md the host deleted is the host's decision: it
             // stays absent and is reported as drift instead of being restored.
             if is_git_tracked(host, "AGENTS.md") {
-                drift.push("AGENTS.md is tracked by the host; left deleted".to_string());
+                drift.push(AGENTS_DELETED_DRIFT.to_string());
                 AgentsOutcome::Drift
             } else {
                 fs::write(&agents_target, HOST_AGENTS)
@@ -629,7 +638,7 @@ fn install_payload(
         }
         let relative_label = format!("{label}/{relative}");
         if is_git_tracked(host, &relative_label) {
-            drift.push(relative_label);
+            drift.push(tracked_drift(&relative_label));
             continue;
         }
         if let Ok(meta) = fs::symlink_metadata(&destination) {
@@ -652,7 +661,7 @@ fn install_payload(
         let path = target.join(&relative);
         let relative_label = format!("{label}/{relative}");
         if is_git_tracked(host, &relative_label) {
-            drift.push(relative_label);
+            drift.push(tracked_drift(&relative_label));
             continue;
         }
         remove_entry(&path)?;
@@ -685,7 +694,7 @@ fn remove_stale_package_files(
         }
         let label = format!(".omp/{prefix}{relative}");
         if is_git_tracked(host, &label) {
-            drift.push(label);
+            drift.push(tracked_drift(&label));
             continue;
         }
         remove_entry(&directory.join(&relative))?;
@@ -975,9 +984,7 @@ pub fn doctor_with_env(
     match fs::symlink_metadata(&agents) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             if is_git_tracked(&host, "AGENTS.md") {
-                report
-                    .drift
-                    .push("AGENTS.md is tracked by the host; left deleted".to_string());
+                report.drift.push(AGENTS_DELETED_DRIFT.to_string());
             } else {
                 report
                     .failures
@@ -1019,9 +1026,7 @@ pub fn doctor_with_env(
                 .strip_prefix(".omp/skills/")
                 .is_some_and(|skill| skill.starts_with(MANAGED_SKILL_PREFIX));
             if !marked_skill && is_git_tracked(&host, label) {
-                report
-                    .drift
-                    .push(format!("{label} is tracked by the host; left unchanged"));
+                report.drift.push(tracked_drift(label));
                 continue;
             }
         }

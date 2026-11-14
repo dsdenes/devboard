@@ -1053,17 +1053,17 @@ impl App {
     /// Syncs the host's managed copies from the installed harness.
     pub fn sync_host_copies(&self) -> anyhow::Result<()> {
         let report = crate::cli_install::install(Some(&self.config().repo_dir), true)?;
-        if report.agents.as_str() == "drift" {
+        // Every drift entry is already the sentence the operator reads, so the
+        // journal records each one verbatim. A present `AGENTS.md` that differs
+        // carries no entry of its own, so the generic line still has that case;
+        // a tracked one the host deleted is reported by its entry alone.
+        if report.agents == crate::cli_install::AgentsOutcome::Drift && !report.agents_deleted() {
             self.shared
                 .journal
                 .write("update", "AGENTS.md differs from the template", None);
         }
         for line in &report.drift {
-            self.shared.journal.write(
-                "update",
-                &format!("{line} is tracked by the host; left unchanged"),
-                None,
-            );
+            self.shared.journal.write("update", line, None);
         }
         Ok(())
     }

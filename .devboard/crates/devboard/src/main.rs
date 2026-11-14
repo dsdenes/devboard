@@ -604,7 +604,7 @@ async fn install_command(args: &[String]) -> anyhow::Result<()> {
         println!("gitignore: {line}");
     }
     for line in &report.drift {
-        println!("drift: {line} (tracked; left unchanged)");
+        println!("drift: {line}");
     }
     if report.removed > 0 {
         println!("removed {} stale file(s)", report.removed);
@@ -667,7 +667,7 @@ async fn update_command(args: &[String]) -> anyhow::Result<()> {
     }
     let report = devboard::cli_install::install(Some(&host), true)?;
     for line in &report.drift {
-        println!("drift: {line} (tracked; left unchanged)");
+        println!("drift: {line}");
     }
     let marker = host.join(".devboard").join(".tmp").join("version.json");
     let recorded_live = std::fs::read_to_string(&marker)

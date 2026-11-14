@@ -68,11 +68,119 @@ fn a_tracked_payload_file_is_preserved_and_reported_as_drift() {
     std::fs::write(&command, b"host tracked content\n").unwrap();
     let report = devboard::cli_install::install(Some(&root), false).unwrap();
     assert_eq!(std::fs::read(&command).unwrap(), b"host tracked content\n");
-    assert!(report
+    assert_eq!(
+        report.drift,
+        vec![".omp/commands/implement-issue.md is tracked by the host; left unchanged".to_string()],
+        "one complete sentence per entry, printed and journaled verbatim"
+    );
+    assert_ne!(std::fs::read(&command).unwrap(), original);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Runs one git command in a fixture host.
+fn git(root: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn a_deleted_tracked_agents_md_is_reported_once_and_never_as_left_unchanged() {
+    let root = host("agents-deleted");
+    devboard::cli_install::install(Some(&root), false).unwrap();
+    git(&root, &["init", "--quiet"]);
+    git(&root, &["add", "-f", "AGENTS.md"]);
+    std::fs::remove_file(root.join("AGENTS.md")).unwrap();
+
+    let report = devboard::cli_install::install(Some(&root), false).unwrap();
+    let agents: Vec<&String> = report
         .drift
         .iter()
-        .any(|entry| entry.contains(".omp/commands/implement-issue.md")));
-    assert_ne!(std::fs::read(&command).unwrap(), original);
+        .filter(|line| line.contains("AGENTS.md"))
+        .collect();
+    assert_eq!(agents.len(), 1, "{:?}", report.drift);
+    assert_eq!(
+        agents[0].as_str(),
+        devboard::cli_install::AGENTS_DELETED_DRIFT
+    );
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_devboard"))
+        .arg("install")
+        .arg(&root)
+        .output()
+        .expect("install runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.contains("AGENTS.md"))
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["drift: AGENTS.md is tracked by the host; left deleted"],
+        "{stdout}"
+    );
+    assert!(!stdout.contains("left unchanged"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn the_update_sync_journals_each_drift_entry_once() {
+    use devboard::app::App;
+    use devboard::config::Config;
+    use devboard::journal::Journal;
+
+    let root = host("agents-journal");
+    devboard::cli_install::install(Some(&root), false).unwrap();
+    git(&root, &["init", "--quiet"]);
+    git(&root, &["add", "-f", "AGENTS.md"]);
+    std::fs::remove_file(root.join("AGENTS.md")).unwrap();
+
+    let state = root.join(".devboard/.tmp");
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: root.join("adrs"),
+        repo_dir: root.clone(),
+        goal_file: root.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&state, &root, 0);
+    let path = journal.path.clone();
+    let app = App::new(config, journal);
+    app.sync_host_copies().expect("the sync journals its drift");
+
+    let text = std::fs::read_to_string(&path).expect("the journal");
+    let texts: Vec<String> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|record| record["text"].as_str().map(str::to_string))
+        .collect();
+    let agents: Vec<&String> = texts
+        .iter()
+        .filter(|line| line.contains("AGENTS.md"))
+        .collect();
+    assert_eq!(agents.len(), 1, "{texts:?}");
+    assert_eq!(
+        agents[0].as_str(),
+        devboard::cli_install::AGENTS_DELETED_DRIFT
+    );
+    assert!(
+        !texts.iter().any(|line| line.contains("left unchanged")),
+        "{texts:?}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
