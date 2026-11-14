@@ -31,14 +31,48 @@
   const rows = $derived(sortAgentIssues(issues));
 
   /**
-   * A zero-row table claims zero filed issues only after a successful read.
-   * Before one, or after a failed one, the rows are unknown, not empty.
+   * Only a fresh successful read proves the list. The state is the verdict and
+   * `at`/`error` are its evidence, so an aged or failed read is never presented
+   * as a current table.
    */
-  const read = $derived(sync.at !== null && sync.error === null);
+  const read = $derived(sync.state === "ok");
   const lastRead = $derived(sync.at === null ? "never" : filedLabel(sync.at));
+  /** Why a read that is not fresh cannot prove its rows, in its own words. */
+  const unreadTitle = $derived(
+    sync.error !== null
+      ? "The tracker could not be read"
+      : sync.at === null
+        ? "The tracker has not been read yet"
+        : "The tracker read is stale",
+  );
+  const unreadCopy = $derived(
+    sync.error !== null
+      ? sync.error
+      : sync.at === null
+        ? `${agentLabel}'s filed issues are unknown until the first read completes.`
+        : `${agentLabel}'s filed issues may be out of date until the next successful read.`,
+  );
+  /** Surviving rows stay, and a read that is not fresh says so above them. */
+  const rowsNotice = $derived(
+    read || rows.length === 0
+      ? null
+      : sync.error !== null
+        ? `These rows predate a failed read; last read ${lastRead}.`
+        : `These rows come from a stale read; last read ${lastRead}.`,
+  );
 </script>
 
 <div class="agent-issues" data-testid="agent-issues">
+  {#if rowsNotice !== null}
+    <p
+      class="agent-issues__sync"
+      data-testid="agent-issues-sync"
+      data-sync={sync.state}
+      role="status"
+    >
+      {rowsNotice}
+    </p>
+  {/if}
   {#if rows.length === 0}
     <div class="agent-issues__empty" data-testid="agent-issues-empty" data-sync={sync.state}>
       <div class="agent-issues__empty-body">
@@ -58,15 +92,11 @@
           </p>
         {:else}
           <p class="agent-issues__empty-title" data-testid="agent-issues-unread">
-            {sync.error === null
-              ? "The tracker has not been read yet"
-              : "The tracker could not be read"}
+            {unreadTitle}
           </p>
           <p class="agent-issues__empty-copy" data-testid="agent-issues-unread-copy">
             Last read {lastRead}.
-            {sync.error === null
-              ? `${agentLabel}'s filed issues are unknown until the first read completes.`
-              : sync.error}
+            {unreadCopy}
           </p>
         {/if}
       </div>
@@ -138,6 +168,15 @@
     height: 100%;
     min-height: 0;
     overflow: auto;
+  }
+
+  /* A non-fresh read above surviving rows: the table stays, the verdict shows. */
+  .agent-issues__sync {
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--muted-foreground);
+    font-size: 11px;
+    margin: 0;
+    padding: 6px 8px;
   }
 
   .agent-issues__empty {

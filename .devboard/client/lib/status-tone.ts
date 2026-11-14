@@ -24,6 +24,7 @@ export function statusTone(status: string): BadgeTone | undefined {
     case "implemented":
       return "success";
     case "failed":
+    case "error":
       return "error";
     case "pending":
       return "pending";

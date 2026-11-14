@@ -20,6 +20,8 @@ describe("status tone", () => {
 
   test("marks failures as error", () => {
     expect(statusTone("failed")).toBe("error");
+    // The agent sync verdict names its failed read `error`.
+    expect(statusTone("error")).toBe("error");
   });
 
   test("keeps stopped and paused work neutral instead of the running color", () => {

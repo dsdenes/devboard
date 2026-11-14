@@ -150,6 +150,19 @@ test("an owned worker shows Stop and no ownership notice", () => {
   expect(within(view.container).getByTestId("agent-stop")).toBeTruthy();
 });
 
+test("the header states the forge sync verdict beside the last read", () => {
+  const at = "2026-11-03T10:15:00.000Z";
+  const stale = present(releaseSnapshot({ sync: { state: "stale", at, error: null } }));
+  const staleState = within(stale.container).getByTestId("agent-sync-state");
+  expect(staleState.textContent?.trim()).toBe("stale");
+  expect(staleState.getAttribute("data-tone")).toBe("stale");
+
+  const fresh = present(releaseSnapshot({ sync: { state: "ok", at, error: null } }));
+  const freshState = within(fresh.container).getByTestId("agent-sync-state");
+  expect(freshState.textContent?.trim()).toBe("ok");
+  expect(freshState.getAttribute("data-tone")).toBeNull();
+});
+
 test("Start is enabled for a stopped agent on an open connection", () => {
   const view = present(
     releaseSnapshot({ lifecycle: "stopped", attached: false, owned: false, notice: null }),

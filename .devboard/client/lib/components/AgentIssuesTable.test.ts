@@ -93,4 +93,26 @@ test("an aged read with surviving rows keeps the table", () => {
   expect(view.getAllByTestId("agent-issue")).toHaveLength(1);
   expect(view.queryByTestId("agent-issues-empty")).toBeNull();
   expect(view.queryByTestId("agent-issues-unread")).toBeNull();
+  const notice = view.getByTestId("agent-issues-sync");
+  expect(notice.getAttribute("data-sync")).toBe("stale");
+  expect(notice.textContent).toContain("come from a stale read");
+});
+
+test("a stale read with no rows states the verdict instead of claiming zero issues", () => {
+  const view = render(AgentIssuesTable, {
+    props: {
+      issues: [],
+      agentLabel: "Auto Scout",
+      sync: { state: "stale" as const, at: readAt, error: null },
+    },
+  });
+  const empty = view.getByTestId("agent-issues-empty");
+  expect(empty.getAttribute("data-sync")).toBe("stale");
+  expect(empty.textContent).not.toContain("No issues filed yet");
+  expect(view.getByTestId("agent-issues-unread").textContent?.trim()).toBe(
+    "The tracker read is stale",
+  );
+  const copy = view.getByTestId("agent-issues-unread-copy").textContent ?? "";
+  expect(copy).toContain("Last read");
+  expect(copy).toContain("may be out of date");
 });

@@ -5,6 +5,7 @@
   import { connection } from "../connection.svelte";
   import { layout } from "../layout.svelte";
   import { pageVisibility } from "../page-visibility.svelte";
+  import { statusTone } from "../status-tone";
   import type {
     AgentCycle,
     AgentDocumentationEntry,
@@ -273,14 +274,25 @@
             {/each}
           </span>
         {/if}
-        <span class="agent-sync-at">
-          Last read
-          <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
-            {#if sync.at === null}
-              never
-            {:else}
-              <time datetime={sync.at}>{stamp(sync.at)}</time>
-            {/if}
+        <!-- The server's forge-sync verdict is the header's health fact; the
+             reason a non-`ok` read failed stays in the alert below. -->
+        <span class="agent-sync" role="group" aria-label="Forge read">
+          <span
+            class="badge"
+            data-tone={statusTone(sync.state)}
+            data-testid="agent-sync-state"
+          >
+            {sync.state}
+          </span>
+          <span class="agent-sync-at">
+            Last read
+            <span class="mono" data-testid="agent-sync-at" title={sync.at ?? "never"}>
+              {#if sync.at === null}
+                never
+              {:else}
+                <time datetime={sync.at}>{stamp(sync.at)}</time>
+              {/if}
+            </span>
           </span>
         </span>
       {/snippet}
@@ -572,6 +584,13 @@
 
   .agent-settings__run .mono {
     font-variant-numeric: tabular-nums;
+  }
+
+  .agent-sync {
+    align-items: center;
+    display: inline-flex;
+    gap: 6px;
+    white-space: nowrap;
   }
 
   .agent-sync-at {
