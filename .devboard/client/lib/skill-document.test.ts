@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { renderSkillDocument, skillBody } from "./skill-document";
 
 const skill = [
@@ -44,7 +45,7 @@ describe("skillBody", () => {
 describe("renderSkillDocument", () => {
   test("renders headings, list items, and inline code as markup", () => {
     const html = renderSkillDocument(skill);
-    expect(html).toContain("<h1>Fixture conventions</h1>");
+    expect(html).toContain('<h1 id="fixture-conventions">Fixture conventions</h1>');
     expect(html).toContain("<li>Prefer the smallest observable change.</li>");
     expect(html).toContain("<code>bun test</code>");
     expect(html).not.toContain("devboard-managed");
@@ -87,13 +88,47 @@ describe("renderSkillDocument", () => {
     }
   });
 
-  test("normalizes a destination before emitting it and allows relative links", () => {
+  test("normalizes an external destination and keeps it in its own tab", () => {
     expect(renderSkillDocument("[docs](<https://exa\tmple.com/x>)")).toContain(
-      'href="https://example.com/x"',
+      'href="https://example.com/x" target="_blank" rel="noreferrer noopener"',
     );
-    expect(renderSkillDocument("[rel](../x.md)")).toContain('href="../x.md"');
-    expect(renderSkillDocument("[mail](mailto:a@b.c)")).toContain('href="mailto:a@b.c"');
+    expect(renderSkillDocument("[mail](mailto:a@b.c)")).toContain(
+      'href="mailto:a@b.c" target="_blank" rel="noreferrer noopener"',
+    );
     expect(renderSkillDocument("[data](data:text/html,<b>x</b>)")).not.toContain("<a ");
+  });
+
+  test("renders a relative destination as text instead of an app-navigable anchor", () => {
+    const html = renderSkillDocument("[rel](../x.md)");
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("rel (../x.md)");
+  });
+
+  test("renders a fragment destination in page with the heading id it names", () => {
+    const html = renderSkillDocument(
+      ["## Durable state", "", "See [Durable state](#durable-state)."].join("\n"),
+    );
+    expect(html).toContain('<h2 id="durable-state">Durable state</h2>');
+    expect(html).toContain('<a href="#durable-state">Durable state</a>');
+    expect(html).not.toContain('target="_blank"');
+  });
+
+  test("suffixes a heading id the same document repeats", () => {
+    const html = renderSkillDocument(["## Notes", "", "## Notes"].join("\n"));
+    expect(html).toContain('<h2 id="notes">Notes</h2>');
+    expect(html).toContain('<h2 id="notes-1">Notes</h2>');
+  });
+
+  test("renders the shipped reference's fragments in page", async () => {
+    const source = await Bun.file(
+      join(import.meta.dir, "..", "..", "omp", "skills", "devboard-harness-reference", "SKILL.md"),
+    ).text();
+    const html = renderSkillDocument(source);
+    for (const fragment of ["#durable-state", "#skills", "#devboard-mcp-server"]) {
+      expect(html).toContain(`<a href="${fragment}">`);
+      expect(html).toContain(`id="${fragment.slice(1)}"`);
+    }
+    expect(html).not.toMatch(/<a href="#[^"]*"[^>]*\starget="_blank"/);
   });
 
   test("returns no markup for a frontmatter-only skill", () => {
