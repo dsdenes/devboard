@@ -26,11 +26,13 @@ comment on, close, or reopen another issue.
   strings: a catalog name that already begins `devboard_` keeps exactly one `devboard_` after
   `mcp__`, and one that does not — `issue_create` — gains none. Never insert a second `devboard_`
   segment and never drop the `mcp__devboard_` prefix, so `xd://mcp__devboard_devboard_status` and
-  a bare `xd://devboard_status` are not tools. Copy each mount from the device list; never infer
-  it. A write that answers `No such tool` gets exactly one corrected attempt: copy a name from
-  the `Mounted devices:` list in that same error or recompose it by this rule, and change nothing
-  else. Never re-issue the identical call and never retry a variant whose `i` text is the only
-  difference.
+  a bare `xd://devboard_status` are not tools. A `write` carries the whole device route in `path`
+  and nothing else: a selector suffix such as `:raw` is a `read` spelling, never part of a device
+  route, so `xd://mcp__devboard_mcp_optimizer_proposal_skip:raw` is not a tool either. Copy each
+  mount from the device list; never infer it. A write that answers `No such tool` gets exactly one
+  corrected attempt: copy a name from the `Mounted devices:` list in that same error or recompose
+  it by this rule, and change nothing else. Never re-issue the identical call and never retry a
+  variant whose `i` text is the only difference.
 - Resolve the session's host and checkout state exactly once, before any forge read or write: make
   one argument-free `devboard_status` MCP call. Take `<REPO_DIR>` from its `repositoryRoot` — the
   checkout's worktree path — along with `harnessDirectory`, `stateDirectory`, and its `git`
