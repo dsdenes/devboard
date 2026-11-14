@@ -1095,12 +1095,12 @@ async fn dispatch(
         "goal_control" => goal_control(context, args).await,
         "goal_draft_file" => file_goal_draft(context, args).await,
         "goal_draft_read" => goal_draft_read(context, args),
-        "goal_drafts_list" => Ok(json!({
-            "drafts": crate::goal_drafts::list_goal_drafts(&context.repo_dir)
-                .into_iter()
-                .map(|draft| draft.to_json())
-                .collect::<Vec<_>>()
-        })),
+        "goal_drafts_list" => match crate::goal_drafts::list_goal_drafts(&context.repo_dir) {
+            Ok(drafts) => Ok(json!({
+                "drafts": drafts.iter().map(|draft| draft.to_json()).collect::<Vec<_>>()
+            })),
+            Err(error) => Err(error),
+        },
         "goal_get" => Ok(goal_text(context)),
         "goal_spec_write" => write_goal_spec(context, args),
         "issue_close" => close_issue(context, args).await,

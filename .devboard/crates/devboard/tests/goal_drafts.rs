@@ -1618,3 +1618,52 @@ async fn a_start_that_never_claims_fails_truthfully() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreadable_drafts_directory_answers_an_error_frame_not_an_empty_list() {
+    let _serial = serial().await;
+    let repo = repo_root("unreadable");
+    let directory = repo.join(".devboard").join("goal-proposals");
+    std::fs::remove_dir_all(&directory).expect("the drafts directory");
+    // A regular file at the drafts path makes `read_dir` fail `ENOTDIR`, the
+    // failure a missing directory must not be confused with.
+    std::fs::write(&directory, "not a directory").expect("a file at the drafts path");
+    let app = app(&repo);
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::GetGoalDrafts).await;
+    let failed = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDrafts" && frame["error"].is_string(),
+        5000,
+    )
+    .await;
+    assert!(failed.get("drafts").is_none(), "{failed}");
+    let message = failed["error"]
+        .as_str()
+        .expect("the read failure")
+        .to_string();
+    assert!(message.contains(".devboard/goal-proposals"), "{message}");
+
+    // The journal keeps the failure once, as a server-side read failure.
+    let journal = std::fs::read_to_string(devboard::journal::journal_file(&state_dir(), &repo))
+        .expect("the journal");
+    assert!(
+        journal.lines().any(|line| {
+            line.contains("\"kind\":\"server-error\"") && line.contains(".devboard/goal-proposals")
+        }),
+        "{journal}"
+    );
+
+    // An absent directory is a host that never created it, so it is empty.
+    std::fs::remove_file(&directory).expect("the file at the drafts path");
+    app.command(&conn, Command::GetGoalDrafts).await;
+    let empty = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDrafts" && frame["drafts"] == json!([]),
+        5000,
+    )
+    .await;
+    assert!(empty.get("error").is_none(), "{empty}");
+    assert_eq!(empty["runs"], json!([]));
+}

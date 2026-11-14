@@ -1598,11 +1598,9 @@ impl App {
         match outcome {
             Ok(proposal) => {
                 // Every connected page sees the draft list the POST changed.
-                let drafts: Vec<Value> = crate::goal_drafts::list_goal_drafts(&repo_dir)
-                    .iter()
-                    .map(crate::goal_drafts::GoalDraftSummary::to_json)
-                    .collect();
-                self.broadcast(json!({"type": "issuesDrafts", "drafts": drafts}));
+                // A read that failed publishes its message, never an empty
+                // directory the write did not produce.
+                self.broadcast(crate::goal_drafts::list_goal_drafts_frame(&repo_dir));
                 let href = proposal
                     .pointer("/links/draft/href")
                     .and_then(Value::as_str)

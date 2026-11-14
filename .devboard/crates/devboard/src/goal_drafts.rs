@@ -922,25 +922,41 @@ pub fn resolve_goal_draft(
 }
 
 /// Every regular `.md` file directly under the drafts directory, by name.
-pub fn list_goal_drafts(repo_dir: &Path) -> Vec<GoalDraftSummary> {
+///
+/// A directory that does not exist is a host that never created it, so it
+/// lists as empty. Every other read failure — permissions, `ENOTDIR`, a
+/// transient `EIO`, one unreadable entry — is returned, because publishing it
+/// as an empty or partial list would claim the directory holds no drafts.
+pub fn list_goal_drafts(repo_dir: &Path) -> Result<Vec<GoalDraftSummary>, String> {
     let directory = repo_dir.join(GOAL_PROPOSALS_DIRECTORY);
-    let Ok(entries) = std::fs::read_dir(&directory) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "Could not read {GOAL_PROPOSALS_DIRECTORY}: {error}"
+            ))
+        }
     };
     let mut drafts = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_file = entry
-            .file_type()
-            .map(|kind| kind.is_file())
-            .unwrap_or(false);
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("Could not read {GOAL_PROPOSALS_DIRECTORY}: {error}"))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !is_file || !name.ends_with(".md") {
+        if !name.ends_with(".md") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let is_file = entry
+            .file_type()
+            .map_err(|error| format!("Could not read {GOAL_PROPOSALS_DIRECTORY}/{name}: {error}"))?
+            .is_file();
+        if !is_file {
             continue;
-        };
+        }
+        let path = entry.path();
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            format!("Could not read {GOAL_PROPOSALS_DIRECTORY}/{name}: {error}")
+        })?;
         drafts.push(GoalDraftSummary {
             path: format!("{GOAL_PROPOSALS_DIRECTORY}/{name}"),
             name,
@@ -948,7 +964,21 @@ pub fn list_goal_drafts(repo_dir: &Path) -> Vec<GoalDraftSummary> {
         });
     }
     drafts.sort_by(|left, right| left.name.cmp(&right.name));
-    drafts
+    Ok(drafts)
+}
+
+/// The `issuesDrafts` frame for one read of the drafts directory.
+///
+/// A failed read carries its message and no `drafts` array: a page must never
+/// read it as an authoritative empty directory.
+pub fn list_goal_drafts_frame(repo_dir: &Path) -> Value {
+    match list_goal_drafts(repo_dir) {
+        Ok(drafts) => json!({
+            "type": "issuesDrafts",
+            "drafts": drafts.iter().map(GoalDraftSummary::to_json).collect::<Vec<_>>(),
+        }),
+        Err(error) => json!({"type": "issuesDrafts", "error": error}),
+    }
 }
 
 /// Reads one draft's bytes exactly, after the same path validation.
@@ -1022,6 +1052,9 @@ struct DraftWatcher {
     begun: bool,
     supervises: bool,
     last_lease_ms: i64,
+    /// The draft-list read failure the journal already carries, so a repeating
+    /// failure is recorded once instead of on every polled frame.
+    drafts_read_error: Option<String>,
 }
 
 impl DraftWatcher {
@@ -1058,6 +1091,7 @@ impl DraftWatcher {
             begun: false,
             supervises: false,
             last_lease_ms: 0,
+            drafts_read_error: None,
         }
     }
 
@@ -1107,17 +1141,30 @@ impl DraftWatcher {
         }));
     }
 
-    /// The `issuesDrafts` frame the list publishes.
-    fn drafts_frame(&self) -> Value {
-        let drafts: Vec<Value> = list_goal_drafts(&self.repo_dir)
-            .iter()
-            .map(GoalDraftSummary::to_json)
-            .collect();
-        json!({"type": "issuesDrafts", "drafts": drafts})
+    /// The `issuesDrafts` frame the list publishes, recording a failed read
+    /// once so a polled failure does not fill the journal.
+    fn drafts_frame(&mut self) -> Value {
+        let frame = list_goal_drafts_frame(&self.repo_dir);
+        let error = frame
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if self.drafts_read_error != error {
+            if let Some(message) = &error {
+                crate::journal::Journal::open(&self.state_dir, &self.repo_dir, 0).write(
+                    "server-error",
+                    message,
+                    Some("goal-drafts"),
+                );
+            }
+            self.drafts_read_error = error;
+        }
+        frame
     }
 
     fn publish_drafts(&mut self) {
-        self.send_all(self.drafts_frame());
+        let frame = self.drafts_frame();
+        self.send_all(frame);
     }
 
     /// Re-reads one draft's owner state and publishes it, so a page action sees
@@ -1902,16 +1949,16 @@ pub async fn handle(conn: &Conn, repo_dir: &Path, command: &crate::command::Comm
         Command::GetGoalDrafts => {
             // The poll thread owns supervision and publishing; a read only
             // projects what the watcher last published.
-            let drafts: Vec<Value> = list_goal_drafts(&watcher.repo_dir)
-                .iter()
-                .map(GoalDraftSummary::to_json)
-                .collect();
             let runs: Vec<Value> = watcher
                 .runs_snapshot()
                 .iter()
                 .map(GoalDraftRun::to_json)
                 .collect();
-            conn.send(json!({"type": "issuesDrafts", "drafts": drafts, "runs": runs}));
+            let mut frame = watcher.drafts_frame();
+            if frame.get("drafts").is_some() {
+                frame["runs"] = Value::Array(runs);
+            }
+            conn.send(frame);
         }
         Command::StartGoalDraft { path } => match watcher.start(path.as_ref()) {
             StartOutcome::Started(run) => {
@@ -1983,11 +2030,32 @@ mod tests {
             "text\n## First ##\n",
         )
         .expect("a draft");
-        let drafts = list_goal_drafts(&root);
+        let drafts = list_goal_drafts(&root).expect("a readable drafts directory");
         assert_eq!(drafts.len(), 2);
         assert_eq!(drafts[0].name, "a.md");
         assert_eq!(drafts[0].heading, "First");
         assert_eq!(drafts[1].heading, "Second");
+    }
+
+    #[test]
+    fn an_absent_drafts_directory_lists_as_empty() {
+        let root = scratch("absent");
+        std::fs::remove_dir_all(root.join(GOAL_PROPOSALS_DIRECTORY)).expect("no drafts dir");
+        assert!(list_goal_drafts(&root)
+            .expect("a host that never created the directory is empty")
+            .is_empty());
+    }
+
+    #[test]
+    fn a_file_where_the_drafts_directory_belongs_is_reported_not_empty() {
+        let root = scratch("enotdir");
+        std::fs::remove_dir_all(root.join(GOAL_PROPOSALS_DIRECTORY)).expect("no drafts dir");
+        std::fs::write(root.join(GOAL_PROPOSALS_DIRECTORY), "not a directory").expect("a file");
+        let error = list_goal_drafts(&root).expect_err("a file is never a draft list");
+        assert!(error.contains(GOAL_PROPOSALS_DIRECTORY), "{error}");
+        let frame = list_goal_drafts_frame(&root);
+        assert!(frame.get("drafts").is_none(), "{frame}");
+        assert_eq!(frame["error"], json!(error));
     }
 
     #[test]

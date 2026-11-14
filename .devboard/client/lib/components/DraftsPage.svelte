@@ -21,6 +21,12 @@
    */
   const proposal = $derived(draftProposal(goalDrafts.draft?.text ?? ""));
   const hasDrafts = $derived(goalDrafts.drafts.length > 0);
+  /**
+   * The server could not read `.devboard/goal-proposals`. The page then shows
+   * the message and keeps the list it already had: a failed read never claims
+   * the directory is empty.
+   */
+  const draftsUnreadable = $derived(goalDrafts.draftsReadError !== null);
 
   // The header reports the selected draft's run only; another draft's run is not this draft's state.
   const run = $derived(goalDrafts.draft !== null ? goalDrafts.draftRunFor(goalDrafts.draft.path) : null);
@@ -70,11 +76,12 @@
     <div>
       <h1 class="issues-overview__title">Draft goals</h1>
       <p class="issues-overview__repo mono" title={issues.repoLabel}>
-        {issues.repoLabel} · {goalDrafts.draftStatus} · {goalDrafts.drafts.length} draft(s)
+        {issues.repoLabel} · {goalDrafts.draftStatus} ·
+        {draftsUnreadable ? "drafts unreadable" : `${goalDrafts.drafts.length} draft(s)`}
       </p>
     </div>
   </header>
-  <div class="issues-drafts__body" data-empty={hasDrafts ? undefined : "true"}>
+  <div class="issues-drafts__body" data-empty={hasDrafts || draftsUnreadable ? undefined : "true"}>
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
@@ -142,7 +149,14 @@
           </div>
         </div>
       {/if}
-      {#if !hasDrafts}
+      {#if draftsUnreadable}
+        <div class="panel__body">
+          <p class="issues-error" data-testid="issues-drafts-error" role="alert">
+            {goalDrafts.draftsReadError}
+          </p>
+        </div>
+      {/if}
+      {#if !hasDrafts && !draftsUnreadable}
         <div class="panel__body issues-drafts__placeholder" data-testid="issues-drafts-empty">
           <div class="issues-drafts__placeholder-body">
             <span class="issues-drafts__placeholder-icon" aria-hidden="true">
@@ -155,7 +169,7 @@
             </p>
           </div>
         </div>
-      {:else}
+      {:else if hasDrafts}
         <div class="panel__body panel__body--flush">
           <ol class="issues-drafts" data-testid="issues-draft-list">
             {#each goalDrafts.drafts as draft (draft.path)}

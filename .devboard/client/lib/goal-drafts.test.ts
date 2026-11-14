@@ -98,6 +98,56 @@ test("a refused draft answer reports nothing sent and its refusal frame answers 
   expect(goalDrafts.answerRevision(PATH)).toBe(1);
 });
 
+test("a failed draft-list read keeps the selection and reports its message", () => {
+  const drafts = [{ path: PATH, name: "example.md", heading: "Example" }];
+  const detail = { path: PATH, name: "example.md", heading: "Example", text: "# Example" };
+  const runs = {
+    [PATH]: {
+      status: "idle" as const,
+      path: PATH,
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+      activity: [],
+      question: null,
+    },
+  };
+  goalDrafts.drafts = drafts;
+  goalDrafts.draft = detail;
+  goalDrafts.draftPath = PATH;
+  goalDrafts.draftRuns = runs;
+
+  try {
+    // `read_dir` failed: the frame carries the message and no list, so the
+    // page keeps what it showed instead of claiming the directory is empty.
+    goalDrafts.handleEvent({
+      type: "issuesDrafts",
+      error: "Could not read .devboard/goal-proposals: Not a directory (os error 20)",
+    });
+    expect(goalDrafts.draftsReadError).toContain(".devboard/goal-proposals");
+    expect(goalDrafts.drafts).toEqual(drafts);
+    expect(goalDrafts.draftPath).toBe(PATH);
+    expect(goalDrafts.draft).toEqual(detail);
+    expect(goalDrafts.draftRuns).toEqual(runs);
+
+    // A frame with neither a list nor a message is not authoritative either.
+    goalDrafts.handleEvent({ type: "issuesDrafts" });
+    expect(goalDrafts.draftPath).toBe(PATH);
+    expect(goalDrafts.draft).toEqual(detail);
+
+    // The absent directory's authoritative empty list clears the vanished
+    // selection and the recorded failure.
+    goalDrafts.handleEvent({ type: "issuesDrafts", drafts: [] });
+    expect(goalDrafts.draftsReadError).toBeNull();
+    expect(goalDrafts.drafts).toEqual([]);
+    expect(goalDrafts.draftPath).toBeNull();
+    expect(goalDrafts.draft).toBeNull();
+  } finally {
+    goalDrafts.drafts = [];
+    goalDrafts.draftRuns = {};
+  }
+});
+
 test("a draft answer with no selected draft or no question sends nothing", () => {
   const sent: unknown[] = [];
   Object.defineProperty(connection, "open", { get: () => true, configurable: true });

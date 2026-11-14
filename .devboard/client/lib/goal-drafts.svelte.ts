@@ -61,6 +61,11 @@ function writeDraftPath(path: string | null): void {
  */
 export class GoalDraftsStore {
   drafts = $state<GoalDraftSummary[]>([]);
+  /**
+   * The server's message for a failed draft-list read, or null after one
+   * succeeded. A frame carrying it is never an authoritative empty list.
+   */
+  draftsReadError = $state<string | null>(null);
   /** One elaboration run per draft path; a path with no entry is idle. */
   draftRuns = $state<Record<string, GoalDraftRun>>({});
   draft = $state<GoalDraftDetail | null>(null);
@@ -289,7 +294,16 @@ export class GoalDraftsStore {
   }
 
   handleEvent(message: Record<string, unknown>): void {
-    if (message.type === "issuesDrafts" && Array.isArray(message.drafts)) {
+    if (message.type === "issuesDrafts") {
+      if (typeof message.error === "string" && message.error.length > 0) {
+        // A failed read is not an authoritative empty directory: the last
+        // known list, the selection, and its detail stay until a read
+        // succeeds, and the page surfaces the message instead of "No drafts".
+        this.draftsReadError = message.error;
+        return;
+      }
+      if (!Array.isArray(message.drafts)) return;
+      this.draftsReadError = null;
       const drafts = (message.drafts as GoalDraftSummary[]).filter(
         (draft) => typeof draft?.path === "string" && typeof draft?.name === "string",
       );
