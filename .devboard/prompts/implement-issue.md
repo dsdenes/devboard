@@ -19,14 +19,18 @@ comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
-- **MCP routes.** A Devboard tool mounts at `xd://mcp__devboard_<tool>`, where `<tool>` is the
-  catalog name minus its `devboard_` prefix: `devboard_status` at `xd://mcp__devboard_status`,
-  `issue_create` at `xd://mcp__devboard_issue_create`, `journal_search` at
-  `xd://mcp__devboard_journal_search`. The mount already carries that one `devboard` segment, so
-  never write a route with two of them — `xd://mcp__devboard_devboard_status` is not a device — and
-  never a bare `xd://<name>`. Copy each mount from the tool list the session carries; never infer
-  it. On `No such tool`, copy the mount from the mounted-device list that error prints and issue
-  the call once there; never rewrite the same path and never probe a second spelling.
+- **MCP routes.** A Devboard tool is addressed as `xd://` followed by its mounted name, spelled
+  exactly as the session's device list prints it: `mcp__devboard_status` is
+  `xd://mcp__devboard_status`, `mcp__devboard_issue_create` is `xd://mcp__devboard_issue_create`,
+  and `mcp__devboard_journal_search` is `xd://mcp__devboard_journal_search`. The catalog name and
+  the mounted name are different strings: a catalog name that already begins `devboard_` keeps
+  exactly one `devboard_` after `mcp__`, and one that does not — `issue_create` — gains none.
+  Never insert a second `devboard_` segment and never drop the `mcp__devboard_` prefix, so
+  `xd://mcp__devboard_devboard_status` and `xd://devboard_status` are not tools. Copy each mount
+  from the device list; never infer it. When a write answers `No such tool`, copy a name from the
+  `Mounted devices:` list in that same error, issue the corrected route once, and change nothing
+  else — never rewrite the path from memory and never retry a variant whose `i` text is the only
+  difference.
 - Resolve the session's host and checkout state exactly once, before any forge read or write: make
   one argument-free `devboard_status` MCP call. Take `<REPO_DIR>` from its `repositoryRoot` — the
   checkout's worktree path — along with `harnessDirectory`, `stateDirectory`, and its `git`
