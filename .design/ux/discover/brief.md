@@ -17,7 +17,7 @@
   trustworthy, and worth acting on, then take the one action that follows: run or re-run the
   crawl, read the project sheet, review a glossary term, or edit a policy skill.
 - Success signal: after a run the Overview shows the new commit and discovery time, the sheet
-  renders, and the five skills are present; on return the developer can state what the project
+  renders, and the six skills are present; on return the developer can state what the project
   is, how to run and test it, where its bounded contexts are, and which skill they changed.
 - Secondary goals: stop an active run without losing the published artifacts; answer one queued
   crawl question; review warnings; start a manual remote crawl (source-checkout harness only).
@@ -38,7 +38,7 @@
 
 - Upstream: Goal and Flow work. A Discover run is refused while either holds work, and a Goal or
   Flow command is refused while Discover runs.
-- Downstream: implementation agents in this host read the five generated skills under
+- Downstream: implementation agents in this host read the six generated skills under
   `.omp/skills/`; the glossary and sheet are evidence for those agents and for the developer.
 - Loops: after the repository changes, the sheet goes stale; re-running Discover refreshes it.
   Editing a skill loops back to its generated baseline through Restore.
@@ -55,7 +55,7 @@
   for completion, scan the new sheet.
 - Decision points: whether to run at all (the empty state must say what is written and what is
   not touched); whether to stop when the run takes long.
-- Success: the sheet, glossary, and five skills are published; the Overview shows the project
+- Success: the sheet, glossary, and six skills are published; the Overview shows the project
   name, definition, commit, and discovery time.
 - Failure routes: the run fails validation, writes outside staging, or collides with a non-
   Discover skill; the view shows one error and the previous artifacts stay readable. A server
@@ -158,9 +158,9 @@
 
 ## Assumptions
 
-- The five skills are fixed by the Discover contract (`discover-testing-strategy`,
+- The six skills are fixed by the Discover contract (`discover-testing-strategy`,
   `discover-naming-conventions`, `discover-coding-conventions`,
-  `discover-architecture-boundaries`, `discover-glossary`).
+  `discover-architecture-boundaries`, `discover-glossary`, `discover-contribution`).
 - `freshness.project` is the repository path; the interface shows its last segment as the
   visible title and the full path in the sidebar and status bar.
 - The shipped interface exposes no glossary confirm/reject decision control; the term page is a

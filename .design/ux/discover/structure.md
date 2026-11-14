@@ -50,7 +50,7 @@ hole. The remote strip follows both columns.
 | 2 | region_term_main | Definition, uses, examples, kind, status | 5 | C23 | P1 |
 | 3 | region_term_detail | Labels, related terms | 5 | C24 | P2 |
 
-### Skill page (five variants)
+### Skill page (six variants)
 
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
@@ -100,7 +100,7 @@ hole. The remote strip follows both columns.
 - **Permission-denied:** not applicable. The dashboard has no accounts, roles, or per-user
   permissions; the server refuses work by run state, not identity. Refusals surface as error.
 - **Success:** after publication the header shows the new commit and time, the stale badge is
-  gone, and the five skills show their state. A mode switch keeps the page and scroll position.
+  gone, and the six skills show their state. A mode switch keeps the page and scroll position.
 - **Active:** run region first, start disabled, Stop available; published artifacts stay visible
   below so the last result is not hidden.
 - **Indexed/glossary empty:** the filtered-empty panel shows the active filters and one reset

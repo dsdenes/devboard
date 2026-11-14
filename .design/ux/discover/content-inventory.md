@@ -33,12 +33,12 @@ the client types. Journey numbers refer to `brief.md`.
 | C25 | Skill text editor with save | `discover.skillDraft`, `saveSkill` | 6 | Correct policy for this host | yes | Primary skill action |
 | C26 | Skill restore / recreate | `discover.restoreSkill`, `DiscoverSkill.state` | 6 | Undo an edit or recover a missing file | yes | Recovery route |
 | C27 | Skill state (generated, edited, missing) and dirty marker | `DiscoverSkill.state`, `skillDirty` | 6 | Know whether the file diverges | yes | Prevents accidental loss |
-| C28 | Skill purpose | fixed five-skill contract | 6 | Decide which skill owns a rule | yes | One line per skill; P2 |
+| C28 | Skill purpose | fixed six-skill contract | 6 | Decide which skill owns a rule | yes | One line per skill; P2 |
 | C29 | Warning detail list | `discover.displayedWarnings` | 2, 3 | Diagnose a partial artifact | yes | Full text lives on its own page |
 | C30 | Manual remote target: URL, active banner, clear | `remoteAvailable`, `remoteUrl`, `remoteTarget` | 8 | Test a crawl against a public repository | yes | Source checkout only; P2 |
 | C31 | Clone progress | `discover.cloning` | 8 | Know a clone is in flight | yes | Conditional on C30 |
 | C32 | Mode navigation | layout mode rail | 1–8 | Reach Discover and leave it | yes | Shell; P0 |
-| C33 | Discover navigation: sections and five skills | `SECTION_TABS`, `SKILL_TABS` | 1–8 | Reach a page | yes | Shell; P0 |
+| C33 | Discover navigation: sections and six skills | `SECTION_TABS`, `SKILL_TABS` | 1–8 | Reach a page | yes | Shell; P0 |
 | C34 | Skill exception state in navigation | `DiscoverSkill.state` | 6 | Notice an edited or missing skill while browsing | yes | Only for `edited`/`missing`, not `generated` |
 | C35 | Empty-state explanation and written paths | `.omp/discover/`, `.omp/skills/` contract | 1 | Decide whether to run | yes | The only place the write boundary is stated |
 | C36 | Status-bar connection, project, versions | shell | all | Know the socket and version | yes | Outside Discover; unchanged |
@@ -47,7 +47,7 @@ the client types. Journey numbers refer to `brief.md`.
 | C39 | Recent notifications inside Discover sidebar | `notifications.items` | — | — | no | Duplicate of the status-bar bell and notification region |
 | C40 | Duplicate warning row above the page | current header banner | — | — | no | Duplicates C12/C29 |
 | C41 | Busy text repeated in the empty state | `discover.busy` | — | — | no | Same fact as the header's disabled reason |
-| C42 | Skill count ("5") in the sidebar group | fixed contract | — | — | no | The five entries are the count |
+| C42 | Skill count ("6") in the sidebar group | fixed contract | — | — | no | The six entries are the count |
 | C43 | Raw full project path as the Overview title | `freshness.project` | — | — | no | Long, unwrappable; use C1 and keep the path in the sidebar/status bar |
 | C44 | Origin and per-concept status as prominent facts | `Concept.origin`, `status` | 5 | Judge trust | no | No user decision turns on the origin; status stays as a quiet term attribute |
 | C45 | "Commands found n of 8" denominator | `COMMAND_TOTAL` | 2 | Judge coverage | yes | A missing command is itself evidence |

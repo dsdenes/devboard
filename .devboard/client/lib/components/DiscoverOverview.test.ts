@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { SKILL_TABS } from "../discover-format";
 import type { DiscoverStatePayload } from "../types";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -528,4 +529,27 @@ test("a refused remote submission keeps the typed URL and never claims no answer
     connection.send = previousSend;
     connection.state = previousState;
   }
+});
+
+test("first run states what a Discover run writes and never executes", () => {
+  discover.state = null;
+  const view = render(DiscoverOverview);
+
+  const empty = view.container.querySelector('[data-testid="discover-empty"]');
+  const text = empty?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  expect(text).toContain("No project sheet yet");
+  expect(text).toContain("without running its commands");
+  expect(text).toContain(".omp/discover/");
+  expect(text).toContain(".omp/skills/");
+  expect(text).toContain(`${SKILL_TABS.length} project-specific Agent Skills`);
+  expect(text).toContain("switching views");
+  expect(view.container.querySelector('[data-testid="discover-sheet"]')).toBeNull();
+});
+
+test("published artifacts render the sheet instead of the first-run explanation", () => {
+  discover.state = state({});
+  const view = render(DiscoverOverview);
+
+  expect(view.container.querySelector('[data-testid="discover-empty"]')).toBeNull();
+  expect(view.container.querySelector('[data-testid="discover-sheet"]')).not.toBeNull();
 });

@@ -37,7 +37,7 @@ Scores follow the skill formula:
 | C30 | Manual remote target | 2 | 2 | 1 | 5 | 2 | 46 | P2 | Below the header, source checkout only |
 | C31 | Clone progress | 4 | 4 | 1 | 5 | 2 | 70 | P1 | Inside the remote card while cloning |
 | C32 | Mode navigation | 5 | 4 | 5 | 5 | 2 | 89 | P0 | Shell rail, always visible |
-| C33 | Discover navigation: sections and five skills | 5 | 4 | 5 | 4 | 2 | 86 | P0 | Sidebar, always visible |
+| C33 | Discover navigation: sections and six skills | 5 | 4 | 5 | 4 | 2 | 86 | P0 | Sidebar, always visible |
 | C34 | Skill exception state in navigation | 4 | 3 | 4 | 3 | 2 | 68 | P1 | Sidebar meta for `edited` and `missing` only |
 | C35 | Empty-state explanation and written paths | 4 | 3 | 1 | 5 | 3 | 67 | P1 | Empty page body, replacing all sheet cards |
 | C36 | Status-bar facts | 3 | 2 | 5 | 3 | 1 | 57 | P2 | Shell, unchanged |

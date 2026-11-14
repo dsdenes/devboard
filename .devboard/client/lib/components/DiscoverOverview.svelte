@@ -13,6 +13,7 @@
     scalarText,
     sectionEntries,
     sectionLeaf,
+    SKILL_TABS,
     technologyName,
     unknownText,
   } from "../discover-format";
@@ -866,5 +867,34 @@
         {/if}
       </div>
     </div>
+  {:else if !discover.hasArtifacts}
+    <section class="panel discover-empty" data-testid="discover-empty">
+      <div class="discover-empty__body">
+        <div class="discover-empty__copy">
+          <h2>No project sheet yet</h2>
+          <p>
+            One Discover run reads the repository without running its commands. It writes a
+            project sheet and one UbiLang glossary per bounded context under
+            <code>.omp/discover/</code>, and {SKILL_TABS.length} project-specific Agent Skills
+            under <code>.omp/skills/</code>.
+          </p>
+          <p class="muted">
+            A field the crawl cannot ground is recorded as unknown instead of guessed. Nothing
+            outside those two directories is written, and switching views or closing the browser
+            never starts a run.
+          </p>
+        </div>
+        <ul class="discover-writes">
+          <li>
+            <code>.omp/discover/</code>
+            <span>Project sheet, one UbiLang glossary per bounded context, and warnings</span>
+          </li>
+          <li>
+            <code>.omp/skills/</code>
+            <span>One generated Agent Skill per Discover skill page</span>
+          </li>
+        </ul>
+      </div>
+    </section>
   {/if}
 </div>
