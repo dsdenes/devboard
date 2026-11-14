@@ -1418,6 +1418,63 @@ fn a_session_exit_record_is_not_a_finding() {
 }
 
 #[test]
+fn a_retired_release_check_record_is_not_a_finding() {
+    let root = production_root("retired-release-check");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let retired = event(
+        now,
+        1,
+        "release check failed: npm could not resolve @dsdenes/devboard: no output",
+        "update-error",
+        &instance,
+    );
+    let current = event(
+        now,
+        2,
+        "update check failed: the release carries no devboard-manifest.json",
+        "update-error",
+        &instance,
+    );
+
+    let findings = analyze_evidence(&[retired, current], window, window);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].category, "update-error");
+    assert!(
+        findings[0].quote.starts_with("update check failed:"),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn a_release_check_record_outside_the_update_kind_still_files() {
+    let root = production_root("release-check-kind");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let record = event(
+        now,
+        1,
+        "release check failed: npm could not resolve @dsdenes/devboard: no output",
+        "server-error",
+        &instance,
+    );
+
+    let findings = analyze_evidence(&[record], window, window);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].category, "server-error");
+}
+
+#[test]
 fn filing_caps_limit_the_room_and_keep_the_rest_pending() {
     let root = production_root("caps");
     let state_dir = root.join(".devboard").join(".tmp").join(WATCHDOG_DIRECTORY);

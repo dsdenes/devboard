@@ -3511,6 +3511,22 @@ fn session_exit_recorded(event: &EvidenceEvent) -> bool {
         && normalize_evidence_line(&event.text) == SESSION_EXIT_RECORDED
 }
 
+const RETIRED_RELEASE_CHECK: &str = "release check failed: ";
+
+/// The retired Bun harness resolved the newest release by running `npm view`,
+/// falling back to a forge feed, and journaled a failed check as an
+/// `update-error` reading `release check failed: ...`. This harness reads the
+/// published release manifest and journals `update check failed:`, `update
+/// install failed:`, or `host sync failed:` instead, so no process of this line
+/// writes that prefix. A record that carries it therefore comes from a
+/// dashboard running a retired harness on a host the operator reinstalls, and
+/// no repository change can fix that process: filing would spend a cycle's
+/// budget on an issue nothing here can complete.
+fn retired_release_check(event: &EvidenceEvent) -> bool {
+    event.kind == "update-error"
+        && normalize_evidence_line(&event.text).starts_with(RETIRED_RELEASE_CHECK)
+}
+
 fn event_key(event: &EvidenceEvent) -> String {
     match &event.instance {
         Some(instance) => format!("{}:{}", instance.repo_dir, instance.port),
@@ -3633,6 +3649,9 @@ pub fn analyze_evidence(
                     add(&format!("omp-{level}"), event, &mut findings);
                 }
             }
+            continue;
+        }
+        if retired_release_check(event) {
             continue;
         }
         if let Some(category) = signal_kind(&event.kind) {

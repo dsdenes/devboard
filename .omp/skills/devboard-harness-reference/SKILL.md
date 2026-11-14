@@ -2461,8 +2461,10 @@ All background-agent pages share `data-testid="agent-page"` and `data-agent`, th
 `agent-cadence`, `agent-last-run`, `agent-next-run`, `agent-save-cadence`, `agent-limit-hour`,
 `agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and the pinned
 `agent-activity-bar`. No shared page renders a separate detail panel. Alerts use one position:
-`agent-error`, `agent-sync-error`, and `agent-settings-error`, each with `role="alert"`;
-`agent-notice` is a separate `role="status"` line above them.
+`agent-error` and `agent-sync-error`, each with `role="alert"`; `agent-notice` is a separate
+`role="status"` line above them. A settings refusal is the one exception: `agent-settings-error`
+carries `role="alert"` inside the settings group that owns the invalid field, beside the fields
+it names.
 Start/Stop is the only filled primary control.
 The header row carries the page identity, the lifecycle badge, the last-read clock, and
 Start/Stop. Its settings footer is one band `role="group"` named `Cadence and filing limits` with
@@ -2658,8 +2660,11 @@ through an agent or a direct file edit, never through the dashboard.
 
 `agent-cadence` accepts an integer from 1 through 1440 minutes. `agent-limit-hour` and
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never
-renders as `0`. One `agent-save-cadence` or `agent-save-limits` click validates all three fields
-and persists them in one atomic settings write; a running worker applies the whole change without
+renders as `0`. Both limit fields are text inputs carrying a numeric keyboard hint, so the raw
+text the operator typed is the model: a field holding `-`, `+`, `.`, `e`, or any other non-integer
+is refused, and only a field left visibly empty sends `null`. One `agent-save-cadence` or
+`agent-save-limits` click validates all three fields and persists them in one atomic settings
+write; a running worker applies the whole change without
 restart. An invalid field sends nothing: `agent-settings-error` names the rule, and the control
 stays at its resting label instead of waiting for an answer the server was never asked for. The
 worker merges a cadence command into the settings it reads at apply time and writes
@@ -3133,6 +3138,12 @@ An omp `Session exit recorded` warning is that peer writing down the exit of a s
 the signal it received, its session file, and the tool calls still in flight — whenever a
 supervisor stops it, so it is omp's own shutdown bookkeeping rather than a failure and is never a
 finding; the same record carrying an attached error still files its `omp-warn` record.
+An `update-error` record reading `release check failed: ...` is the retired Bun harness's `npm`
+release check, with its forge feed as fallback, failing on a host that still runs that harness:
+this line reads the published release manifest and journals `update check failed: ...`,
+`update install failed: ...`, or `host sync failed: ...`, so no process of this line writes that
+prefix. The failing process belongs to a host the operator reinstalls and no change here can fix
+it, so the record is never a finding; an `update-error` record of any other shape still files.
 
 The ledger outlives a forge change: an entry may name an issue filed through another forge, or
 through the same project under a different instance. The delivery reports the URLs its configured
