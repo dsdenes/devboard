@@ -8,8 +8,8 @@ use devboard::providers::{agent_directory, ProviderId};
 use devboard::workers::builds::{run_build_cleanup_with, BuildCandidateKind, TargetLock};
 use devboard::workers::watchdog::{
     apparent_tree_bytes, covered_state_dirs, epoch_ms, run_cleanup, run_cleanup_with,
-    sweep_state_dir_with, CleanupSource, CoveredStateDir, Instance, ProviderRetention,
-    PROVIDER_FLOOR_MS, PROVIDER_RETENTION_MS,
+    run_cleanup_with_sections, sweep_state_dir_with, CleanupSections, CleanupSource,
+    CoveredStateDir, Instance, ProviderRetention, PROVIDER_FLOOR_MS, PROVIDER_RETENTION_MS,
 };
 use devboard::workers::worktrees::{run_worktree_cleanup, WorktreeCandidateKind};
 
@@ -1434,5 +1434,39 @@ fn a_dry_run_names_the_dead_scope_and_a_real_pass_stops_it() {
     let real = run_scope_cleanup(&directory, now, false, &[], &[facts], &record);
     assert_eq!(real.stopped.len(), 1);
     assert_eq!(stopped.lock().unwrap().as_slice(), ["run-p4242-i1.scope"]);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_selected_section_never_reaches_the_others() {
+    let directory = root("sections");
+    let repo = directory.join("repo");
+    let state = directory.join(".devboard/.tmp");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&repo).unwrap();
+    let old_state = state.join("old.log");
+    std::fs::write(&old_state, b"x").unwrap();
+    let now = epoch_ms();
+    set_mtime(&old_state, now - 30 * DAY_MS);
+    let scratch = directory.join(".devboard/.test-tmp/stale-run");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let scratch_file = scratch.join("artifact");
+    std::fs::write(&scratch_file, b"x").unwrap();
+    set_mtime(&scratch_file, now - 2 * DAY_MS);
+    set_mtime(&scratch, now - 2 * DAY_MS);
+
+    let sections = CleanupSections::parse_list("scratch").expect("a section list");
+    let report =
+        run_cleanup_with_sections(&directory, now, false, &[], None, None, sections, &|_| {
+            false
+        });
+    assert!(report.roots.is_empty(), "state is not selected");
+    assert!(report.worktrees.removed.is_empty());
+    assert!(report.builds.removed.is_empty());
+    assert!(!scratch.exists(), "the selected section's tree leaves");
+    assert!(old_state.exists(), "an unselected state file stays");
+
+    assert!(CleanupSections::parse_list("state,scratch").is_some());
+    assert!(CleanupSections::parse_list("nonsense").is_none());
     let _ = std::fs::remove_dir_all(&directory);
 }

@@ -1882,6 +1882,61 @@ pub struct CleanupReport {
     pub scopes: crate::workers::scopes::ScopeCleanupReport,
 }
 
+/// What one cleanup pass touches. The manual command can select sections so
+/// an operator reclaims one surface without reaching the others; every other
+/// caller runs all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CleanupSections {
+    pub state: bool,
+    pub worktrees: bool,
+    pub builds: bool,
+    pub scratch: bool,
+    pub scopes: bool,
+}
+
+impl CleanupSections {
+    pub const ALL: Self = Self {
+        state: true,
+        worktrees: true,
+        builds: true,
+        scratch: true,
+        scopes: true,
+    };
+
+    /// One pass's section list: comma-separated `state`, `worktrees`,
+    /// `builds`, `scratch`, and `scopes` names.
+    pub fn parse_list(text: &str) -> Option<Self> {
+        let mut sections = Self {
+            state: false,
+            worktrees: false,
+            builds: false,
+            scratch: false,
+            scopes: false,
+        };
+        for name in text
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            match name {
+                "state" => sections.state = true,
+                "worktrees" => sections.worktrees = true,
+                "builds" => sections.builds = true,
+                "scratch" => sections.scratch = true,
+                "scopes" => sections.scopes = true,
+                _ => return None,
+            }
+        }
+        Some(sections)
+    }
+}
+
+impl Default for CleanupSections {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 fn real_directory(path: &Path) -> Option<PathBuf> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     if !metadata.is_dir() {
@@ -2734,6 +2789,30 @@ pub fn run_cleanup_with(
     watchdog_run_dir: Option<&Path>,
     build_running: &dyn Fn(&Path) -> bool,
 ) -> CleanupReport {
+    run_cleanup_with_sections(
+        root,
+        now_ms,
+        dry_run,
+        instances,
+        covered,
+        watchdog_run_dir,
+        CleanupSections::ALL,
+        build_running,
+    )
+}
+
+/// `run_cleanup_with` over one selected set of sections.
+#[allow(clippy::too_many_arguments)]
+pub fn run_cleanup_with_sections(
+    root: &Path,
+    now_ms: i64,
+    dry_run: bool,
+    instances: &[Instance],
+    covered: Option<&[CoveredStateDir]>,
+    watchdog_run_dir: Option<&Path>,
+    sections: CleanupSections,
+    build_running: &dyn Fn(&Path) -> bool,
+) -> CleanupReport {
     let owned;
     let entries: &[CoveredStateDir] = match covered {
         Some(entries) => entries,
@@ -2742,46 +2821,64 @@ pub fn run_cleanup_with(
             &owned
         }
     };
-    let roots = entries
-        .iter()
-        .map(|entry| {
-            let mut report = sweep_state_dir(&entry.state_dir, now_ms, dry_run, watchdog_run_dir);
-            report.source = entry.source;
-            report
-        })
-        .collect();
+    let roots = if sections.state {
+        entries
+            .iter()
+            .map(|entry| {
+                let mut report =
+                    sweep_state_dir(&entry.state_dir, now_ms, dry_run, watchdog_run_dir);
+                report.source = entry.source;
+                report
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // The build output leaves first, so a dry run's build candidates are the
     // real pass's removals even when a worktree that still holds one is removed
     // afterwards and takes that directory with it. The state directories are
     // swept first, so a worktree's `.tmp` is gone before the worktree itself
     // leaves. A dry run reports the same candidates and changes nothing.
-    let builds = crate::workers::builds::run_build_cleanup_with(
-        root,
-        dry_run,
-        crate::workers::builds::TARGET_DEBUG_MAX_BYTES,
-        build_running,
-        &|| {
-            let mut directories = crate::workers::worktrees::live_working_directories();
-            for instance in instances {
-                if instance.repo_dir.is_empty() {
-                    continue;
+    let builds = if sections.builds {
+        crate::workers::builds::run_build_cleanup_with(
+            root,
+            dry_run,
+            crate::workers::builds::TARGET_DEBUG_MAX_BYTES,
+            build_running,
+            &|| {
+                let mut directories = crate::workers::worktrees::live_working_directories();
+                for instance in instances {
+                    if instance.repo_dir.is_empty() {
+                        continue;
+                    }
+                    let directory = PathBuf::from(&instance.repo_dir);
+                    directories.push(std::fs::canonicalize(&directory).unwrap_or(directory));
                 }
-                let directory = PathBuf::from(&instance.repo_dir);
-                directories.push(std::fs::canonicalize(&directory).unwrap_or(directory));
-            }
-            directories
-        },
-    );
-    let worktrees =
-        crate::workers::worktrees::run_worktree_cleanup(root, now_ms, dry_run, instances);
+                directories
+            },
+        )
+    } else {
+        crate::workers::builds::BuildCleanupReport::default()
+    };
+    let worktrees = if sections.worktrees {
+        crate::workers::worktrees::run_worktree_cleanup(root, now_ms, dry_run, instances)
+    } else {
+        crate::workers::worktrees::WorktreeCleanupReport::default()
+    };
     // The test scratch and the transient scopes are checked against one read
     // of the process table, so a tree and a scope the same process holds are
     // both kept.
     let live = crate::workers::worktrees::live_working_directories();
-    let scratch =
-        crate::workers::scopes::run_scratch_cleanup(root, now_ms, dry_run, &|| live.clone());
-    let scopes =
-        crate::workers::scopes::run_scope_cleanup_on_host(root, now_ms, dry_run, instances);
+    let scratch = if sections.scratch {
+        crate::workers::scopes::run_scratch_cleanup(root, now_ms, dry_run, &|| live.clone())
+    } else {
+        crate::workers::scopes::ScratchCleanupReport::default()
+    };
+    let scopes = if sections.scopes {
+        crate::workers::scopes::run_scope_cleanup_on_host(root, now_ms, dry_run, instances)
+    } else {
+        crate::workers::scopes::ScopeCleanupReport::default()
+    };
     CleanupReport {
         now: iso_from_ms(now_ms),
         cutoff: iso_from_ms(now_ms - CLEANUP_RETENTION_MS),

@@ -861,16 +861,19 @@ fn terminate_dashboard(pid: u32) {
     }
 }
 
-/// `devboard cleanup [--dry-run] [--once] [--root <dir>] [--json]`.
+/// `devboard cleanup [--dry-run] [--once] [--root <dir>] [--only <sections>]
+/// [--json]`.
 ///
 /// Sweeps every covered state directory with the documented retention
 /// exceptions. `--dry-run` prints candidates and changes nothing; `--once`
-/// deletes them.
+/// deletes them. `--only` restricts the pass to comma-separated `state`,
+/// `worktrees`, `builds`, `scratch`, and `scopes` sections.
 fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
     let mut dry_run = false;
     let mut once = false;
     let mut json = false;
     let mut root: Option<PathBuf> = None;
+    let mut sections = devboard::workers::watchdog::CleanupSections::ALL;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -893,8 +896,24 @@ fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
                     })?));
                 index += 2;
             }
+            "--only" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    anyhow::anyhow!("--only needs a comma-separated section list")
+                })?;
+                sections =
+                    devboard::workers::watchdog::CleanupSections::parse_list(value).ok_or_else(
+                        || {
+                            anyhow::anyhow!(
+                                "--only names unknown sections; use state,worktrees,builds,scratch,scopes"
+                            )
+                        },
+                    )?;
+                index += 2;
+            }
             "--help" | "-h" => {
-                println!("usage: devboard cleanup [--dry-run] [--once] [--root <dir>] [--json]");
+                println!(
+                    "usage: devboard cleanup [--dry-run] [--once] [--root <dir>] [--only <sections>] [--json]"
+                );
                 return Ok(());
             }
             other => anyhow::bail!("unknown cleanup option {other}"),
@@ -920,13 +939,15 @@ fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
         }
     };
     let instances = devboard::workers::watchdog::discover_instances_for(&root);
-    let report = devboard::workers::watchdog::run_cleanup(
+    let report = devboard::workers::watchdog::run_cleanup_with_sections(
         &root,
         devboard::workers::watchdog::epoch_ms(),
         dry_run,
         &instances,
         None,
         None,
+        sections,
+        &devboard::workers::builds::build_running_in,
     );
     if json {
         println!(
