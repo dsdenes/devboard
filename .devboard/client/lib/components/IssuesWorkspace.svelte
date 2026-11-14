@@ -337,6 +337,8 @@
                       </span>
                       <span
                         class="issues-agent-row__elapsed mono"
+                        data-testid="issues-agent-row-elapsed"
+                        data-run={agent.runId}
                         title={`Started ${startedClock(agent.startedAt)}`}
                       >
                         {elapsedShort(agent.startedAt)}

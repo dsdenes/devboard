@@ -8,7 +8,7 @@ second focus target.
 
 | Need | Decision | OpenUI entry | Storybook story | Data/state requirements | Accessibility | Token needs |
 |---|---|---|---|---|---|---|
-| Running-agent row: number, title, elapsed, question badge | **Modify** the page-level list row style (`.issues-agent-row`) | None (list row, not a catalog primitive) | — (page-level; covered by `verify:issues` row geometry assertions) | 0 agents; 1 agent; 5+; long titles; missing title (`Issue N`); malformed `startedAt`; question 0/1; narrow and wide panel | Native `button`; visible text names the row; tooltip carries the full title; global focus ring; badge text states the meaning | `foreground`, `muted-foreground`, `border-subtle`, `secondary`, `warning`, `mono-small` |
+| Running-agent row: number, title, elapsed, question badge | **Modify** the page-level list row style (`.issues-agent-row`) | None (list row, not a catalog primitive) | — (page-level; the badge and the ticking elapsed cell are covered by `client/lib/components/IssuesWorkspaceAgentRow.test.ts`) | 0 agents; 1 agent; 5+; long titles; missing title (`Issue N`); malformed `startedAt`; question 0/1; narrow and wide panel | Native `button`; visible text names the row; tooltip carries the full title; global focus ring; badge text states the meaning | `foreground`, `muted-foreground`, `border-subtle`, `secondary`, `warning`, `mono-small` |
 | Panel body | **Reuse** `.panel__body--flush` and `.panel` | Panel (existing) | — | Empty list, many rows, scroll | Scrolling stays inside the panel | none |
 | Count | **Reuse** `.panel__subtitle` | Existing | — | 0/1/many | Text, no colour-only meaning | `muted-foreground` |
 

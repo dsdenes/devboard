@@ -3,8 +3,8 @@
 - Issue: #238. Changed surface: the running-agent rows of the Issues overview (`.issues-agent-row`)
   and the row's component entry in `DESIGN.md`.
 - Worktree: `.worktree/issue-238`, branch `issue-238`; the reported checks ran after merging
-  `origin/main` (which advanced to `0b6b041` while the work was in flight), and the build,
-  `verify:issues`, and the browser captures were repeated on that merged base.
+  `origin/main` (which advanced to `0b6b041` while the work was in flight), and the build and the
+  browser captures were repeated on that merged base.
 - Commands, run from `.devboard` in the worktree:
 
 ```bash
@@ -13,8 +13,13 @@ bun run build                 # vite build, dist rewritten
 bun test                      # 536 pass, 0 fail, 3934 expect() calls, 40 files
 bunx tsc --noEmit             # 0 errors
 bun run check                 # svelte-check: 1245 files, 0 errors, 0 warnings
-bun run verify:issues         # passed, including the new row geometry assertions
 ```
+
+- The row's two behavior claims — the `needs answer` badge and the ticking elapsed cell — are
+  covered by `bun test client/lib/components/IssuesWorkspaceAgentRow.test.ts` (added in #1874),
+  which pushes `issuesState` snapshots through the overview and asserts the badge appears with a
+  question, clears without it, and the elapsed text advances on the page's own clock. No
+  `verify:issues` script exists, and this record cites none.
 
 - Validation dashboard (served the worktree build, not the installed bundle):
 
@@ -45,13 +50,13 @@ STATE_DIR=.tmp/validation/state AGENT_COMMAND="true" PORT=8188 bun run server/in
      ticks outside the Agents page.
 - Geometry measured in the browser at 1440 and 1024: for all five rows, the issue column's right
   edge ≤ the title's left edge, the title's right edge ≤ the meta group's left edge, and
-  `scrollWidth <= row width`. The same checks now run in `verify:issues` against a four-agent
-  fixture (issue order `1,2,3,4`, elapsed text present, no overlap, no overflow).
+  `scrollWidth <= row width`. These are browser measurements: no automated check asserts the
+  geometry, and none is cited here.
 - Duplicate information removed: the hard-coded per-row `running` badge. The lifecycle badge,
   the Automation `Agents · N running` fact, the panel subtitle `N active`, and the mode rail state
   dot still state the state once per surface.
-- Console/network: the validation tab reported zero page errors, zero `console.error` entries,
-  and `verify:issues` passed its page-error and failed-request gates.
+- Console/network: The validation tab reported zero page errors, zero `console.error` entries, and
+  zero failed requests.
 - Screenshots (`.design/ux/issues-running-agents/`):
   - `issues-overview-1440-dark.png`, `issues-overview-1024-dark.png` — full page context.
   - `running-agents-1440-dark.png`, `running-agents-1440-light.png`,
