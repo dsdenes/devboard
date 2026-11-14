@@ -3,14 +3,20 @@
 //! reviewable widgets, the steering feed, a read-only widget conversation, and
 //! every refusal path's exact message.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboard::app::{App, Conn};
 use devboard::command::Command;
 use devboard::config::Config;
+use devboard::flow_mode::{CommandFlowForge, FlowForge, ForgePrInput, ForgeTarget};
+use devboard::forge::{
+    Exec, ExecOptions, ExecResult, HttpError, HttpFuture, HttpRequest, Transport,
+    GITLAB_DRAFT_PREFIX,
+};
 use devboard::journal::Journal;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -1140,4 +1146,218 @@ async fn a_merged_session_refuses_a_steering_note() {
         .filter(|line| !line.trim().is_empty())
         .count();
     assert_eq!(after, before, "a refused note appends no line");
+}
+
+// ---------------------------------------------------------------------------
+// The command adapter's GitLab draft state
+
+/// One recorded `glab` call set and the merge request the stub keeps.
+#[derive(Default)]
+struct RecordedGitlab {
+    calls: Vec<Vec<String>>,
+    title: String,
+}
+
+/// The merge request URL the recorded `glab mr create` answers with.
+const GITLAB_MR_URL: &str = "https://gitlab.test/acme/fixture/-/merge_requests/7";
+
+/// The value one recorded call passed after `flag`.
+fn flag_value(args: &[String], flag: &str) -> Option<String> {
+    let index = args.iter().position(|argument| argument == flag)?;
+    args.get(index + 1).cloned()
+}
+
+/// A recorded `glab` runner: it answers credential resolution, and it keeps one
+/// merge request whose title carries GitLab's draft marker, so the calls a
+/// checkpoint makes can be read back.
+fn recorded_gitlab() -> (Exec, Arc<Mutex<RecordedGitlab>>) {
+    let state: Arc<Mutex<RecordedGitlab>> = Arc::new(Mutex::new(RecordedGitlab::default()));
+    let inner = state.clone();
+    let exec: Exec = Arc::new(
+        move |command: String, args: Vec<String>, _options: ExecOptions| {
+            let inner = inner.clone();
+            Box::pin(async move {
+                if command != "glab" {
+                    return ExecResult {
+                        stderr: format!("{command}: not found"),
+                        code: 127,
+                        ..ExecResult::default()
+                    };
+                }
+                let mut state = inner.lock().expect("the recorded glab state");
+                state.calls.push(args.clone());
+                let first = args.first().map(String::as_str).unwrap_or("");
+                let second = args.get(1).map(String::as_str).unwrap_or("");
+                match (first, second) {
+                    ("auth", "status") => ExecResult {
+                        code: 0,
+                        ..ExecResult::default()
+                    },
+                    ("api", _) if args.last().map(String::as_str) == Some("user") => ExecResult {
+                        stdout: json!({"username": "alice"}).to_string(),
+                        code: 0,
+                        ..ExecResult::default()
+                    },
+                    ("api", _) => ExecResult {
+                        stdout: json!({"permissions": {"project_access": {"access_level": 40}}})
+                            .to_string(),
+                        code: 0,
+                        ..ExecResult::default()
+                    },
+                    ("mr", "create") => {
+                        // GitLab itself prefixes the title of a draft MR.
+                        let title = flag_value(&args, "--title").unwrap_or_default();
+                        state.title = format!("{GITLAB_DRAFT_PREFIX}{title}");
+                        ExecResult {
+                            stdout: format!("{GITLAB_MR_URL}\n"),
+                            code: 0,
+                            ..ExecResult::default()
+                        }
+                    }
+                    ("mr", "view") => ExecResult {
+                        stdout: json!({
+                            "title": state.title,
+                            "state": "opened",
+                            "web_url": GITLAB_MR_URL,
+                        })
+                        .to_string(),
+                        code: 0,
+                        ..ExecResult::default()
+                    },
+                    ("mr", "update") => {
+                        if args.iter().any(|argument| argument == "--ready") {
+                            // `--ready` is the call that clears the marker.
+                            state.title = state.title.trim_start_matches("Draft: ").to_string();
+                        } else if let Some(title) = flag_value(&args, "--title") {
+                            state.title = title;
+                        }
+                        ExecResult {
+                            code: 0,
+                            ..ExecResult::default()
+                        }
+                    }
+                    _ => ExecResult {
+                        stderr: format!("glab {first} {second}: unexpected"),
+                        code: 2,
+                        ..ExecResult::default()
+                    },
+                }
+            })
+        },
+    );
+    (exec, state)
+}
+
+/// A transport that never runs: the command adapter's GitLab path is CLI only.
+fn unreachable_transport() -> Transport {
+    Arc::new(|request: HttpRequest| -> HttpFuture {
+        Box::pin(async move {
+            Err(HttpError::Unreachable(format!(
+                "no transport for {}",
+                request.url
+            )))
+        })
+    })
+}
+
+/// Every recorded `glab mr update` call.
+fn recorded_updates(state: &Arc<Mutex<RecordedGitlab>>) -> Vec<Vec<String>> {
+    state
+        .lock()
+        .expect("the recorded glab state")
+        .calls
+        .iter()
+        .filter(|args| {
+            args.first().map(String::as_str) == Some("mr")
+                && args.get(1).map(String::as_str) == Some("update")
+        })
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn a_gitlab_checkpoint_keeps_the_draft_prefix_until_the_ready_call() {
+    let scratch = Scratch::new("gitlab-draft");
+    let (exec, state) = recorded_gitlab();
+    let forge = CommandFlowForge::with_seams(exec, unreachable_transport(), HashMap::new(), 5_000);
+    let target = ForgeTarget {
+        forge: "gitlab".to_string(),
+        host: "gitlab.test".to_string(),
+        project: "acme/fixture".to_string(),
+        base_url: None,
+    };
+    let input = ForgePrInput {
+        cwd: scratch.path().to_path_buf(),
+        target: target.clone(),
+        head: "flow/goal".to_string(),
+        base: "main".to_string(),
+        title: "Flow goal".to_string(),
+        body: "The goal body.".to_string(),
+    };
+
+    let created = forge
+        .create_draft(input.clone())
+        .await
+        .expect("the draft merge request");
+    assert!(created.draft, "the local PR state is draft");
+    assert_eq!(created.number, 7);
+    let created_calls = state.lock().expect("the recorded glab state").calls.clone();
+    let create = created_calls
+        .iter()
+        .find(|args| args.get(1).map(String::as_str) == Some("create"))
+        .expect("the recorded create call");
+    assert!(create.iter().any(|argument| argument == "--draft"));
+
+    // The second checkpoint runs while the local PR state is still draft.
+    forge
+        .update(input.clone(), created.number)
+        .await
+        .expect("the checkpoint update");
+    let updates = recorded_updates(&state);
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert_eq!(
+        flag_value(&updates[0], "--title").as_deref(),
+        Some("Draft: Flow goal"),
+        "{:?}",
+        updates[0]
+    );
+
+    forge
+        .mark_ready(scratch.path(), &target, created.number)
+        .await
+        .expect("the ready call");
+    let updates = recorded_updates(&state);
+    let ready: Vec<&Vec<String>> = updates
+        .iter()
+        .filter(|args| args.iter().any(|argument| argument == "--ready"))
+        .collect();
+    assert_eq!(ready.len(), 1, "one ready call: {updates:?}");
+    assert!(
+        !ready[0].iter().any(|argument| argument == "--title"),
+        "the ready call sends no title: {:?}",
+        ready[0]
+    );
+    for update in &updates {
+        if update.iter().any(|argument| argument == "--ready") {
+            continue;
+        }
+        let title = flag_value(update, "--title").expect("an update carries a title");
+        assert!(
+            title.starts_with(GITLAB_DRAFT_PREFIX),
+            "{update:?} drops the draft prefix"
+        );
+    }
+
+    // A checkpoint after the ready call sends the plain title again.
+    forge
+        .update(input, created.number)
+        .await
+        .expect("the checkpoint after ready");
+    let updates = recorded_updates(&state);
+    let last = updates.last().expect("the last update");
+    assert_eq!(
+        flag_value(last, "--title").as_deref(),
+        Some("Flow goal"),
+        "{last:?}"
+    );
 }

@@ -891,6 +891,44 @@ impl CommandFlowForge {
             timeout_ms: Some(self.timeout_ms),
         }
     }
+
+    /// The current title of one GitLab merge request.
+    ///
+    /// GitLab records draft state in the title, so a checkpoint reads it before
+    /// it edits the title, exactly as the Gitea branch reads the pull request.
+    async fn gitlab_title(
+        &self,
+        cwd: &Path,
+        target: &ForgeTarget,
+        number: u64,
+    ) -> Result<String, String> {
+        let result = self
+            .run(
+                cwd,
+                target,
+                "glab",
+                vec![
+                    "mr".to_string(),
+                    "view".to_string(),
+                    number.to_string(),
+                    "--output".to_string(),
+                    "json".to_string(),
+                ],
+            )
+            .await?;
+        if result.code != 0 {
+            return Err(forge_failure("read the pull request", &result));
+        }
+        serde_json::from_str::<Value>(&result.stdout)
+            .ok()
+            .and_then(|document| {
+                document
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| "Could not read the pull request: unexpected forge output.".to_string())
+    }
 }
 
 impl Default for CommandFlowForge {
@@ -1028,6 +1066,16 @@ impl FlowForge for CommandFlowForge {
                     ],
                 )
             } else {
+                // GitLab records draft state in the title too. A checkpoint
+                // after Ready must not send the Draft: prefix back, and a
+                // checkpoint before it must not drop the prefix the request
+                // was created with, so the forge's current title decides.
+                let current = self.gitlab_title(&input.cwd, &input.target, number).await?;
+                let title = if crate::forge::is_gitlab_draft_title(&current) {
+                    crate::forge::gitlab_draft_title(&input.title)
+                } else {
+                    crate::forge::gitlab_ready_title(&input.title)
+                };
                 (
                     "glab",
                     vec![
@@ -1035,7 +1083,7 @@ impl FlowForge for CommandFlowForge {
                         "update".to_string(),
                         number.to_string(),
                         "--title".to_string(),
-                        input.title.clone(),
+                        title,
                         "--description".to_string(),
                         input.body.clone(),
                     ],

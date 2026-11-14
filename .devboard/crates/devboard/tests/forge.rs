@@ -2366,6 +2366,37 @@ fn draft_state_follows_every_gitea_wip_prefix_case_insensitively() {
     assert_eq!(ready_title("WIP: [WIP] goal"), "goal");
 }
 
+#[test]
+fn gitlab_draft_state_follows_every_draft_prefix_case_insensitively() {
+    for title in [
+        "Draft: x",
+        "draft: x",
+        "DRAFT:x",
+        "[Draft] x",
+        "[draft]x",
+        "(Draft) x",
+    ] {
+        assert!(is_gitlab_draft_title(title), "{title} is a draft");
+    }
+    for title in ["Ready", "Draft x", "Draft", "x Draft: y"] {
+        assert!(!is_gitlab_draft_title(title), "{title} is not a draft");
+    }
+
+    assert_eq!(gitlab_draft_title("Flow goal"), "Draft: Flow goal");
+    assert_eq!(gitlab_draft_title("Draft: Flow goal"), "Draft: Flow goal");
+    assert_eq!(gitlab_ready_title("Draft: Flow goal"), "Flow goal");
+    assert_eq!(gitlab_ready_title("Flow goal"), "Flow goal");
+
+    // A goal whose own text starts with a marker keeps one, and ready clears
+    // every marker an earlier checkpoint or the operator left.
+    let created = gitlab_draft_title("Draft: goal");
+    assert_eq!(created, "Draft: goal");
+    let ready = gitlab_ready_title(&created);
+    assert_eq!(ready, "goal");
+    assert!(!is_gitlab_draft_title(&ready));
+    assert_eq!(gitlab_ready_title("Draft: [Draft] (Draft) goal"), "goal");
+}
+
 // ---------------------------------------------------------------------------
 // Composite forge issue client
 

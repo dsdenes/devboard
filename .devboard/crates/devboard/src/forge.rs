@@ -2089,9 +2089,16 @@ pub const DRAFT_PREFIX: &str = "WIP: ";
 /// matches case-insensitively against a pull request title.
 const DRAFT_PREFIXES: [&str; 2] = ["WIP:", "[WIP]"];
 
+/// The marker Devboard puts on a draft GitLab merge request title.
+pub const GITLAB_DRAFT_PREFIX: &str = "Draft: ";
+
+/// GitLab's draft markers, the ones it matches case-insensitively against a
+/// merge request title.
+const GITLAB_DRAFT_PREFIXES: [&str; 3] = ["Draft:", "[Draft]", "(Draft)"];
+
 /// Byte length of one leading draft marker and the whitespace after it.
-fn draft_prefix_len(title: &str) -> Option<usize> {
-    DRAFT_PREFIXES.iter().find_map(|prefix| {
+fn draft_prefix_len(title: &str, prefixes: &[&str]) -> Option<usize> {
+    prefixes.iter().find_map(|prefix| {
         let bytes = title.as_bytes();
         if bytes.len() < prefix.len()
             || !bytes[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
@@ -2105,7 +2112,7 @@ fn draft_prefix_len(title: &str) -> Option<usize> {
 
 /// Whether Gitea keeps `title` a draft, by its own prefix rule.
 pub fn is_draft_title(title: &str) -> bool {
-    draft_prefix_len(title).is_some()
+    draft_prefix_len(title, &DRAFT_PREFIXES).is_some()
 }
 
 pub fn draft_title(title: &str) -> String {
@@ -2120,7 +2127,31 @@ pub fn draft_title(title: &str) -> String {
 /// one still stops matching at Gitea.
 pub fn ready_title(title: &str) -> String {
     let mut rest = title;
-    while let Some(len) = draft_prefix_len(rest) {
+    while let Some(len) = draft_prefix_len(rest, &DRAFT_PREFIXES) {
+        rest = &rest[len..];
+    }
+    rest.to_string()
+}
+
+/// Whether GitLab keeps `title` a draft, by its own prefix rule.
+pub fn is_gitlab_draft_title(title: &str) -> bool {
+    draft_prefix_len(title, &GITLAB_DRAFT_PREFIXES).is_some()
+}
+
+/// The title Devboard sends for a GitLab merge request that stays a draft.
+pub fn gitlab_draft_title(title: &str) -> String {
+    if is_gitlab_draft_title(title) {
+        title.to_string()
+    } else {
+        format!("{GITLAB_DRAFT_PREFIX}{title}")
+    }
+}
+
+/// Removes every leading GitLab draft marker, so the title a ready merge
+/// request receives carries none of them.
+pub fn gitlab_ready_title(title: &str) -> String {
+    let mut rest = title;
+    while let Some(len) = draft_prefix_len(rest, &GITLAB_DRAFT_PREFIXES) {
         rest = &rest[len..];
     }
     rest.to_string()
