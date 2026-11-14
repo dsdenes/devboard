@@ -202,16 +202,6 @@ pub fn host_harness_dir(repo_dir: &Path) -> PathBuf {
     running_harness_dir()
 }
 
-/// The harness whose worker binaries can actually run.
-pub fn runnable_harness_dir(repo_dir: &Path) -> PathBuf {
-    let host = host_harness_dir(repo_dir);
-    if host.join("bin").join("devboard").exists() || host.join("Cargo.toml").exists() {
-        host
-    } else {
-        running_harness_dir()
-    }
-}
-
 /// The release version an unpacked source tree represents: the newest `vX.Y.Z`
 /// tag reachable from its `HEAD`.
 fn source_version(directory: &Path) -> Option<String> {
