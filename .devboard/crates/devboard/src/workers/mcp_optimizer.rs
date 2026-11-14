@@ -3698,38 +3698,17 @@ pub fn open_code_peers(
         .iter()
         .map(|(key, value)| (key.clone(), Some(value.clone())))
         .collect();
+    let provisioner = crate::providers::PeerProvisioner::unscoped(state_dir, base);
     let mut peers = Vec::new();
     for entry in &go {
-        let mut binding = crate::providers::PeerBinding {
-            provider: crate::providers::ProviderId::OpenCodeGo,
-            provider_name: crate::providers::provider_name(
-                crate::providers::ProviderId::OpenCodeGo,
-            ),
-            subscription_id: entry.id.clone(),
-            subscription_label: entry.label.clone(),
-            model: crate::providers::OPENCODE_GO_MODEL.to_string(),
-            remaining_fraction: None,
-            agent_dir: crate::providers::agent_directory(
-                state_dir,
-                crate::providers::ProviderId::OpenCodeGo,
-                &entry.id,
-            ),
-            env: HashMap::new(),
-        };
-        binding.env =
-            crate::providers::peer_environment(&base, &binding, &entry.key, fallback.as_deref());
-        let mcp = crate::providers::default_agent_mcp();
-        let config = crate::providers::generated_config(
-            crate::providers::ProviderId::OpenCodeGo,
-            &binding.model,
-        );
-        if let Err(error) =
-            crate::providers::write_agent_directory(&binding.agent_dir, &config, &mcp)
-        {
-            return Err(format!(
-                "the synthesizer agent directory could not be written: {error}"
-            ));
-        }
+        let binding = provisioner
+            .bind(entry, None, fallback.as_deref())
+            .map_err(|error| {
+                format!(
+                    "the synthesizer agent directory could not be written: {}",
+                    error.message
+                )
+            })?;
         peers.push(binding);
     }
     Ok(peers)

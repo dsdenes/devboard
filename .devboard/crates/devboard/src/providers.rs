@@ -1427,31 +1427,389 @@ struct ValidatedInput {
     key: Option<String>,
 }
 
-struct Inner {
-    subscriptions: Vec<StoredSubscription>,
-    usage: HashMap<String, UsageReport>,
-}
-
 /// One in-flight usage read, shared by every caller that asks for the same
 /// provider key while it runs.
 type UsageFuture = Shared<BoxFuture<'static, UsageReport>>;
 
-pub struct ProviderService {
+/// The durable provider credential file and the in-memory copy a service reads.
+/// Every credential-file read and write happens here.
+pub struct CredentialStore {
     state_dir: PathBuf,
-    repo_dir: PathBuf,
+    log: Log,
+    subscriptions: Mutex<Vec<StoredSubscription>>,
+}
+
+impl CredentialStore {
+    pub fn new(state_dir: impl AsRef<Path>, log: Log) -> Self {
+        let state_dir = state_dir.as_ref().to_path_buf();
+        let loaded = load_subscriptions(&state_dir);
+        if let Some(preserved) = &loaded.preserved {
+            log(&format!(
+                "providers: unusable credentials were preserved at {}",
+                preserved.display()
+            ));
+        }
+        Self {
+            state_dir,
+            log,
+            subscriptions: Mutex::new(loaded.subscriptions),
+        }
+    }
+
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
+    pub fn credentials_path(&self) -> PathBuf {
+        credentials_path(&self.state_dir)
+    }
+
+    /// The internal list, including keys; never serialize this.
+    pub fn list(&self) -> Vec<StoredSubscription> {
+        lock(&self.subscriptions).clone()
+    }
+
+    pub fn get(&self, id: &str) -> Option<StoredSubscription> {
+        lock(&self.subscriptions)
+            .iter()
+            .find(|subscription| subscription.id == id)
+            .cloned()
+    }
+
+    /// Re-reads the credential file for a long-lived worker and answers the
+    /// list it read.
+    pub fn reload(&self) -> Vec<StoredSubscription> {
+        let loaded = load_subscriptions(&self.state_dir);
+        *lock(&self.subscriptions) = loaded.subscriptions.clone();
+        if let Some(preserved) = &loaded.preserved {
+            (self.log)(&format!(
+                "providers: unusable credentials were preserved at {}",
+                preserved.display()
+            ));
+        }
+        loaded.subscriptions
+    }
+
+    /// Adds a subscription, or replaces the record that carries its id.
+    pub fn save(&self, subscription: StoredSubscription) -> SaveProviderResult {
+        let mut current = lock(&self.subscriptions);
+        let mut next = current.clone();
+        match next.iter().position(|entry| entry.id == subscription.id) {
+            Some(index) => next[index] = subscription,
+            None => next.push(subscription),
+        }
+        self.persist(&mut current, next)
+    }
+
+    pub fn remove(&self, id: &str) -> SaveProviderResult {
+        let mut current = lock(&self.subscriptions);
+        let next: Vec<StoredSubscription> = current
+            .iter()
+            .filter(|subscription| subscription.id != id)
+            .cloned()
+            .collect();
+        if next.len() == current.len() {
+            return Err("That subscription no longer exists.".to_string().into());
+        }
+        self.persist(&mut current, next)
+    }
+
+    pub fn set_enabled(&self, id: &str, enabled: bool, updated_at: &str) -> SaveProviderResult {
+        let mut current = lock(&self.subscriptions);
+        if !current.iter().any(|subscription| subscription.id == id) {
+            return Err("That subscription no longer exists.".to_string().into());
+        }
+        let next: Vec<StoredSubscription> = current
+            .iter()
+            .map(|subscription| {
+                if subscription.id == id {
+                    StoredSubscription {
+                        enabled,
+                        updated_at: updated_at.to_string(),
+                        ..subscription.clone()
+                    }
+                } else {
+                    subscription.clone()
+                }
+            })
+            .collect();
+        self.persist(&mut current, next)
+    }
+
+    /// Writes the whole file and adopts the list only once the write landed.
+    fn persist(
+        &self,
+        current: &mut MutexGuard<'_, Vec<StoredSubscription>>,
+        next: Vec<StoredSubscription>,
+    ) -> SaveProviderResult {
+        if let Err(error) = save_subscriptions(&self.state_dir, &next) {
+            return Err(format!("The credentials file could not be written: {error}").into());
+        }
+        **current = next;
+        Ok(())
+    }
+}
+
+/// The usage reads and the reports a service ranks from: one fetch per
+/// provider key is shared while it runs, and a read that finds a stale report
+/// wakes the dashboard's background loop through `refresh_wake`.
+pub struct UsageCache {
     base_env: Env,
     transport: Transport,
     now_ms: Now,
     usage_base_urls: HashMap<ProviderId, String>,
-    log: Log,
-    broadcast: Mutex<Option<Broadcast>>,
-    inner: Mutex<Inner>,
+    cached: Mutex<HashMap<String, UsageReport>>,
     /// One in-flight fetch per provider key, whatever asks while it runs.
     inflight: Mutex<HashMap<String, UsageFuture>>,
     /// Wakes the dashboard's background refresh loop when a read finds cached
     /// usage it should replace, so the read itself never waits for the
     /// usage endpoint.
     refresh_wake: Arc<tokio::sync::Notify>,
+}
+
+impl UsageCache {
+    pub fn new(
+        base_env: Env,
+        transport: Transport,
+        now_ms: Now,
+        usage_base_urls: HashMap<ProviderId, String>,
+    ) -> Self {
+        Self {
+            base_env,
+            transport,
+            now_ms,
+            usage_base_urls,
+            cached: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
+            refresh_wake: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    /// The handle the background refresh loop waits on.
+    pub fn refresh_wake(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.refresh_wake)
+    }
+
+    /// Wakes the background refresh loop for a stale report a read served.
+    pub fn wake(&self) {
+        self.refresh_wake.notify_one();
+    }
+
+    /// The cached report for every subscription id.
+    pub fn snapshot(&self) -> HashMap<String, UsageReport> {
+        lock(&self.cached).clone()
+    }
+
+    pub fn store(&self, id: String, report: UsageReport) {
+        lock(&self.cached).insert(id, report);
+    }
+
+    pub fn forget(&self, id: &str) {
+        lock(&self.cached).remove(id);
+    }
+
+    /// Keeps cached usage for an unchanged key and drops it for a removed or
+    /// replaced one.
+    pub fn retain_unchanged(&self, previous: &[StoredSubscription], next: &[StoredSubscription]) {
+        let ids: std::collections::HashSet<&str> =
+            next.iter().map(|entry| entry.id.as_str()).collect();
+        let replaced: std::collections::HashSet<&str> = next
+            .iter()
+            .filter(|entry| {
+                previous
+                    .iter()
+                    .find(|candidate| candidate.id == entry.id)
+                    .is_some_and(|candidate| {
+                        candidate.key != entry.key || candidate.provider != entry.provider
+                    })
+            })
+            .map(|entry| entry.id.as_str())
+            .collect();
+        lock(&self.cached)
+            .retain(|id, _| ids.contains(id.as_str()) && !replaced.contains(id.as_str()));
+    }
+
+    /// Whether one cached report is missing or older than the TTL.
+    fn is_stale(cached: Option<&UsageReport>, now: i64) -> bool {
+        match cached {
+            None => true,
+            Some(cached) => now - cached.checked_at_ms >= USAGE_TTL_MS as i64,
+        }
+    }
+
+    /// Whether a background refresh would replace any cached report now.
+    pub fn has_stale_usage(&self, subscriptions: &[StoredSubscription]) -> bool {
+        let now = (self.now_ms)();
+        let cached = lock(&self.cached);
+        subscriptions
+            .iter()
+            .any(|subscription| Self::is_stale(cached.get(&subscription.id), now))
+    }
+
+    /// Reads every subscription whose cached usage is older than the TTL, or
+    /// all of them when the operator forces a refresh.
+    pub async fn refresh(&self, subscriptions: &[StoredSubscription], force: bool) {
+        let now = (self.now_ms)();
+        let pending: Vec<StoredSubscription> = {
+            let cached = lock(&self.cached);
+            subscriptions
+                .iter()
+                .filter(|subscription| force || Self::is_stale(cached.get(&subscription.id), now))
+                .cloned()
+                .collect()
+        };
+        let mut futures = Vec::new();
+        for subscription in pending {
+            let provider = subscription.provider;
+            let key = subscription.key.clone();
+            let id = subscription.id.clone();
+            futures.push(async move {
+                let report = self.fetch(provider, &key).await;
+                (id, key, report)
+            });
+        }
+        let results = futures_util::future::join_all(futures).await;
+        let mut cached = lock(&self.cached);
+        for (id, key, report) in results {
+            let current = subscriptions
+                .iter()
+                .find(|subscription| subscription.id == id);
+            if current.map(|subscription| subscription.key.as_str()) == Some(key.as_str()) {
+                cached.insert(id, report);
+            }
+        }
+    }
+
+    fn base_url(&self, provider: ProviderId) -> String {
+        let definition = provider_definition(provider);
+        if let Some(value) = self.usage_base_urls.get(&provider) {
+            return value.clone();
+        }
+        if let Some(value) = self
+            .base_env
+            .get(definition.usage_base_url_env)
+            .and_then(Option::as_ref)
+        {
+            return value.clone();
+        }
+        definition.default_usage_base_url.to_string()
+    }
+
+    /// Reads one provider key, joining the fetch already in flight for it.
+    pub async fn fetch(&self, provider: ProviderId, key: &str) -> UsageReport {
+        let shared = self.shared_usage(provider, key);
+        let report = shared.clone().await;
+        self.finish_usage(provider, key, &shared);
+        report
+    }
+
+    /// The one fetch every concurrent caller for this provider key waits on.
+    /// The future is created once and shared, so a second caller never opens a
+    /// second upstream request while the first is still pending.
+    fn shared_usage(&self, provider: ProviderId, key: &str) -> UsageFuture {
+        let id = format!("{}\u{0}{key}", provider.as_str());
+        let mut inflight = lock(&self.inflight);
+        if let Some(existing) = inflight.get(&id) {
+            return existing.clone();
+        }
+        let base_url = self.base_url(provider);
+        let transport = Arc::clone(&self.transport);
+        let now = (self.now_ms)();
+        let owned_key = key.to_string();
+        let request: BoxFuture<'static, UsageReport> =
+            async move { fetch_usage(provider, &owned_key, &base_url, &transport, now).await }
+                .boxed();
+        let shared = request.shared();
+        inflight.insert(id, shared.clone());
+        shared
+    }
+
+    /// Drops the in-flight entry once its callers have the report. A newer
+    /// fetch for the same key is never removed by an older one.
+    fn finish_usage(&self, provider: ProviderId, key: &str, shared: &UsageFuture) {
+        let id = format!("{}\u{0}{key}", provider.as_str());
+        let mut inflight = lock(&self.inflight);
+        if inflight
+            .get(&id)
+            .map(|existing| existing.ptr_eq(shared))
+            .unwrap_or(false)
+        {
+            inflight.remove(&id);
+        }
+    }
+}
+
+/// Writes one peer's agent directory and builds the binding it runs with. The
+/// dashboard passes the repository root its harness executable resolves
+/// against; a worker that carries only a state directory uses `unscoped`.
+pub struct PeerProvisioner {
+    state_dir: PathBuf,
+    repo_dir: Option<PathBuf>,
+    base_env: Env,
+}
+
+impl PeerProvisioner {
+    pub fn new(state_dir: impl AsRef<Path>, repo_dir: impl AsRef<Path>, base_env: Env) -> Self {
+        Self {
+            state_dir: state_dir.as_ref().to_path_buf(),
+            repo_dir: Some(repo_dir.as_ref().to_path_buf()),
+            base_env,
+        }
+    }
+
+    /// A provisioner for a caller that carries no repository root.
+    pub fn unscoped(state_dir: impl AsRef<Path>, base_env: Env) -> Self {
+        Self {
+            state_dir: state_dir.as_ref().to_path_buf(),
+            repo_dir: None,
+            base_env,
+        }
+    }
+
+    /// Writes the selected subscription's agent directory and returns the
+    /// binding that directory and its environment carry.
+    pub fn bind(
+        &self,
+        subscription: &StoredSubscription,
+        usage: Option<&UsageReport>,
+        fallback_key: Option<&str>,
+    ) -> Result<PeerBinding, ProviderUnavailable> {
+        let provider = subscription.provider;
+        let model = provider_definition(provider).model;
+        let directory = agent_directory(&self.state_dir, provider, &subscription.id);
+        let mcp = match &self.repo_dir {
+            Some(repo_dir) => default_agent_mcp_for(repo_dir),
+            None => Ok(default_agent_mcp()),
+        }
+        .map_err(ProviderUnavailable::new)?;
+        write_agent_directory(&directory, &generated_config(provider, model), &mcp)
+            .map_err(|error| ProviderUnavailable::new(error.to_string()))?;
+
+        let mut binding = PeerBinding {
+            provider,
+            provider_name: provider_name(provider),
+            subscription_id: subscription.id.clone(),
+            subscription_label: subscription.label.clone(),
+            model: model.to_string(),
+            remaining_fraction: usage.and_then(|usage| usage.remaining_fraction),
+            agent_dir: directory,
+            env: Env::new(),
+        };
+        binding.env = peer_environment(&self.base_env, &binding, &subscription.key, fallback_key);
+        Ok(binding)
+    }
+}
+
+/// Composes the credential store, the usage cache, and the peer provisioner;
+/// keeps the masked view, the state frame, and command dispatch.
+pub struct ProviderService {
+    credentials: CredentialStore,
+    usage: UsageCache,
+    provisioner: PeerProvisioner,
+    repo_dir: PathBuf,
+    now_ms: Now,
+    log: Log,
+    broadcast: Mutex<Option<Broadcast>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1525,34 +1883,28 @@ impl ProviderService {
             .unwrap_or_else(|| default_transport(timeout_ms));
         let now_ms = options.now_ms.unwrap_or_else(|| Arc::new(now_millis));
         let log = options.log.unwrap_or_else(|| Arc::new(|_: &str| {}));
-        let loaded = load_subscriptions(&state_dir);
-        if let Some(preserved) = &loaded.preserved {
-            log(&format!(
-                "providers: unusable credentials were preserved at {}",
-                preserved.display()
-            ));
-        }
-        Self {
-            state_dir,
-            repo_dir,
-            base_env,
+        let credentials = CredentialStore::new(&state_dir, Arc::clone(&log));
+        let usage = UsageCache::new(
+            base_env.clone(),
             transport,
+            Arc::clone(&now_ms),
+            options.usage_base_urls,
+        );
+        let provisioner = PeerProvisioner::new(&state_dir, &repo_dir, base_env);
+        Self {
+            credentials,
+            usage,
+            provisioner,
+            repo_dir,
             now_ms,
-            usage_base_urls: options.usage_base_urls,
             log,
             broadcast: Mutex::new(options.broadcast),
-            inner: Mutex::new(Inner {
-                subscriptions: loaded.subscriptions,
-                usage: HashMap::new(),
-            }),
-            inflight: Mutex::new(HashMap::new()),
-            refresh_wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     /// The handle the background refresh loop waits on.
     pub fn refresh_wake(&self) -> Arc<tokio::sync::Notify> {
-        Arc::clone(&self.refresh_wake)
+        self.usage.refresh_wake()
     }
 
     pub fn repo_dir(&self) -> &Path {
@@ -1575,165 +1927,36 @@ impl ProviderService {
     }
 
     pub fn credentials_path(&self) -> PathBuf {
-        credentials_path(&self.state_dir)
+        self.credentials.credentials_path()
     }
 
-    /// The internal list, including keys; never serialize this.
+    /// The internal credential list, including keys; never serialize this.
     pub fn list(&self) -> Vec<StoredSubscription> {
-        lock(&self.inner).subscriptions.clone()
+        self.credentials.list()
     }
 
     /// Re-reads the credential file for a long-lived worker, keeping cached
     /// usage for an unchanged key and dropping it for a removed or replaced
     /// one.
     pub fn reload(&self) {
-        let loaded = load_subscriptions(&self.state_dir);
-        let next = loaded.subscriptions;
-        let next_ids: std::collections::HashSet<&str> = next
-            .iter()
-            .map(|subscription| subscription.id.as_str())
-            .collect();
-        let mut inner = lock(&self.inner);
-        inner.usage.retain(|id, _| next_ids.contains(id.as_str()));
-        for subscription in &next {
-            if let Some(previous) = inner
-                .subscriptions
-                .iter()
-                .find(|entry| entry.id == subscription.id)
-            {
-                if previous.key != subscription.key || previous.provider != subscription.provider {
-                    inner.usage.remove(&subscription.id);
-                }
-            }
-        }
-        inner.subscriptions = next;
-        drop(inner);
-        if let Some(preserved) = &loaded.preserved {
-            (self.log)(&format!(
-                "providers: unusable credentials were preserved at {}",
-                preserved.display()
-            ));
-        }
-    }
-
-    fn base_url(&self, provider: ProviderId) -> String {
-        let definition = provider_definition(provider);
-        if let Some(value) = self.usage_base_urls.get(&provider) {
-            return value.clone();
-        }
-        if let Some(value) = self
-            .base_env
-            .get(definition.usage_base_url_env)
-            .and_then(Option::as_ref)
-        {
-            return value.clone();
-        }
-        definition.default_usage_base_url.to_string()
-    }
-
-    async fn fetch_usage_for(&self, provider: ProviderId, key: &str) -> UsageReport {
-        let shared = self.shared_usage(provider, key);
-        let report = shared.clone().await;
-        self.finish_usage(provider, key, &shared);
-        report
-    }
-
-    /// The one fetch every concurrent caller for this provider key waits on.
-    /// The future is created once and shared, so a second caller never opens a
-    /// second upstream request while the first is still pending.
-    fn shared_usage(&self, provider: ProviderId, key: &str) -> UsageFuture {
-        let id = format!("{}\u{0}{key}", provider.as_str());
-        let mut inflight = lock(&self.inflight);
-        if let Some(existing) = inflight.get(&id) {
-            return existing.clone();
-        }
-        let base_url = self.base_url(provider);
-        let transport = Arc::clone(&self.transport);
-        let now = (self.now_ms)();
-        let owned_key = key.to_string();
-        let request: BoxFuture<'static, UsageReport> =
-            async move { fetch_usage(provider, &owned_key, &base_url, &transport, now).await }
-                .boxed();
-        let shared = request.shared();
-        inflight.insert(id, shared.clone());
-        shared
-    }
-
-    /// Drops the in-flight entry once its callers have the report. A newer
-    /// fetch for the same key is never removed by an older one.
-    fn finish_usage(&self, provider: ProviderId, key: &str, shared: &UsageFuture) {
-        let id = format!("{}\u{0}{key}", provider.as_str());
-        let mut inflight = lock(&self.inflight);
-        if inflight
-            .get(&id)
-            .map(|existing| existing.ptr_eq(shared))
-            .unwrap_or(false)
-        {
-            inflight.remove(&id);
-        }
-    }
-
-    /// Whether one subscription's cached usage is missing or older than the TTL.
-    fn usage_is_stale(inner: &Inner, subscription: &StoredSubscription, now: i64) -> bool {
-        match inner.usage.get(&subscription.id) {
-            None => true,
-            Some(cached) => now - cached.checked_at_ms >= USAGE_TTL_MS as i64,
-        }
-    }
-
-    /// Whether a background refresh would replace any cached report now.
-    fn has_stale_usage(&self) -> bool {
-        let now = (self.now_ms)();
-        let inner = lock(&self.inner);
-        inner
-            .subscriptions
-            .iter()
-            .any(|subscription| Self::usage_is_stale(&inner, subscription, now))
+        let previous = self.credentials.list();
+        let next = self.credentials.reload();
+        self.usage.retain_unchanged(&previous, &next);
     }
 
     /// Reads every subscription whose cached usage is older than the TTL, or
     /// all of them when the operator forces a refresh.
     pub async fn refresh(&self, force: bool) {
-        let now = (self.now_ms)();
-        let pending: Vec<StoredSubscription> = {
-            let inner = lock(&self.inner);
-            inner
-                .subscriptions
-                .iter()
-                .filter(|subscription| force || Self::usage_is_stale(&inner, subscription, now))
-                .cloned()
-                .collect()
-        };
-        let mut futures = Vec::new();
-        for subscription in pending {
-            let provider = subscription.provider;
-            let key = subscription.key.clone();
-            let id = subscription.id.clone();
-            futures.push(async move {
-                let report = self.fetch_usage_for(provider, &key).await;
-                (id, key, report)
-            });
-        }
-        let results = futures_util::future::join_all(futures).await;
-        {
-            let mut inner = lock(&self.inner);
-            for (id, key, report) in results {
-                let current = inner
-                    .subscriptions
-                    .iter()
-                    .find(|subscription| subscription.id == id);
-                if current.map(|subscription| subscription.key.as_str()) == Some(key.as_str()) {
-                    inner.usage.insert(id, report);
-                }
-            }
-        }
+        let subscriptions = self.credentials.list();
+        self.usage.refresh(&subscriptions, force).await;
         self.publish_selection();
     }
 
     fn ranked(&self) -> Vec<RankedSubscription> {
-        let snapshot = read_selection_snapshot(&self.state_dir);
-        let inner = lock(&self.inner);
-        let mut ranked = rank_subscriptions(&inner.subscriptions, &inner.usage);
+        let snapshot = read_selection_snapshot(self.credentials.state_dir());
+        let subscriptions = self.credentials.list();
+        let usage = self.usage.snapshot();
+        let mut ranked = rank_subscriptions(&subscriptions, &usage);
         if let Some(snapshot) = snapshot {
             for candidate in &mut ranked {
                 candidate.preferred = candidate.subscription.provider == snapshot.provider
@@ -1755,7 +1978,7 @@ impl ProviderService {
                 usage,
                 ..
             } => write_selection_snapshot(
-                &self.state_dir,
+                self.credentials.state_dir(),
                 subscription.provider,
                 &subscription.id,
                 &subscription.label,
@@ -1764,7 +1987,7 @@ impl ProviderService {
                 &checked_at,
             ),
             ProviderDecision::Refused { .. } => {
-                remove_selection_snapshot(&self.state_dir);
+                remove_selection_snapshot(self.credentials.state_dir());
                 Ok(())
             }
         };
@@ -1869,11 +2092,7 @@ impl ProviderService {
     pub async fn save(&self, input: SaveProviderInput) -> SaveProviderResult {
         let validated = self.validated(&input)?;
         let existing = match &input.id {
-            Some(id) => lock(&self.inner)
-                .subscriptions
-                .iter()
-                .find(|subscription| &subscription.id == id)
-                .cloned(),
+            Some(id) => self.credentials.get(id),
             None => None,
         };
         if input.id.is_some() && existing.is_none() {
@@ -1890,7 +2109,7 @@ impl ProviderService {
 
         let mut checked = None;
         if validated.key.is_some() {
-            let report = self.fetch_usage_for(validated.provider, &key).await;
+            let report = self.usage.fetch(validated.provider, &key).await;
             if report.status == UsageStatus::Invalid {
                 return Err(ProviderChangeError::refused_key(
                     report
@@ -1920,95 +2139,31 @@ impl ProviderService {
             updated_at: timestamp,
         };
 
-        let mut inner = lock(&self.inner);
-        let next = match &existing {
-            None => {
-                let mut next = inner.subscriptions.clone();
-                next.push(subscription.clone());
-                next
-            }
-            Some(_) => inner
-                .subscriptions
-                .iter()
-                .map(|entry| {
-                    if entry.id == id {
-                        subscription.clone()
-                    } else {
-                        entry.clone()
-                    }
-                })
-                .collect(),
-        };
-        if let Err(error) = save_subscriptions(&self.state_dir, &next) {
-            return Err(format!("The credentials file could not be written: {error}").into());
-        }
-        inner.subscriptions = next;
-        if let Some(existing) = &existing {
-            if existing.key != subscription.key {
-                inner.usage.remove(&id);
-            }
+        self.credentials.save(subscription.clone())?;
+        if existing
+            .as_ref()
+            .is_some_and(|entry| entry.key != subscription.key)
+        {
+            self.usage.forget(&id);
         }
         if let Some(report) = checked {
-            inner.usage.insert(id, report);
+            self.usage.store(id, report);
         }
-        drop(inner);
 
         self.publish_selection();
         Ok(())
     }
 
     pub fn remove(&self, id: &str) -> SaveProviderResult {
-        let mut inner = lock(&self.inner);
-        let next: Vec<StoredSubscription> = inner
-            .subscriptions
-            .iter()
-            .filter(|subscription| subscription.id != id)
-            .cloned()
-            .collect();
-        if next.len() == inner.subscriptions.len() {
-            return Err("That subscription no longer exists.".to_string().into());
-        }
-        if let Err(error) = save_subscriptions(&self.state_dir, &next) {
-            return Err(format!("The credentials file could not be written: {error}").into());
-        }
-        inner.subscriptions = next;
-        inner.usage.remove(id);
-        drop(inner);
+        self.credentials.remove(id)?;
+        self.usage.forget(id);
         self.publish_selection();
         Ok(())
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> SaveProviderResult {
-        let mut inner = lock(&self.inner);
-        let Some(existing) = inner
-            .subscriptions
-            .iter()
-            .find(|subscription| subscription.id == id)
-            .cloned()
-        else {
-            return Err("That subscription no longer exists.".to_string().into());
-        };
         let updated_at = iso_timestamp((self.now_ms)());
-        let next: Vec<StoredSubscription> = inner
-            .subscriptions
-            .iter()
-            .map(|subscription| {
-                if subscription.id == existing.id {
-                    StoredSubscription {
-                        enabled,
-                        updated_at: updated_at.clone(),
-                        ..subscription.clone()
-                    }
-                } else {
-                    subscription.clone()
-                }
-            })
-            .collect();
-        if let Err(error) = save_subscriptions(&self.state_dir, &next) {
-            return Err(format!("The credentials file could not be written: {error}").into());
-        }
-        inner.subscriptions = next;
-        drop(inner);
+        self.credentials.set_enabled(id, enabled, &updated_at)?;
         self.publish_selection();
         Ok(())
     }
@@ -2036,30 +2191,11 @@ impl ProviderService {
             } => (subscription, usage, fallback),
         };
 
-        let provider = subscription.provider;
-        let model = provider_definition(provider).model;
-        let directory = agent_directory(&self.state_dir, provider, &subscription.id);
-        let mcp = default_agent_mcp_for(&self.repo_dir).map_err(ProviderUnavailable::new)?;
-        write_agent_directory(&directory, &generated_config(provider, model), &mcp)
-            .map_err(|error| ProviderUnavailable::new(error.to_string()))?;
-
-        let mut binding = PeerBinding {
-            provider,
-            provider_name: provider_name(provider),
-            subscription_id: subscription.id.clone(),
-            subscription_label: subscription.label.clone(),
-            model: model.to_string(),
-            remaining_fraction: usage.and_then(|usage| usage.remaining_fraction),
-            agent_dir: directory,
-            env: Env::new(),
-        };
-        binding.env = peer_environment(
-            &self.base_env,
-            &binding,
-            &subscription.key,
+        self.provisioner.bind(
+            &subscription,
+            usage.as_ref(),
             fallback.as_ref().map(|entry| entry.key.as_str()),
-        );
-        Ok(binding)
+        )
     }
 
     /// The environment one ACP peer receives for the current selection.
@@ -2090,19 +2226,11 @@ impl ProviderService {
     pub async fn handle(&self, conn: &Conn, command: &Command) -> bool {
         match command {
             Command::GetProviders => {
-                // A read answers the cached view and never waits for a usage
-                // endpoint. A stale report wakes the dashboard's background
-                // loop, which refreshes it and pushes the state it answers
-                // with; only an explicit refresh publishes to every client.
-                conn.send(self.state_frame());
-                if self.has_stale_usage() {
-                    self.refresh_wake.notify_one();
-                }
+                self.get_providers(conn);
                 true
             }
             Command::RefreshProviders => {
-                self.refresh(true).await;
-                self.push_state(conn);
+                self.refresh_providers(conn).await;
                 true
             }
             Command::CreateProvider {
@@ -2137,26 +2265,12 @@ impl ProviderService {
                 true
             }
             Command::DeleteProvider { request_id, id } => {
-                let Some(id) = id.as_ref().and_then(Value::as_str) else {
-                    conn.send(provider_error_frame(
-                        request_id.as_ref(),
-                        &ProviderChangeError::new("A delete needs the subscription id."),
-                    ));
-                    return true;
-                };
-                if !request_id
-                    .as_ref()
-                    .map(is_provider_request_id)
-                    .unwrap_or(false)
-                {
-                    conn.send(provider_error_frame(
-                        None,
-                        &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
-                    ));
-                    return true;
-                }
-                let result = self.remove(id);
-                self.settle(conn, request_id.as_ref(), result).await;
+                self.delete_provider(
+                    conn,
+                    request_id.as_ref(),
+                    id.as_ref().and_then(Value::as_str),
+                )
+                .await;
                 true
             }
             Command::SetProviderEnabled {
@@ -2164,34 +2278,77 @@ impl ProviderService {
                 id,
                 enabled,
             } => {
-                let id = id.as_ref().and_then(Value::as_str);
-                let enabled = enabled.as_ref().and_then(Value::as_bool);
-                let (Some(id), Some(enabled)) = (id, enabled) else {
-                    conn.send(provider_error_frame(
-                        request_id.as_ref(),
-                        &ProviderChangeError::new(
-                            "Enabling a subscription needs its id and a boolean.",
-                        ),
-                    ));
-                    return true;
-                };
-                if !request_id
-                    .as_ref()
-                    .map(is_provider_request_id)
-                    .unwrap_or(false)
-                {
-                    conn.send(provider_error_frame(
-                        None,
-                        &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
-                    ));
-                    return true;
-                }
-                let result = self.set_enabled(id, enabled);
-                self.settle(conn, request_id.as_ref(), result).await;
+                self.set_provider_enabled(
+                    conn,
+                    request_id.as_ref(),
+                    id.as_ref().and_then(Value::as_str),
+                    enabled.as_ref().and_then(Value::as_bool),
+                )
+                .await;
                 true
             }
             _ => false,
         }
+    }
+
+    /// A read answers the cached view and never waits for a usage endpoint. A
+    /// stale report wakes the dashboard's background loop, which refreshes it
+    /// and pushes the state it answers with; only an explicit refresh
+    /// publishes to every client.
+    fn get_providers(&self, conn: &Conn) {
+        conn.send(self.state_frame());
+        if self.usage.has_stale_usage(&self.credentials.list()) {
+            self.usage.wake();
+        }
+    }
+
+    async fn refresh_providers(&self, conn: &Conn) {
+        self.refresh(true).await;
+        self.push_state(conn);
+    }
+
+    async fn delete_provider(&self, conn: &Conn, request_id: Option<&Value>, id: Option<&str>) {
+        let Some(id) = id else {
+            conn.send(provider_error_frame(
+                request_id,
+                &ProviderChangeError::new("A delete needs the subscription id."),
+            ));
+            return;
+        };
+        if !request_id.map(is_provider_request_id).unwrap_or(false) {
+            conn.send(provider_error_frame(
+                None,
+                &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
+            ));
+            return;
+        }
+        let result = self.remove(id);
+        self.settle(conn, request_id, result).await;
+    }
+
+    async fn set_provider_enabled(
+        &self,
+        conn: &Conn,
+        request_id: Option<&Value>,
+        id: Option<&str>,
+        enabled: Option<bool>,
+    ) {
+        let (Some(id), Some(enabled)) = (id, enabled) else {
+            conn.send(provider_error_frame(
+                request_id,
+                &ProviderChangeError::new("Enabling a subscription needs its id and a boolean."),
+            ));
+            return;
+        };
+        if !request_id.map(is_provider_request_id).unwrap_or(false) {
+            conn.send(provider_error_frame(
+                None,
+                &ProviderChangeError::new(PROVIDER_CHANGE_NEEDS_ID),
+            ));
+            return;
+        }
+        let result = self.set_enabled(id, enabled);
+        self.settle(conn, request_id, result).await;
     }
 
     /// Applies one save or create under the request id both commands carry.
@@ -2362,7 +2519,8 @@ pub async fn worker_peer_environment(
     mut options: ProviderOptions,
 ) -> Result<Env, ProviderUnavailable> {
     let state_dir = state_dir.as_ref();
-    if load_subscriptions(state_dir).subscriptions.is_empty() {
+    let credentials = CredentialStore::new(state_dir, Arc::new(|_: &str| {}));
+    if credentials.list().is_empty() {
         return Ok(environment);
     }
     options.env = Some(environment);
