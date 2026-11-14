@@ -1330,7 +1330,7 @@ impl GoalAuthoring {
             return;
         }
 
-        let mut errors = inspection.errors.clone();
+        let mut errors = inspection.prepare_errors.clone();
         if inspection.prepare.is_empty() {
             errors.push("no managed skill was prepared.".to_string());
         }
@@ -2069,7 +2069,9 @@ struct SkillsInspection {
     prepare: Vec<SkillFile>,
     discover: Vec<SkillFile>,
     unmanaged: Vec<SkillFile>,
-    errors: Vec<String>,
+    /// Metadata faults in the `prepare` family alone; the only ones that fail
+    /// preparation.
+    prepare_errors: Vec<String>,
     contradictions: Vec<Contradiction>,
     discover_states: Vec<(String, String, String, String)>,
 }
@@ -2210,23 +2212,26 @@ async fn inspect_skills(root: &Path) -> Result<SkillsInspection, String> {
         .to_path_buf();
     let discover_states = discover_skill_views(&repo_dir).await;
 
-    let mut errors: Vec<String> = Vec::new();
-    for skill in &managed {
+    // Only this family's own metadata can fail preparation: a malformed
+    // Discover document belongs to the Discover page, which owns that
+    // artifact, and must never roll back skills preparation wrote.
+    let mut prepare_errors: Vec<String> = Vec::new();
+    for skill in &prepare {
         let label = format!("\"{}\"", skill.directory);
         if skill.name != skill.directory {
-            errors.push(format!(
+            prepare_errors.push(format!(
                 "skill {label} has frontmatter name \"{}\", not the directory name.",
                 skill.name
             ));
         } else if !crate::installed_skills::is_skill_name(&skill.name) {
-            errors.push(format!(
+            prepare_errors.push(format!(
                 "skill {label} has an invalid name: use 1-{SKILL_NAME_MAX} lowercase letters, digits, or single hyphens."
             ));
         }
         if skill.description.trim().is_empty() {
-            errors.push(format!("skill {label} has an empty description."));
+            prepare_errors.push(format!("skill {label} has an empty description."));
         } else if skill.description.chars().count() > SKILL_DESCRIPTION_MAX {
-            errors.push(format!(
+            prepare_errors.push(format!(
                 "skill {label} has a description longer than {SKILL_DESCRIPTION_MAX} characters."
             ));
         }
@@ -2245,7 +2250,7 @@ async fn inspect_skills(root: &Path) -> Result<SkillsInspection, String> {
         prepare,
         discover,
         unmanaged,
-        errors,
+        prepare_errors,
         contradictions,
         discover_states,
     })
@@ -3063,7 +3068,11 @@ mod tests {
 
         let inspection = inspect_skills(&skills).await.expect("a skills inspection");
 
-        assert!(inspection.errors.is_empty(), "{:?}", inspection.errors);
+        assert!(
+            inspection.prepare_errors.is_empty(),
+            "{:?}",
+            inspection.prepare_errors
+        );
         let summaries = inspection.summaries();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0]["name"], "bommed");
@@ -3072,6 +3081,48 @@ mod tests {
         assert_eq!(
             inspection.contradictions[0].skills,
             ("bommed".to_string(), "plain".to_string())
+        );
+    }
+
+    /// A Discover document with empty metadata is the Discover page's problem;
+    /// it must never fail preparation, while the same fault in the `prepare`
+    /// family still does.
+    #[tokio::test]
+    async fn a_discover_metadata_fault_is_not_a_preparation_error() {
+        let (_repo, skills) = scratch("family-errors");
+        write_skill(
+            &skills,
+            "discover-order",
+            "---\nname: discover-order\ndescription:\nmetadata:\n  devboard-managed: \"true\"\n  \
+             devboard-family: \"discover\"\n---\n\n- Keep the order aggregate authoritative.\n",
+        );
+        write_skill(
+            &skills,
+            "cohesive-units",
+            "---\nname: cohesive-units\ndescription: One cohesive responsibility per unit.\n\
+             metadata:\n  devboard-managed: \"true\"\n---\n\n- Keep units small.\n",
+        );
+
+        let clean = inspect_skills(&skills).await.expect("a skills inspection");
+        assert_eq!(clean.prepare.len(), 1);
+        assert_eq!(clean.discover.len(), 1);
+        assert!(
+            clean.prepare_errors.is_empty(),
+            "{:?}",
+            clean.prepare_errors
+        );
+
+        write_skill(
+            &skills,
+            "empty-prepare",
+            "---\nname: empty-prepare\ndescription:\nmetadata:\n  devboard-managed: \"true\"\n---\n\n\
+             - Nothing.\n",
+        );
+
+        let faulty = inspect_skills(&skills).await.expect("a skills inspection");
+        assert_eq!(
+            faulty.prepare_errors,
+            vec!["skill \"empty-prepare\" has an empty description.".to_string()]
         );
     }
 }

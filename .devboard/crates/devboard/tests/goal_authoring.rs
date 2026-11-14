@@ -707,3 +707,135 @@ async fn preemption_keeps_the_issues_worker() {
         "goal creation still preempts the runs it replaces"
     );
 }
+
+/// An edited Discover document with a missing description belongs to the
+/// Discover page: preparation completes, keeps the skills it wrote, and leaves
+/// the Discover directory byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_discover_metadata_fault_never_fails_preparation() {
+    let scratch = Scratch::new("discover-fault");
+    std::fs::write(scratch.path().join("GOAL.md"), "# Fixture goal\n").expect("the goal");
+    let discover = scratch
+        .path()
+        .join(".omp")
+        .join("skills")
+        .join("discover-orders");
+    std::fs::create_dir_all(&discover).expect("the discover skill directory");
+    let discover_source = "---\nname: discover-orders\ndescription:\nmetadata:\n  \
+        devboard-managed: \"true\"\n  devboard-family: \"discover\"\n---\n\n\
+        - Keep the order aggregate authoritative.\n";
+    std::fs::write(discover.join("SKILL.md"), discover_source).expect("the discover SKILL.md");
+
+    let command = stub_command(&scratch, &["--prepare-skills"]);
+    let app = app_with(&scratch, command).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::PrepareSkills).await;
+
+    let (stopped, frames) = collect_until(
+        &mut inbox,
+        |frame| frame["type"] == "skillsPreparationStopped",
+        10_000,
+    )
+    .await;
+    assert_eq!(stopped["completed"], true);
+    let failures: Vec<&Value> = frames
+        .iter()
+        .filter(|frame| frame["type"] == "error")
+        .collect();
+    assert!(failures.is_empty(), "{failures:?}");
+    let skills_dir = scratch.path().join(".omp").join("skills");
+    assert!(skills_dir
+        .join("dependency-direction")
+        .join("SKILL.md")
+        .is_file());
+    assert_eq!(
+        std::fs::read_to_string(discover.join("SKILL.md")).expect("the discover skill survives"),
+        discover_source
+    );
+}
+
+/// The `.omp/skills` tree as relative path to bytes, sorted, so a refused
+/// preparation can be compared byte for byte with the tree it started from.
+fn skill_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, relative: &str, files: &mut Vec<(String, Vec<u8>)>) {
+        let Ok(reader) = std::fs::read_dir(root.join(relative)) else {
+            return;
+        };
+        for entry in reader.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let next = if relative.is_empty() {
+                name
+            } else {
+                format!("{relative}/{name}")
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                walk(root, &next, files);
+            } else if file_type.is_file() {
+                files.push((
+                    next.clone(),
+                    std::fs::read(root.join(&next)).unwrap_or_default(),
+                ));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(root, "", &mut files);
+    files.sort();
+    files
+}
+
+/// The same fault inside the `prepare` family stays fatal: the run stops with
+/// the empty description named and restores the previous skills tree byte for
+/// byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prepare_metadata_fault_fails_preparation_and_rolls_back() {
+    let scratch = Scratch::new("prepare-fault");
+    std::fs::write(scratch.path().join("GOAL.md"), "# Fixture goal\n").expect("the goal");
+    let skills_dir = scratch.path().join(".omp").join("skills");
+    let legacy = skills_dir.join("legacy-style");
+    std::fs::create_dir_all(&legacy).expect("the previous skill directory");
+    std::fs::write(
+        legacy.join("SKILL.md"),
+        "---\nname: legacy-style\ndescription: A prepared skill from an earlier run.\n\
+         metadata:\n  devboard-managed: \"true\"\n---\n\n- Keep one writer.\n",
+    )
+    .expect("the previous SKILL.md");
+    let house = skills_dir.join("house-style");
+    std::fs::create_dir_all(&house).expect("the hand-authored directory");
+    std::fs::write(
+        house.join("SKILL.md"),
+        "---\nname: house-style\ndescription: The operator's own style.\n---\n\n\
+         - Keep every rule.\n",
+    )
+    .expect("the hand-authored SKILL.md");
+    let before = skill_tree(&skills_dir);
+
+    let command = stub_command(&scratch, &["--prepare-skills", "--prepare-skills-invalid"]);
+    let app = app_with(&scratch, command).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::PrepareSkills).await;
+
+    let failure = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
+    let message = failure["message"].as_str().unwrap_or_default();
+    assert!(
+        message.starts_with("Skills preparation failed: "),
+        "{message}"
+    );
+    assert!(
+        message.contains("skill \"invalid-skill\" has an empty description."),
+        "{message}"
+    );
+    let (stopped, _frames) = collect_until(
+        &mut inbox,
+        |frame| frame["type"] == "skillsPreparationStopped",
+        10_000,
+    )
+    .await;
+    assert_eq!(stopped["completed"], false);
+    assert_eq!(skill_tree(&skills_dir), before);
+}
