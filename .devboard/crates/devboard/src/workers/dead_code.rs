@@ -1157,10 +1157,6 @@ fn is_ignored_path(root: &Path, relative: &str) -> bool {
     ignored_by_rules(root, relative)
 }
 
-pub fn walk_regular_repository_files(repo_dir: &Path) -> Vec<String> {
-    walk_regular_files(repo_dir)
-}
-
 pub fn scout_pool(repo_dir: &Path) -> Vec<String> {
     let root = absolute(repo_dir);
     let files = match git_admitted_files(&root) {
