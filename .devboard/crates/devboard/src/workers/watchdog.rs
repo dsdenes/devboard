@@ -1643,12 +1643,6 @@ fn marker_port(state_dir: &Path, pid: u32) -> Option<u16> {
         .filter(|port| *port > 0)
 }
 
-/// Every dashboard on the machine, read from `/proc`.
-pub fn discover_instances() -> Vec<Instance> {
-    let self_pids = HashSet::from([std::process::id()]);
-    instances_from_processes(&process_table(), &self_pids)
-}
-
 /// The guard record a repository's dashboard writes beside its state.
 fn read_guard_owner(host: &Path) -> Option<crate::instances::GuardOwner> {
     let path = host
