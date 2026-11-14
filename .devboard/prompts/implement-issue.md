@@ -19,6 +19,14 @@ comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
+- **MCP routes.** A Devboard tool mounts at `xd://mcp__devboard_<tool>`, where `<tool>` is the
+  catalog name minus its `devboard_` prefix: `devboard_status` at `xd://mcp__devboard_status`,
+  `issue_create` at `xd://mcp__devboard_issue_create`, `journal_search` at
+  `xd://mcp__devboard_journal_search`. The mount already carries that one `devboard` segment, so
+  never write a route with two of them — `xd://mcp__devboard_devboard_status` is not a device — and
+  never a bare `xd://<name>`. Copy each mount from the tool list the session carries; never infer
+  it. On `No such tool`, copy the mount from the mounted-device list that error prints and issue
+  the call once there; never rewrite the same path and never probe a second spelling.
 - Resolve the session's host and checkout state exactly once, before any forge read or write: make
   one argument-free `devboard_status` MCP call. Take `<REPO_DIR>` from its `repositoryRoot` — the
   checkout's worktree path — along with `harnessDirectory`, `stateDirectory`, and its `git`
@@ -41,15 +49,9 @@ comment on, close, or reopen another issue.
   `agent_sessions_list` — never by spawning the harness's `call-tool` bridge or any other
   subprocess that wraps them: the bridge starts a second Bun process and duplicates a capability
   the session already has. Never reach for that bridge for a Devboard state read.
-- Address every Devboard tool through its mounted route, copied from the tool list the session
-  carries and never inferred: a route is `xd://` plus the mount name exactly as that list prints
-  it, so the status tool's route is `xd://mcp__devboard_status`, one `devboard` segment.
-  `xd://mcp__devboard_devboard_status` repeats the server prefix on top of the tool's own
-  `devboard_` prefix, and bare `xd://devboard_status` drops the mount; each fails with
-  `No such tool` and costs a turn, so issue the status read once, on the correct route. Before the
-  first write of a turn, resolve each route from that list; a `write` whose `path` is not a listed
-  device route — `conflict://1`, for example — is never a probe. Fix the route and issue the call
-  once.
+- Before the first write of a turn, check each route against the mounted devices: a `write` whose
+  `path` is not a listed device route — `conflict://1`, for example — is never a probe. Fix the
+  route and issue the call once.
 - Never orient the session with a shell probe, and never chain orientation probes: no
   `git remote get-url origin` or `git remote get-url github`, no `git config --get
   remote.origin.url`, no `git rev-parse --show-toplevel`, no `ls` of `.devboard`'s scripts
