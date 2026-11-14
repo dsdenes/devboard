@@ -565,7 +565,18 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
 
     // The Start's own answer reports the start; the worker it spawned proves
     // its attachment through the projection the next read walks. The spawn runs
-    // beside that answer, so its pid is awaited before this read.
+    // beside that answer, and the lock its closure writes lands after the
+    // recorded argv, so attachment is awaited here instead of assumed.
+    let lock_path = repo.join(".devboard/.tmp/dead-code/lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2_000);
+    while std::fs::read_to_string(&lock_path).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the spawned worker never published its lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
     let (conn, mut inbox) = connection_for(&app).await;
     devboard::agents_mode::handle(
         &app,
@@ -584,6 +595,14 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
     assert_eq!(
         attached["workers"][0]["pid"],
         child_pid.lock().expect("a pid").expect("a pid")
+    );
+    // The projection carries the lock's own start, the one instant that says how
+    // long this worker has run; `lastRunAt` moves with every cycle instead.
+    let lock: Value = serde_json::from_str(&std::fs::read_to_string(&lock_path).expect("the lock"))
+        .expect("JSON lock");
+    assert_eq!(
+        attached["workers"][0]["startedAt"], lock["startedAt"],
+        "{attached:?}"
     );
 
     let (conn, mut inbox) = connection_for(&app).await;

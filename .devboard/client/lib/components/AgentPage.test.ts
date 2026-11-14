@@ -221,6 +221,52 @@ test("a frame without workers renders the page with no live worker row", () => {
   expect(agents.snapshot("release-train")?.workers).toEqual([]);
 });
 
+test("the activity dot names the worker's own start while Last run keeps the cadence", () => {
+  const workerStart = "2026-11-10T08:00:00.000Z";
+  const lastScan = "2026-11-14T09:55:00.000Z";
+  const view = present(
+    releaseSnapshot({
+      lifecycle: "running",
+      cadence: { minutes: 10, defaultMinutes: 10, lastRunAt: lastScan, nextRunAt: null },
+      workers: [
+        {
+          pid: 41,
+          version: "1.48.1",
+          stateDir: "/fixture/state",
+          lifecycle: "running",
+          startedAt: workerStart,
+        },
+      ],
+    }),
+  );
+  const page = within(view.container);
+  const dot = page.getByTestId("agent-activity-dot");
+  expect(dot.getAttribute("title")).toBe(workerStart);
+  expect(dot.getAttribute("aria-label")).toBe(`Release Train is running since ${workerStart}`);
+  // The scan start is the settings row's fact alone, never the dot's.
+  const lastRun = page.getByTestId("agent-last-run");
+  expect(lastRun.getAttribute("title")).toBe(lastScan);
+  expect(dot.getAttribute("title")).not.toBe(lastScan);
+});
+
+test("a worker frame with no start renders no running-since claim", () => {
+  const lastScan = "2026-11-14T09:55:00.000Z";
+  const view = present(
+    releaseSnapshot({
+      lifecycle: "running",
+      cadence: { minutes: 10, defaultMinutes: 10, lastRunAt: lastScan, nextRunAt: null },
+      // An older server sends no worker start; the page must not fall back to
+      // the cadence instant it is told apart from.
+      workers: [{ pid: 41, version: "1.48.1", stateDir: "/fixture/state", lifecycle: "running" }],
+    }),
+  );
+  const page = within(view.container);
+  const dot = page.getByTestId("agent-activity-dot");
+  expect(dot.getAttribute("aria-label")).toBe("Release Train is running");
+  expect(dot.getAttribute("title")).toBeNull();
+  expect(agents.snapshot("release-train")?.workers[0]?.startedAt).toBeNull();
+});
+
 /** Stub the socket so a test observes exactly what a Save control sent. */
 function recordSettingsSends(): { sent: unknown[]; restore: () => void } {
   const previous = connection.send;

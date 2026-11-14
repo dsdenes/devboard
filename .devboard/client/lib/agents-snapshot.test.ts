@@ -37,6 +37,35 @@ test("a frame without workers is stored with no live workers", () => {
   expect(agents.snapshot("scout")?.workers).toEqual([]);
 });
 
+test("a worker keeps the start its lock reported and stores null without one", () => {
+  const agents = new AgentsStore();
+  agents.handleEvent({
+    type: "agentState",
+    agent: frame({
+      workers: [
+        {
+          pid: 41,
+          version: "1.48.1",
+          stateDir: "/fixture/state",
+          lifecycle: "running",
+          startedAt: "2026-11-10T08:00:00.000Z",
+        },
+        { pid: 42, version: null, stateDir: "/fixture/old", lifecycle: "running" },
+      ],
+    }),
+  });
+  expect(agents.snapshot("scout")?.workers).toEqual([
+    {
+      pid: 41,
+      version: "1.48.1",
+      stateDir: "/fixture/state",
+      lifecycle: "running",
+      startedAt: "2026-11-10T08:00:00.000Z",
+    },
+    { pid: 42, version: null, stateDir: "/fixture/old", lifecycle: "running", startedAt: null },
+  ]);
+});
+
 test("a frame whose issue row has no url is dropped and the stored snapshot stands", () => {
   const agents = new AgentsStore();
   agents.handleEvent({ type: "agentState", agent: frame() });

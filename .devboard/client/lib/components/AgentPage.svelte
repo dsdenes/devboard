@@ -12,6 +12,7 @@
     AgentIssueRow,
     AgentReleaseRow,
     AgentSync,
+    AgentWorker,
   } from "../types";
   import AgentActivityBar from "./AgentActivityBar.svelte";
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
@@ -61,7 +62,7 @@
           : ("idle" as const),
   );
   const barStartedAt = $derived(
-    barState === "running" ? (snapshot?.cadence.lastRunAt ?? null) : null,
+    barState === "running" ? earliestWorkerStart(snapshot?.workers ?? []) : null,
   );
   const cycles = $derived(detail?.panel === "cycles" ? detail.cycles : []);
   // A Watchdog or MCP optimizer page follows cycles instead of a scan log; the bar's
@@ -69,6 +70,20 @@
   const barActivity = $derived(
     detail?.panel === "cycles" ? cycles.slice().reverse().map(cycleLine) : activity,
   );
+
+  // The bar's `running since` is how long the worker process itself has run, so
+  // it reads the earliest live worker start. `cadence.lastRunAt` is the last
+  // scan's start, which advances on every cadence tick and is labelled `Last
+  // run` below; feeding it here claimed one instant under two labels. A frame
+  // from a server that sent no worker start makes no uptime claim at all.
+  function earliestWorkerStart(workers: AgentWorker[]): string | null {
+    let earliest: string | null = null;
+    for (const worker of workers) {
+      if (worker.startedAt === null) continue;
+      if (earliest === null || worker.startedAt < earliest) earliest = worker.startedAt;
+    }
+    return earliest;
+  }
 
   function cycleLine(cycle: AgentCycle): string {
     const parts = [cycle.at, cycle.action];

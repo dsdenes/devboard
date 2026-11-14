@@ -149,6 +149,8 @@ export interface AgentWorker {
   version: string | null;
   stateDir: string;
   lifecycle: AgentLifecycle;
+  /** When the worker process started, ISO 8601; null for an older server. */
+  startedAt: string | null;
 }
 
 export interface AgentSnapshot {
@@ -730,7 +732,13 @@ export function normalizeWorkers(
       throw new AgentRegistryError(`${descriptor.id}: a worker needs its state directory`);
     }
     const lifecycle = normalizeLifecycle(descriptor, entry.lifecycle);
-    return { pid: entry.pid, version: entry.version, stateDir: entry.stateDir, lifecycle };
+    return {
+      pid: entry.pid,
+      version: entry.version,
+      stateDir: entry.stateDir,
+      lifecycle,
+      startedAt: nullableTimestamp(entry.startedAt),
+    };
   });
 }
 

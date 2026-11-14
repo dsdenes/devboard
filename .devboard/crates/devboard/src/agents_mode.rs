@@ -470,6 +470,10 @@ struct Worker {
     version: Option<String>,
     state_dir: String,
     lifecycle: String,
+    /// ISO 8601 start of the worker process, as the lock recorded it: the one
+    /// instant that says how long this worker has run, unlike `lastRunAt`,
+    /// which moves with every cadence tick.
+    started_at: String,
 }
 
 impl Worker {
@@ -479,6 +483,7 @@ impl Worker {
             "version": self.version,
             "stateDir": self.state_dir,
             "lifecycle": self.lifecycle,
+            "startedAt": self.started_at,
         })
     }
 }
@@ -5060,6 +5065,7 @@ impl RepoFamily {
                     version: owner.harness_version.clone(),
                     state_dir: owner.state_dir.clone(),
                     lifecycle: worker_lifecycle(self.family_id, state.as_ref()),
+                    started_at: owner.started_at.clone(),
                 }
             })
             .collect();
@@ -7469,6 +7475,7 @@ impl WatchdogFamily {
                         .as_ref()
                         .map(|state| state.lifecycle.clone())
                         .unwrap_or_else(|| "running".to_string()),
+                    started_at: owner.started_at.clone(),
                 }
             })
             .collect();
@@ -8755,6 +8762,7 @@ impl McpFamily {
                     .get(&owner.pid)
                     .map(|state| state.lifecycle.clone())
                     .unwrap_or_else(|| "running".to_string()),
+                started_at: owner.started_at.clone(),
             })
             .collect();
         let issue_rows: Vec<Value> = status_issues
@@ -9747,6 +9755,7 @@ impl ReleaseFamily {
                     .find(|record| record.pid == owner.pid)
                     .map(|record| record.lifecycle.clone())
                     .unwrap_or_else(|| "running".to_string()),
+                started_at: owner.started_at.clone(),
             })
             .collect();
         let releases = crate::workers::release_train::release_history(&self.directory, &shared);

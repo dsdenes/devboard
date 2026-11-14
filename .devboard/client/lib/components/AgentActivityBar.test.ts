@@ -109,3 +109,17 @@ test("the toggle expands every line and a new identity collapses it", async () =
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   expect(within(bar).queryByTestId("agent-activity-log")).toBeNull();
 });
+
+test("a running bar with no start makes no uptime claim", async () => {
+  const view = render(AgentActivityBar, {
+    props: {
+      identity: "mode:page",
+      label: "Synthetic agent",
+      status: "running",
+      activity: [],
+    },
+  });
+  const dot = within(view.container).getByTestId("agent-activity-dot");
+  expect(dot.getAttribute("aria-label")).toBe("Synthetic agent is running");
+  expect(dot.hasAttribute("title")).toBe(false);
+});

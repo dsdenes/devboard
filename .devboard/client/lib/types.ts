@@ -225,6 +225,7 @@ export type {
   AgentSync,
   AgentSyncState,
   AgentTimerGate,
+  AgentWorker,
 } from "../../lib/agent-registry.ts";
 
 export type { AgentPromptState } from "../../lib/agent-registry.ts";
