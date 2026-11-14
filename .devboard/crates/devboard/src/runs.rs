@@ -1010,37 +1010,15 @@ fn problem(headers: &HeaderMap, status: u16, detail: &str, extra: &[(&str, &str)
     Replies::problem(headers, status, detail, extra)
 }
 
+/// The id one `/agent-runs/<id>` path names. The path arrives decoded: the
+/// request path is decoded once before dispatch.
 fn path_id(path: &str) -> Option<String> {
     let rest = path.strip_prefix("/agent-runs/")?;
     let id = rest.strip_suffix("/output").unwrap_or(rest);
     if id.is_empty() || id.contains('/') {
         return None;
     }
-    percent_decode(id)
-}
-
-fn percent_decode(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    let hex = |byte: u8| match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    };
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = hex(*bytes.get(index + 1)?)?;
-            let low = hex(*bytes.get(index + 2)?)?;
-            out.push(high * 16 + low);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(out).ok()
+    Some(id.to_string())
 }
 
 fn is_upgrade(headers: &HeaderMap) -> bool {
@@ -1052,13 +1030,14 @@ fn is_upgrade(headers: &HeaderMap) -> bool {
 }
 
 /// Serves the run collection, one representation, or the output endpoint.
+/// `path` arrives decoded: the request path is decoded once before dispatch.
 pub async fn handle(
     server: Arc<Server>,
     request: Request,
     headers: &HeaderMap,
     url: &Url,
+    path: &str,
 ) -> Option<Response> {
-    let path = request.uri().path().to_string();
     let method = request.method().clone();
     let app = &server.app;
     if path == "/agent-runs" {
@@ -1086,7 +1065,7 @@ pub async fn handle(
             &[],
         ));
     }
-    let id = path_id(&path)?;
+    let id = path_id(path)?;
     if path.ends_with("/output") {
         if method != Method::GET {
             return Some(problem(

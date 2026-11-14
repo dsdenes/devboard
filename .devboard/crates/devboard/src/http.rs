@@ -547,7 +547,36 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         return reply(refusal_answer(&headers, refusal));
     }
 
-    match uri.path() {
+    // RFC 3986 6.2.2.2 makes a percent-encoded unreserved character equivalent
+    // to the literal one, so every path comparison reads the decoded path — the
+    // same rule `rest::match_template` applies to each segment. The path is
+    // decoded once here; the raw spelling survives only where the answer names
+    // what the client sent: the control-character refusal and the static path
+    // guards, which refuse an encoded separator.
+    let raw_pathname = uri.path();
+    let pathname = match percent_decode(raw_pathname) {
+        Some(pathname) => pathname,
+        None => {
+            return reply(Replies::problem(
+                &headers,
+                400,
+                "The request path is not valid percent-encoding.",
+                &[],
+            ))
+        }
+    };
+    if has_control_character(&pathname) {
+        let mut quoted = String::new();
+        jsjson::write_string(raw_pathname, &mut quoted);
+        return reply(Replies::problem(
+            &headers,
+            400,
+            &format!("The request path {quoted} carries a control character."),
+            &[],
+        ));
+    }
+
+    match pathname.as_str() {
         "/reports" => {
             let (_parts, body) = request.into_parts();
             return reply(
@@ -572,13 +601,13 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         _ => {}
     }
 
-    if let Some(id) = uri.path().strip_prefix("/reports/") {
+    if let Some(id) = pathname.strip_prefix("/reports/") {
         if !id.is_empty() && !id.contains('/') {
             return reply(server.app.report_record(&method, &headers, &url, id));
         }
     }
 
-    if uri.path() == "/flows" {
+    if pathname == "/flows" {
         if method != Method::GET && method != Method::HEAD {
             return reply(Replies::problem(
                 &headers,
@@ -613,9 +642,9 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         ));
     }
 
-    if uri.path() == "/agent-runs" || uri.path().starts_with("/agent-runs/") {
+    if pathname == "/agent-runs" || pathname.starts_with("/agent-runs/") {
         return reply(
-            crate::runs::handle(server.clone(), request, &headers, &url)
+            crate::runs::handle(server.clone(), request, &headers, &url, &pathname)
                 .await
                 .unwrap_or_else(|| {
                     Replies::problem(&headers, 404, "The requested run was not found.", &[])
@@ -627,32 +656,10 @@ async fn handle(State(server): State<Arc<Server>>, request: Request) -> Response
         return reply(answer);
     }
 
-    if let Some(name) = uri.path().strip_prefix("/goal-proposals/") {
+    if let Some(name) = pathname.strip_prefix("/goal-proposals/") {
         return reply(draft_answer(&server, name, &method, &headers));
     }
 
-    let raw_pathname = uri.path();
-    let pathname = match percent_decode(raw_pathname) {
-        Some(pathname) => pathname,
-        None => {
-            return reply(Replies::problem(
-                &headers,
-                400,
-                "The request path is not valid percent-encoding.",
-                &[],
-            ))
-        }
-    };
-    if has_control_character(&pathname) {
-        let mut quoted = String::new();
-        jsjson::write_string(raw_pathname, &mut quoted);
-        return reply(Replies::problem(
-            &headers,
-            400,
-            &format!("The request path {quoted} carries a control character."),
-            &[],
-        ));
-    }
     // A path under a root the REST surface owns is an operation request, never
     // a file. Answer it as one, so a page that sends a path this server does
     // not serve reads which request was refused instead of a missing document.
@@ -704,9 +711,9 @@ fn refusal_answer(headers: &HeaderMap, refusal: RequestRefusal) -> Response {
     refusal_problem(headers, refusal, "Cross-origin requests are refused.")
 }
 
-/// One written draft, served where `POST /goal-proposals` linked it.
-fn draft_answer(server: &Server, raw_name: &str, method: &Method, headers: &HeaderMap) -> Response {
-    let name = percent_decode(raw_name).unwrap_or_default();
+/// One written draft, served where `POST /goal-proposals` linked it. The name
+/// arrives decoded: the request path is decoded once before dispatch.
+fn draft_answer(server: &Server, name: &str, method: &Method, headers: &HeaderMap) -> Response {
     if name.is_empty() || name.contains('/') || !name.ends_with(".md") {
         return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
     }
@@ -714,7 +721,7 @@ fn draft_answer(server: &Server, raw_name: &str, method: &Method, headers: &Head
         .config
         .repo_dir
         .join(crate::goal_drafts::GOAL_PROPOSALS_DIRECTORY);
-    let path = directory.join(&name);
+    let path = directory.join(name);
     let Ok(metadata) = std::fs::symlink_metadata(&path) else {
         return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
     };

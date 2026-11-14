@@ -77,9 +77,9 @@ fn client() -> reqwest::Client {
         .expect("a client")
 }
 
-/// Sends one raw request line, so percent-encoded dot segments reach the
-/// server exactly as written.
-async fn raw_get(base: &str, path: &str) -> u16 {
+/// Sends one raw request line, so the path reaches the server exactly as
+/// written, and returns the status and the body.
+async fn raw_response(base: &str, path: &str) -> (u16, Vec<u8>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let address = base.trim_start_matches("http://");
     let mut stream = tokio::net::TcpStream::connect(address)
@@ -92,11 +92,23 @@ async fn raw_get(base: &str, path: &str) -> u16 {
         .expect("a request");
     let mut response = Vec::new();
     let _ = stream.read_to_end(&mut response).await;
-    let text = String::from_utf8_lossy(&response);
-    text.split_whitespace()
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("a header terminator");
+    let head = String::from_utf8_lossy(&response[..split]);
+    let status = head
+        .split_whitespace()
         .nth(1)
         .and_then(|code| code.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(0);
+    (status, response[split + 4..].to_vec())
+}
+
+/// Sends one raw request line, so percent-encoded dot segments reach the
+/// server exactly as written.
+async fn raw_get(base: &str, path: &str) -> u16 {
+    raw_response(base, path).await.0
 }
 
 async fn send(method: Method, url: &str, headers: HeaderMap) -> (StatusCode, HeaderMap, Vec<u8>) {
@@ -314,6 +326,59 @@ async fn an_unserved_operation_path_names_the_request_it_refuses() {
     assert_eq!(
         parsed["detail"], "The requested file was not found.",
         "a static miss keeps its own detail"
+    );
+}
+
+/// RFC 3986 6.2.2.2 makes a percent-encoded unreserved character equivalent to
+/// the literal one, so an encoded root names the resource its literal spelling
+/// names — the rule the REST table already applies to every segment.
+#[tokio::test]
+async fn encoded_roots_reach_the_paths_the_router_serves() {
+    let instance = start("encoded-roots").await;
+
+    let (status, literal) = raw_response(&instance.base, "/flows").await;
+    assert_eq!(status, 200);
+    let (status, encoded) = raw_response(&instance.base, "/%66lows").await;
+    assert_eq!(status, 200, "/%66lows is the resource /flows names");
+    assert_eq!(encoded, literal, "/%66lows answers the /flows body");
+
+    let (status, body) = raw_response(&instance.base, "/%72eady").await;
+    assert_eq!(status, 200);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(parsed["pid"], std::process::id());
+
+    let (status, body) = raw_response(&instance.base, "/%61gent-runs").await;
+    assert_eq!(
+        status, 200,
+        "/%61gent-runs is the collection /agent-runs names"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+    assert!(
+        parsed["runs"].as_array().is_some_and(Vec::is_empty),
+        "a dashboard with no run lists none: {parsed}"
+    );
+
+    for path in ["/re%63ords", "/%72ecords"] {
+        let (status, _body) = raw_response(&instance.base, path).await;
+        assert_eq!(status, 200, "{path}");
+    }
+
+    // `/reports` and `/goal-proposals` answer POST only, so reaching their
+    // handler rather than the beside-table refusal is that handler's 405.
+    for path in ["/%72eports", "/%67oal-proposals"] {
+        let (status, body) = raw_response(&instance.base, path).await;
+        assert_eq!(status, 405, "{path}");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+        assert_eq!(
+            parsed["detail"], "This endpoint accepts POST only.",
+            "{path}"
+        );
+    }
+
+    let (status, _body) = raw_response(&instance.base, "/%6dissing.txt").await;
+    assert_eq!(
+        status, 404,
+        "an encoded segment that names no route stays absent"
     );
 }
 
