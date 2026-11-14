@@ -18,7 +18,7 @@ import {
   type ReleaseRunView,
 } from "./release-run";
 import { connection } from "./connection.svelte";
-import { queryClient } from "./query-client";
+import { invalidateRead, queryClient } from "./query-client";
 import { queryKeyFor } from "./query-keys";
 import { notifications } from "./notifications.svelte";
 import { saveFeedback } from "./save-feedback.svelte";
@@ -217,8 +217,9 @@ export class AgentsStore {
       this.requestedPrompts = [...this.requestedPrompts, id];
     }
     // The prompt is static, but opening the section again asks for its current
-    // document: the query's cached copy is invalidated, not re-read by a store.
-    void queryClient.invalidateQueries({ queryKey: ["getAgentPrompt", id] });
+    // document: the query's cached copy is invalidated by the key the
+    // operation derives, not re-read by a store.
+    invalidateRead({ type: "getAgentPrompt", id });
   }
 
   /**

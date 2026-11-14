@@ -201,3 +201,24 @@ test("a request the closed socket refused leaves the run free to ask again", asy
   await settle();
   expect(runReads(reads, "run-42")).toBe(1);
 });
+
+test("reopening a finished run reads its stored history again", async () => {
+  const reads = await openPage();
+
+  issues.openRun("run-42");
+  await settle();
+  applyFrames([{ type: "issuesRun", run: finishedRun() }]);
+  expect(issues.run?.runId).toBe("run-42");
+  expect(runReads(reads, "run-42")).toBe(1);
+
+  issues.openRun("run-43");
+  await settle();
+  expect(runReads(reads, "run-43")).toBe(1);
+  expect(issues.run).toBeNull();
+
+  // Back to the history the cache already holds: the entry is invalidated by
+  // the key the operation derives, so its stored copy is not served as fresh.
+  issues.openRun("run-42");
+  await settle();
+  expect(runReads(reads, "run-42")).toBe(2);
+});

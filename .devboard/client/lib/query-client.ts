@@ -7,6 +7,7 @@
  * interval is the finest cadence that surface earns.
  */
 import { QueryClient, focusManager } from "@tanstack/svelte-query";
+import { queryKeyFor, type Command } from "./query-keys";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -23,6 +24,17 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+/**
+ * Invalidate the one entry a read is cached under. The key carries the
+ * resource path the operation derives, never the command's bare parameter, so
+ * a filter built from the parameter matches no entry and the read is served
+ * from a cache its `staleTime` still calls fresh.
+ */
+export function invalidateRead(command: Command): void {
+  const key = queryKeyFor(command);
+  if (key !== null) void queryClient.invalidateQueries({ queryKey: key });
+}
 
 /**
  * A hidden document issues nothing. TanStack pauses every interval while the

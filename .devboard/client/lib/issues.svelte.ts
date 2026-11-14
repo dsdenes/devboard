@@ -1,5 +1,5 @@
 import { connection } from "./connection.svelte";
-import { queryClient } from "./query-client";
+import { invalidateRead } from "./query-client";
 import { queueCounts } from "./issues-queue";
 import { notifications } from "./notifications.svelte";
 import type {
@@ -347,13 +347,17 @@ export class IssuesStore {
    */
   openRun(runId: string): void {
     if (!connection.open) return;
+    // Only a reopen asks again. The first request of a connection mounts its
+    // own read — the cache holds no entry for it — and a reconnect invalidates
+    // every query it still shows, so neither forces a second request. A run
+    // opened after another was already requested has a cached entry whose
+    // `staleTime` would serve that copy, so its derived key is invalidated.
+    const reopening = this.requestedRun !== null;
     this.selectedRun = runId;
     this.requestedRun = runId;
     this.run = null;
     this.runError = null;
-    // The selected run is a query in the plan; opening it re-reads the stored
-    // history instead of sending a per-feature request.
-    void queryClient.invalidateQueries({ queryKey: ["getIssuesRun", runId] });
+    if (reopening) invalidateRead({ type: "getIssuesRun", runId });
   }
 
   /**

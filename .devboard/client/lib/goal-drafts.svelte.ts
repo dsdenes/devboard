@@ -1,5 +1,5 @@
 import { connection } from "./connection.svelte";
-import { queryClient } from "./query-client";
+import { invalidateRead, queryClient } from "./query-client";
 import { postJson } from "./rest-transport";
 import { slowUiAction } from "./slow-ui-action";
 import { GOAL_PROPOSALS_ENDPOINT } from "../../lib/endpoints.ts";
@@ -159,8 +159,9 @@ export class GoalDraftsStore {
     writeDraftPath(path);
     this.draftReading = path;
     // The selected draft is a one-shot query in the plan; opening it asks for
-    // the stored document instead of a per-feature request path.
-    void queryClient.invalidateQueries({ queryKey: ["getGoalDraft", path] });
+    // the stored document instead of a per-feature request path, under the key
+    // the operation derives from that path.
+    invalidateRead({ type: "getGoalDraft", path });
   }
 
   /**

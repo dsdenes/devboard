@@ -8,8 +8,10 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { connection } = await import("./connection.svelte");
 const { goalDrafts } = await import("./goal-drafts.svelte");
 const { queryClient } = await import("./query-client");
+const { queryKeyFor } = await import("./query-keys");
 
 const PATH = ".devboard/goal-proposals/example.md";
+const DRAFT_KEY = queryKeyFor({ type: "getGoalDraft", path: PATH });
 
 const originalSend = connection.send;
 
@@ -32,7 +34,7 @@ test("a stored draft is not read again while its first read is unanswered", () =
 
   try {
     goalDrafts.openDraft(PATH);
-    expect(reads).toEqual([["getGoalDraft", PATH]]);
+    expect(reads).toEqual([DRAFT_KEY]);
 
     // The drafts page's two-second restore runs while that read is
     // outstanding; it must not ask for another copy every tick.
@@ -56,7 +58,7 @@ test("a stored draft is not read again while its first read is unanswered", () =
     });
     goalDrafts.restoreDraft();
     expect(reads).toHaveLength(3);
-    expect(reads[2]).toEqual(["getGoalDraft", PATH]);
+    expect(reads[2]).toEqual(DRAFT_KEY);
   } finally {
     queryClient.invalidateQueries = original;
   }
