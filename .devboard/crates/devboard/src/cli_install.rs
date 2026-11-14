@@ -257,9 +257,11 @@ pub fn resolve_host(argument: Option<&Path>) -> Result<PathBuf> {
 ///
 /// Every `.omp/` file is written as a real file at the same relative path.
 /// A differing file outside the managed `devboard-*` namespace stops the run
-/// unless `force` is set. The marked skills are package-owned and always
-/// replaced; unmarked skills are never read. `<host>/AGENTS.md` is copied only
-/// when it is absent, a symlink, or absent content, and left alone on drift.
+/// unless `force` is set, and every such conflict is collected before the
+/// first write, so a refused run leaves the host byte-identical. The marked
+/// skills are package-owned and always replaced; unmarked skills are never
+/// read. `<host>/AGENTS.md` is copied only when it is absent, a symlink, or
+/// absent content, and left alone on drift.
 pub fn install(host: Option<&Path>, force: bool) -> Result<InstallReport> {
     let host = resolve_host(host)?;
     install_into(&host, force)
@@ -454,6 +456,35 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     // for the deeper paths, so nothing is written through a link.
     ensure_real_dir(&omp)?;
     let mut drift: Vec<String> = Vec::new();
+
+    // `install.sh` gathers every conflict before it writes anything; the binary
+    // must refuse the same input with the same untouched host tree. Every
+    // `.omp/commands/*` entry sorts before `.omp/mcp.json`, so a bail inside
+    // the write loop below would already have upgraded two dozen wrappers.
+    if !force {
+        let mut conflicts: Vec<String> = Vec::new();
+        for (relative, contents) in &package.files {
+            let destination = omp.join(relative.as_str());
+            if is_identical_file(&destination, contents)? {
+                continue;
+            }
+            let label = format!(".omp/{relative}");
+            if is_git_tracked(host, &label) {
+                continue;
+            }
+            if fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_dir()) {
+                conflicts.push(label);
+            }
+        }
+        if !conflicts.is_empty() {
+            bail!(
+                "install: refusing to overwrite differing files in {}:\n  {}\n\
+                 install: rerun with --force to replace them",
+                omp.display(),
+                conflicts.join("\n  ")
+            );
+        }
+    }
 
     let mut installed_files = 0usize;
     for (relative, contents) in &package.files {

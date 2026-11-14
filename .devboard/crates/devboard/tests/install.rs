@@ -401,12 +401,18 @@ fn a_changed_untracked_package_file_is_refused_and_a_tracked_one_is_preserved() 
     fs::create_dir_all(target.parent().unwrap()).unwrap();
     fs::write(&target, b"host: config\n").unwrap();
 
+    let before = snapshot(host);
     let error = cli_install::install(Some(host), false).expect_err("a differing file is refused");
     assert!(error.to_string().contains(".omp/mcp.json"), "{error}");
+    assert!(error.to_string().contains("rerun with --force"), "{error}");
     assert_eq!(
-        fs::read(&target).unwrap(),
-        b"host: config\n",
-        "a refused install changes no byte"
+        snapshot(host),
+        before,
+        "a refused install changes no file, including the commands that sort before the conflict"
+    );
+    assert!(
+        !host.join(".omp/commands").exists(),
+        "a refused install writes no command"
     );
 
     let report = cli_install::install(Some(host), true).unwrap();
