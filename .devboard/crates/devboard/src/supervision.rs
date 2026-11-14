@@ -493,29 +493,9 @@ impl SupervisedChild {
         &self.child
     }
 
-    /// The underlying child, mutably.
-    pub fn child_mut(&mut self) -> &mut tokio::process::Child {
-        &mut self.child
-    }
-
     /// The durable record this child owns, when one was written.
     pub fn record_path(&self) -> Option<&Path> {
         self.record_path.as_deref()
-    }
-
-    /// Takes the piped stdin handle.
-    pub fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
-        self.child.stdin.take()
-    }
-
-    /// Takes the piped stdout handle.
-    pub fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
-        self.child.stdout.take()
-    }
-
-    /// Takes the piped stderr handle.
-    pub fn take_stderr(&mut self) -> Option<tokio::process::ChildStderr> {
-        self.child.stderr.take()
     }
 
     /// Sends SIGKILL to the child without waiting for it.
