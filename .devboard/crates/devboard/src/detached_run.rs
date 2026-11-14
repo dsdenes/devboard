@@ -846,6 +846,28 @@ pub fn take_detached_run_commands(directory: &Path) -> Vec<DetachedRunCommand> {
     commands
 }
 
+/// The newest turn a still-queued prompt names, without consuming the command.
+/// An instruction the owner already took is reported by its state instead.
+fn pending_prompt_turn(directory: &Path) -> Option<u64> {
+    let entries = std::fs::read_dir(directory).ok()?;
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    let mut pending = None;
+    for name in names {
+        let Ok(text) = std::fs::read_to_string(directory.join(&name)) else {
+            continue;
+        };
+        if let Some(DetachedRunCommand::Prompt { seq, .. }) = DetachedRunCommand::parse(&text) {
+            pending = Some(pending.unwrap_or(0).max(seq));
+        }
+    }
+    pending
+}
+
 // ---------------------------------------------------------------------------
 // Lease and handoff
 
@@ -1466,6 +1488,28 @@ impl DetachedPeer {
         }
         self.start(prompt)?;
         self.wait_outcome().await
+    }
+
+    /// The sequence a replacement waits on after attaching to a live owner.
+    ///
+    /// The owner numbers its turns on its own sequence: a fresh owner publishes
+    /// nothing until its first turn settles, and that turn is number 1. This is
+    /// the number to pass to [`Self::wait_turn`], never a counter the caller
+    /// keeps itself: a caller's admission counter advances without the owner's
+    /// knowledge, so it can sit permanently ahead of the owner's sequence.
+    /// A prompt written to the owner but not yet consumed is the newest turn it
+    /// still owes, and it is waited on too.
+    pub fn turn_to_settle(&self) -> u64 {
+        let state = self.state();
+        let reported = state
+            .as_ref()
+            .filter(|state| state.turn_status == Some(DetachedTurnStatus::Running))
+            .and_then(|state| state.turn_seq)
+            .or_else(|| state.as_ref().and_then(|state| state.turn_seq));
+        let queued = pending_prompt_turn(&self.inner.control).unwrap_or(0);
+        // A fresh owner publishes no turn until its first one settles, and that
+        // turn is number 1.
+        reported.unwrap_or(0).max(queued).max(1)
     }
 
     /// Waits for one turn already running on the owner, without sending one.

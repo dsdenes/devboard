@@ -794,9 +794,15 @@ impl AskMode {
             self.fail(&id, turn, &message);
             return;
         }
+        // The owner numbers its own turns, and that sequence is not this
+        // conversation's admission counter: an expiry advances the counter
+        // without telling the owner, and a fresh owner numbers its first turn
+        // 1. Waiting on `turn` would wait for a turn the owner never reaches,
+        // so the wait targets the sequence the owner reports.
+        let waiting = peer.turn_to_settle();
         let outcome = self
             .await_turn(&id, async {
-                match peer.wait_turn(turn).await {
+                match peer.wait_turn(waiting).await {
                     Ok(()) => TurnOutcome::Done,
                     Err(message) => TurnOutcome::Failed(message),
                 }

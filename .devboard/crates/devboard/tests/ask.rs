@@ -256,6 +256,23 @@ fn log_lines(log: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Waits until the stub logged one line starting with `marker`, so a test acts
+/// on what the peer already received instead of on a sleep.
+async fn wait_for_log_marker(log: &Path, marker: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if log_lines(log).iter().any(|line| line.starts_with(marker)) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agent never logged {marker}: {:?}",
+            log_lines(log)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 // The environment guard serializes process-wide env across concurrently
 // running tests, so it is deliberately held for the whole test.
 #[allow(clippy::await_holding_lock)]
@@ -783,6 +800,126 @@ async fn ask_restored_conversation_delivers_its_follow_up_to_the_live_owner() {
     second
         .command(
             &follow,
+            Command::CloseAsk {
+                conversation_id: Some(json!("conversation-1")),
+            },
+        )
+        .await;
+    let spawned = log_lines(&log)
+        .iter()
+        .find_map(|line| {
+            line.strip_prefix("spawn ")
+                .and_then(|pid| pid.parse::<u32>().ok())
+        })
+        .expect("the log names the spawned peer");
+    wait_for_process_exit(spawned).await;
+}
+
+/// A replacement dashboard restores a busy conversation whose admission
+/// counter sits ahead of its owner's turn sequence, because an expiry advanced
+/// the counter without telling the owner. Recovery waits on the sequence the
+/// owner reports, so the re-attached answer reaches the transcript and no
+/// timeout error replaces it.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn ask_recovery_settles_the_turn_its_owner_reports() {
+    let _env = env_guard();
+    let scratch = Scratch::new("recovery-turn");
+    let log = scratch.path.join("agent.log");
+    save_subscriptions(
+        &scratch.state(),
+        &[StoredSubscription {
+            id: "subscription-1".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "Test".to_string(),
+            key: "test-key".to_string(),
+            enabled: true,
+            created_at: "2026-11-03T00:00:00.000Z".to_string(),
+            updated_at: "2026-11-03T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("the credentials file is written");
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let command = format!(
+        "{} acp-stub --ask --ask-delay-ms=700 --log={}",
+        env!("CARGO_BIN_EXE_devboard"),
+        log.display()
+    );
+
+    let first = app_for(&scratch, command.clone());
+    let (conn, mut inbox) = connection();
+    let question = "What does the issues indicator show?";
+    first
+        .command(
+            &conn,
+            Command::Ask {
+                conversation_id: Some(json!("conversation-1")),
+                question: Some(json!(question)),
+                context: Some(context()),
+            },
+        )
+        .await;
+    assert!(
+        drain(&mut inbox)
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
+        "the first ask is admitted"
+    );
+    wait_for_log_marker(&log, "ask-prompt 1").await;
+
+    // The dashboard goes away mid-turn and hands the owner it leaves alive to
+    // the replacement.
+    devboard::detached_run::begin_detached_handoff(
+        &scratch.state(),
+        &scratch.repo(),
+        &first.instance,
+    );
+    drop(conn);
+    drop(first);
+
+    // The expiry advanced the conversation's counter to a turn the owner, whose
+    // first turn is number 1, never reaches.
+    let path = transcript_path(&scratch, "conversation-1");
+    let stored = std::fs::read_to_string(&path).expect("the persisted conversation");
+    let parsed: Value = serde_json::from_str(&stored).expect("a JSON conversation");
+    let mut record = parsed.as_object().cloned().expect("a JSON object");
+    assert_eq!(record.get("busy"), Some(&json!(true)));
+    record.insert("turn".to_string(), json!(3));
+    std::fs::write(&path, format!("{}\n", Value::Object(record)))
+        .expect("the conversation is rewritten with the advanced counter");
+
+    let second = app_for(&scratch, command);
+    let (poll, mut poll_inbox) = request_connection();
+    let frames = settled(&second, &poll, &mut poll_inbox, "conversation-1").await;
+    let inquiry = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
+    assert_eq!(
+        inquiry["busy"],
+        json!(false),
+        "recovery settles the turn: {frames:?}"
+    );
+    assert_eq!(
+        inquiry["error"],
+        Value::Null,
+        "the answer is not replaced by a timeout: {frames:?}"
+    );
+    assert_eq!(
+        inquiry["transcript"],
+        json!([
+            {"role": "developer", "text": question},
+            {"role": "agent", "text": streamed(ANSWER_ONE)},
+        ]),
+        "the re-attached answer reaches the transcript"
+    );
+
+    second
+        .command(
+            &poll,
             Command::CloseAsk {
                 conversation_id: Some(json!("conversation-1")),
             },
