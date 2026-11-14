@@ -118,6 +118,9 @@ pub struct Shared {
     state_path: PathBuf,
     sections: Mutex<Vec<(String, Arc<dyn StateSection>)>>,
     last_saved: Mutex<Option<String>>,
+    /// The write failure the journal already carries, so a repeating failure
+    /// is recorded once and one after a success is recorded again.
+    persist_failure: Mutex<Option<String>>,
     /// Signalled when this process is about to be replaced.
     pub shutdown: tokio::sync::Notify,
     /// The live-work gates each mode registers.
@@ -335,21 +338,41 @@ impl Shared {
     }
 
     /// Replaces the state file with the current state, skipping a write when
-    /// nothing changed.
+    /// nothing changed. The saved text is recorded only once the write returns
+    /// `Ok`, so a failed write leaves the cache untouched and the next
+    /// broadcast or flush retries it instead of serving state that a restore
+    /// could not read back.
     fn persist(&self, _event: &Value) {
         let _write = self.persist_lock.lock();
         let text = crate::state::state_envelope(&self.state_value());
-        if let Ok(mut last) = self.last_saved.lock() {
+        if let Ok(last) = self.last_saved.lock() {
             if last.as_deref() == Some(text.as_str()) {
                 return;
             }
-            *last = Some(text.clone());
         }
-        if let Err(error) = crate::state::write_state_file(&self.state_path, &text) {
-            eprintln!(
-                "state: could not write {}: {error}",
-                self.state_path.display()
-            );
+        match crate::state::write_state_file(&self.state_path, &text) {
+            Ok(()) => {
+                if let Ok(mut last) = self.last_saved.lock() {
+                    *last = Some(text);
+                }
+                if let Ok(mut recorded) = self.persist_failure.lock() {
+                    *recorded = None;
+                }
+            }
+            Err(error) => {
+                let detail = format!(
+                    "state: could not write {}: {error}",
+                    self.state_path.display()
+                );
+                let mut recorded = self
+                    .persist_failure
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if recorded.as_deref() != Some(detail.as_str()) {
+                    self.journal.write("server-error", &detail, None);
+                    *recorded = Some(detail);
+                }
+            }
         }
     }
 
@@ -436,6 +459,7 @@ impl App {
             state_path,
             sections: Mutex::new(Vec::new()),
             last_saved: Mutex::new(None),
+            persist_failure: Mutex::new(None),
             shutdown: tokio::sync::Notify::new(),
             gates: Mutex::new(Vec::new()),
             broadcast_hooks: Mutex::new(Vec::new()),
