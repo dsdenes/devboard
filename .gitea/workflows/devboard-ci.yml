@@ -8,6 +8,13 @@ on:
   push:
     branches: [main]
 
+# One run per commit. A restarted run or a duplicate push of the same commit
+# cancels the run already in progress instead of stacking a second full
+# workspace build on the local act runner.
+concurrency:
+  group: devboard-ci-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: host
