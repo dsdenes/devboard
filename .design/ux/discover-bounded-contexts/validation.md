@@ -58,7 +58,14 @@ The chips' link handoff is asserted by the same suite, not by a browser stage:
 `DiscoverOverview.test.ts` renders an entry-point file, an entry-point directory, and a manifest as
 anchors carrying the `vscode://file/` href, keeps a missing path, a command, and every
 external-boundary chip a plain `code` element, keeps an absolute, parent-relative, and escaping
-entry point plain, and renders no path link while a remote target is shown.
+entry point plain, and keeps every chip plain for a payload that carries no `overviewLinks`.
+
+The remote-target no-link guarantee belongs to the server payload, so the Rust suite asserts it:
+`a_shown_remote_target_publishes_no_overview_links` in `.devboard/crates/devboard/tests/discover.rs`
+switches to a retained project whose published sheet names an entry point, its directory, and a
+manifest that all exist in that clone, asserts the same sheet yields a non-empty `overviewLinks` for
+the host target, and asserts `discoverState`'s `overviewLinks` is `{}` while the remote target is
+shown, so dropping the `shown_remote.is_some()` clause fails that test.
 
 ## State coverage
 

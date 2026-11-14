@@ -219,13 +219,16 @@ test("an absolute or escaping value stays plain text", () => {
   expect(view.container.querySelectorAll('a[href^="vscode://"]')).toHaveLength(0);
 });
 
-test("a remote target renders no path link and keeps its text", () => {
+// The server publishes `overviewLinks` for a host target alone, so a payload
+// without the map is the whole client-side contract: every chip stays plain.
+test("a payload without overviewLinks keeps every chip plain", () => {
   discover.state = state({});
   const view = render(DiscoverOverview);
 
   expect(view.container.querySelectorAll('a[href^="vscode://"]')).toHaveLength(0);
   expect(chip(view.container, "src/checkout/flow.ts")?.tagName).toBe("CODE");
-  expect(chip(view.container, "package.json")).toBeNull();
+  expect(chip(view.container, "src")?.tagName).toBe("CODE");
+  expect(anchor(view.container, "package.json")).toBeNull();
   expect(view.container.textContent).toContain("package.json");
 });
 

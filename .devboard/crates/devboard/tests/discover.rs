@@ -67,6 +67,13 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).expect("a fixture file");
 }
 
+fn copy_fixture(from: &Path, to: &Path) {
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).expect("a parent directory");
+    }
+    std::fs::copy(from, to).expect("a copied fixture file");
+}
+
 fn git(repo: &Path, args: &[&str]) {
     let status = ProcessCommand::new("git")
         .arg("-C")
@@ -1511,6 +1518,110 @@ fn overview_links_percent_encode_every_reserved_character() {
     for encoded in ["%20", "%21", "%27", "%28", "%29", "%7E"] {
         assert!(href.contains(encoded), "{encoded} in {href}");
     }
+}
+
+/// The shown remote target gets no link map: its sheet names paths that exist
+/// in the retained project, so a published map would open the wrong checkout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shown_remote_target_publishes_no_overview_links() {
+    let scratch = Scratch::new("overview-remote");
+    let repo = fixture_repo(&scratch, "repo", true);
+    let state = scratch.path().join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let scratch_root = state.join("discover-remote");
+    std::fs::create_dir_all(&scratch_root).expect("a scratch root");
+
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet(json!([{
+            "name": "bun test",
+            "checks": "Runs the whole fixture test suite in CI.",
+        }])))
+        .expect("a staged sheet"),
+    );
+    let facts = devboard::discover_mode::host_facts(&repo);
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-overview",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    )
+    .expect("the sheet publishes into the host");
+
+    // A retained project is a clone of the same host carrying the same
+    // publication, so every path the sheet names resolves in it too.
+    retained_project(
+        &scratch_root,
+        "acme",
+        "retained",
+        "https://github.com/acme/retained",
+    );
+    let project = scratch_root.join("acme~retained");
+    for relative in [
+        "package.json",
+        "src/order.ts",
+        ".omp/discover/manifest.json",
+        ".omp/discover/sheet.json",
+    ] {
+        copy_fixture(&repo.join(relative), &project.join(relative));
+    }
+
+    let log = scratch.path().join("agent.log");
+    let command = format!("{} --discover --log={}", stub_agent(), log.display());
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    // The host target links every path its checkout holds.
+    app.command(&conn, Command::GetDiscover).await;
+    let host = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    let host_payload = state_of(&host);
+    let host_links = host_payload["overviewLinks"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the host link map: {host_payload:?}"));
+    for reference in ["package.json", "src", "src/order.ts"] {
+        assert!(
+            host_links.contains_key(reference),
+            "{reference} in {host_links:?}"
+        );
+    }
+    assert_eq!(
+        host_payload["sheet"]["architecture"]["contexts"]["value"][0]["entryPoints"],
+        json!(["src/order.ts"])
+    );
+
+    app.command(
+        &conn,
+        Command::SwitchDiscoverRemote {
+            url: "https://github.com/acme/retained".to_string(),
+        },
+    )
+    .await;
+    let switched = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    let payload = state_of(&switched);
+    assert_eq!(payload["target"]["kind"], json!("remote"));
+    assert!(
+        payload["sheet"].is_object(),
+        "the retained publication is shown: {payload:?}"
+    );
+    // Unguarded, the same sheet over the retained root resolves every path.
+    let unguarded =
+        devboard::discover_mode::overview_path_links(&project, payload.get("sheet"), true);
+    assert_eq!(
+        unguarded.as_object().map(|links| links.len()),
+        Some(3),
+        "the retained project holds every path the sheet names: {unguarded:?}"
+    );
+    assert_eq!(payload["overviewLinks"], json!({}));
 }
 
 #[test]
