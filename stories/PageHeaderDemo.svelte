@@ -1,6 +1,6 @@
 <script lang="ts">
+  import AgentSettings from "../.devboard/client/lib/components/AgentSettings.svelte";
   import Button from "../.devboard/client/lib/components/ui/button.svelte";
-  import Input from "../.devboard/client/lib/components/ui/input.svelte";
   import PageHeader from "../.devboard/client/lib/components/ui/page-header.svelte";
 
   interface Props {
@@ -14,22 +14,40 @@
     layout?: "stacked" | "bar";
   }
 
+  // The named snippets below become the header's `meta` and `footer` props, so
+  // the boolean props they gate are bound under their own names: reading
+  // `footer` here would resolve to the snippet and render it unconditionally.
   let {
     eyebrow = "Plan",
     title = "Goal document",
     subtitle = "Saved",
     actionCount = 3,
-    meta = true,
-    footer = false,
+    meta: showMeta = true,
+    footer: showFooter = false,
     flat = false,
     layout = "stacked",
   }: Props = $props();
 </script>
 
+{#snippet footerBand()}
+  <AgentSettings
+    cadenceText="10"
+    lastRunAt="2026-11-14T09:55:00.000Z"
+    nextRunAt="2026-11-14T10:05:00.000Z"
+  />
+{/snippet}
+
 <div style="background: var(--background); padding: 8px;">
-  <PageHeader {eyebrow} {title} {subtitle} {flat} {layout}>
+  <PageHeader
+    {eyebrow}
+    {title}
+    {subtitle}
+    {flat}
+    {layout}
+    footer={showFooter ? footerBand : undefined}
+  >
     {#snippet meta()}
-      {#if meta}
+      {#if showMeta}
         <span class="muted">GOAL.md is the source of truth</span>
         <span class="badge" data-tone="accent">revision ready</span>
       {/if}
@@ -48,31 +66,5 @@
         <Button variant="outline">Close</Button>
       {/if}
     {/snippet}
-    {#if footer}
-      {#snippet footer()}
-        <div
-          style="align-items: center; display: flex; flex-wrap: wrap; font-size: 11px; gap: 6px 24px;"
-        >
-          <div style="align-items: center; display: flex; gap: 10px;">
-            <span class="muted">Cadence</span>
-            <label class="muted" style="align-items: center; display: flex; gap: 4px;">
-              Every
-              <Input type="number" class="w-16 text-center" value="30" />
-              min
-            </label>
-            <span class="muted">Last run never</span>
-            <Button variant="secondary">Save cadence</Button>
-          </div>
-          <div style="align-items: center; display: flex; gap: 10px;">
-            <span class="muted">Filing limits</span>
-            <label class="muted" style="align-items: center; display: flex; gap: 4px;">
-              Per hour
-              <Input type="number" class="w-16 text-center" placeholder="unlimited" />
-            </label>
-            <Button variant="secondary">Save limits</Button>
-          </div>
-        </div>
-      {/snippet}
-    {/if}
   </PageHeader>
 </div>

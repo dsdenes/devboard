@@ -47,7 +47,9 @@ export const Bar: Story = {
 };
 
 // The bar with its secondary footer band: controls that configure the primary
-// action stay on the header surface, below the state and the action.
+// action stay on the header surface, below the state and the action. The band
+// is the shipped `AgentSettings` component, the same one the agent pages render,
+// so the catalog can never show a footer the product does not.
 export const BarWithFooter: Story = {
   args: {
     eyebrow: "Issues",

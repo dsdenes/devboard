@@ -508,14 +508,16 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   log under a 1px `border` top edge, with 6px 10px padding and a 180px cap that scrolls and
   follows the newest line only while the operator stays at the bottom. The bar collapses whenever
   the page identity changes.
-- **Agent settings footer** (`.agent-settings` in `AgentPage.svelte`) — the header footer shared
-  by Auto Scout and Watchdog: two `overline` groups 24px apart, each with 10px column and 6px row
-  gaps. `Cadence` holds the Every field (64px, centered, 4px from its label and the `min` unit),
-  the last-run and next-run clocks in mono tabular figures, and a secondary `Save cadence`.
-  `Filing limits` holds the Per hour and Open issues fields (80px, so the `unlimited` placeholder
-  is never clipped) with `unlimited` placeholders and a secondary `Save limits`. Both groups wrap
-  as units, so a field never separates from its save control, and the filled Start/Stop stays
-  alone in the header row above.
+- **Agent settings footer** (`.agent-settings` in `AgentSettings.svelte`) — the header footer shared
+  by Auto Scout and Watchdog and the `BarWithFooter` PageHeader story renders: two `overline` groups
+  24px apart, each with 10px column and 6px row gaps. `Cadence` holds the Every field (64px,
+  centered, 4px from its label and the `min` unit), the last-run and next-run clocks in mono
+  tabular figures, and a secondary `Save cadence`. `Filing limits` holds the Per hour and Open
+  issues fields (80px, so the `unlimited` placeholder is never clipped) with `unlimited`
+  placeholders and a secondary `Save limits`. Both groups wrap as units, so a field never
+  separates from its save control, and the filled Start/Stop stays alone in the header row above.
+  The page passes its save controls and refusals, so the story and the product render one footer
+  instead of two that can drift.
 - **Agent prompt disclosure** (`.agent-prompt` in `AgentPromptSection.svelte`) — the shared
   read-only prompt region directly below an agent page header: a `surface` card with a 1px
   `border`, 4px radius, and hidden overflow, so its 30px summary is the header band and its body

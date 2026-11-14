@@ -19,10 +19,10 @@
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
   import AgentReleasesTable from "./AgentReleasesTable.svelte";
+  import AgentSettings from "./AgentSettings.svelte";
   import ReleaseRunPanel from "./ReleaseRunPanel.svelte";
   import CommandButton from "./CommandButton.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
-  import Input from "./ui/input.svelte";
   import PageHeader from "./ui/page-header.svelte";
 
   interface Props {
@@ -218,14 +218,6 @@
   }
 </script>
 
-{#snippet settingsAlert(field: "cadence" | "limits")}
-  {#if settingsError?.field === field}
-    <p class="issues-error agent-settings__error" data-testid="agent-settings-error" role="alert">
-      {settingsError.message}
-    </p>
-  {/if}
-{/snippet}
-
 {#if descriptor === undefined}
   <section class="agent-page" data-testid="agent-page" data-agent={agentId}>
     <p class="issues-error" role="alert">Unknown background agent: {agentId}.</p>
@@ -334,36 +326,16 @@
         </span>
       {/snippet}
       {#snippet footer()}
-        <div class="agent-settings" role="group" aria-label="Cadence and filing limits">
-          <div class="agent-settings__group" role="group" aria-label="Cadence">
-            <span class="agent-settings__title">Cadence</span>
-            <label class="agent-settings__field">
-              <span>Every</span>
-              <Input
-                type="number"
-                min="1"
-                max="1440"
-                step="1"
-                inputmode="numeric"
-                class="w-16 text-center"
-                data-testid="agent-cadence"
-                value={cadenceText}
-                oninput={(event) => (cadenceText = event.currentTarget.value)}
-              />
-              <span class="agent-settings__unit">min</span>
-            </label>
-            <span class="agent-settings__run">
-              Last run
-              <span class="mono" data-testid="agent-last-run" title={snapshot?.cadence.lastRunAt ?? "never"}>
-                {stamp(snapshot?.cadence.lastRunAt ?? null)}
-              </span>
-            </span>
-            <span class="agent-settings__run">
-              Next run
-              <span class="mono" data-testid="agent-next-run" title={snapshot?.cadence.nextRunAt ?? "—"}>
-                {stamp(snapshot?.cadence.nextRunAt ?? null)}
-              </span>
-            </span>
+        <AgentSettings
+          bind:cadenceText
+          bind:maxPerHourText
+          bind:maxPendingText
+          lastRunAt={snapshot?.cadence.lastRunAt ?? null}
+          nextRunAt={snapshot?.cadence.nextRunAt ?? null}
+          cadenceError={settingsError?.field === "cadence" ? settingsError.message : null}
+          limitsError={settingsError?.field === "limits" ? settingsError.message : null}
+        >
+          {#snippet cadenceActions()}
             <CommandButton
               variant="secondary"
               label="Save cadence"
@@ -377,36 +349,8 @@
               Save cadence
             </CommandButton>
             <SaveFeedback scope={`agent.cadence.${agentId}`} />
-            {@render settingsAlert("cadence")}
-          </div>
-          <div class="agent-settings__group" role="group" aria-label="Filing limits">
-            <span class="agent-settings__title">Filing limits</span>
-            <!-- The raw text is the model: a number input reports "" for text it
-                 cannot represent, which would read as an unlimited limit. -->
-            <label class="agent-settings__field">
-              <span>Per hour</span>
-              <Input
-                type="text"
-                inputmode="numeric"
-                placeholder="unlimited"
-                class="w-20 text-center"
-                data-testid="agent-limit-hour"
-                value={maxPerHourText}
-                oninput={(event) => (maxPerHourText = event.currentTarget.value)}
-              />
-            </label>
-            <label class="agent-settings__field">
-              <span>Open issues</span>
-              <Input
-                type="text"
-                inputmode="numeric"
-                placeholder="unlimited"
-                class="w-20 text-center"
-                data-testid="agent-limit-pending"
-                value={maxPendingText}
-                oninput={(event) => (maxPendingText = event.currentTarget.value)}
-              />
-            </label>
+          {/snippet}
+          {#snippet limitsActions()}
             <CommandButton
               variant="secondary"
               label="Save limits"
@@ -420,9 +364,8 @@
               Save limits
             </CommandButton>
             <SaveFeedback scope={`agent.limits.${agentId}`} />
-            {@render settingsAlert("limits")}
-          </div>
-        </div>
+          {/snippet}
+        </AgentSettings>
       {/snippet}
     </PageHeader>
 
@@ -563,64 +506,6 @@
     font-size: 12px;
     margin: 0;
     padding: 8px 12px;
-  }
-
-  /* Two overline groups, each ending in its own save control. */
-  .agent-settings {
-    align-items: center;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 24px;
-    width: 100%;
-  }
-
-  .agent-settings__group {
-    align-items: center;
-    column-gap: 10px;
-    display: flex;
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  .agent-settings__title {
-    color: var(--muted-foreground);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .agent-settings__field {
-    align-items: center;
-    color: var(--muted-foreground);
-    display: flex;
-    font-size: 11px;
-    gap: 4px;
-    white-space: nowrap;
-  }
-
-  .agent-settings__unit,
-  .agent-settings__run {
-    color: var(--muted-foreground);
-    font-size: 11px;
-    white-space: nowrap;
-  }
-
-  /* The refusal wraps onto its own line under the fields it names. */
-  .agent-settings__error {
-    flex-basis: 100%;
-    font-size: 11px;
-  }
-
-  .agent-settings__run {
-    align-items: center;
-    display: inline-flex;
-    gap: 4px;
-  }
-
-  .agent-settings__run .mono {
-    font-variant-numeric: tabular-nums;
   }
 
   .agent-sync {
