@@ -280,6 +280,8 @@ fn write_tool_record(directory: &Path, number: i64, title: &str) {
 struct ApiForge {
     issues: Mutex<Vec<api::ForgeIssue>>,
     fail: Mutex<Option<String>>,
+    open_title_calls: AtomicU64,
+    title_delay_ms: AtomicU64,
 }
 
 impl api::ForgeClient for ApiForge {
@@ -293,7 +295,12 @@ impl api::ForgeClient for ApiForge {
     }
 
     fn list_open_issue_titles(&self) -> api::ForgeFuture<'_, Vec<String>> {
+        self.open_title_calls.fetch_add(1, Ordering::SeqCst);
+        let delay = self.title_delay_ms.load(Ordering::SeqCst);
         Box::pin(async move {
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
             Ok(self
                 .issues
                 .lock()
@@ -759,6 +766,120 @@ async fn api_standards_drain_exits_after_the_in_flight_cycle() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn api_standards_reads_open_titles_once_per_cycle_not_on_every_sync() {
+    let fixture = Fixture::new("api-titles");
+    fixture.api_inputs();
+    let forge = Arc::new(ApiForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(api::ForgeIssue {
+            number: 1,
+            title: "Existing finding".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: String::new(),
+            labels: vec!["api-standards".to_string()],
+        });
+    let seen = Arc::new(Mutex::new(Value::Null));
+    let seen_for_peer = Arc::clone(&seen);
+    let connect = fake_connect(move |prompt| {
+        let seen = Arc::clone(&seen_for_peer);
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/api-standards-audit ");
+            let request: Value = serde_json::from_str(
+                &std::fs::read_to_string(directory.join("request.json")).expect("a request"),
+            )
+            .expect("request JSON");
+            *seen.lock().expect("the request") = request;
+            Ok(())
+        })
+    });
+    let worker = api_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    // The periodic read never walks the open issue history.
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 0);
+    // A title created after the sync is still in the cycle's duplicate check.
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(api::ForgeIssue {
+            number: 9,
+            title: "Fresh open title".to_string(),
+            url: "https://forge.test/acme/fixture/issues/9".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:01:00.000Z".to_string(),
+            body: String::new(),
+            labels: vec!["api-standards".to_string()],
+        });
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 1);
+    let request = seen.lock().expect("the request").clone();
+    let titles = request["knownTitles"].as_array().expect("known titles");
+    assert!(
+        titles.iter().any(|title| title == "Fresh open title"),
+        "{titles:?}"
+    );
+    worker.stop().await;
+}
+
+/// A stalled title page is not a failed sync: the labelled rows still land,
+/// no error or notice is raised for the same forge, and the cycle that needs
+/// the titles starts on the last known set when its own read times out.
+#[tokio::test]
+async fn api_standards_keeps_the_rows_when_the_title_read_stalls() {
+    let fixture = Fixture::new("api-titles-stall");
+    fixture.api_inputs();
+    let forge = Arc::new(ApiForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(api::ForgeIssue {
+            number: 4,
+            title: "Existing finding".to_string(),
+            url: "https://forge.test/acme/fixture/issues/4".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: String::new(),
+            labels: vec!["api-standards".to_string()],
+        });
+    let mut options = api::WorkerOptions::new(&fixture.repo, &fixture.state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    options.sync_ms = Some(60_000);
+    options.cadence_ms = Some(60 * 60_000);
+    options.manual_cycles = true;
+    options.read_timeout_ms = Some(20);
+    options.connect = Some(fake_connect(|_prompt| Box::pin(async move { Ok(()) })));
+    options.forge = Some(Arc::clone(&forge) as Arc<dyn api::ForgeClient>);
+    let worker = api::Worker::new(options);
+    assert!(worker.start("acme/fixture"));
+    forge.title_delay_ms.store(200, Ordering::SeqCst);
+    worker.refresh().await;
+    let synced = worker.current_state();
+    assert_eq!(synced.sync.state, api::SyncState::Ok);
+    assert_eq!(synced.issues.len(), 1);
+    assert_eq!(synced.last_error, None);
+    assert_eq!(synced.notice, None);
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 0);
+
+    worker.begin_cycle().await;
+    assert_eq!(forge.open_title_calls.load(Ordering::SeqCst), 1);
+    assert!(worker.current_state().newest_cycle_id.is_some());
+    worker.wait_for_cycle().await;
+    let audited = worker.current_state();
+    assert_eq!(audited.issues.len(), 1);
+    assert_eq!(audited.last_error, None);
+    assert_eq!(audited.notice, None);
+    worker.stop().await;
 }
 
 #[tokio::test]

@@ -3145,15 +3145,19 @@ impl Worker {
         }
     }
 
-    async fn read_forge(&self) -> Result<(Vec<IssueRow>, Vec<String>), String> {
+    /// The labelled issues, read on their own.
+    ///
+    /// The open-issue titles are not part of the periodic read: they are
+    /// consumed once per cycle, so `begin_cycle` reads them where they are
+    /// used. Keeping that whole-history walk out of every sync keeps one
+    /// periodic read inside its deadline and keeps a stalled title page from
+    /// discarding the labelled rows that did arrive.
+    async fn read_forge(&self) -> Result<Vec<IssueRow>, String> {
         let forge = lock(&self.inner).forge.clone();
         let Some(forge) = forge else {
             return Err("no forge client is configured".to_string());
         };
-        let (issues, open_titles) =
-            tokio::join!(forge.list_issues(), forge.list_open_issue_titles());
-        let issues = issues?;
-        let open_titles = open_titles?;
+        let issues = forge.list_issues().await?;
         let previous = lock(&self.inner).state.issues.clone();
         let mut rows: Vec<IssueRow> = issues
             .into_iter()
@@ -3179,10 +3183,10 @@ impl Worker {
             })
             .collect();
         rows.sort_by(newest_first);
-        Ok((rows, open_titles))
+        Ok(rows)
     }
 
-    async fn read_forge_within_deadline(&self) -> Result<(Vec<IssueRow>, Vec<String>), String> {
+    async fn read_forge_within_deadline(&self) -> Result<Vec<IssueRow>, String> {
         match tokio::time::timeout(
             Duration::from_millis(self.read_timeout_ms),
             self.read_forge(),
@@ -3192,6 +3196,30 @@ impl Worker {
             Ok(result) => result,
             Err(_) => Err(format!(
                 "the forge read did not finish within {} ms",
+                self.read_timeout_ms
+            )),
+        }
+    }
+
+    /// The open-issue titles a cycle needs for its duplicate check.
+    ///
+    /// Best effort: a failure is logged and the last known titles stay in use,
+    /// so a slow forge never blocks a cycle.
+    async fn refresh_open_titles(&self) {
+        let forge = lock(&self.inner).forge.clone();
+        let Some(forge) = forge else {
+            return;
+        };
+        match tokio::time::timeout(
+            Duration::from_millis(self.read_timeout_ms),
+            forge.list_open_issue_titles(),
+        )
+        .await
+        {
+            Ok(Ok(titles)) => lock(&self.inner).open_titles = titles,
+            Ok(Err(detail)) => (self.log)(format!("could not read open issue titles: {detail}")),
+            Err(_) => (self.log)(format!(
+                "could not read open issue titles: the forge read did not finish within {} ms",
                 self.read_timeout_ms
             )),
         }
@@ -3208,8 +3236,8 @@ impl Worker {
         let read = self.read_forge_within_deadline().await;
         match read {
             Err(detail) => self.record_sync_failure(&detail),
-            Ok((issues, open_titles)) => {
-                self.apply_read(issues, open_titles);
+            Ok(issues) => {
+                self.apply_read(issues);
                 lock(&self.inner).retry.succeed();
                 lock(&self.inner).next_sync_at = self.now() + self.sync_ms as i64;
                 self.publish();
@@ -3218,11 +3246,10 @@ impl Worker {
         lock(&self.inner).syncing = false;
     }
 
-    fn apply_read(&self, issues: Vec<IssueRow>, open_titles: Vec<String>) {
+    fn apply_read(&self, issues: Vec<IssueRow>) {
         {
             let mut inner = lock(&self.inner);
             inner.state.issues = issues;
-            inner.open_titles = open_titles;
             inner.state.sync = SyncStatus {
                 state: SyncState::Ok,
                 at: Some(iso_from_millis(self.now())),
@@ -3355,15 +3382,20 @@ impl Worker {
         self.tick().await;
     }
 
+    fn can_begin(&self) -> bool {
+        let inner = lock(&self.inner);
+        !inner.stopping && inner.active.is_none() && !inner.cycling && inner.state.enabled
+    }
+
     pub async fn begin_cycle(&self) {
-        {
-            let inner = lock(&self.inner);
-            if inner.stopping || inner.active.is_some() || inner.cycling {
-                return;
-            }
-            if !inner.state.enabled {
-                return;
-            }
+        if !self.can_begin() {
+            return;
+        }
+        // The duplicate-title check consumes the open titles, so they are read
+        // here, once per cycle, instead of on every periodic sync.
+        self.refresh_open_titles().await;
+        if !self.can_begin() {
+            return;
         }
         let Some(claim) = claim_cycle(
             &cycle_claim_path(&self.repo_dir),
@@ -3752,7 +3784,7 @@ impl Worker {
         }
         if !filed.is_empty() || !lock(&self.inner).state.issues.is_empty() {
             match self.read_forge_within_deadline().await {
-                Ok((issues, open_titles)) => self.apply_read(issues, open_titles),
+                Ok(issues) => self.apply_read(issues),
                 Err(failure) => record(format!("could not re-read the forge: {failure}")),
             }
         }
