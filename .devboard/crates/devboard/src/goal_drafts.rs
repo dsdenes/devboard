@@ -630,20 +630,6 @@ fn write_goal_draft_attempt(
     );
 }
 
-pub fn read_goal_draft_handoff(state_dir: &Path, repo_dir: &Path) -> Option<GoalDraftHandoff> {
-    let parsed = read_json(&goal_draft_handoff_path(state_dir, repo_dir))?;
-    let record = parsed.as_object()?;
-    let at = record.get("at")?.as_i64()?;
-    let pid = record.get("pid")?.as_i64()?;
-    if !(0..=u32::MAX as i64).contains(&pid) {
-        return None;
-    }
-    Some(GoalDraftHandoff {
-        at,
-        pid: pid as u32,
-    })
-}
-
 pub fn write_goal_draft_handoff(state_dir: &Path, repo_dir: &Path, handoff: GoalDraftHandoff) {
     let _ = write_json(
         &goal_draft_handoff_path(state_dir, repo_dir),
@@ -991,36 +977,6 @@ pub fn read_goal_draft(repo_dir: &Path, path: Option<&Value>) -> Result<GoalDraf
         path: relative,
         name,
         text,
-    })
-}
-
-/// Whether an elaboration run is live for this draft.
-pub fn is_goal_draft_running(state_dir: &Path, repo_dir: &Path, path: &str) -> bool {
-    read_goal_draft_owner_state(state_dir, repo_dir, path).is_some_and(|state| {
-        state.run.status == GoalDraftStatus::Running && state_owner_alive(&state)
-    })
-}
-
-/// Deletes one draft. A draft being elaborated is refused with 409.
-pub fn delete_goal_draft(
-    repo_dir: &Path,
-    path: Option<&Value>,
-) -> Result<GoalDraftSummary, GoalDraftError> {
-    let draft = read_goal_draft(repo_dir, path)?;
-    let (_, _, file) = resolve_goal_draft(repo_dir, path)?;
-    let state_dir = crate::supervision::default_supervision_state_directory();
-    if is_goal_draft_running(&state_dir, repo_dir, &draft.path) {
-        return Err(GoalDraftError::new(
-            409,
-            "This draft is being elaborated. Stop the elaboration and delete it again.",
-        ));
-    }
-    std::fs::remove_file(&file)
-        .map_err(|_| GoalDraftError::new(404, format!("No draft at {}.", draft.path)))?;
-    Ok(GoalDraftSummary {
-        path: draft.path,
-        name: draft.name,
-        heading: draft.heading,
     })
 }
 
