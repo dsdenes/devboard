@@ -2120,6 +2120,74 @@ impl ReleaseSuiteGate for LoggingSuiteGate {
     }
 }
 
+/// A suite gate that records whether the environment it runs under carries the
+/// release run's progress path, and reports one whole attempt on the log.
+struct RunDirWatchingGate {
+    saw: Arc<Mutex<Option<bool>>>,
+}
+
+impl ReleaseSuiteGate for RunDirWatchingGate {
+    fn run<'a>(
+        &'a self,
+        options: ReleaseSuiteOptions,
+    ) -> BoxFuture<'a, anyhow::Result<ReleaseSuiteReport>> {
+        *self.saw.lock().expect("the observation") = Some(
+            options
+                .environment
+                .contains_key(devboard::publish::RELEASE_RUN_DIR_VARIABLE),
+        );
+        if let Some(log) = options.log.clone() {
+            log("attempt 1/9: 0 fail, 100 pass, 0 skip");
+        }
+        let report = ReleaseSuiteReport {
+            code: 0,
+            attempts: 1,
+            quarantined: Vec::new(),
+            structural: None,
+            error_line: None,
+        };
+        Box::pin(async move { Ok(report) })
+    }
+}
+
+/// The suite runs the workspace tests, and one of those tests may publish. It
+/// must never inherit the release run's progress path, or its own phases would
+/// land in the record the operator is watching.
+#[tokio::test]
+async fn the_release_suite_never_inherits_the_run_progress_path() {
+    let live = live("release-suite-progress-env", release_assets()).await;
+    let progress = live
+        .state_dir
+        .join(devboard::publish::PUBLISH_PROGRESS_FILE);
+    let saw = Arc::new(Mutex::new(None));
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.progress_path = Some(progress.clone());
+    args.environment.insert(
+        devboard::publish::RELEASE_RUN_DIR_VARIABLE.to_string(),
+        live.state_dir.to_string_lossy().into_owned(),
+    );
+    args.release_suite = Some(Arc::new(RunDirWatchingGate { saw: saw.clone() }));
+    publish(args).await.expect("a release");
+
+    assert_eq!(
+        *saw.lock().expect("the observation"),
+        Some(false),
+        "the suite inherited the run directory and would write into the record"
+    );
+    let records = devboard::publish::read_publish_progress(&progress);
+    let count = |phase: &str| {
+        records
+            .iter()
+            .filter(|record| record.phase == phase)
+            .count()
+    };
+    assert_eq!(count("start"), 1, "{records:?}");
+    assert_eq!(count("fetch"), 1, "{records:?}");
+    assert_eq!(count("tag"), 1, "{records:?}");
+    assert_eq!(count("manifest"), 1, "{records:?}");
+}
+
 /// The harness owns the run's progress record: publish appends one timestamped
 /// line per phase by itself, so the account survives a silent agent and a dead
 /// shell without any `tee`. The record names every phase in the order the

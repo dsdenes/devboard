@@ -882,9 +882,6 @@ impl PublishArgs {
         let repo_dir = repo_dir.into();
         let harness_root = repo_dir.join(".devboard");
         let release_suite_dir = Some(harness_root.clone());
-        let progress_path = std::env::var(RELEASE_RUN_DIR_VARIABLE)
-            .ok()
-            .map(|run_dir| PathBuf::from(run_dir).join(PUBLISH_PROGRESS_FILE));
         Self {
             repo_dir,
             harness_root,
@@ -900,7 +897,10 @@ impl PublishArgs {
             release_suite_dir,
             release_suite: None,
             log: None,
-            progress_path,
+            // The progress record belongs to the one publish a release run
+            // started, never to a publish a test or a nested command inherits
+            // the run environment into. The CLI sets it from the environment.
+            progress_path: None,
         }
     }
 }
@@ -2245,6 +2245,12 @@ async fn run_release_suite_gate(
         })
     };
     let report = {
+        // The suite runs the workspace tests, and a test that publishes must
+        // never inherit this run's record: it would append its own phases to
+        // the release the operator is watching. Only the one publish the run
+        // started writes that file.
+        let mut suite_environment = args.environment.clone();
+        suite_environment.remove(RELEASE_RUN_DIR_VARIABLE);
         // One attempt can outlast a silence window, so the suite's own record
         // grows while it works even when the attempt reports nothing yet.
         let heartbeat = tokio::spawn({
@@ -2265,7 +2271,7 @@ async fn run_release_suite_gate(
             .run(release_suite::ReleaseSuiteOptions {
                 dir: suite_dir,
                 forge_dir: Some(args.repo_dir.clone()),
-                environment: args.environment.clone(),
+                environment: suite_environment,
                 runner: Some(runner),
                 transport: None,
                 log: Some(suite_log),

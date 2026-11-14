@@ -1079,6 +1079,13 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
         index += 2;
     }
     let mut args = devboard::publish::PublishArgs::new(repo_dir.clone());
+    // The release agent's shell is handed its run directory; only this
+    // top-level command writes that run's progress record, never a test or a
+    // nested publish that inherits the same environment.
+    if let Ok(run_dir) = std::env::var(devboard::publish::RELEASE_RUN_DIR_VARIABLE) {
+        args.progress_path =
+            Some(PathBuf::from(run_dir).join(devboard::publish::PUBLISH_PROGRESS_FILE));
+    }
     if let Some(harness) = harness_root {
         args.harness_root = harness;
     }
