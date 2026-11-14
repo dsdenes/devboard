@@ -852,7 +852,9 @@ async fn a_reset_refuses_every_mutating_command_and_answers_reads() {
     devboard::goal_run::set_reset_active(&app, true);
 
     app.command(&conn, Command::GetGoal).await;
-    let frame: Value = serde_json::from_str(&inbox.recv().await.expect("a frame")).expect("JSON");
+    // A reset app broadcasts its own frames; the goal answer is the frame this
+    // read asked for, not whichever frame arrives first.
+    let frame = frame_matching(&mut inbox, |frame| frame["type"] == "goal", 10_000).await;
     assert_eq!(frame["type"], "goal");
 
     app.command(&conn, Command::StartIssues).await;

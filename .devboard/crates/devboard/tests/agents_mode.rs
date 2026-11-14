@@ -2804,6 +2804,23 @@ struct FamilyHarness {
     spawns: RecordedSpawns,
 }
 
+/// The pid a family's spawn recorded. The spawn runs on the blocking pool, so
+/// a Start that returned has not necessarily recorded its pid yet: wait for it
+/// instead of assuming the ordering.
+async fn recorded_pid(harness: &FamilyHarness, family: &str) -> u32 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(pid) = harness.pids.lock().expect("pids").first().copied() {
+            return pid;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{family}: no pid was recorded before the deadline"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 async fn family_harness(
     root: &Path,
     family: &str,
@@ -3042,7 +3059,7 @@ async fn a_failed_preflight_stops_the_spawned_worker() {
         let (all, _) = start_family(&mut harness, family).await;
         assert!(find(&all, "error").is_empty(), "{family}: {all:?}");
         assert_spawned_program(&harness, family);
-        let pid = *harness.pids.lock().expect("pids").first().expect("a pid");
+        let pid = recorded_pid(&harness, family).await;
         release.send(()).expect("release the preflight");
         let snapshot = wait_for_refusal(&mut harness, family, pid).await;
         assert_eq!(snapshot["error"], json!(fault), "{family}: {snapshot:?}");
@@ -3062,7 +3079,7 @@ async fn a_failed_preflight_stops_the_spawned_worker() {
     let mut harness = family_harness(&root, "scout", preflight, true).await;
     let (all, _) = start_family(&mut harness, "scout").await;
     assert!(find(&all, "error").is_empty(), "{all:?}");
-    let pid = *harness.pids.lock().expect("pids").first().expect("a pid");
+    let pid = recorded_pid(&harness, "scout").await;
     release.send(()).expect("release the preflight");
     let snapshot = wait_for_refusal(&mut harness, "scout", pid).await;
     assert_eq!(snapshot["notice"], json!(latency), "{snapshot:?}");

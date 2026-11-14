@@ -2036,6 +2036,12 @@ async fn a_scan_that_never_starts_leaves_failed_and_the_next_due_tick_scans_agai
     worker.tick().await;
     let state = worker.current_state();
     assert_eq!(state.lifecycle, "scanning", "the next due tick scans again");
+    // The scan runs in its own task, so the tick's return does not prove the
+    // agent was entered yet: wait for it before reading the count.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while runs.load(Ordering::SeqCst) < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     assert_eq!(runs.load(Ordering::SeqCst), 2, "a second scan started");
     assert_eq!(scan_ids(&repo).len(), 2, "a second scan directory exists");
     worker.stop().await;
