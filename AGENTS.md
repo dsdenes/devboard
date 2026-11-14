@@ -159,10 +159,16 @@ each tracker failure with its forge, its operation, and the concrete cause.
 ## The Release Train releases
 
 The Release Train is the only component that publishes a Devboard version. It is the
-`release-train` background agent family in the dashboard. On each tick its worker runs one
+`release-train` background agent family in the dashboard, and it is gated to the harness source
+checkout: on a host project its entry stays listed and disabled, carries `Release Train runs only
+in a harness source checkout; this project is a host project.`, and starts no worker.
+On each tick its worker runs one
 deterministic gate and starts one `omp acp` release agent only when the gate finds unreleased
 commits. Nothing is published under `@dsdenes/devboard-harness`.
 
+- **Project kind.** The Release Train runs only in the harness source checkout. A host project
+  deploys itself through Deploy on main; the Release Train page there shows that reason and no
+  Start control.
 - **Cadence.** The default is 10 minutes, and the field accepts 1 through 1440 minutes.
 - **Gate.** The worker fetches `origin/main` and its tags and compares that tip with the newest
   `v<version>` tag reachable from it. Unreleased means at least one non-merge commit after that
@@ -247,6 +253,33 @@ Guardrails:
   compare `versionState` and the installed package version before debugging client code.
 - A UI check against a bundle or server older than the changed source is not a passing
   verification.
+
+## Deploy on main
+
+The Deploy on main background family (`deploy-on-main`) deploys the served host project whenever
+the served checkout's `main` advances. It and the Release Train are gated to opposite projects:
+the Release Train releases the harness source checkout, and Deploy on main deploys host projects.
+The host project's own `AGENTS.md` owns how that deployment happens.
+
+- **Gate.** Deploy on main runs only on a host project. In the harness source checkout its entry
+  stays listed and disabled, carries `Deploy on main runs only on host projects; this project is
+  the harness source checkout.`, and renders no Start control. The Release Train is gated the
+  other way and carries its own reason on a host project.
+- **Trigger.** It is push-triggered, with no cadence and no timer: the descriptor has no interval,
+  the page renders no cadence field, and one coalesced run exists per advance of the served
+  checkout's `main`. An advance that arrives during a live run is folded into the next run.
+- **Worktree.** Every run deploys the triggering commit from the fast-forward-only worktree at
+  `<served checkout>/.worktree/deploy-main`. Nothing edits the served checkout, moves `main`,
+  force-updates a ref, or rewrites history.
+- **Instructions.** The worker reads the host project's root `AGENTS.md` and hands its
+  deploy-instructions section to one `omp acp` peer per run as `/deploy-on-main <run-dir>`. The
+  peer executes exactly those instructions from the deploy worktree and writes
+  `<run-dir>/result.json` as `{"ok":true,"detail":"…"}` or `{"ok":false,"detail":"…"}`; a host
+  `AGENTS.md` with no deploy instructions yields `{"ok":false,"skipped":true,"detail":"…"}` and a
+  skipped run.
+- **Never.** A deploy never runs a release, never kills or relaunches the dashboard, and never
+  deploys a commit other than the one its request names. The peer's only writes are its result
+  document and whatever the host's own instructions write.
 
 ## Wrappers
 
@@ -390,7 +423,10 @@ never hand-edit them.
   workflow, waits for it, proves the GitHub assets and the Gitea manifest, and reports dashboards
   without restarting them. Only the Release Train invokes it.
 - `.devboard/release-train/` — the Release Train family: worker, gate call, settings, control,
-  state, and runs.
+  state, and runs. It runs only in the harness source checkout.
+- `.devboard/prompts/deploy-on-main.md` — the Deploy on main instruction: one run executes the
+  host `AGENTS.md` deploy steps from `.worktree/deploy-main` at the triggering commit. It runs
+  only on host projects.
 - `.devboard/dist-workspace.toml` — the cargo-dist workspace: the platform matrix, the installers,
   and the GitHub release host.
 - `.devboard/templates/host-AGENTS.md` — host contract copied at install time; byte-identical to

@@ -47,6 +47,11 @@
   const documentation = $derived<AgentDocumentationEntry[]>(snapshot?.documentation ?? []);
   const detail = $derived(snapshot?.detail ?? null);
   const blocked = $derived(snapshot?.timer?.blocked === true);
+  // A project gate says this checkout never runs the family. The page keeps
+  // every read-only fact and drops the Start control, so the operator cannot
+  // ask for a worker the server refuses.
+  const gated = $derived(snapshot?.availability?.state === "disabled");
+  const gateReason = $derived(gated ? (snapshot?.availability.reason ?? null) : null);
   const showStop = $derived(
     snapshot?.owned === true &&
       (snapshot.lifecycle === "running" || snapshot.lifecycle === "stopping"),
@@ -150,12 +155,12 @@
     const current = snapshot;
     if (current === null) return;
     const signature =
-      `${current.cadence.minutes}/${current.limits.maxPerHour}/` +
+      `${current.cadence?.minutes ?? "-"}/${current.limits.maxPerHour}/` +
       `${current.limits.maxPending}`;
     if (agentId === settingsAgent && signature === lastSettings) return;
     settingsAgent = agentId;
     lastSettings = signature;
-    cadenceText = String(current.cadence.minutes);
+    cadenceText = current.cadence === null ? "" : String(current.cadence.minutes);
     maxPerHourText = current.limits.maxPerHour === null ? "" : String(current.limits.maxPerHour);
     maxPendingText =
       current.limits.maxPending === null ? "" : String(current.limits.maxPending);
@@ -185,24 +190,30 @@
   }
 
   /**
-   * One save validates all three fields and sends one settings command.
-   * Returns false when it sent nothing: a refused save shows its own message
-   * and never claims the action received no answer.
+   * One save validates all three fields and sends one settings command. A
+   * push-triggered family persists no interval, so its save sends `null` for
+   * the interval and the field's text is never read. Returns false when it
+   * sent nothing: a refused save shows its own message and never claims the
+   * action received no answer.
    */
   function saveSettings(scope: string): boolean {
-    const trimmed = cadenceText.trim();
-    const minutes = Number(trimmed);
-    if (
-      !/^\d+$/.test(trimmed) ||
-      !Number.isInteger(minutes) ||
-      minutes < 1 ||
-      minutes > 1440
-    ) {
-      settingsError = {
-        field: "cadence",
-        message: "The cadence must be an integer from 1 through 1440 minutes.",
-      };
-      return false;
+    let minutes: number | null = null;
+    if (descriptor?.cadence !== undefined) {
+      const trimmed = cadenceText.trim();
+      const parsed = Number(trimmed);
+      if (
+        !/^\d+$/.test(trimmed) ||
+        !Number.isInteger(parsed) ||
+        parsed < 1 ||
+        parsed > 1440
+      ) {
+        settingsError = {
+          field: "cadence",
+          message: "The cadence must be an integer from 1 through 1440 minutes.",
+        };
+        return false;
+      }
+      minutes = parsed;
     }
     const perHour = parseLimit(maxPerHourText);
     const pending = parseLimit(maxPendingText);
@@ -247,7 +258,7 @@
           >
             Stop
           </CommandButton>
-        {:else}
+        {:else if !gated}
           <CommandButton
             variant="default"
             label="Start"
@@ -330,8 +341,9 @@
           bind:cadenceText
           bind:maxPerHourText
           bind:maxPendingText
-          lastRunAt={snapshot?.cadence.lastRunAt ?? null}
-          nextRunAt={snapshot?.cadence.nextRunAt ?? null}
+          cadence={descriptor.cadence !== undefined}
+          lastRunAt={snapshot?.cadence?.lastRunAt ?? null}
+          nextRunAt={snapshot?.cadence?.nextRunAt ?? null}
           cadenceError={settingsError?.field === "cadence" ? settingsError.message : null}
           limitsError={settingsError?.field === "limits" ? settingsError.message : null}
         >
@@ -368,6 +380,10 @@
         </AgentSettings>
       {/snippet}
     </PageHeader>
+
+    {#if gated && gateReason !== null}
+      <p class="agent-gate" data-testid="agent-gate" role="status">{gateReason}</p>
+    {/if}
 
     {#key agentId}
       <AgentPromptSection {agentId} />
@@ -415,7 +431,7 @@
       <ReleaseRunPanel
         run={releaseRun}
         gate={releaseGate}
-        nextRunAt={snapshot?.cadence.nextRunAt ?? null}
+        nextRunAt={snapshot?.cadence?.nextRunAt ?? null}
       />
     {/if}
 
@@ -508,6 +524,16 @@
     padding: 8px 12px;
   }
 
+  /* A family this project never runs: the reason replaces the Start control. */
+  .agent-gate {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    margin: 0;
+    padding: 8px 12px;
+  }
   .agent-sync {
     align-items: center;
     display: inline-flex;

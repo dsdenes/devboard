@@ -9,6 +9,7 @@ pub mod builds;
 pub mod consistent_naming;
 pub mod cycle;
 pub mod dead_code;
+pub mod deploy_on_main;
 pub mod design;
 pub mod goal_draft;
 pub mod issues;
@@ -125,6 +126,16 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
             invocation.repo_dir.display()
         );
     }
+    // A family that belongs to one project kind refuses the other before any
+    // peer, lock, or state write: the same verdict the card renders.
+    if let Some(refusal) = crate::project_kind::refusal(
+        &invocation.family,
+        crate::project_kind::gate_for_family(&invocation.family),
+        &invocation.repo_dir,
+    ) {
+        eprintln!("{refusal}");
+        std::process::exit(2);
+    }
     run_family(invocation).await
 }
 
@@ -141,6 +152,7 @@ async fn run_family(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         "consistent-naming" => consistent_naming::run(invocation).await,
         "mcp-optimizer" => mcp_optimizer::run(invocation).await,
         "release-train" => release_train::run(invocation).await,
+        "deploy-on-main" => deploy_on_main::run(invocation).await,
         "watchdog" => watchdog::run(invocation).await,
         other => anyhow::bail!("unknown worker family {other}"),
     }
@@ -150,7 +162,7 @@ async fn run_family(invocation: &WorkerInvocation) -> anyhow::Result<()> {
 ///
 /// The run collection, the CPU bench, and [`known_family`] read this one
 /// set, so a family cannot be listed by one consumer and unknown to another.
-pub const FAMILIES: [&str; 10] = [
+pub const FAMILIES: [&str; 11] = [
     "issues",
     "scout",
     "design",
@@ -160,6 +172,7 @@ pub const FAMILIES: [&str; 10] = [
     "consistent-naming",
     "mcp-optimizer",
     "release-train",
+    "deploy-on-main",
     "watchdog",
 ];
 

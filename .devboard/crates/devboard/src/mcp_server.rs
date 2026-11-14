@@ -48,7 +48,7 @@ pub const VERIFICATION_TARGET_MAX: usize = 16;
 pub const JOURNAL_SEARCH_MAX_RECORDS: usize = 200;
 pub const JOURNAL_SEARCH_MAX_BYTES: usize = 64 * 1024;
 
-const AGENT_IDS: [&str; 9] = [
+const AGENT_IDS: [&str; 10] = [
     "scout",
     "watchdog",
     "design",
@@ -58,6 +58,7 @@ const AGENT_IDS: [&str; 9] = [
     "single-responsibility",
     "consistent-naming",
     "release-train",
+    "deploy-on-main",
 ];
 
 const FLOW_CATEGORIES: [&str; 7] = [

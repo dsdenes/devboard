@@ -60,11 +60,11 @@ function snapshotActivity(lines: string[], entries: string[]): string[] {
 
 /** One comparable key for the three settings a save sends. */
 function settingsSignature(
-  minutes: number,
+  minutes: number | null,
   maxPerHour: number | null,
   maxPending: number | null,
 ): string {
-  return `${minutes}/${maxPerHour ?? "-"}/${maxPending ?? "-"}`;
+  return `${minutes ?? "-"}/${maxPerHour ?? "-"}/${maxPending ?? "-"}`;
 }
 
 /**
@@ -170,20 +170,23 @@ export class AgentsStore {
   }
 
   /**
-   * One settings command for all three fields. Returns false when the socket
-   * refused the envelope, so the control never waits for an answer it never
-   * asked for.
+   * One settings command for all three fields. A push-triggered family has no
+   * interval, so `minutes` is `null` and the envelope carries no `minutes`
+   * field at all. Returns false when the socket refused the envelope, so the
+   * control never waits for an answer it never asked for.
    */
   saveSettings(
     id: string,
-    minutes: number,
+    minutes: number | null,
     maxPerHour: number | null,
     maxPending: number | null,
     scope: string,
   ): boolean {
-    if (
-      !connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending })
-    ) {
+    const sent =
+      minutes === null
+        ? connection.send({ type: "setAgentSettings", id, maxPerHour, maxPending })
+        : connection.send({ type: "setAgentSettings", id, minutes, maxPerHour, maxPending });
+    if (!sent) {
       return false;
     }
     this.pendingSettings.set(id, {
@@ -327,7 +330,7 @@ export class AgentsStore {
     if (
       pending !== undefined &&
       settingsSignature(
-        snapshot.cadence.minutes,
+        snapshot.cadence?.minutes ?? null,
         snapshot.limits.maxPerHour,
         snapshot.limits.maxPending,
       ) === pending.signature

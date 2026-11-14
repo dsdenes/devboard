@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import {
+  agentRegistry,
+  projectAgentSnapshot,
+  type AgentSnapshotInput,
+} from "../../lib/agent-registry.ts";
 import { AgentsStore } from "./agents.svelte";
 
 /** One wire frame of the shared shape, with the fields a case overrides. */
@@ -103,4 +108,47 @@ test("a cycle row without a window is dropped instead of rendered", () => {
     }),
   });
   expect(agents.snapshot("watchdog")).toBeNull();
+});
+
+test("a frame without availability reads enabled, as an older server's did", () => {
+  const snapshot = projectAgentSnapshot(
+    agentRegistry.require("scout"),
+    frame() as unknown as AgentSnapshotInput,
+  );
+  expect(snapshot.availability).toEqual({ state: "enabled", reason: null });
+});
+
+test("a disabled availability without a reason is refused", () => {
+  const descriptor = agentRegistry.require("release-train");
+  const input = frame({
+    id: "release-train",
+    label: "Release Train",
+    availability: { state: "disabled", reason: null },
+  }) as unknown as AgentSnapshotInput;
+  expect(() => projectAgentSnapshot(descriptor, input)).toThrow(
+    "a disabled agent must state its reason",
+  );
+  const blank = frame({
+    id: "release-train",
+    label: "Release Train",
+    availability: { state: "disabled", reason: "   " },
+  }) as unknown as AgentSnapshotInput;
+  expect(() => projectAgentSnapshot(descriptor, blank)).toThrow(
+    "a disabled agent must state its reason",
+  );
+});
+
+test("a push-triggered family projects a null cadence whatever the frame sends", () => {
+  const descriptor = agentRegistry.require("deploy-on-main");
+  expect(descriptor.cadence).toBeUndefined();
+  const snapshot = projectAgentSnapshot(
+    descriptor,
+    frame({
+      id: "deploy-on-main",
+      label: "Deploy on main",
+      cadence: { minutes: 5, lastRunAt: null, nextRunAt: null },
+    }) as unknown as AgentSnapshotInput,
+  );
+  expect(snapshot.cadence).toBeNull();
+  expect(snapshot.availability).toEqual({ state: "enabled", reason: null });
 });

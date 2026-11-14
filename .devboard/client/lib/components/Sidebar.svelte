@@ -700,11 +700,17 @@
         {#each agents.descriptors as descriptor (descriptor.id)}
           {@const snapshot = agents.snapshot(descriptor.id)}
           {@const runState = agentRunState(descriptor.id)}
+          {@const gateReason =
+            snapshot?.availability?.state === "disabled"
+              ? (snapshot.availability.reason ?? null)
+              : null}
           <Button
             bare
             class="sidebar-item"
             aria-current={isActive(descriptor.tab.id) ? "true" : undefined}
             aria-label={`${descriptor.label} (${modeLabel})`}
+            aria-disabled={gateReason !== null ? "true" : undefined}
+            title={gateReason ?? undefined}
             data-command={`open.devboard.${descriptor.id}`}
             data-testid={`open-devboard-${descriptor.id}`}
             data-run-state={runState}
@@ -718,6 +724,11 @@
               )}
           >
             <span class="sidebar-item__label">{descriptor.label}</span>
+            {#if gateReason !== null}
+              <span class="sr-only" data-testid={`agent-gate-${descriptor.id}`}>
+                {gateReason}
+              </span>
+            {/if}
             <span
               class="badge"
               data-tone={statusTone(snapshot?.lifecycle ?? "stopped")}

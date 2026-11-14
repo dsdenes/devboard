@@ -14,7 +14,7 @@ afterAll(() => {
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the stores load after registration.
-const { cleanup, render } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: Sidebar } = await import("./Sidebar.svelte");
 const { layout } = await import("../layout.svelte");
@@ -151,6 +151,39 @@ afterEach(() => {
 
 function mount(): void {
   render(Sidebar, { props: { openTab: () => {} } });
+}
+
+/** A complete background-agent snapshot for the sidebar's own reads. */
+function backgroundSnapshot(
+  id: string,
+  label: string,
+  availability: { state: "enabled" | "disabled"; reason: string | null },
+): (typeof agents.snapshots)[string] {
+  return {
+    id,
+    label,
+    description: "",
+    scope: "repository",
+    lifecycle: "stopped",
+    paused: false,
+    enabled: false,
+    owned: false,
+    attached: false,
+    cadence: null,
+    availability,
+    limits: { maxPerHour: null, maxPending: null },
+    issues: [],
+    documentation: [],
+    releases: [],
+    pending: 0,
+    sync: { state: "ok", at: null, error: null },
+    detail: { panel: "activity", scanId: null, entries: [] },
+    notice: null,
+    error: null,
+    timer: null,
+    workers: [],
+    peers: 0,
+  } as unknown as (typeof agents.snapshots)[string];
 }
 
 async function showDiscover(payload: DiscoverStatePayload): Promise<void> {
@@ -654,6 +687,51 @@ test("each background-agent entry follows its own lifecycle and no Discover run"
     const button = document.querySelector(`[data-testid="open-devboard-${descriptor.id}"]`);
     expect(button?.getAttribute("data-run-state")).toBe(lifecycles[String(agents.lifecycle(descriptor.id))]);
   }
+});
+
+test("a project-gated background agent stays visible, disabled, and states its reason", async () => {
+  layout.mode = "devboard";
+  const reason =
+    "Deploy on main runs only on host projects; this project is the harness source checkout.";
+  agents.snapshots = {
+    "deploy-on-main": backgroundSnapshot("deploy-on-main", "Deploy on main", {
+      state: "disabled",
+      reason,
+    }),
+  };
+  const opened: Array<[string, string]> = [];
+  render(Sidebar, {
+    props: { openTab: (mode, tab) => opened.push([mode, tab.id]) },
+  });
+  await tick();
+
+  const entry = document.querySelector('[data-testid="open-devboard-deploy-on-main"]');
+  expect(entry).not.toBeNull();
+  expect(entry?.getAttribute("aria-disabled")).toBe("true");
+  expect(entry?.getAttribute("title")).toBe(reason);
+  expect(
+    entry?.querySelector('[data-testid="agent-gate-deploy-on-main"]')?.textContent?.trim(),
+  ).toBe(reason);
+  // The sidebar never carries a Start control; the entry still opens its page.
+  expect(document.querySelector('[data-testid="agent-start"]')).toBeNull();
+  await fireEvent.click(entry as Element);
+  expect(opened).toEqual([["devboard", "deploy-on-main"]]);
+});
+
+test("an enabled background agent keeps its unmarked sidebar entry", async () => {
+  layout.mode = "devboard";
+  agents.snapshots = {
+    scout: backgroundSnapshot("scout", "Auto Scout", { state: "enabled", reason: null }),
+  };
+  mount();
+  await tick();
+
+  const entry = document.querySelector('[data-testid="open-devboard-scout"]');
+  expect(entry).not.toBeNull();
+  expect(entry?.getAttribute("aria-disabled")).toBeNull();
+  expect(entry?.hasAttribute("title")).toBe(false);
+  expect(entry?.querySelector('[data-testid="agent-gate-scout"]')).toBeNull();
+  expect(document.querySelector('[data-testid="agent-start"]')).toBeNull();
 });
 
 test("a checkpoint badge names its verification tone", async () => {

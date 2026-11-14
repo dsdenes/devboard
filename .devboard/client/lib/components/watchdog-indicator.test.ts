@@ -40,6 +40,7 @@ function snapshot(action: string): AgentSnapshot {
     owned: true,
     attached: true,
     cadence: { minutes: 30, defaultMinutes: 30, lastRunAt: null, nextRunAt: null },
+    availability: { state: "enabled", reason: null },
     limits: { maxPerHour: null, maxPending: null },
     issues: [],
     documentation: [],

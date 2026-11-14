@@ -23,6 +23,8 @@
     cadenceError?: string | null;
     /** The refusal the page holds for the Filing limits group, if any. */
     limitsError?: string | null;
+    /** False for a push-triggered family: it persists no interval. */
+    cadence?: boolean;
     /** The page's Save cadence control; the story renders a static one. */
     cadenceActions?: Snippet;
     /** The page's Save limits control; the story renders a static one. */
@@ -37,6 +39,7 @@
     nextRunAt = null,
     cadenceError = null,
     limitsError = null,
+    cadence = true,
     cadenceActions,
     limitsActions,
   }: Props = $props();
@@ -63,8 +66,13 @@
   <Button variant="secondary">Save limits</Button>
 {/snippet}
 
-<div class="agent-settings" role="group" aria-label="Cadence and filing limits">
-  <div class="agent-settings__group" role="group" aria-label="Cadence">
+<div
+  class="agent-settings"
+  role="group"
+  aria-label={cadence ? "Cadence and filing limits" : "Filing limits"}
+>
+  {#if cadence}
+    <div class="agent-settings__group" role="group" aria-label="Cadence">
     <span class="agent-settings__title">Cadence</span>
     <label class="agent-settings__field">
       <span>Every</span>
@@ -100,6 +108,7 @@
       </p>
     {/if}
   </div>
+  {/if}
   <div class="agent-settings__group" role="group" aria-label="Filing limits">
     <span class="agent-settings__title">Filing limits</span>
     <!-- The raw text is the model: a number input reports "" for text it

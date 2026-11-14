@@ -58,6 +58,13 @@ export interface AgentCadence {
   maxMinutes: number;
 }
 
+/** Whether this project may run a family at all, and why not when it may not. */
+export interface AgentAvailability {
+  state: "enabled" | "disabled";
+  /** Why the family is disabled here; null while it is enabled. */
+  reason: string | null;
+}
+
 export interface AgentLimitField {
   min: number;
   max: number;
@@ -166,13 +173,16 @@ export interface AgentSnapshot {
   /** True when this dashboard may command the live worker. */
   owned: boolean;
   attached: boolean;
+  /** `null` for a push-triggered family, whose worker runs on an event. */
   cadence: {
     minutes: number;
     /** The descriptor's default cadence, kept for callers that compare it. */
     defaultMinutes: number;
     lastRunAt: string | null;
     nextRunAt: string | null;
-  };
+  } | null;
+  /** Whether this project may run the family, and why not when it may not. */
+  availability: AgentAvailability;
   limits: AgentLimits;
   issues: AgentIssueRow[];
   /** Released documentation changes, newest first; empty for most agents. */
@@ -208,7 +218,9 @@ export interface AgentSnapshotInput {
     minutes: number;
     lastRunAt: string | null;
     nextRunAt: string | null;
-  };
+  } | null;
+  /** Optional so an adapter of an older server keeps projecting. */
+  availability?: AgentAvailability;
   limits: AgentLimits;
   issues: AgentIssueRow[];
   /** Optional so an adapter of an older server keeps projecting. */
@@ -252,7 +264,8 @@ export interface AgentDescriptor {
   /** What the shared prompt section shows for this agent. */
   prompt: AgentPromptDescriptor;
   lifecycle: readonly AgentLifecycle[];
-  cadence: AgentCadence;
+  /** Absent for a push-triggered family: it persists no interval. */
+  cadence?: AgentCadence;
   limits: {
     maxPerHour: AgentLimitField;
     maxPending: AgentLimitField;
@@ -360,12 +373,13 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
   }
   const cadence = descriptor.cadence;
   if (
-    !isRecord(cadence) ||
-    cadence.field !== "intervalMinutes" ||
-    !isIntegerIn(cadence.minMinutes, 1, 1440) ||
-    !isIntegerIn(cadence.maxMinutes, 1, 1440) ||
-    cadence.minMinutes > cadence.maxMinutes ||
-    !isIntegerIn(cadence.defaultMinutes, cadence.minMinutes, cadence.maxMinutes)
+    cadence !== undefined &&
+    (!isRecord(cadence) ||
+      cadence.field !== "intervalMinutes" ||
+      !isIntegerIn(cadence.minMinutes, 1, 1440) ||
+      !isIntegerIn(cadence.maxMinutes, 1, 1440) ||
+      cadence.minMinutes > cadence.maxMinutes ||
+      !isIntegerIn(cadence.defaultMinutes, cadence.minMinutes, cadence.maxMinutes))
   ) {
     throw new AgentRegistryError(`${id}: cadence must declare a valid minutes field`);
   }
@@ -491,7 +505,11 @@ function normalizeLifecycle(descriptor: AgentDescriptor, value: unknown): AgentL
 }
 
 function normalizeMinutes(descriptor: AgentDescriptor, value: unknown): number {
-  if (!isIntegerIn(value, descriptor.cadence.minMinutes, descriptor.cadence.maxMinutes)) {
+  const cadence = descriptor.cadence;
+  if (cadence === undefined) {
+    throw new AgentRegistryError(`${descriptor.id}: this agent has no cadence`);
+  }
+  if (!isIntegerIn(value, cadence.minMinutes, cadence.maxMinutes)) {
     throw new AgentRegistryError(`${descriptor.id}: cadence is outside its bounds`);
   }
   return value;
@@ -503,6 +521,29 @@ function nullableTimestamp(value: unknown): string | null {
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
+}
+
+/**
+ * One project verdict on a family. An older server sends none, which reads as
+ * enabled; a disabled family must say why, because the page and sidebar show
+ * that reason as the only explanation for a control they omit.
+ */
+function normalizeAvailability(
+  descriptor: AgentDescriptor,
+  value: unknown,
+): AgentAvailability {
+  if (value === undefined) return { state: "enabled", reason: null };
+  if (
+    !isRecord(value) ||
+    (value.state !== "enabled" && value.state !== "disabled") ||
+    !isNullableString(value.reason)
+  ) {
+    throw new AgentRegistryError(`${descriptor.id}: availability is outside the shared shape`);
+  }
+  if (value.state === "disabled" && (value.reason === null || value.reason.trim().length === 0)) {
+    throw new AgentRegistryError(`${descriptor.id}: a disabled agent must state its reason`);
+  }
+  return { state: value.state, reason: value.reason };
 }
 
 /** One filed-issue row; a row the table would read a missing field from throws. */
@@ -690,6 +731,11 @@ export function projectAgentSnapshot(
   if (typeof peers !== "number" || !Number.isInteger(peers) || peers < 0) {
     throw new AgentRegistryError(`${descriptor.id}: peers must be a whole count`);
   }
+  // A push-triggered family persists no interval, so its frame carries none
+  // whatever a mismatched adapter sent: the page reads `null` and renders no
+  // cadence group. Every other family keeps the shape it always had.
+  const cadence = descriptor.cadence;
+  const availability = normalizeAvailability(descriptor, input.availability);
   return {
     id: descriptor.id,
     label: descriptor.label,
@@ -700,12 +746,16 @@ export function projectAgentSnapshot(
     enabled: input.enabled === true,
     owned: input.owned === true,
     attached: input.attached === true,
-    cadence: {
-      minutes: normalizeMinutes(descriptor, input.cadence?.minutes),
-      defaultMinutes: descriptor.cadence.defaultMinutes,
-      lastRunAt: nullableTimestamp(input.cadence?.lastRunAt),
-      nextRunAt: nullableTimestamp(input.cadence?.nextRunAt),
-    },
+    cadence:
+      cadence === undefined
+        ? null
+        : {
+            minutes: normalizeMinutes(descriptor, input.cadence?.minutes),
+            defaultMinutes: cadence.defaultMinutes,
+            lastRunAt: nullableTimestamp(input.cadence?.lastRunAt),
+            nextRunAt: nullableTimestamp(input.cadence?.nextRunAt),
+          },
+    availability,
     limits: {
       maxPerHour: input.limits.maxPerHour,
       maxPending: input.limits.maxPending,
@@ -1034,6 +1084,28 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     detail: { panel: "activity", testId: "agent-detail" },
     releases: { testId: "agent-releases" },
     tab: { id: "release-train", kind: "release-train", title: "Release Train" },
+  }),
+  validateAgentDescriptor({
+    id: "deploy-on-main",
+    label: "Deploy on main",
+    description:
+      "Deploys every advance of main from the dedicated deploy worktree by following the host " +
+      "project's AGENTS.md deploy instructions.",
+    scope: "repository",
+    prompt: {
+      kind: "file",
+      file: "deploy-on-main.md",
+    },
+    lifecycle: AGENT_LIFECYCLES,
+    limits: {
+      maxPerHour: { min: 1, max: 100, nullable: true },
+      maxPending: { min: 1, max: 100, nullable: true },
+      default: { maxPerHour: null, maxPending: null },
+    },
+    commands: SHARED_COMMANDS,
+    issues: SHARED_ISSUES,
+    detail: { panel: "activity", testId: "agent-detail" },
+    tab: { id: "deploy-on-main", kind: "deploy-on-main", title: "Deploy on main" },
   }),
 ]);
 

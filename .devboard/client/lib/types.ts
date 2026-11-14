@@ -207,6 +207,7 @@ export interface GoalDraftRun {
 
 export type {
   AgentActivityDetail,
+  AgentAvailability,
   AgentCadence,
   AgentCycle,
   AgentCycleWindow,

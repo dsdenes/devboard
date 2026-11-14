@@ -917,6 +917,18 @@ pub enum AgentLifecycle {
     Failed,
 }
 
+impl AgentLifecycle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReleaseTrainWorkerRecord {

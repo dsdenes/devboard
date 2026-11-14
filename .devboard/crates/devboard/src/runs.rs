@@ -268,6 +268,10 @@ fn worker_activity_path(
             &crate::workers::release_train::release_train_directory(state_dir),
             state,
         ),
+        "deploy-on-main" => crate::workers::deploy_on_main::state_activity_path(
+            &crate::workers::deploy_on_main::deploy_directory(state_dir),
+            state,
+        ),
         _ => {
             let cycle = state
                 .get("newestCycleId")
@@ -371,6 +375,20 @@ fn family_worker_states(state_dir: &Path, repo_dir: &Path, family: &str) -> Vec<
                 .map(|version| {
                     let label = version_label(&version);
                     let path = release_train::versioned_worker_state_path(&directory, Some(&label));
+                    (label, path)
+                })
+                .collect()
+        }
+        "deploy-on-main" => {
+            let directory = crate::workers::deploy_on_main::deploy_directory(state_dir);
+            crate::workers::deploy_on_main::worker_state_directories(&directory)
+                .into_iter()
+                .map(|version| {
+                    let label = version_label(&version);
+                    let path = crate::workers::deploy_on_main::versioned_worker_state_path(
+                        &directory,
+                        Some(&label),
+                    );
                     (label, path)
                 })
                 .collect()

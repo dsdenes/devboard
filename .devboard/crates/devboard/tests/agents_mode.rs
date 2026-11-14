@@ -37,6 +37,13 @@ fn scratch(label: &str) -> PathBuf {
     std::fs::create_dir_all(root.join("repo/.devboard/prompts")).expect("a prompt root");
     std::fs::create_dir_all(root.join("repo/adrs")).expect("an adr root");
     std::fs::create_dir_all(root.join("state")).expect("a state root");
+    // The fixture served repository is the harness source checkout: the
+    // Release Train runs only there, and every start test expects it to run.
+    std::fs::write(
+        root.join("repo/.devboard/package.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"0.1.0\"}\n",
+    )
+    .expect("a harness manifest");
     for prompt in [
         "scout-recommendations.md",
         "design-system.md",
@@ -45,6 +52,7 @@ fn scratch(label: &str) -> PathBuf {
         "single-responsibility.md",
         "consistent-naming.md",
         "release-train.md",
+        "deploy-on-main.md",
     ] {
         std::fs::write(
             root.join("repo/.devboard/prompts").join(prompt),
@@ -235,6 +243,7 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
             "single-responsibility",
             "consistent-naming",
             "release-train",
+            "deploy-on-main",
         ]
     );
     let scout = &agents[0];
@@ -297,7 +306,7 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
     assert_eq!(release["detail"]["scanId"], "idle:0");
 
     let prompts = find(&all, "agentPromptState");
-    assert_eq!(prompts.len(), 9);
+    assert_eq!(prompts.len(), 10);
     assert_eq!(prompts[0]["id"], "scout");
     assert_eq!(prompts[0]["prompt"]["absent"], false);
     assert!(prompts[0]["prompt"]["text"]
@@ -3268,4 +3277,313 @@ async fn a_repeated_page_open_refresh_is_coalesced_for_the_family() {
         vec![json!({"type": "refresh"}), json!({"type": "refresh"})]
     );
     kill_stand_in(pid);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Project-kind gates                                                        */
+/* ------------------------------------------------------------------------ */
+
+const RELEASE_HOST_REASON: &str =
+    "Release Train runs only in a harness source checkout; this project is a host project.";
+const DEPLOY_SOURCE_REASON: &str =
+    "Deploy on main runs only on host projects; this project is the harness source checkout.";
+
+/// The canonical fixture with its harness manifest removed: a host project.
+fn host_scratch(label: &str) -> PathBuf {
+    let root = scratch(label);
+    std::fs::remove_file(root.join("repo/.devboard/package.json"))
+        .expect("the harness manifest is the source marker");
+    root
+}
+
+/// One agent inside the replay's single `agentsState` frame.
+fn state_agent<'a>(frames: &'a [Value], id: &str) -> Option<&'a Value> {
+    frames
+        .iter()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))?
+        .get("agents")?
+        .as_array()?
+        .iter()
+        .find(|agent| agent.get("id").and_then(Value::as_str) == Some(id))
+}
+
+#[tokio::test]
+async fn both_registries_carry_the_same_agent_ids_and_labels() {
+    let rust: Vec<(String, String)> = devboard::agents_mode::descriptor_ids_and_labels()
+        .into_iter()
+        .map(|(id, label)| (id.to_string(), label.to_string()))
+        .collect();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lib/agent-registry.ts");
+    let text = std::fs::read_to_string(&path).expect("the TypeScript registry");
+    let table = &text[text
+        .find("export const DEFAULT_AGENT_DESCRIPTORS")
+        .expect("the default descriptors")..];
+    let mut typescript: Vec<(String, String)> = Vec::new();
+    for block in table.split("validateAgentDescriptor({").skip(1) {
+        let field = |name: &str| -> String {
+            let marker = format!("\n    {name}: \"");
+            block
+                .split(&marker)
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_else(|| panic!("{name} in {block}"))
+                .to_string()
+        };
+        typescript.push((field("id"), field("label")));
+    }
+    assert_eq!(rust, typescript, "the two registries must agree");
+    assert!(
+        rust.iter().any(|(id, _)| id == "deploy-on-main"),
+        "both registries carry the deploy family: {rust:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_checkout_enables_the_release_train_and_gates_the_deploy_family() {
+    let root = scratch("gates-source");
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+
+    let release = state_agent(&all, "release-train").expect("a release-train snapshot");
+    assert_eq!(
+        release["availability"],
+        json!({"state": "enabled", "reason": null}),
+        "{release}"
+    );
+
+    let deploy = state_agent(&all, "deploy-on-main").expect("a deploy-on-main snapshot");
+    assert_eq!(deploy["label"], "Deploy on main");
+    assert_eq!(deploy["scope"], "repository");
+    assert_eq!(
+        deploy["availability"],
+        json!({"state": "disabled", "reason": DEPLOY_SOURCE_REASON}),
+        "{deploy}"
+    );
+    assert_eq!(
+        deploy["cadence"],
+        Value::Null,
+        "a push-triggered family carries no interval"
+    );
+}
+
+#[tokio::test]
+async fn a_host_project_enables_deploy_and_gates_the_release_train() {
+    let root = host_scratch("gates-host");
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+
+    let deploy = state_agent(&all, "deploy-on-main").expect("a deploy-on-main snapshot");
+    assert_eq!(
+        deploy["availability"],
+        json!({"state": "enabled", "reason": null}),
+        "{deploy}"
+    );
+
+    let release = state_agent(&all, "release-train").expect("a release-train snapshot");
+    assert_eq!(
+        release["availability"],
+        json!({"state": "disabled", "reason": RELEASE_HOST_REASON}),
+        "{release}"
+    );
+}
+
+#[tokio::test]
+async fn a_gated_off_start_refuses_with_its_reason_and_spawns_nothing() {
+    let root = host_scratch("gate-start-host");
+    let app = app_at(&root);
+    let recorded: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let recorded_spawn = Arc::clone(&recorded);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded_spawn
+            .lock()
+            .expect("recorded spawns")
+            .push((argv.to_vec(), environment.clone()));
+        None
+    });
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("release-train")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let errors: Vec<&str> = find(&all, "error")
+        .iter()
+        .filter_map(|frame| frame.get("message").and_then(Value::as_str))
+        .collect();
+    assert_eq!(errors.len(), 1, "{all:?}");
+    assert!(errors[0].contains(RELEASE_HOST_REASON), "{errors:?}");
+    assert!(
+        recorded.lock().expect("recorded spawns").is_empty(),
+        "a gated-off Start starts no worker"
+    );
+}
+
+#[tokio::test]
+async fn a_deploy_start_on_the_source_checkout_refuses_and_spawns_nothing() {
+    let root = scratch("gate-start-source");
+    let app = app_at(&root);
+    let recorded: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let recorded_spawn = Arc::clone(&recorded);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded_spawn
+            .lock()
+            .expect("recorded spawns")
+            .push((argv.to_vec(), environment.clone()));
+        None
+    });
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("deploy-on-main")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let errors: Vec<&str> = find(&all, "error")
+        .iter()
+        .filter_map(|frame| frame.get("message").and_then(Value::as_str))
+        .collect();
+    assert_eq!(errors.len(), 1, "{all:?}");
+    assert!(errors[0].contains(DEPLOY_SOURCE_REASON), "{errors:?}");
+    assert!(recorded.lock().expect("recorded spawns").is_empty());
+}
+
+#[tokio::test]
+async fn a_deploy_interval_is_refused_as_push_triggered() {
+    let root = host_scratch("deploy-interval");
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::SetAgentSettings {
+            id: Some(json!("deploy-on-main")),
+            minutes: Some(json!(5)),
+            max_per_hour: Some(Value::Null),
+            max_pending: Some(Value::Null),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let errors: Vec<&str> = find(&all, "error")
+        .iter()
+        .filter_map(|frame| frame.get("message").and_then(Value::as_str))
+        .collect();
+    assert_eq!(errors.len(), 1, "{all:?}");
+    assert!(errors[0].contains("push-triggered"), "{errors:?}");
+    assert!(errors[0].contains("no interval"), "{errors:?}");
+}
+
+#[tokio::test]
+async fn the_deploy_prompt_loads_through_the_family_prompt_kind() {
+    let harness = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let root = scratch("deploy-prompt");
+    let repo = harness.canonicalize().expect("the harness root");
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "omp acp".to_string(),
+        state_dir: root.join("state"),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgentPrompt {
+            id: Some(json!("deploy-on-main")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let prompt = all
+        .iter()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentPromptState"))
+        .expect("a prompt frame");
+    let text = prompt["prompt"]["text"].as_str().expect("the prompt text");
+    assert!(
+        text.starts_with("## Manifesto"),
+        "the deploy prompt begins with its manifesto: {text:.80}"
+    );
+    assert!(text.contains(".worktree/deploy-main"), "{text:.200}");
+}
+
+#[tokio::test]
+async fn an_installed_host_inverts_the_two_project_gates() {
+    let root = scratch("gates-installed");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join(".devboard/bin")).expect("a bin directory");
+    std::fs::write(repo.join(".devboard/bin/devboard"), "").expect("a harness binary");
+    std::fs::write(
+        repo.join(".devboard/devboard.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"9.9.9\"}\n",
+    )
+    .expect("a release manifest");
+    assert!(devboard::version::is_installed_host(&repo));
+
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let deploy = state_agent(&all, "deploy-on-main").expect("a deploy-on-main snapshot");
+    assert_eq!(
+        deploy["availability"],
+        json!({"state": "enabled", "reason": null}),
+        "{deploy}"
+    );
+    let release = state_agent(&all, "release-train").expect("a release-train snapshot");
+    assert_eq!(
+        release["availability"],
+        json!({"state": "disabled", "reason": RELEASE_HOST_REASON}),
+        "{release}"
+    );
+}
+
+#[tokio::test]
+async fn a_project_kind_flip_republishes_both_gated_families() {
+    let root = scratch("gate-flip");
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    assert_eq!(
+        state_agent(&all, "release-train").expect("release")["availability"]["state"],
+        "enabled"
+    );
+
+    std::fs::remove_file(root.join("repo/.devboard/package.json")).expect("the source marker");
+    // The connect replay arms a one-second settle window; the poll owes
+    // nothing until it closes.
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    devboard::agents_mode::poll_once(&app);
+    let all = frames(&mut inbox);
+    let release = agent(&all, "release-train").expect("a release snapshot");
+    assert_eq!(
+        release["availability"],
+        json!({"state": "disabled", "reason": RELEASE_HOST_REASON}),
+        "{release}"
+    );
+    let deploy = agent(&all, "deploy-on-main").expect("a deploy snapshot");
+    assert_eq!(
+        deploy["availability"],
+        json!({"state": "enabled", "reason": null}),
+        "{deploy}"
+    );
 }

@@ -44,7 +44,7 @@ export const tmpDir = path.join(harnessDir, ".tmp", "e2e");
 export const scratchRoot = path.join(harnessDir, ".test-tmp", "e2e");
 export const statePath = path.join(tmpDir, "state.json");
 
-/** The nine background agent families, in the dashboard's registry order. */
+/** The ten background agent families, in the dashboard's registry order. */
 export const FAMILIES = [
   "scout",
   "watchdog",
@@ -55,6 +55,7 @@ export const FAMILIES = [
   "single-responsibility",
   "consistent-naming",
   "release-train",
+  "deploy-on-main",
 ] as const;
 
 export type Family = (typeof FAMILIES)[number];
@@ -70,6 +71,7 @@ export const FAMILY_LABELS: Record<Family, string> = {
   "single-responsibility": "Single Responsibility",
   "consistent-naming": "Consistent Naming",
   "release-train": "Release Train",
+  "deploy-on-main": "Deploy on main",
 };
 
 /**
@@ -79,9 +81,14 @@ export const FAMILY_LABELS: Record<Family, string> = {
  * the live Gitea repository — and starts a release agent for its unreleased
  * commits, so a warm-up or a Start would run a real release from a test
  * fixture (and its stub peer's failure would reach the page and the board).
- * Its Start and Stop controls are covered by the Rust adapter tests.
+ * Deploy on main is left out for the mirror reason: a Start of the fixture's
+ * own deploy family would follow the fixture's deploy instructions as soon as
+ * the fixture's `main` advances. Their Start and Stop controls are covered by
+ * the Rust adapter tests.
  */
-export const SUITE_FAMILIES: Family[] = FAMILIES.filter((family) => family !== "release-train");
+export const SUITE_FAMILIES: Family[] = FAMILIES.filter(
+  (family) => family !== "release-train" && family !== "deploy-on-main",
+);
 
 export interface SuiteState {
   baseUrl: string;

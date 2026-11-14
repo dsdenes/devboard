@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 
 use crate::app::{App, Conn, Shared};
 use crate::command::Command;
+use crate::workers::release_train::AgentLifecycle;
 
 /* ------------------------------------------------------------------------ */
 /* Shared vocabulary                                                         */
@@ -269,6 +270,21 @@ enum PromptKind {
     Template(&'static str),
 }
 
+/// One descriptor's settings cadence. A family with no cadence has none: it is
+/// triggered by something other than a timer, so no interval field is rendered
+/// and no interval can be saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cadence {
+    default_minutes: u32,
+    min_minutes: u32,
+    max_minutes: u32,
+}
+
+/// Which project kind a family runs on. A gated family is still listed, but it
+/// is disabled for assistive technology, carries the reason, and starts no
+/// worker on the other kind.
+use crate::project_kind::Gate as ProjectGate;
+
 #[derive(Clone, Copy)]
 struct Descriptor {
     id: &'static str,
@@ -276,25 +292,27 @@ struct Descriptor {
     description: &'static str,
     scope: &'static str,
     prompt: PromptKind,
-    default_minutes: u32,
-    min_minutes: u32,
-    max_minutes: u32,
+    cadence: Option<Cadence>,
     max_per_hour: Option<u32>,
     max_pending: Option<u32>,
     panel: &'static str,
     timer_unit: Option<&'static str>,
+    gate: ProjectGate,
 }
 
-const DESCRIPTORS: [Descriptor; 9] = [
+const DESCRIPTORS: [Descriptor; 10] = [
     Descriptor {
         id: "scout",
         label: "Auto Scout",
         description: "Scans the repository and files significant findings as issues.",
         scope: "repository",
         prompt: PromptKind::File("scout-recommendations.md"),
-        default_minutes: 1,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 1,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(5),
         panel: "activity",
@@ -306,9 +324,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Watches dashboard evidence and files significant machine findings as issues.",
         scope: "machine",
         prompt: PromptKind::Absent,
-        default_minutes: 10,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 10,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: None,
         max_pending: None,
         panel: "cycles",
@@ -320,9 +341,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Audits the interface against its documented design system and files capped issues for every divergence.",
         scope: "repository",
         prompt: PromptKind::File("design-system.md"),
-        default_minutes: 60,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 60,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(5),
         panel: "activity",
@@ -334,9 +358,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Proves dead code from a seeded entry point and files capped removal issues for every finding.",
         scope: "repository",
         prompt: PromptKind::File("dead-code-removal.md"),
-        default_minutes: 60,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 60,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(5),
         panel: "activity",
@@ -350,9 +377,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         prompt: PromptKind::Template(
             "MCP optimizer synthesizes its prompt from each cycle's evidence, so this generated template is read-only.",
         ),
-        default_minutes: 60,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 60,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(20),
         panel: "cycles",
@@ -364,9 +394,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Audits the dashboard HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.",
         scope: "repository",
         prompt: PromptKind::File("api-standards.md"),
-        default_minutes: 60,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 60,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(5),
         panel: "activity",
@@ -378,9 +411,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Audits the repository source against the project Single Responsibility skill and files one capped issue per component and violation.",
         scope: "repository",
         prompt: PromptKind::File("single-responsibility.md"),
-        default_minutes: 60,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 60,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(5),
         panel: "activity",
@@ -392,9 +428,12 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Audits the repository's vocabulary against the project naming skill and files one capped vocabulary issue per concept and violation.",
         scope: "repository",
         prompt: PromptKind::File("consistent-naming.md"),
-        default_minutes: 60,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::Any,
+        cadence: Some(Cadence {
+            default_minutes: 60,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
         max_per_hour: Some(10),
         max_pending: Some(5),
         panel: "activity",
@@ -406,9 +445,27 @@ const DESCRIPTORS: [Descriptor; 9] = [
         description: "Releases every unreleased commit on main on its scheduled cadence, one version per collected range.",
         scope: "repository",
         prompt: PromptKind::File("release-train.md"),
-        default_minutes: 10,
-        min_minutes: 1,
-        max_minutes: 1440,
+        gate: ProjectGate::HarnessSource,
+        cadence: Some(Cadence {
+            default_minutes: 10,
+            min_minutes: 1,
+            max_minutes: 1440,
+        }),
+        max_per_hour: None,
+        max_pending: None,
+        panel: "activity",
+        timer_unit: None,
+    },
+    Descriptor {
+        id: "deploy-on-main",
+        label: "Deploy on main",
+        description: "Deploys every advance of main from the dedicated deploy worktree by following the host project's AGENTS.md deploy instructions.",
+        scope: "repository",
+        prompt: PromptKind::File("deploy-on-main.md"),
+        gate: ProjectGate::HostProject,
+        // No cadence: an advance of main is the trigger, so no interval field
+        // exists and no interval can be saved.
+        cadence: None,
         max_per_hour: None,
         max_pending: None,
         panel: "activity",
@@ -418,6 +475,15 @@ const DESCRIPTORS: [Descriptor; 9] = [
 
 fn descriptor(id: &str) -> Option<&'static Descriptor> {
     DESCRIPTORS.iter().find(|entry| entry.id == id)
+}
+
+/// The registry's ids and labels, in registry order. The parity test reads it
+/// beside the TypeScript registry so the two can never disagree.
+pub fn descriptor_ids_and_labels() -> Vec<(&'static str, &'static str)> {
+    DESCRIPTORS
+        .iter()
+        .map(|descriptor| (descriptor.id, descriptor.label))
+        .collect()
 }
 
 /* ------------------------------------------------------------------------ */
@@ -515,6 +581,47 @@ enum Detail {
     Cycles(Vec<Value>),
 }
 
+/// Whether this project kind permits a family, and why not when it does not.
+///
+/// The fact rides on every snapshot, gated or not, so the card can render a
+/// gated-off family disabled without asking a second question.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AvailabilityState {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Availability {
+    state: AvailabilityState,
+    reason: Option<String>,
+}
+
+impl Availability {
+    fn of(gate: ProjectGate, repo_dir: &Path) -> Self {
+        match crate::project_kind::reason(gate, repo_dir) {
+            None => Self {
+                state: AvailabilityState::Enabled,
+                reason: None,
+            },
+            Some(reason) => Self {
+                state: AvailabilityState::Disabled,
+                reason: Some(reason.to_string()),
+            },
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "state": match self.state {
+                AvailabilityState::Enabled => "enabled",
+                AvailabilityState::Disabled => "disabled",
+            },
+            "reason": self.reason,
+        })
+    }
+}
+
 /// Which read produced a snapshot.
 ///
 /// A live snapshot is the dashboard's own state. A persisted snapshot is the
@@ -551,6 +658,8 @@ struct SnapshotInput {
     /// The `/agent-runs` identity of the run this family's armed start is
     /// creating, or `None` while no start is armed.
     run_id: Option<String>,
+    /// Whether this project kind permits the family.
+    availability: Availability,
     minutes: u32,
     last_run_at: Option<String>,
     next_run_at: Option<String>,
@@ -723,12 +832,25 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
             "cycles": cycles,
         }),
     };
-    let minutes = if input.minutes < descriptor.min_minutes {
-        descriptor.min_minutes
-    } else if input.minutes > descriptor.max_minutes {
-        descriptor.max_minutes
-    } else {
-        input.minutes
+    let cadence = match descriptor.cadence {
+        Some(cadence) => {
+            let minutes = if input.minutes < cadence.min_minutes {
+                cadence.min_minutes
+            } else if input.minutes > cadence.max_minutes {
+                cadence.max_minutes
+            } else {
+                input.minutes
+            };
+            json!({
+                "minutes": minutes,
+                "defaultMinutes": cadence.default_minutes,
+                "lastRunAt": input.last_run_at,
+                "nextRunAt": input.next_run_at,
+            })
+        }
+        // A push-triggered family has no interval: null is the fact, and a
+        // default would invent a cadence no worker reads.
+        None => Value::Null,
     };
     json!({
         "id": descriptor.id,
@@ -746,12 +868,8 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
         "owned": input.owned,
         "attached": input.attached,
         "runId": input.run_id,
-        "cadence": {
-            "minutes": minutes,
-            "defaultMinutes": descriptor.default_minutes,
-            "lastRunAt": input.last_run_at,
-            "nextRunAt": input.next_run_at,
-        },
+        "availability": input.availability.to_json(),
+        "cadence": cadence,
         "limits": input.limits.to_json(),
         "issues": issues,
         "documentation": normalize_documentation(input.documentation),
@@ -2386,6 +2504,13 @@ struct AgentsMode {
     publish_lock: Mutex<()>,
     /// Broadcasts wait out the connect replay's settle window.
     settle_until: Mutex<i64>,
+    /// The project kind every snapshot's availability was last built from. A
+    /// checkout that becomes (or stops being) the harness source checkout
+    /// changes a gated family's projection while its own state stands still,
+    /// so the poll owes every family a rebuild on this fact alone.
+    project_kind: Mutex<crate::project_kind::ProjectKind>,
+    /// The served checkout the project kind is read from.
+    repo_dir: PathBuf,
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
@@ -2394,6 +2519,7 @@ enum Adapter {
     Watchdog(Arc<WatchdogFamily>),
     Mcp(Arc<McpFamily>),
     Release(Arc<ReleaseFamily>),
+    Deploy(Arc<DeployFamily>),
 }
 
 impl Adapter {
@@ -2403,6 +2529,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.descriptor.id,
             Adapter::Mcp(family) => family.descriptor.id,
             Adapter::Release(family) => family.descriptor.id,
+            Adapter::Deploy(family) => family.descriptor.id,
         }
     }
 
@@ -2412,6 +2539,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.descriptor,
             Adapter::Mcp(family) => family.descriptor,
             Adapter::Release(family) => family.descriptor,
+            Adapter::Deploy(family) => family.descriptor,
         }
     }
 
@@ -2424,6 +2552,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.snapshot(),
             Adapter::Mcp(family) => family.snapshot(),
             Adapter::Release(family) => family.snapshot(),
+            Adapter::Deploy(family) => family.snapshot(),
         };
         if let Some(object) = snapshot.as_object_mut() {
             object.insert("peers".to_string(), json!(peers));
@@ -2439,13 +2568,14 @@ impl Adapter {
             Adapter::Watchdog(family) => family.start_projection(answer),
             Adapter::Mcp(family) => family.start_projection(answer),
             Adapter::Release(family) => family.start_projection(answer),
+            Adapter::Deploy(family) => family.start_projection(answer),
         }
     }
 
     fn replay(&self, conn: &Conn, shared: &Shared, snapshot: Value) {
         match self {
             Adapter::Repo(family) => family.replay(conn, shared, snapshot),
-            Adapter::Watchdog(_) | Adapter::Mcp(_) | Adapter::Release(_) => {}
+            Adapter::Watchdog(_) | Adapter::Mcp(_) | Adapter::Release(_) | Adapter::Deploy(_) => {}
         }
     }
 
@@ -2457,6 +2587,9 @@ impl Adapter {
             Adapter::Release(family) => {
                 let _ = family.takeover().await;
             }
+            Adapter::Deploy(family) => {
+                let _ = family.takeover().await;
+            }
         }
     }
 
@@ -2466,6 +2599,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.preview_start(),
             Adapter::Mcp(family) => family.preview_start(),
             Adapter::Release(family) => family.preview_start(),
+            Adapter::Deploy(family) => family.preview_start(),
         }
     }
 
@@ -2475,6 +2609,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.clear_preview(),
             Adapter::Mcp(family) => family.clear_preview(),
             Adapter::Release(family) => family.clear_preview(),
+            Adapter::Deploy(family) => family.clear_preview(),
         }
     }
 
@@ -2484,6 +2619,7 @@ impl Adapter {
             Adapter::Watchdog(family) => Some(&family.preflight_override),
             Adapter::Mcp(family) => Some(&family.preflight_override),
             Adapter::Release(family) => Some(&family.preflight_override),
+            Adapter::Deploy(family) => Some(&family.preflight_override),
         }
     }
 
@@ -2493,6 +2629,7 @@ impl Adapter {
             Adapter::Watchdog(family) => Some(family.preflight_timeout_cell()),
             Adapter::Mcp(family) => Some(family.preflight_timeout_cell()),
             Adapter::Release(family) => Some(family.preflight_timeout_cell()),
+            Adapter::Deploy(family) => Some(family.preflight_timeout_cell()),
         }
     }
 
@@ -2503,6 +2640,7 @@ impl Adapter {
             Adapter::Watchdog(family) => &family.program,
             Adapter::Mcp(family) => &family.program,
             Adapter::Release(family) => &family.program,
+            Adapter::Deploy(family) => &family.program,
         }
     }
 
@@ -2513,6 +2651,7 @@ impl Adapter {
             Adapter::Watchdog(family) => !family.owners().is_empty(),
             Adapter::Mcp(family) => !family.owners().is_empty(),
             Adapter::Release(family) => !family.owners().is_empty(),
+            Adapter::Deploy(family) => !family.owners().is_empty(),
         }
     }
 
@@ -2526,6 +2665,7 @@ impl Adapter {
             Adapter::Watchdog(family) => &family.publisher,
             Adapter::Mcp(family) => &family.publisher,
             Adapter::Release(family) => &family.publisher,
+            Adapter::Deploy(family) => &family.publisher,
         };
         if let Ok(mut slot) = cell.lock() {
             *slot = Some(publisher);
@@ -2538,6 +2678,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.request_sync(),
             Adapter::Mcp(family) => family.request_sync(),
             Adapter::Release(family) => family.request_sync(),
+            Adapter::Deploy(family) => family.request_sync(),
         }
     }
 
@@ -2547,6 +2688,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.start().await,
             Adapter::Mcp(family) => family.start().await,
             Adapter::Release(family) => family.start().await,
+            Adapter::Deploy(family) => family.start().await,
         }
     }
 
@@ -2556,6 +2698,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.stop(),
             Adapter::Mcp(family) => family.stop(),
             Adapter::Release(family) => family.stop(),
+            Adapter::Deploy(family) => family.stop(),
         }
     }
 
@@ -2570,6 +2713,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.set_settings(minutes, max_per_hour, max_pending),
             Adapter::Mcp(family) => family.set_settings(minutes, max_per_hour, max_pending),
             Adapter::Release(family) => family.set_settings(minutes, max_per_hour, max_pending),
+            Adapter::Deploy(family) => family.set_settings(minutes, max_per_hour, max_pending),
         }
     }
 
@@ -2640,7 +2784,7 @@ impl Adapter {
             Adapter::Repo(family) => family.forge_urls(),
             Adapter::Watchdog(family) => family.forge_urls(),
             Adapter::Mcp(family) => family.forge_urls(),
-            Adapter::Release(_) => Vec::new(),
+            Adapter::Release(_) | Adapter::Deploy(_) => Vec::new(),
         }
     }
 
@@ -2659,6 +2803,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.poll_signature(),
             Adapter::Mcp(family) => family.poll_signature(),
             Adapter::Release(family) => family.poll_signature(),
+            Adapter::Deploy(family) => family.poll_signature(),
         }
     }
 
@@ -2670,6 +2815,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.rebuild_always(),
             Adapter::Mcp(family) => family.rebuild_always(),
             Adapter::Release(family) => family.rebuild_always(),
+            Adapter::Deploy(family) => family.rebuild_always(),
         }
     }
 }
@@ -2825,6 +2971,15 @@ impl AgentsMode {
             new_preflight(),
             now.clone(),
         ))));
+        ordered.push(Adapter::Deploy(Arc::new(DeployFamily::new(
+            &repo_dir,
+            &state_dir,
+            &environment,
+            running_version.clone(),
+            spawn.clone(),
+            new_preflight(),
+            now.clone(),
+        ))));
         let shared_for_clients = Arc::clone(&shared);
         Arc::new(Self {
             prompts: PromptController {
@@ -2841,6 +2996,8 @@ impl AgentsMode {
             poll_peers: Mutex::new(HashMap::new()),
             publish_lock: Mutex::new(()),
             settle_until: Mutex::new(0),
+            project_kind: Mutex::new(crate::project_kind::of(&repo_dir)),
+            repo_dir: repo_dir.clone(),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
         })
     }
@@ -2937,13 +3094,25 @@ impl AgentsMode {
         for adapter in &self.adapters {
             adapter.schedule_forge(weak, has_clients, now);
         }
+        // One project-kind read answers every family: a checkout that becomes
+        // the harness source (or stops being it) flips both gated families'
+        // availability, and their own state files never move.
+        let kind = crate::project_kind::of(&self.repo_dir);
+        let gate_changed = match self.project_kind.lock() {
+            Ok(mut slot) => {
+                let changed = *slot != kind;
+                *slot = kind;
+                changed
+            }
+            Err(_) => true,
+        };
         // One slot read answers every family: the cap's own grouping is the
         // only source a running worker and the deferral line both report from.
         let peers = self.governor.active_by_starter();
         for adapter in &self.adapters {
             adapter.poll_activity(&self.shared);
             let held = peers.get(adapter.descriptor().label).copied().unwrap_or(0);
-            if self.poll_should_rebuild(adapter, held) {
+            if self.poll_should_rebuild(adapter, held, gate_changed) {
                 self.publish_if_changed_with(adapter, held);
             }
         }
@@ -2959,7 +3128,7 @@ impl AgentsMode {
     /// family with an in-flight start, stop, or timer read is always rebuilt
     /// because its snapshot changes with time alone. A peer that started or
     /// ended changes the projection while the family's state stands still.
-    fn poll_should_rebuild(&self, adapter: &Adapter, peers: u32) -> bool {
+    fn poll_should_rebuild(&self, adapter: &Adapter, peers: u32, gate_changed: bool) -> bool {
         let signature = adapter.poll_signature();
         let changed = {
             let Ok(mut signatures) = self.poll_signatures.lock() else {
@@ -2985,7 +3154,7 @@ impl AgentsMode {
             .map(|snapshot| snapshot.get("lifecycle").and_then(Value::as_str) == Some("stopping"))
             .unwrap_or(false)
             && !adapter.has_live_workers();
-        changed || peers_changed || stale_stop || adapter.rebuild_always()
+        changed || peers_changed || stale_stop || gate_changed || adapter.rebuild_always()
     }
 
     fn publish_if_changed(&self, adapter: &Adapter) {
@@ -3456,6 +3625,7 @@ pub fn set_spawn(
                 Adapter::Watchdog(family) => Some(&family.spawn),
                 Adapter::Mcp(family) => Some(&family.spawn),
                 Adapter::Release(family) => Some(&family.spawn),
+                Adapter::Deploy(family) => Some(&family.spawn),
             };
             if let Some(cell) = cell {
                 if let Ok(mut slot) = cell.lock() {
@@ -3687,7 +3857,12 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
     let minutes = object_limit(value_of(&worker), "intervalMinutes")
         .or_else(|| object_limit(value_of(&state), "intervalMinutes"))
         .or_else(|| object_limit(value_of(&settings), "intervalMinutes"))
-        .unwrap_or(descriptor.default_minutes);
+        .unwrap_or_else(|| {
+            descriptor
+                .cadence
+                .map(|cadence| cadence.default_minutes)
+                .unwrap_or(0)
+        });
     let limits = Limits {
         max_per_hour: object_limit(value_of(&state), "maxPerHour")
             .or_else(|| {
@@ -3859,6 +4034,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
             owned,
             attached,
             run_id: None,
+            availability: Availability::of(descriptor.gate, repo_dir),
             minutes,
             last_run_at,
             next_run_at,
@@ -4871,7 +5047,10 @@ impl RepoFamily {
         };
         {
             let Ok(mut mutable) = self.mutable.lock() else {
-                return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
+                return project_snapshot(
+                    self.descriptor,
+                    empty_repo_input(self.descriptor, &self.repo_dir),
+                );
             };
             if (mutable.starting || mutable.preview_starting) && !owners.is_empty() {
                 // A worker is attached, so the start this preview announced has
@@ -5145,6 +5324,7 @@ impl RepoFamily {
                     mutable.starting,
                     self.running_version.as_deref(),
                 ),
+                availability: Availability::of(self.descriptor.gate, &self.repo_dir),
                 minutes: settings.interval_minutes,
                 last_run_at,
                 next_run_at,
@@ -6373,7 +6553,7 @@ impl RepoFamily {
     }
 }
 
-fn empty_repo_input(descriptor: &Descriptor) -> SnapshotInput {
+fn empty_repo_input(descriptor: &Descriptor, repo_dir: &Path) -> SnapshotInput {
     SnapshotInput {
         source: SnapshotSource::Live,
         as_of: None,
@@ -6383,7 +6563,11 @@ fn empty_repo_input(descriptor: &Descriptor) -> SnapshotInput {
         owned: false,
         attached: false,
         run_id: None,
-        minutes: descriptor.default_minutes,
+        availability: Availability::of(descriptor.gate, repo_dir),
+        minutes: descriptor
+            .cadence
+            .map(|cadence| cadence.default_minutes)
+            .unwrap_or(0),
         last_run_at: None,
         next_run_at: None,
         limits: Limits {
@@ -7385,7 +7569,10 @@ impl WatchdogFamily {
         let newest = newest_states.first().cloned();
         {
             let Ok(mut mutable) = self.mutable.lock() else {
-                return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
+                return project_snapshot(
+                    self.descriptor,
+                    empty_repo_input(self.descriptor, &self.repo_dir),
+                );
             };
             if (mutable.starting || mutable.preview_starting) && attached {
                 // A worker is attached, so the start this preview announced has
@@ -7552,6 +7739,7 @@ impl WatchdogFamily {
                     mutable.starting,
                     self.running_version.as_deref(),
                 ),
+                availability: Availability::of(self.descriptor.gate, &self.repo_dir),
                 minutes: settings.interval_minutes,
                 last_run_at,
                 next_run_at: if attached {
@@ -8693,7 +8881,10 @@ impl McpFamily {
             .or_else(|| sorted_states.first().cloned());
         {
             let Ok(mut mutable) = self.mutable.lock() else {
-                return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
+                return project_snapshot(
+                    self.descriptor,
+                    empty_repo_input(self.descriptor, &self.repo_dir),
+                );
             };
             if (mutable.starting || mutable.preview_starting) && attached {
                 // A worker is attached, so the start this preview announced has
@@ -8843,6 +9034,7 @@ impl McpFamily {
                     mutable.starting,
                     self.running_version.as_deref(),
                 ),
+                availability: Availability::of(self.descriptor.gate, &self.repo_dir),
                 minutes: settings.interval_minutes,
                 last_run_at,
                 next_run_at: if attached {
@@ -9662,7 +9854,10 @@ impl ReleaseFamily {
             .or_else(|| records.first().cloned());
         {
             let Ok(mut mutable) = self.mutable.lock() else {
-                return project_snapshot(self.descriptor, empty_repo_input(self.descriptor));
+                return project_snapshot(
+                    self.descriptor,
+                    empty_repo_input(self.descriptor, &self.repo_dir),
+                );
             };
             if (mutable.starting || mutable.preview_starting) && attached {
                 // A worker is attached, so the start this preview announced has
@@ -9864,6 +10059,7 @@ impl ReleaseFamily {
                     mutable.starting,
                     self.running_version.as_deref(),
                 ),
+                availability: Availability::of(self.descriptor.gate, &self.repo_dir),
                 minutes: settings.interval_minutes,
                 last_run_at: active
                     .as_ref()
@@ -9946,6 +10142,9 @@ impl ReleaseFamily {
 
     async fn start(self: &Arc<Self>) -> AgentResult {
         let _guard = self.start_lock.lock().await;
+        if let Some(reason) = crate::project_kind::reason(self.descriptor.gate, &self.repo_dir) {
+            return AgentResult::failure(reason.to_string());
+        }
         {
             let mut mutable = self.mutable.lock().expect("release state");
             if mutable.starting {
@@ -10264,6 +10463,714 @@ impl ReleaseFamily {
                 failures.join("; ")
             ))
         }
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Deploy on main                                                            */
+/* ------------------------------------------------------------------------ */
+
+fn deploy_directory(state_dir: &Path) -> PathBuf {
+    crate::workers::deploy_on_main::deploy_directory(state_dir)
+}
+
+const DEPLOY_FOREIGN_NOTICE: &str =
+    "Deploy on main is running for this root from another dashboard";
+
+fn deploy_foreign_notice(state_dir: &str) -> String {
+    format!("{DEPLOY_FOREIGN_NOTICE} (STATE_DIR {state_dir}).")
+}
+
+struct DeployMutable {
+    preview_starting: bool,
+    starting: bool,
+    starting_since: Option<i64>,
+    start_deadline: Option<i64>,
+    stop_requested: bool,
+    start_error: Option<String>,
+    takeover: bool,
+    notice: Option<String>,
+    last_sync_request_at: i64,
+    start_attempt: u64,
+}
+
+struct DeployFamily {
+    descriptor: &'static Descriptor,
+    repo_dir: PathBuf,
+    state_dir: PathBuf,
+    directory: PathBuf,
+    running_version: Option<String>,
+    environment: HashMap<String, String>,
+    spawn: SharedSpawn,
+    preflight_override: SharedPreflight,
+    preflight_timeout_ms: Arc<AtomicU64>,
+    now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    program: ProgramLink,
+    publisher: SharedPublish,
+    mutable: Arc<Mutex<DeployMutable>>,
+    start_lock: tokio::sync::Mutex<()>,
+}
+
+impl DeployFamily {
+    fn new(
+        repo_dir: &Path,
+        state_dir: &Path,
+        environment: &HashMap<String, String>,
+        running_version: Option<String>,
+        spawn: SharedSpawn,
+        preflight_override: SharedPreflight,
+        now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Self {
+        Self {
+            descriptor: descriptor("deploy-on-main").expect("deploy-on-main descriptor"),
+            repo_dir: repo_dir.to_path_buf(),
+            state_dir: state_dir.to_path_buf(),
+            directory: deploy_directory(state_dir),
+            running_version,
+            environment: environment.clone(),
+            spawn,
+            preflight_override,
+            preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
+            now,
+            program: ProgramLink::default(),
+            publisher: Arc::new(Mutex::new(None)),
+            mutable: Arc::new(Mutex::new(DeployMutable {
+                preview_starting: false,
+                starting: false,
+                starting_since: None,
+                start_deadline: None,
+                stop_requested: false,
+                start_error: None,
+                takeover: false,
+                notice: None,
+                last_sync_request_at: i64::MIN / 2,
+                start_attempt: 0,
+            })),
+            start_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn publish_refusal(&self, refusal: &StartRefusal) {
+        let error = (!refusal.latency).then(|| refusal.message.clone());
+        if let Some(publisher) = self.publisher.lock().ok().and_then(|slot| slot.clone()) {
+            publisher(error);
+        }
+    }
+
+    fn preflight_timeout_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.preflight_timeout_ms)
+    }
+
+    fn all_owners(&self) -> Vec<LockOwner> {
+        crate::workers::deploy_on_main::deploy_owners(&self.directory)
+            .into_iter()
+            .map(|owner| LockOwner {
+                pid: owner.pid,
+                started_at: owner.started_at,
+                state_dir: owner.state_dir,
+                harness_version: owner.harness_version,
+            })
+            .collect()
+    }
+
+    fn owners(&self) -> Vec<LockOwner> {
+        self.all_owners()
+            .into_iter()
+            .filter(|owner| self.owns(owner))
+            .collect()
+    }
+
+    fn foreign_owner(&self) -> Option<LockOwner> {
+        self.all_owners()
+            .into_iter()
+            .find(|owner| !self.owns(owner))
+    }
+
+    fn owns(&self, owner: &LockOwner) -> bool {
+        resolved(Path::new(&owner.state_dir)) == resolved(&self.state_dir)
+    }
+
+    fn control_for(&self, owner: &LockOwner) -> PathBuf {
+        crate::workers::deploy_on_main::versioned_control_directory(
+            &self.directory,
+            owner.harness_version.as_deref(),
+        )
+    }
+
+    fn poll_signature(&self) -> u64 {
+        tree_signature(&self.directory)
+    }
+
+    fn rebuild_always(&self) -> bool {
+        let Ok(mutable) = self.mutable.lock() else {
+            return true;
+        };
+        mutable.starting || mutable.preview_starting || mutable.stop_requested
+    }
+
+    fn start_projection(&self, answer: &mut Value) {
+        let mutable = self.mutable.lock().expect("deploy-on-main state");
+        start_answer(
+            answer,
+            StartFacts {
+                starting: mutable.starting || mutable.preview_starting,
+                stopping: mutable.stop_requested,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting,
+                    self.running_version.as_deref(),
+                ),
+                notice: mutable.notice.clone(),
+                error: mutable.start_error.clone(),
+            },
+        );
+    }
+
+    fn snapshot(&self) -> Value {
+        let now = (self.now)();
+        let state = crate::workers::deploy_on_main::read_state(&self.directory);
+        let owners = self.all_owners();
+        let own: Vec<LockOwner> = owners
+            .iter()
+            .filter(|owner| self.owns(owner))
+            .cloned()
+            .collect();
+        let foreign = owners.iter().find(|owner| !self.owns(owner)).cloned();
+        let records = crate::workers::deploy_on_main::deploy_worker_states(&self.directory);
+        let published = |owners: &[LockOwner]| {
+            owners.iter().any(|owner| {
+                records.iter().any(|record| {
+                    record.pid == owner.pid && record.lifecycle != AgentLifecycle::Stopped
+                })
+            })
+        };
+        let attached = published(&owners);
+        let owned = published(&own);
+        let active = records
+            .iter()
+            .find(|record| {
+                owners.iter().any(|owner| {
+                    owner.pid == record.pid && record.lifecycle != AgentLifecycle::Stopped
+                })
+            })
+            .cloned()
+            .or_else(|| records.first().cloned());
+        {
+            let Ok(mut mutable) = self.mutable.lock() else {
+                return project_snapshot(
+                    self.descriptor,
+                    empty_repo_input(self.descriptor, &self.repo_dir),
+                );
+            };
+            if (mutable.starting || mutable.preview_starting) && attached {
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
+            }
+            if attached {
+                mutable.start_error = None;
+            }
+            if mutable.starting
+                && mutable
+                    .start_deadline
+                    .is_some_and(|deadline| now > deadline)
+            {
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.preview_starting = false;
+                mutable.start_error = Some(
+                    "the Deploy on main start did not finish; press Start to retry.".to_string(),
+                );
+            }
+            if mutable.starting {
+                if let Some(since) = mutable.starting_since {
+                    if now - since > START_PROOF_MS {
+                        mutable.starting = false;
+                        mutable.starting_since = None;
+                        mutable.start_error = Some(
+                            "the Deploy on main worker did not publish its state within 5 seconds"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            if mutable.stop_requested && own.is_empty() {
+                mutable.stop_requested = false;
+            }
+            if let Some(foreign) = foreign.as_ref() {
+                if !mutable.notice.as_deref().is_some_and(is_start_refusal) {
+                    mutable.notice = Some(deploy_foreign_notice(&foreign.state_dir));
+                }
+            } else if mutable
+                .notice
+                .as_ref()
+                .map(|notice| notice.starts_with(DEPLOY_FOREIGN_NOTICE))
+                .unwrap_or(false)
+            {
+                mutable.notice = None;
+            }
+        }
+        let mutable = self.mutable.lock().expect("deploy-on-main state");
+        let lifecycle = if mutable.starting || mutable.preview_starting {
+            "starting".to_string()
+        } else if mutable.stop_requested
+            || active
+                .as_ref()
+                .map(|record| record.lifecycle == AgentLifecycle::Stopping)
+                .unwrap_or(false)
+        {
+            "stopping".to_string()
+        } else if attached {
+            if active
+                .as_ref()
+                .map(|record| record.lifecycle == AgentLifecycle::Failed)
+                .unwrap_or(false)
+            {
+                "failed".to_string()
+            } else {
+                "running".to_string()
+            }
+        } else if active
+            .as_ref()
+            .map(|record| record.lifecycle == AgentLifecycle::Failed)
+            .unwrap_or(false)
+        {
+            "failed".to_string()
+        } else {
+            "stopped".to_string()
+        };
+        let activity = state
+            .as_ref()
+            .map(|state| state.activity.clone())
+            .unwrap_or_default();
+        let issues = state
+            .as_ref()
+            .map(|state| state.issues.clone())
+            .unwrap_or_default();
+        let workers: Vec<Worker> = owners
+            .iter()
+            .map(|owner| Worker {
+                pid: owner.pid,
+                version: owner.harness_version.clone(),
+                state_dir: owner.state_dir.clone(),
+                lifecycle: records
+                    .iter()
+                    .find(|record| record.pid == owner.pid)
+                    .map(|record| record.lifecycle.as_str().to_string())
+                    .unwrap_or_else(|| "running".to_string()),
+                started_at: owner.started_at.clone(),
+            })
+            .collect();
+        let error = mutable
+            .start_error
+            .clone()
+            .or_else(|| active.as_ref().and_then(|record| record.last_error.clone()));
+        let notice = mutable
+            .notice
+            .clone()
+            .or_else(|| active.as_ref().and_then(|record| record.notice.clone()));
+        let last_run_at = active
+            .as_ref()
+            .and_then(|record| record.last_run_at.clone())
+            .or_else(|| {
+                state.as_ref().and_then(|state| {
+                    state
+                        .runs
+                        .first()
+                        .and_then(|run| run.ended_at.clone().or_else(|| run.started_at.clone()))
+                })
+            });
+        project_snapshot(
+            self.descriptor,
+            SnapshotInput {
+                source: SnapshotSource::Live,
+                as_of: state
+                    .as_ref()
+                    .map(|state| state.updated_at.clone())
+                    .filter(|text| !text.is_empty()),
+                lifecycle: Some(lifecycle),
+                paused: active.as_ref().map(|record| record.paused).unwrap_or(false),
+                enabled: attached
+                    && active
+                        .as_ref()
+                        .map(|record| record.enabled)
+                        .unwrap_or(false),
+                owned,
+                attached,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting,
+                    self.running_version.as_deref(),
+                ),
+                availability: Availability::of(self.descriptor.gate, &self.repo_dir),
+                // A push-triggered family has no interval; the projection
+                // carries null no matter what a state file says.
+                minutes: 0,
+                last_run_at,
+                next_run_at: None,
+                limits: Limits {
+                    max_per_hour: None,
+                    max_pending: None,
+                },
+                issues,
+                documentation: Vec::new(),
+                releases: Vec::new(),
+                pending: 0,
+                sync: AgentSync::stale(),
+                detail: Detail::Activity {
+                    scan_id: None,
+                    entries: activity,
+                },
+                notices: Vec::new(),
+                last_scan: None,
+                notice,
+                error,
+                timer: None,
+                workers,
+            },
+        )
+    }
+
+    fn request_sync(&self) {
+        let now = (self.now)();
+        let allowed = match self.mutable.lock() {
+            Ok(mut mutable) => sync_request_due(&mut mutable.last_sync_request_at, now),
+            Err(_) => true,
+        };
+        if !allowed {
+            return;
+        }
+        for owner in self.owners() {
+            let _ = crate::workers::deploy_on_main::write_command(
+                &self.control_for(&owner),
+                &json!({"type": "check"}),
+            );
+        }
+    }
+
+    fn preview_start(&self) {
+        if self.owners().is_empty() {
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.preview_starting = true;
+                mutable.start_error = None;
+                mutable.notice = None;
+            }
+        }
+    }
+
+    fn clear_preview(&self) {
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable.preview_starting = false;
+        }
+    }
+
+    async fn start(self: &Arc<Self>) -> AgentResult {
+        let _guard = self.start_lock.lock().await;
+        if let Some(reason) = crate::project_kind::reason(self.descriptor.gate, &self.repo_dir) {
+            return AgentResult::failure(reason.to_string());
+        }
+        {
+            let mut mutable = self.mutable.lock().expect("deploy-on-main state");
+            if mutable.starting {
+                mutable.notice = Some(
+                    "Start did nothing: the Deploy on main worker is already starting.".to_string(),
+                );
+                return AgentResult::ok();
+            }
+        }
+        if let Some(foreign) = self.foreign_owner() {
+            let notice = format!(
+                "Start did nothing: {}",
+                deploy_foreign_notice(&foreign.state_dir)
+            );
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.notice = Some(notice);
+                mutable.start_error = None;
+            }
+            return AgentResult::ok();
+        }
+        let owners = self.owners();
+        if owners.is_empty() {
+            return self.spawn_worker().await;
+        }
+        if owners
+            .iter()
+            .any(|owner| owner.harness_version == self.running_version)
+        {
+            let notice = format!(
+                "Start did nothing: the Deploy on main worker (pid {}) is already running for this dashboard.",
+                owners
+                    .iter()
+                    .map(|owner| owner.pid.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            );
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.notice = Some(notice);
+            }
+            return AgentResult::ok();
+        }
+        self.takeover().await
+    }
+
+    async fn takeover(self: &Arc<Self>) -> AgentResult {
+        {
+            let Ok(mut mutable) = self.mutable.lock() else {
+                return AgentResult::failure("the dashboard is stopping".to_string());
+            };
+            if mutable.takeover {
+                return AgentResult::ok();
+            }
+            mutable.takeover = true;
+        }
+        let owners = self.owners();
+        if owners.is_empty() {
+            return AgentResult::failure(
+                "No Deploy on main worker is running for this repository.".to_string(),
+            );
+        }
+        if owners
+            .iter()
+            .any(|owner| owner.harness_version == self.running_version)
+        {
+            return AgentResult::ok();
+        }
+        let newest = self.running_version.as_ref().and_then(|_| {
+            crate::version::read_harness_version(&crate::version::host_harness_dir(&self.repo_dir))
+        });
+        let refusal = |owners: &[LockOwner], newest: Option<&str>| -> String {
+            let running = owners
+                .iter()
+                .map(|owner| {
+                    owner
+                        .harness_version
+                        .clone()
+                        .unwrap_or_else(|| "an unversioned harness".to_string())
+                })
+                .collect::<Vec<String>>()
+                .join(", ");
+            match (&self.running_version, newest) {
+                (None, _) => format!(
+                    "A Deploy on main worker of version {running} is running, and this dashboard does not know its own harness version, so it cannot take the worker over."
+                ),
+                (Some(_), None) => format!(
+                    "A Deploy on main worker of version {running} is running, and the harness version under this repository could not be read, so this {} dashboard cannot take the worker over.",
+                    self.running_version.as_deref().unwrap_or("")
+                ),
+                (Some(version), Some(newest)) => format!(
+                    "A Deploy on main worker of version {running} is running, and the newest harness here is {newest}, so this {version} dashboard cannot take the worker over."
+                ),
+            }
+        };
+        if self.running_version.is_none() || newest.as_deref() != self.running_version.as_deref() {
+            return AgentResult::failure(refusal(&owners, newest.as_deref()));
+        }
+        let started = self.spawn_worker().await;
+        if !started.ok {
+            return started;
+        }
+        for owner in owners {
+            let _ = crate::workers::deploy_on_main::write_command(
+                &self.control_for(&owner),
+                &json!({"type": "drain"}),
+            );
+        }
+        AgentResult::ok()
+    }
+
+    async fn spawn_worker(self: &Arc<Self>) -> AgentResult {
+        let problem = root_problem(&self.repo_dir);
+        if let Some(problem) = problem {
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.start_error = Some(problem.clone());
+            }
+            return AgentResult::failure(problem);
+        }
+        let attempt = {
+            let mut mutable = self.mutable.lock().expect("deploy-on-main state");
+            mutable.starting = true;
+            mutable.starting_since = None;
+            mutable.start_deadline =
+                Some(start_deadline_at((self.now)(), AGENT_PREFLIGHT_TIMEOUT_MS));
+            mutable.start_error = None;
+            mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
+            mutable.start_attempt
+        };
+        let program = match self.program.resolve(&self.repo_dir) {
+            Ok(program) => program,
+            Err(message) => {
+                let mut mutable = self.mutable.lock().expect("deploy-on-main state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                return AgentResult::failure(message);
+            }
+        };
+        let argv = harness_argv(
+            &program,
+            "deploy-on-main",
+            &[
+                ("repo", self.repo_dir.as_path()),
+                ("state-dir", self.state_dir.as_path()),
+            ],
+        );
+        let mut environment = provider_environment(
+            &self.environment,
+            &[("REPO_DIR", self.repo_dir.to_string_lossy().as_ref())],
+        );
+        if let Some(version) = self.running_version.as_ref() {
+            environment.insert("DEVBOARD_HARNESS_VERSION".to_string(), version.clone());
+        }
+        let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
+        let pid = match spawn.and_then(|spawn| spawn(&argv, environment)) {
+            Some(pid) => pid,
+            None => {
+                let message = "the Deploy on main worker could not be started".to_string();
+                let mut mutable = self.mutable.lock().expect("deploy-on-main state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                return AgentResult::failure(message);
+            }
+        };
+        {
+            let mut mutable = self.mutable.lock().expect("deploy-on-main state");
+            mutable.starting = true;
+            mutable.starting_since = Some((self.now)());
+            mutable.start_deadline = None;
+        }
+        self.begin_preflight(attempt, pid);
+        AgentResult::ok()
+    }
+
+    fn begin_preflight(self: &Arc<Self>, attempt: u64, pid: u32) {
+        let request = PreflightRequest {
+            family: "deploy-on-main".to_string(),
+            repo_dir: self.repo_dir.clone(),
+            state_dir: self.state_dir.clone(),
+            environment: self.environment.clone(),
+        };
+        let override_preflight = self
+            .preflight_override
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let timeout_ms = self.preflight_timeout_ms.load(Ordering::SeqCst).max(1);
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let pending: Pin<Box<dyn Future<Output = Result<String, String>> + Send>> =
+                match override_preflight {
+                    Some(callback) => callback(request),
+                    None => Box::pin(async { Ok(String::new()) }),
+                };
+            let result = match crate::deadline::within_deadline(pending, timeout_ms).await {
+                Some(result) => result,
+                None => Err(format!(
+                    "the start preflight did not finish within {timeout_ms} ms; press Start to retry."
+                )),
+            };
+            let message = match result {
+                Ok(_) => return,
+                Err(message) => message,
+            };
+            let refusal = StartRefusal::classify(message);
+            {
+                let mutable = this.mutable.lock().expect("deploy-on-main state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+            }
+            terminate_spawned(pid).await;
+            {
+                let mut mutable = this.mutable.lock().expect("deploy-on-main state");
+                if mutable.start_attempt != attempt {
+                    return;
+                }
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                let (start_error, notice) = refusal.fields();
+                mutable.start_error = start_error;
+                mutable.notice = notice;
+            }
+            this.publish_refusal(&refusal);
+        });
+    }
+
+    fn stop(&self) -> AgentResult {
+        let owners = self.owners();
+        if owners.is_empty() {
+            if let Some(foreign) = self.foreign_owner() {
+                return AgentResult::failure(format!(
+                    "Deploy on main is running from another dashboard (STATE_DIR {}); this dashboard cannot stop it.",
+                    foreign.state_dir
+                ));
+            }
+            return AgentResult::failure(
+                "No Deploy on main worker is running for this repository.".to_string(),
+            );
+        }
+        let mut failures: Vec<String> = Vec::new();
+        for owner in &owners {
+            if let Err(error) = crate::workers::deploy_on_main::write_command(
+                &self.control_for(owner),
+                &json!({"type": "stop"}),
+            ) {
+                failures.push(error.to_string());
+            } else if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.stop_requested = true;
+            }
+        }
+        if let Ok(mut mutable) = self.mutable.lock() {
+            mutable.start_error = None;
+            mutable.notice = None;
+            mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
+        }
+        if failures.is_empty() {
+            AgentResult::ok()
+        } else {
+            AgentResult::failure(format!(
+                "Could not reach every worker: {}",
+                failures.join("; ")
+            ))
+        }
+    }
+
+    fn set_settings(
+        &self,
+        minutes: Option<u64>,
+        max_per_hour: Option<Value>,
+        max_pending: Option<Value>,
+    ) -> AgentResult {
+        if minutes.is_some() {
+            return AgentResult::failure(
+                "Deploy on main is push-triggered: it has no interval, so no cadence can be saved. It deploys once per advance of main."
+                    .to_string(),
+            );
+        }
+        let (Some(max_per_hour), Some(max_pending)) =
+            (strict_limit(&max_per_hour), strict_limit(&max_pending))
+        else {
+            return AgentResult::failure(
+                "Both limits must be empty or integers from 1 through 100.".to_string(),
+            );
+        };
+        let settings = crate::workers::deploy_on_main::DeploySettings {
+            max_per_hour,
+            max_pending,
+        };
+        if let Err(error) = crate::workers::deploy_on_main::write_settings(
+            &self.state_dir.join("deploy-on-main"),
+            &settings,
+        ) {
+            return AgentResult::failure(format!("Could not save the settings: {error}"));
+        }
+        AgentResult::ok()
     }
 }
 

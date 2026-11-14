@@ -20,6 +20,11 @@ pub const WORKTREE_IDLE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// under the canonical harness.
 pub const BRANCH_PATCH_DIRECTORY: &str = "worktree-cleanup/branches";
 
+/// The deploy family's worktree. It is created and reused by the Deploy on
+/// main worker, never a cleanup candidate: deleting it would erase the deploy
+/// history the next run fast-forwards.
+pub const DEPLOY_WORKTREE_NAME: &str = "deploy-main";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorktreeCandidateKind {
     Worktree,
@@ -270,7 +275,7 @@ pub fn run_worktree_cleanup(
     };
     names.sort();
     for name in names {
-        if name == ".test-tmp" {
+        if name == ".test-tmp" || name == DEPLOY_WORKTREE_NAME {
             continue;
         }
         let path = worktrees_directory.join(&name);

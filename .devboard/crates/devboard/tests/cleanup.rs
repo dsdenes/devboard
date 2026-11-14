@@ -1470,3 +1470,55 @@ fn a_selected_section_never_reaches_the_others() {
     assert!(CleanupSections::parse_list("nonsense").is_none());
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn the_deploy_worktree_is_never_a_cleanup_candidate() {
+    let directory = root("deploy-worktree");
+    let repo = directory.join("repo");
+    init_repo(&repo);
+    let deploy = repo.join(".worktree").join("deploy-main");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            deploy.to_str().expect("a utf-8 path"),
+            "HEAD",
+        ],
+    );
+
+    let dry = run_worktree_cleanup(&repo, epoch_ms(), true, &[]);
+    assert!(
+        dry.candidates
+            .iter()
+            .all(|candidate| !candidate.path.to_string_lossy().contains("deploy-main")),
+        "{:?}",
+        dry.candidates
+    );
+    let real = run_worktree_cleanup(&repo, epoch_ms(), false, &[]);
+    assert!(
+        real.removed
+            .iter()
+            .all(|candidate| !candidate.path.to_string_lossy().contains("deploy-main")),
+        "{:?}",
+        real.removed
+    );
+    assert!(deploy.exists(), "the deploy worktree stays");
+    assert!(deploy.join(".git").exists());
+
+    // A live run's worktree is skipped by build-output reclamation.
+    let target = deploy.join("target").join("debug");
+    write_text(&target.join("artifact.bin"), "bytes\n");
+    let held = run_build_cleanup_with(&repo, true, u64::MAX, &|_| false, &|| vec![deploy.clone()]);
+    assert!(
+        held.candidates
+            .iter()
+            .all(|candidate| !candidate.path.starts_with(&target)),
+        "{:?}",
+        held.candidates
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+}

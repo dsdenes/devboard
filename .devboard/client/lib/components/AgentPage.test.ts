@@ -131,6 +131,32 @@ function present(agent: Record<string, unknown>, state?: typeof connection.state
   return render(AgentPage, { props: { agentId: "release-train" } });
 }
 
+/** The same bridge for a family whose page id is not the Release Train. */
+function presentAgent(
+  agentId: string,
+  agent: Record<string, unknown>,
+  state?: typeof connection.state,
+) {
+  if (state === "open") openConnection();
+  else if (state !== undefined) connection.state = state;
+  agents.handleEvent({ type: "agentState", agent });
+  return render(AgentPage, { props: { agentId } });
+}
+
+/** A push-triggered family's server frame: no interval, only filing limits. */
+function deploySnapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...releaseSnapshot(overrides),
+    id: "deploy-on-main",
+    label: "Deploy on main",
+    description: "",
+    cadence: null,
+  };
+}
+
+const GATE_REASON =
+  "Release Train runs only in a harness source checkout; this project is a host project.";
+
 test("a worker another dashboard owns reads running and says why Start starts nothing", () => {
   const view = present(
     releaseSnapshot({ attached: true, owned: false, notice: FOREIGN_NOTICE }),
@@ -208,6 +234,70 @@ test("both settings Save controls are disabled and send nothing with the socket 
     // The refused save never claims the field's value as saved.
     expect(cadenceField.value).toBe("42");
   } finally {
+    connection.state = previous;
+  }
+});
+
+test("a project-gated family states its reason and renders no Start control", () => {
+  const view = present(
+    releaseSnapshot({
+      attached: false,
+      owned: false,
+      notice: null,
+      availability: { state: "disabled", reason: GATE_REASON },
+    }),
+    "open",
+  );
+  const gate = within(view.container).getByTestId("agent-gate");
+  expect(gate.getAttribute("role")).toBe("status");
+  expect(gate.textContent?.trim()).toBe(GATE_REASON);
+  expect(within(view.container).queryByTestId("agent-start")).toBeNull();
+  expect(within(view.container).queryByTestId("agent-stop")).toBeNull();
+  // Every read-only fact stays: the gate removes the control, not the page.
+  expect(within(view.container).getByTestId("agent-header")).toBeTruthy();
+  expect(within(view.container).getByTestId("agent-releases-count")).toBeTruthy();
+});
+
+test("an enabled gate keeps the Start control unchanged", () => {
+  const view = present(
+    releaseSnapshot({
+      lifecycle: "stopped",
+      attached: false,
+      owned: false,
+      notice: null,
+      availability: { state: "enabled", reason: null },
+    }),
+    "open",
+  );
+  expect(within(view.container).queryByTestId("agent-gate")).toBeNull();
+  expect(within(view.container).getByTestId("agent-start")).toBeTruthy();
+});
+
+test("a push-triggered family renders no interval input and no cadence save", () => {
+  const view = presentAgent("deploy-on-main", deploySnapshot(), "open");
+  expect(agents.snapshot("deploy-on-main")?.cadence).toBeNull();
+  expect(within(view.container).queryByTestId("agent-cadence")).toBeNull();
+  expect(within(view.container).queryByTestId("agent-save-cadence")).toBeNull();
+  expect(within(view.container).queryByTestId("agent-last-run")).toBeNull();
+  expect(within(view.container).queryByTestId("agent-next-run")).toBeNull();
+  // Filing limits still render and save.
+  expect(within(view.container).getByTestId("agent-save-limits")).toBeTruthy();
+});
+
+test("a push-triggered family's limits save sends no interval", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = presentAgent("deploy-on-main", deploySnapshot());
+    await fireEvent.click(within(view.container).getByTestId("agent-save-limits"));
+    expect(settingsFrames(socket.sent)).toEqual([
+      { type: "setAgentSettings", id: "deploy-on-main", maxPerHour: null, maxPending: null },
+    ]);
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
     connection.state = previous;
   }
 });

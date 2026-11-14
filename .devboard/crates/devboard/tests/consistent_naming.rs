@@ -778,7 +778,7 @@ async fn consistent_naming_appears_in_the_background_agents_tools() {
     .await;
     let list = mcp_result(&frames, 1);
     let agents = list["agents"].as_array().expect("agents");
-    assert_eq!(agents.len(), 9);
+    assert_eq!(agents.len(), 10);
     let naming = agents
         .iter()
         .find(|agent| agent["id"] == "consistent-naming")

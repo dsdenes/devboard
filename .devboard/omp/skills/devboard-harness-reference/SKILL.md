@@ -2206,6 +2206,9 @@ from the repository root before and after; the two hashes match.
 ## The Release Train releases
 
 One scheduled background family publishes every version: the Release Train (`release-train`).
+It runs only in the harness source checkout: on a host project its entry stays listed, carries
+`Release Train runs only in a harness source checkout; this project is a host project.`, and
+starts no worker. A host project is deployed by Deploy on main instead.
 A push to `main` releases nothing, and neither does an implementation or design agent.
 `.gitea/workflows/devboard-release.yml` runs only on `workflow_dispatch`; the train is the only
 component that dispatches it.
@@ -2384,6 +2387,43 @@ version that tag just published.
 |`DEVBOARD_GITEA_URL` / `GITEA_URL`|unset|Gitea HTTP origin; an HTTP(S) `origin` remote supplies it when unset, and a source-checkout dashboard discovers a local SSH Gitea listener. Installed hosts never probe.|
 |`GITEA_TOKEN`|unset|Gitea credential for issue, PR, scout, and watchdog writes; public reads need none.|
 
+## Deploy on main
+
+Deploy on main (`deploy-on-main`) deploys the served host project whenever the served checkout's
+`main` advances. It runs only on host projects: in the harness source checkout its entry stays
+listed, carries `Deploy on main runs only on host projects; this project is the harness source
+checkout.`, and starts no worker. The two gates are the project-kind gates described under
+Background agents.
+
+- Push-triggered, never scheduled: the descriptor has no cadence field at all, the page renders no
+  `agent-cadence` or `agent-save-cadence`, and a settings write carrying `intervalMinutes` is
+  refused with an error whose text names the family as push-triggered. The filing-limit fields
+  stay.
+- One coalesced run per advance: the worker watches the served checkout's `main`, and every
+  advance it observes becomes at most one run at the newest commit. An advance that arrives
+  before the live run ends is folded into the next run after it; the family never queues one run
+  per commit and never runs two peers for one repository.
+- The worker refreshes a fast-forward-only worktree at `<served checkout>/.worktree/deploy-main`
+  to the triggering commit before the peer starts. It never edits the served checkout, moves
+  `main`, force-updates a ref, or rewrites history.
+- One `omp acp` peer per run, started as `/deploy-on-main <run-dir>` with its working directory in
+  the deploy worktree. The run directory is
+  `<STATE_DIR>/deploy-on-main/runs/<run-id>/`, and its `request.json` carries `format`, `runId`,
+  `commit` (the full triggering sha), `servedCheckout`, `deployWorktree`, `instructionsFile`, and
+  `instructions` (the extracted deploy-instructions section). The peer inherits
+  `DEVBOARD_DEPLOY_RUN_DIR`, `REPO_DIR` naming the served checkout, and `STATE_DIR`.
+- The prompt is `.devboard/prompts/deploy-on-main.md`, and the host project's root `AGENTS.md`
+  owns the deploy: the peer reads that file and executes exactly the deploy instructions it finds
+  from the deploy worktree. The worker's `instructions` excerpt is authoritative, so a host that
+  changes its file and a run that read the older bytes never disagree about the steps.
+- When the host `AGENTS.md` has no deploy instructions, the peer writes
+  `{"ok":false,"skipped":true,"detail":"…"}` and the worker records the run as skipped, never as a
+  failure and never as a deployment.
+- The peer writes only `<run-dir>/result.json` plus what the host's own instructions write. It
+  never edits the served checkout, moves `main`, force-updates a ref, kills or relaunches the
+  dashboard, or runs a release; the Release Train owns releases. The worker settles the run as
+  `succeeded`, `failed`, or `skipped`; the peer never writes run history.
+
 ## Self-hosted runner
 
 The release workflow's only job runs on an `act_runner` registered to one machine and selected by
@@ -2463,7 +2503,8 @@ sudo userdel --remove <user>
 
 Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer, API Standards, and Single
 Responsibility are the seven continuous instances of one background-agent contract; the Release
-Train is an eighth descriptor of the same shape. A typed registry in `server/agents/registry.ts`
+Train is an eighth descriptor of the same shape, and Deploy on main is a ninth with no cadence: it
+is push-triggered and gated to host projects. A typed registry in `server/agents/registry.ts`
 declares each descriptor's id, label, description, scope, lifecycle vocabulary, cadence field and
 defaults, nullable limits schema, start/stop commands, issue projection, detail panel, and prompt
 source. The shared page, the shared filed-issues table, and the Devboard sidebar are built from
@@ -2471,7 +2512,8 @@ that registry; adding a further continuous agent means writing its engine, its a
 registry entry. The shared page, sidebar, and issue table have no agent-id branch: a synthetic
 further descriptor projects and validates unchanged.
 
-All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
+Every continuous agent publishes the same lifecycle: `stopped`, `starting`, `running`,
+`stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
 `stopping` from the moment Stop is accepted until the worker exits. A Start answers before its
 worker exists: the server publishes the `starting` snapshot, naming the run that Start is
@@ -2500,7 +2542,9 @@ All background-agent pages share `data-testid="agent-page"` and `data-agent`, th
 `agent-start`/`agent-stop`,
 `agent-cadence`, `agent-last-run`, `agent-next-run`, `agent-save-cadence`, `agent-limit-hour`,
 `agent-limit-pending`, `agent-save-limits`, `agent-issues-count`, `agent-issues`, and the pinned
-`agent-activity-bar`. No shared page renders a separate detail panel. Alerts use one position:
+`agent-activity-bar`. A family gated off on this project renders no `agent-start` or `agent-stop`
+and one `agent-gate` line with `role="status"` carrying its reason. No shared page renders a
+separate detail panel. Alerts use one position:
 `agent-error` and `agent-sync-error`, each with `role="alert"`; `agent-notice` is a separate
 `role="status"` line above them. A settings refusal is the one exception: `agent-settings-error`
 carries `role="alert"` inside the settings group that owns the invalid field, beside the fields
@@ -2517,11 +2561,33 @@ sends one settings command. The Devboard sidebar has two groups in order: `Backg
 `open-devboard-scout`, `open-devboard-watchdog`, `open-devboard-design`,
 `open-devboard-dead-code`, `open-devboard-mcp-optimizer`, `open-devboard-api-standards`,
 `open-devboard-single-responsibility`, then
-`open-devboard-release-train`, badges `agent-state-<id>`, counts `agent-count-<id>`), and
+`open-devboard-release-train`, then `open-devboard-deploy-on-main`, badges `agent-state-<id>`,
+counts `agent-count-<id>`), and
 `Devboard sections` (the `devboard-tab` MCP tools, Skills, Complexity, and Resources entries). The
 Issues sidebar carries no Background agents group. `agent-count-<id>` is the number of rows in that
 agent's filed-issues table, equal to `agent-issues-count`; it never counts findings still waiting in
 the pending-filing queue.
+
+### Project gates
+
+Two background families are project-kind specific, and the same verdict gates the sidebar entry,
+the agent page, a Start, and the `devboard worker <family>` command. The served checkout is the
+harness source checkout when its `.devboard/` carries the source manifest (`package.json` naming
+`@dsdenes/devboard`) and no installed prefix (`<checkout>/.devboard/bin/devboard`); every other
+checkout is a host project, whether it carries an installed harness or none.
+
+|Family|Runs on|Gated-off reason on the other kind|
+|---|---|---|
+|`release-train`|harness source checkout|`Release Train runs only in a harness source checkout; this project is a host project.`|
+|`deploy-on-main`|host project|`Deploy on main runs only on host projects; this project is the harness source checkout.`|
+
+A gated-off family stays listed and clickable: its sidebar entry carries `aria-disabled="true"`,
+the reason as `title` and as text in `agent-gate-<id>`, and its page renders the reason in
+`agent-gate` with `role="status"` and no Start or Stop control. A gated-on family renders no gate,
+its Start as usual, and its settings group. The gate is recomputed from the served checkout on
+every agent read, so it follows the checkout the dashboard serves rather than a value captured at
+start. A Start or a worker command for a gated-off family is refused with the same reason, so no
+path starts a family on the wrong project kind.
 
 ### Periodic forge reads
 
@@ -2701,6 +2767,10 @@ prompt read failure shows `agent-prompt-error` and leaves the bytes empty. Promp
 through an agent or a direct file edit, never through the dashboard.
 
 ### Cadence and limits
+
+Deploy on main has no cadence: its descriptor has no interval, its page renders no `agent-cadence`
+or `agent-save-cadence`, and a settings write that carries `intervalMinutes` is refused with an
+error naming the family as push-triggered. Its filing limits are edited like every other family's.
 
 `agent-cadence` accepts an integer from 1 through 1440 minutes. `agent-limit-hour` and
 `agent-limit-pending` are empty (unlimited) or an integer from 1 through 100; an empty field never

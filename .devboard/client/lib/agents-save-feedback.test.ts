@@ -91,6 +91,7 @@ function scout(minutes: number, maxPerHour: number | null, maxPending: number | 
     owned: true,
     attached: true,
     cadence: { minutes, defaultMinutes: 1, lastRunAt: null, nextRunAt: null },
+    availability: { state: "enabled", reason: null },
     limits: { maxPerHour, maxPending },
     issues: [],
     documentation: [],

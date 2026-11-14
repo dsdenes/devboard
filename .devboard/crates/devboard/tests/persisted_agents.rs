@@ -230,7 +230,7 @@ fn persisted_workers_answer_without_a_dashboard() {
     let list = agents["agents"]
         .as_array()
         .unwrap_or_else(|| panic!("an agent array: {agents}"));
-    assert_eq!(list.len(), 9, "{agents}");
+    assert_eq!(list.len(), 10, "{agents}");
     let find = |id: &str| {
         list.iter()
             .find(|agent| agent["id"] == id)

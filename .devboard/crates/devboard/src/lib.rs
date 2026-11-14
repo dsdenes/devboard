@@ -44,6 +44,7 @@ pub mod jsjson;
 pub mod land;
 pub mod mcp;
 pub mod mcp_server;
+pub mod project_kind;
 pub mod providers;
 pub mod publish;
 pub mod records;
