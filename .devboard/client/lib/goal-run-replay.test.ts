@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { connection } from "./connection.svelte";
 import { GoalStore } from "./goal.svelte";
 
@@ -20,6 +20,36 @@ const FINISHED = {
   status: "Accepted",
   activity: ["Inspecting a.md", "Answer received: Alpha"],
 };
+
+test("a replayed started frame keeps the run's first stamp", () => {
+  jest.useFakeTimers();
+  try {
+    jest.setSystemTime(new Date("2026-11-01T00:00:00Z"));
+    const store = new GoalStore();
+    store.handleEvent(STARTED);
+    const first = store.runStartedAt;
+    expect(first).toBe("2026-11-01T00:00:00.000Z");
+
+    // The next poll replays the same frame two seconds later; the run did not
+    // start then, so its stamp may not move.
+    jest.setSystemTime(new Date("2026-11-01T00:00:02Z"));
+    store.handleEvent(STARTED);
+    expect(store.runStartedAt).toBe(first);
+
+    // A retitled replay is still the same run.
+    store.handleEvent({ ...STARTED, title: "Adopt the revised decision" });
+    expect(store.runTitle).toBe("Adopt the revised decision");
+    expect(store.runStartedAt).toBe(first);
+
+    // The run ends, and the next run of the same ADR gets its own stamp.
+    store.handleEvent(FINISHED);
+    jest.setSystemTime(new Date("2026-11-01T00:01:00Z"));
+    store.handleEvent(STARTED);
+    expect(store.runStartedAt).toBe("2026-11-01T00:01:00.000Z");
+  } finally {
+    jest.useRealTimers();
+  }
+});
 
 test("a replayed finished run re-enables Start and keeps its last action", () => {
   const store = new GoalStore();

@@ -686,6 +686,12 @@ export class GoalStore {
 
     if (type === "runStarted" && message.lane === undefined) {
       if (typeof message.file === "string" && typeof message.title === "string") {
+        // The polled getGoal replay re-sends this frame every 2 s for a live
+        // run, so only the frame that starts a run the store does not already
+        // hold live may stamp it: a second run of the same ADR passes through
+        // runStopped (stopped) or resetActiveOperations (idle) first, and a
+        // retitled run is still the same run.
+        const continued = this.runState === "active" && this.runFile === message.file;
         this.runFile = message.file;
         this.runTitle = message.title;
         this.runAction =
@@ -693,7 +699,7 @@ export class GoalStore {
             ? message.action
             : "resolving";
         this.runState = "active";
-        this.runStartedAt = new Date().toISOString();
+        if (!continued) this.runStartedAt = new Date().toISOString();
         this.manualRunActive = message.manual === true;
         this.activity = [];
         this.applySnapshotQuestion(message.question);
