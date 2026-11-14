@@ -23,6 +23,7 @@ use crate::acp::{
 use crate::app::{App, Conn, ModeGate, StateSection};
 use crate::command::Command;
 use crate::goal_run::question_cleared_event;
+use crate::skill_frontmatter;
 use crate::state::{ACTIVITY_MAX_BYTES, ACTIVITY_MAX_ENTRIES, ACTIVITY_TRIMMED_MARKER};
 
 /// The prompt a creation peer receives.
@@ -2145,14 +2146,8 @@ async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<SkillFile>
         Err(error) => return Err(error.to_string()),
     };
     let content = String::from_utf8_lossy(&bytes).into_owned();
-    let fields = parse_frontmatter(&content).unwrap_or_default();
-    let field = |key: &str| {
-        fields
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
+    let fields = skill_frontmatter::fields(&content).unwrap_or_default();
+    let field = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
     let family = if field(FAMILY_FIELD) == "discover" {
         Family::Discover
     } else {
@@ -2160,8 +2155,8 @@ async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<SkillFile>
     };
     Ok(Some(SkillFile {
         directory: directory.to_string(),
-        name: field("name"),
-        description: field("description"),
+        name: field("name").to_string(),
+        description: field("description").to_string(),
         managed: field(&format!("metadata.{MANAGED_MARKER}")) == "true",
         builtin: field(&format!("metadata.{BUILTIN_MARKER}")) == "true",
         family,
@@ -2343,13 +2338,8 @@ async fn discover_skill_views(repo_dir: &Path) -> Vec<(String, String, String, S
         let description = live
             .as_deref()
             .or(baseline.as_deref())
-            .and_then(parse_frontmatter)
-            .and_then(|fields| {
-                fields
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+            .and_then(skill_frontmatter::fields)
+            .and_then(|fields| fields.get("description").cloned())
             .unwrap_or_default();
         let live_hash = live.as_deref().map(hash_text);
         let baseline_hash = baseline.as_deref().map(hash_text);
@@ -2477,105 +2467,6 @@ fn describe_contradictions(contradictions: &[Contradiction], managed: &[SkillFil
 // Frontmatter and directives
 // ---------------------------------------------------------------------------
 
-fn unquote(value: &str) -> String {
-    let trimmed = value.trim();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        let last = bytes[bytes.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return trimmed[1..trimmed.len() - 1].to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
-/// Reads the flat and one-level `metadata:` fields of a `SKILL.md`
-/// frontmatter block. Folded (`>`) and literal (`|`) scalars are joined so a
-/// wrapped description keeps its length and text.
-fn parse_frontmatter(source: &str) -> Option<Map<String, Value>> {
-    let lines: Vec<&str> = source
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
-    if lines.first().map(|line| line.trim()) != Some("---") {
-        return None;
-    }
-    let close = lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, line)| line.trim() == "---")
-        .map(|(index, _)| index)?;
-
-    let mut fields = Map::new();
-    let mut section: Option<String> = None;
-    let mut block_key: Option<String> = None;
-    let mut block_literal = false;
-    let mut block_lines: Vec<String> = Vec::new();
-
-    fn flush(
-        fields: &mut Map<String, Value>,
-        block_key: &mut Option<String>,
-        block_literal: bool,
-        block_lines: &mut Vec<String>,
-    ) {
-        if let Some(key) = block_key.take() {
-            let joined = if block_literal {
-                block_lines.join("\n")
-            } else {
-                block_lines.join(" ")
-            };
-            fields.insert(key, Value::String(joined));
-        }
-        block_lines.clear();
-    }
-
-    for raw in lines.iter().take(close).skip(1) {
-        let trimmed = raw.trim();
-        if block_key.is_some() {
-            if raw.starts_with(' ') || raw.starts_with('\t') {
-                block_lines.push(trimmed.to_string());
-                continue;
-            }
-            flush(&mut fields, &mut block_key, block_literal, &mut block_lines);
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some(colon) = trimmed.find(':') else {
-            continue;
-        };
-        if colon == 0 {
-            continue;
-        }
-        let key = trimmed[..colon].trim().to_string();
-        let value = trimmed[colon + 1..].trim_start();
-        if raw.starts_with(' ') || raw.starts_with('\t') {
-            if let Some(section) = &section {
-                fields.insert(format!("{section}.{key}"), Value::String(unquote(value)));
-                continue;
-            }
-        }
-        let marker = value.trim();
-        if marker.is_empty() {
-            section = Some(key);
-            continue;
-        }
-        if matches!(marker, ">" | ">-" | "|" | "|-") {
-            section = None;
-            block_key = Some(key);
-            block_literal = marker.starts_with('|');
-            block_lines.clear();
-            continue;
-        }
-        section = None;
-        fields.insert(key, Value::String(unquote(value)));
-    }
-    flush(&mut fields, &mut block_key, block_literal, &mut block_lines);
-    Some(fields)
-}
-
 static DIRECTIVE_PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r"(?i)^(always|never|must not|must|should not|should|do not|don't|avoid|prefer|use)\s+(.+)$",
@@ -2673,24 +2564,9 @@ fn strip_bullet(text: &str) -> &str {
 }
 
 fn extract_directives(source: &str) -> Vec<Directive> {
-    let lines: Vec<&str> = source
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-        .collect();
-    let mut start = 0;
-    if lines.first().map(|line| line.trim()) == Some("---") {
-        if let Some((close, _)) = lines
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find(|(_, line)| line.trim() == "---")
-        {
-            start = close + 1;
-        }
-    }
     let mut directives = Vec::new();
     let mut fenced = false;
-    for line in lines.iter().skip(start) {
+    for line in skill_frontmatter::lines(skill_frontmatter::body(source)) {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fenced = !fenced;
@@ -3118,4 +2994,95 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A repository fixture whose skills root holds the written documents.
+    fn scratch(label: &str) -> (PathBuf, PathBuf) {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("goal-authoring-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        let skills = repo.join(".omp").join("skills");
+        std::fs::create_dir_all(&skills).expect("a fixture skills root");
+        (repo, skills)
+    }
+
+    fn write_skill(root: &Path, name: &str, source: &str) {
+        let directory = root.join(name);
+        std::fs::create_dir_all(&directory).expect("a skill directory");
+        std::fs::write(directory.join("SKILL.md"), source).expect("a SKILL.md");
+    }
+
+    /// One `SKILL.md` carrying a UTF-8 byte-order mark, as an editor saving it
+    /// that way writes it.
+    fn marked_skill(name: &str, managed: bool, directive: &str) -> String {
+        let mut source = format!("\u{feff}---\nname: {name}\ndescription: Guidance for {name}.\n");
+        if managed {
+            source.push_str("metadata:\n  devboard-managed: \"true\"\n");
+        }
+        source.push_str(&format!("---\n\n# {name}\n\n- {directive}\n"));
+        source
+    }
+
+    #[tokio::test]
+    async fn a_byte_order_mark_keeps_the_marker_and_the_body() {
+        let (_repo, skills) = scratch("bom-skill");
+        write_skill(
+            &skills,
+            "bommed",
+            &marked_skill("bommed", true, "Always keep the fence in one place."),
+        );
+
+        let skill = read_skill_at(&skills, "bommed")
+            .await
+            .expect("a readable skill")
+            .expect("a skill row");
+
+        assert!(skill.managed);
+        assert_eq!(skill.name, "bommed");
+        assert_eq!(skill.description, "Guidance for bommed.");
+        // The frontmatter is bookkeeping, so no directive comes out of it.
+        assert_eq!(skill.directives.len(), 1);
+        assert_eq!(
+            skill.directives[0].source,
+            "Always keep the fence in one place."
+        );
+        assert_eq!(
+            skill_frontmatter::body(&skill.content),
+            "\n# bommed\n\n- Always keep the fence in one place.\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn inspection_lists_a_marked_skill_and_reviews_its_directives() {
+        let (_repo, skills) = scratch("bom-inspection");
+        write_skill(
+            &skills,
+            "bommed",
+            &marked_skill("bommed", true, "Always keep the fence in one place."),
+        );
+        write_skill(
+            &skills,
+            "plain",
+            &marked_skill("plain", false, "Never keep the fence in one place."),
+        );
+
+        let inspection = inspect_skills(&skills).await.expect("a skills inspection");
+
+        assert!(inspection.errors.is_empty(), "{:?}", inspection.errors);
+        let summaries = inspection.summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["name"], "bommed");
+        assert_eq!(summaries[0]["family"], "prepare");
+        assert_eq!(inspection.contradictions.len(), 1);
+        assert_eq!(
+            inspection.contradictions[0].skills,
+            ("bommed".to_string(), "plain".to_string())
+        );
+    }
 }

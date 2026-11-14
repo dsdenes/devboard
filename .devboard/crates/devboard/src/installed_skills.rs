@@ -7,12 +7,12 @@
 //! every other key of that document survives byte for byte.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::skill_frontmatter;
 use crate::state::write_file_atomically;
 
 /// The project-level settings file OMP reads at the repository root.
@@ -153,7 +153,7 @@ async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<ParsedSkil
         }
         None => return Ok(None),
     };
-    let fields = parse_frontmatter(&content).unwrap_or_default();
+    let fields = skill_frontmatter::fields(&content).unwrap_or_default();
     let field = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
     Ok(Some(ParsedSkill {
         managed: field(&format!("metadata.{MANAGED_MARKER}")) == "true",
@@ -183,7 +183,7 @@ pub async fn read_project_settings(path: &Path) -> Result<Value, String> {
         }
         None => return Ok(empty_document()),
     };
-    if js_trim(&source).is_empty() {
+    if skill_frontmatter::js_trim(&source).is_empty() {
         return Ok(empty_document());
     }
     let parsed: Value = serde_json::from_str(&source)
@@ -925,156 +925,4 @@ fn case_key(text: &str) -> Vec<u8> {
     text.chars()
         .map(|character| u8::from(character.is_uppercase()))
         .collect()
-}
-
-/// ECMAScript's whitespace and BOM, which `String.prototype.trim` removes.
-fn is_js_space(character: char) -> bool {
-    character == '\u{feff}' || character.is_whitespace()
-}
-
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(is_js_space)
-}
-
-/// Splits on `\r?\n`, as the frontmatter reader does.
-fn split_lines(source: &str) -> Vec<&str> {
-    let bytes = source.as_bytes();
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\r' && index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
-            lines.push(&source[start..index]);
-            index += 2;
-            start = index;
-        } else if bytes[index] == b'\n' {
-            lines.push(&source[start..index]);
-            index += 1;
-            start = index;
-        } else {
-            index += 1;
-        }
-    }
-    lines.push(&source[start..]);
-    lines
-}
-
-fn unquote(value: &str) -> String {
-    let trimmed = js_trim(value);
-    let characters: Vec<char> = trimmed.chars().collect();
-    if characters.len() >= 2 {
-        let first = characters[0];
-        let last = characters[characters.len() - 1];
-        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-            return characters[1..characters.len() - 1].iter().collect();
-        }
-    }
-    trimmed.to_string()
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BlockStyle {
-    Folded,
-    Literal,
-}
-
-/// Reads the flat and one-level `metadata:` fields of a `SKILL.md`
-/// frontmatter block. Folded (`>`) and literal (`|`) scalars are joined so a
-/// wrapped description keeps its length and text.
-fn parse_frontmatter(source: &str) -> Option<HashMap<String, String>> {
-    let lines = split_lines(source);
-    if !matches!(lines.first(), Some(line) if js_trim(line) == "---") {
-        return None;
-    }
-    let close = lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, line)| js_trim(line) == "---")
-        .map(|(index, _)| index)?;
-
-    let mut fields: HashMap<String, String> = HashMap::new();
-    let mut section: Option<String> = None;
-    let mut block_key: Option<String> = None;
-    let mut block_style = BlockStyle::Folded;
-    let mut block_lines: Vec<String> = Vec::new();
-
-    let mut flush_key: Option<(String, BlockStyle, Vec<String>)> = None;
-    for index in 1..close {
-        let raw = lines[index];
-        let trimmed = js_trim(raw);
-
-        if block_key.is_some() {
-            if raw.starts_with(' ') || raw.starts_with('\t') {
-                block_lines.push(trimmed.to_string());
-                continue;
-            }
-            flush_key = block_key
-                .take()
-                .map(|key| (key, block_style, std::mem::take(&mut block_lines)));
-        }
-
-        if let Some((key, style, lines)) = flush_key.take() {
-            let joined = if style == BlockStyle::Literal {
-                lines.join("\n")
-            } else {
-                lines.join(" ")
-            };
-            fields.insert(key, joined);
-        }
-
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some(colon) = trimmed.find(':') else {
-            continue;
-        };
-        if colon == 0 {
-            continue;
-        }
-        let key = js_trim(&trimmed[..colon]).to_string();
-        let value = trimmed[colon + 1..]
-            .trim_start_matches(is_js_space)
-            .to_string();
-
-        if raw.chars().next().map(is_js_space).unwrap_or(false) {
-            if let Some(section) = &section {
-                fields.insert(format!("{section}.{key}"), unquote(&value));
-                continue;
-            }
-        }
-
-        let marker = js_trim(&value).to_string();
-        if marker.is_empty() {
-            section = Some(key);
-            continue;
-        }
-        if marker == ">" || marker == ">-" || marker == "|" || marker == "|-" {
-            section = None;
-            block_key = Some(key);
-            block_style = if marker.starts_with('>') {
-                BlockStyle::Folded
-            } else {
-                BlockStyle::Literal
-            };
-            continue;
-        }
-
-        section = None;
-        fields.insert(key, unquote(&value));
-    }
-    let tail = flush_key.take().or_else(|| {
-        block_key
-            .take()
-            .map(|key| (key, block_style, std::mem::take(&mut block_lines)))
-    });
-    if let Some((key, style, lines)) = tail {
-        let joined = if style == BlockStyle::Literal {
-            lines.join("\n")
-        } else {
-            lines.join(" ")
-        };
-        fields.insert(key, joined);
-    }
-    Some(fields)
 }

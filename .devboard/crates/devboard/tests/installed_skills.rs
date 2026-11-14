@@ -107,6 +107,37 @@ async fn rows_follow_the_filesystem_and_classify_markers() {
     assert_eq!(payload, expected);
 }
 
+/// One managed `SKILL.md` saved with the UTF-8 byte-order mark an editor writes.
+fn bom_managed_skill(name: &str) -> String {
+    format!("\u{feff}{}", managed_skill(name, None))
+}
+
+#[tokio::test]
+async fn a_byte_order_mark_does_not_hide_a_managed_row() {
+    let repo = scratch("bom");
+    write_skill(&repo, "bommed", &bom_managed_skill("bommed"));
+
+    let payload = installed_skills_payload(&repo).await;
+
+    // The Skills page reads the same fence Goal's inspection reads, so the
+    // mark must not classify the row differently from an unmarked document.
+    let expected = json!({
+        "type": "installedSkills",
+        "skills": [row(
+            "bommed",
+            true,
+            bom_managed_skill("bommed"),
+            false,
+            true,
+        )],
+    });
+    assert_eq!(
+        devboard::jsjson::stringify(&payload),
+        devboard::jsjson::stringify(&expected)
+    );
+    assert_eq!(payload, expected);
+}
+
 #[tokio::test]
 async fn disabling_writes_the_exclusion_and_a_rerun_reports_it() {
     let repo = scratch("toggle");

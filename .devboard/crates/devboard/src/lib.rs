@@ -56,6 +56,7 @@ pub mod rest;
 pub mod runs;
 pub mod runtime_boundary;
 pub mod sampling;
+pub mod skill_frontmatter;
 pub mod source_refresh;
 pub mod state;
 pub mod supervision;

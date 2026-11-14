@@ -4,6 +4,11 @@ import { Marked, type Token, type Tokens } from "marked";
  * The prepared SKILL.md body without its YAML frontmatter. The frontmatter is
  * bookkeeping: the panel header already states the name and the skills list
  * owns the description, so the document starts at the first instruction.
+ *
+ * This ECMAScript `trim` — which removes U+FEFF as well as whitespace — is the
+ * reference fence rule both Rust readers share
+ * (`crates/devboard/src/skill_frontmatter.rs`), so a byte-order mark cannot
+ * hide the frontmatter here while the server finds it, or the reverse.
  */
 export function skillBody(source: string): string {
   const normalized = source.replace(/\r\n?/g, "\n");

@@ -40,6 +40,17 @@ describe("skillBody", () => {
   test("treats an unclosed fence as ordinary content", () => {
     expect(skillBody("---\nname: broken\n\n# Body")).toBe("---\nname: broken\n\n# Body");
   });
+
+  test("finds the fence behind a UTF-8 byte-order mark", () => {
+    expect(skillBody(`\uFEFF${skill}`)).toBe(
+      [
+        "# Fixture conventions",
+        "",
+        "- Prefer the smallest observable change.",
+        "- Run `bun test` before pushing.",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("renderSkillDocument", () => {
