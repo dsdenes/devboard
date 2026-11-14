@@ -1138,11 +1138,6 @@ pub fn peer_environment(
     env
 }
 
-/// The provider definition for a selection, for its model and env variable.
-pub fn selected_provider(binding: &PeerBinding) -> &'static ProviderDefinition {
-    provider_definition(binding.provider)
-}
-
 // ---------------------------------------------------------------------------
 // Selection snapshot
 
@@ -2373,108 +2368,6 @@ pub async fn worker_peer_environment(
     options.env = Some(environment);
     let service = ProviderService::with_options(state_dir, repo_dir, options);
     Ok(service.select().await?.env)
-}
-
-// ---------------------------------------------------------------------------
-// Peers
-
-#[derive(Clone, Default)]
-pub struct OpenCodePeerOptions {
-    /// Names the requester in a refusal, e.g. "the finalizer".
-    pub subject: String,
-    /// Distinguishes this role's generated agent directory from other roles'.
-    pub agent_suffix: Option<String>,
-    /// The MCP registration the generated directory carries.
-    pub mcp: Option<AgentMcp>,
-    /// Transport and clock seams; usage is not consulted here.
-    pub options: ProviderOptions,
-}
-
-/// One binding per enabled OpenCode Go subscription, in the operator's list
-/// order, each pinned to the Go model. An enabled OpenRouter subscription
-/// supplies the fallback chain's key when one exists.
-pub fn open_code_peer_bindings(
-    state_dir: &Path,
-    repo_dir: &Path,
-    environment: &Env,
-    options: &OpenCodePeerOptions,
-) -> Result<Vec<PeerBinding>, String> {
-    let mut settings = options.options.clone();
-    settings.env = Some(environment.clone());
-    let service = ProviderService::with_options(state_dir, repo_dir, settings);
-    let subscriptions = service.list();
-    let mut candidates: Vec<StoredSubscription> = subscriptions
-        .iter()
-        .filter(|entry| entry.provider == ProviderId::OpenCodeGo && entry.enabled)
-        .cloned()
-        .collect();
-    if candidates.is_empty() {
-        return Err(format!(
-            "{} needs an enabled OpenCode Go subscription; add one in the Providers dialog (settings.providers)",
-            options.subject
-        ));
-    }
-
-    if let Some(snapshot) = read_selection_snapshot(state_dir) {
-        if snapshot.provider == ProviderId::OpenCodeGo {
-            if let Some(preferred) = candidates
-                .iter()
-                .position(|entry| entry.id == snapshot.subscription_id)
-            {
-                if preferred > 0 {
-                    let entry = candidates.remove(preferred);
-                    candidates.insert(0, entry);
-                }
-            }
-        }
-    }
-
-    let fallback = subscriptions
-        .iter()
-        .find(|entry| entry.provider == ProviderId::OpenRouter && entry.enabled)
-        .cloned();
-    let mcp = match options.mcp.clone() {
-        Some(mcp) => mcp,
-        None => default_agent_mcp_for(repo_dir)?,
-    };
-
-    let mut bindings = Vec::new();
-    for subscription in candidates {
-        let subscription_id = match &options.agent_suffix {
-            None => subscription.id.clone(),
-            Some(suffix) => format!("{}-{suffix}", subscription.id),
-        };
-        let directory = agent_directory(state_dir, ProviderId::OpenCodeGo, &subscription_id);
-        write_agent_directory(
-            &directory,
-            &generated_config(ProviderId::OpenCodeGo, OPENCODE_GO_MODEL),
-            &mcp,
-        )
-        .map_err(|error| {
-            format!(
-                "{} agent directory could not be written: {error}",
-                options.subject
-            )
-        })?;
-        let mut binding = PeerBinding {
-            provider: ProviderId::OpenCodeGo,
-            provider_name: OPENCODE_GO.name,
-            subscription_id: subscription.id.clone(),
-            subscription_label: subscription.label.clone(),
-            model: OPENCODE_GO_MODEL.to_string(),
-            remaining_fraction: None,
-            agent_dir: directory,
-            env: Env::new(),
-        };
-        binding.env = peer_environment(
-            environment,
-            &binding,
-            &subscription.key,
-            fallback.as_ref().map(|entry| entry.key.as_str()),
-        );
-        bindings.push(binding);
-    }
-    Ok(bindings)
 }
 
 #[cfg(test)]
