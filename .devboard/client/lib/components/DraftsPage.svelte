@@ -28,6 +28,15 @@
    * the directory is empty.
    */
   const draftsUnreadable = $derived(goalDrafts.draftsReadError !== null);
+  /**
+   * The body keeps its second column only while a second panel can fill it:
+   * the draft list's rows or the selected draft's detail. A failed read with
+   * neither of them renders one panel, so the read-failure alert spans the
+   * body like every other no-draft state instead of sitting in the narrow
+   * list track beside an empty detail track that reads as a panel that
+   * failed to load.
+   */
+  const secondColumn = $derived(hasDrafts || goalDrafts.draft !== null);
 
   // The header reports the selected draft's run only; another draft's run is not this draft's state.
   const run = $derived(goalDrafts.draft !== null ? goalDrafts.draftRunFor(goalDrafts.draft.path) : null);
@@ -81,7 +90,7 @@
     }`}
     testid="issues-drafts-header"
   />
-  <div class="issues-drafts__body" data-empty={hasDrafts || draftsUnreadable ? undefined : "true"}>
+  <div class="issues-drafts__body" data-empty={secondColumn ? undefined : "true"}>
     <section class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Proposed goals</h2>
