@@ -2274,104 +2274,6 @@ fn default_checks(worktree: &Path, config: &DesignConfig) -> Result<(), String> 
     Ok(())
 }
 
-fn derive_version(repo_dir: &Path, sha: &str) -> String {
-    const BASELINE: &str = "1.0.0";
-    let described = crate::forge::git(repo_dir, &["describe", "--tags", "--abbrev=0", sha]);
-    let previous = if described.code == 0 {
-        let tag = described.stdout.trim();
-        let version = tag.trim_start_matches('v');
-        if version.split('.').count() == 3
-            && version
-                .split('.')
-                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-        {
-            Some(version.to_string())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let range = previous
-        .as_ref()
-        .map(|version| format!("v{version}..{sha}"))
-        .unwrap_or_else(|| sha.to_string());
-    let log = crate::forge::git(repo_dir, &["log", "--format=%s", &range]);
-    let subjects: Vec<&str> = log
-        .stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let level = if subjects.iter().any(|subject| {
-        subject
-            .split(':')
-            .next()
-            .map(|header| header.contains('!'))
-            .unwrap_or(false)
-            || subject.contains("BREAKING CHANGE")
-    }) {
-        Some(0)
-    } else if subjects.iter().any(|subject| subject.starts_with("feat")) {
-        Some(1)
-    } else if subjects.is_empty() {
-        None
-    } else {
-        Some(2)
-    };
-    let Some(previous) = previous else {
-        return BASELINE.to_string();
-    };
-    let mut parts: Vec<u64> = previous
-        .split('.')
-        .map(|part| part.parse().unwrap_or(0))
-        .collect();
-    if parts.len() != 3 {
-        return BASELINE.to_string();
-    }
-    if compare_versions(&previous, BASELINE) == Some(std::cmp::Ordering::Less) {
-        return BASELINE.to_string();
-    }
-    match level {
-        None => previous,
-        Some(0) => {
-            parts[0] += 1;
-            parts[1] = 0;
-            parts[2] = 0;
-            format!("{}.{}.{}", parts[0], parts[1], parts[2])
-        }
-        Some(1) => {
-            parts[1] += 1;
-            parts[2] = 0;
-            format!("{}.{}.{}", parts[0], parts[1], parts[2])
-        }
-        _ => {
-            parts[2] += 1;
-            format!("{}.{}.{}", parts[0], parts[1], parts[2])
-        }
-    }
-}
-
-fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
-    let parse = |version: &str| -> Option<[u64; 3]> {
-        let parts: Vec<&str> = version.split('.').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-        let mut parsed = [0u64; 3];
-        for (index, part) in parts.iter().enumerate() {
-            if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-                return None;
-            }
-            parsed[index] = part.parse().ok()?;
-        }
-        Some(parsed)
-    };
-    let left = parse(left)?;
-    let right = parse(right)?;
-    Some(left.cmp(&right))
-}
-
 struct Worktree {
     directory: PathBuf,
     branch: String,
@@ -2736,7 +2638,8 @@ pub async fn release_documents(input: ReleaseInput) -> ReleaseResult {
         if contains.code != 0 {
             return Err("the integration checkout does not contain the pushed commit".to_string());
         }
-        let version = derive_version(&input.repo_dir, &sha);
+        let version = crate::publish::release_version(&input.repo_dir, &sha)
+            .unwrap_or_else(|_| crate::publish::BASELINE_VERSION.to_string());
         let url = commit_url(&input.repo_dir, &environment, &project, &sha);
         (input.activity)(&format!(
             "pushed documentation {}; the Release Train will release it",

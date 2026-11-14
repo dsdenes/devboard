@@ -784,6 +784,84 @@ async fn the_release_planner_commits_only_the_documents_and_cleans_up() {
         .any(|line| line.contains("pushed documentation")));
 }
 
+/// Commits one fixture file, with `body` as a second paragraph when given, so a
+/// `BREAKING CHANGE:` line lands in the commit body rather than its subject.
+fn commit_fixture_file(repo: &Path, name: &str, text: &str, message: &str, body: Option<&str>) {
+    std::fs::write(repo.join(name), text).expect("the fixture file");
+    git(repo, &["add", name]);
+    let mut arguments = vec!["commit", "-q", "-m", message];
+    if let Some(body) = body {
+        arguments.extend(["-m", body]);
+    }
+    git(repo, &arguments);
+}
+
+#[test]
+fn the_design_release_version_reads_the_subject_phrase_as_text() {
+    let fixture = Fixture::new("version-subject");
+    git(&fixture.repo, &["tag", "v1.48.1"]);
+    commit_fixture_file(
+        &fixture.repo,
+        "tracked.txt",
+        "changed\n",
+        "docs: mention BREAKING CHANGE in the release guide",
+        None,
+    );
+    assert_eq!(
+        devboard::publish::release_version(&fixture.repo, "HEAD"),
+        Ok("1.48.2".to_string())
+    );
+}
+
+#[test]
+fn the_design_release_version_reads_a_breaking_footer_from_the_body() {
+    let fixture = Fixture::new("version-footer");
+    git(&fixture.repo, &["tag", "v1.48.1"]);
+    commit_fixture_file(
+        &fixture.repo,
+        "tracked.txt",
+        "changed\n",
+        "feat(api): add x",
+        Some("BREAKING CHANGE: y"),
+    );
+    assert_eq!(
+        devboard::publish::release_version(&fixture.repo, "HEAD"),
+        Ok("2.0.0".to_string())
+    );
+}
+
+#[test]
+fn the_design_release_version_skips_a_merge_only_range() {
+    let fixture = Fixture::new("version-merge");
+    commit_fixture_file(
+        &fixture.repo,
+        "tracked.txt",
+        "second\n",
+        "chore: fixture two",
+        None,
+    );
+    git(&fixture.repo, &["tag", "v1.48.1"]);
+    let tree = git_stdout(&fixture.repo, &["rev-parse", "HEAD^{tree}"]);
+    let parent = git_stdout(&fixture.repo, &["rev-parse", "HEAD^"]);
+    let merge = git_stdout(
+        &fixture.repo,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            "HEAD",
+            "-p",
+            &parent,
+            "-m",
+            "Merge branch 'fixture'",
+        ],
+    );
+    assert_eq!(
+        devboard::publish::release_version(&fixture.repo, &merge),
+        Ok("1.48.1".to_string())
+    );
+}
+
 #[test]
 fn capacity_counts_the_window_and_the_smaller_room_wins() {
     let now = 1_767_268_800_000;

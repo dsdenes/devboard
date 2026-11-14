@@ -745,6 +745,57 @@ fn valid_version(value: &str) -> bool {
     compare_versions(value, value).is_some()
 }
 
+/// The highest `v<major>.<minor>.<patch>` tag reachable from `head`, without the `v`.
+fn previous_release_version(repo_dir: &Path, head: &str) -> Option<String> {
+    let tags = forge::git(repo_dir, &["tag", "--merged", head, "--list", "v*"]);
+    if tags.code != 0 {
+        return None;
+    }
+    highest_version(tags.stdout.split('\n').filter_map(|line| {
+        let version = line.trim().strip_prefix('v')?;
+        valid_version(version).then_some(version)
+    }))
+}
+
+/// Every commit of `range`, read with its body and parents.
+fn read_commits(repo_dir: &Path, range: &str) -> std::result::Result<Vec<CommitRecord>, String> {
+    const FORMAT: &str = "%H\u{1f}%P\u{1f}%s\u{1f}%b\u{1e}";
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("log")
+        .arg(format!("--format={FORMAT}"))
+        .arg(range)
+        .arg("--")
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let reason = if stderr.is_empty() {
+            format!("exit {}", output.status.code().unwrap_or(1))
+        } else {
+            stderr
+        };
+        return Err(format!("could not read the commits of {range}: {reason}"));
+    }
+    Ok(parse_records(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// The version `head` releases: the canonical bump over every commit after the
+/// newest release tag reachable from it.
+pub fn release_version(repo_dir: &Path, head: &str) -> std::result::Result<String, String> {
+    let previous = previous_release_version(repo_dir, head);
+    let range = previous
+        .as_ref()
+        .map(|version| format!("v{version}..{head}"))
+        .unwrap_or_else(|| head.to_string());
+    let commits = read_commits(repo_dir, &range)?;
+    Ok(next_release_version(
+        previous.as_deref(),
+        release_level(&commits),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Public argument and report types
 
