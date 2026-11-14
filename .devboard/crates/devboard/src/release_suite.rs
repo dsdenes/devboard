@@ -552,6 +552,51 @@ pub struct SuiteOutcome {
     pub error_line: Option<String>,
 }
 
+/// One whole-suite attempt as the run reports it on its log: its number and
+/// its passed and failed counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuiteAttempt {
+    pub attempt: u32,
+    pub passed: u64,
+    pub failed: u64,
+}
+
+/// Formats one attempt's log line, `attempt 2/9: 3 fail, 100 pass, 4 skip`.
+///
+/// This function and `parse_attempt_line` are the wording's only owner:
+/// `publish` reads the record they write, so no other module spells these
+/// separators or count suffixes.
+pub fn attempt_line(index: u32, max: u32, failed: usize, passed: usize, skipped: usize) -> String {
+    format!("attempt {index}/{max}: {failed} fail, {passed} pass, {skipped} skip")
+}
+
+/// Parses the line `attempt_line` writes. Every other attempt shape — `nothing
+/// ran`, `structural failure`, the all-quarantined sentence — yields `None`,
+/// because it reports no attempt's passed and failed counts.
+pub fn parse_attempt_line(line: &str) -> Option<SuiteAttempt> {
+    let rest = line.strip_prefix("attempt ")?;
+    let (index, rest) = rest.split_once('/')?;
+    let attempt: u32 = index.trim().parse().ok()?;
+    let (_, counts) = rest.split_once(": ")?;
+    let mut parts = counts.split(", ");
+    let failed: u64 = parts.next()?.strip_suffix(" fail")?.trim().parse().ok()?;
+    let passed: u64 = parts.next()?.strip_suffix(" pass")?.trim().parse().ok()?;
+    parts
+        .next()?
+        .strip_suffix(" skip")?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(SuiteAttempt {
+        attempt,
+        passed,
+        failed,
+    })
+}
+
 /// One whole-suite attempt, injectable so the loop is testable.
 pub trait SuiteAttempts: Send {
     /// Runs attempt `index`, filtered to `names` after a quarantine.
@@ -660,11 +705,12 @@ pub async fn run_quarantine_suite(
                 output: failure.output.clone(),
             });
         }
-        log(&format!(
-            "attempt {index}/{max_attempts}: {} fail, {} pass, {} skip",
+        log(&attempt_line(
+            index,
+            max_attempts,
             record.failures.len(),
             record.pass,
-            record.skip
+            record.skip,
         ));
         if record.failures.is_empty() {
             return SuiteOutcome {
@@ -1878,6 +1924,79 @@ error: could not parse/generate dep info at: \
             RELEASE_SUITE_CONSECUTIVE_FAILURES,
         )
         .await
+    }
+
+    #[test]
+    fn release_suite_round_trips_the_attempt_line_it_writes() {
+        let line = attempt_line(2, 9, 3, 100, 4);
+        assert_eq!(line, "attempt 2/9: 3 fail, 100 pass, 4 skip");
+        assert_eq!(
+            parse_attempt_line(&line),
+            Some(SuiteAttempt {
+                attempt: 2,
+                passed: 100,
+                failed: 3,
+            })
+        );
+        // The other attempt shapes carry no passed and failed counts, and a
+        // changed separator is not an attempt record either.
+        assert_eq!(
+            parse_attempt_line("attempt 2/9: nothing ran, retrying: a vanished target tree"),
+            None
+        );
+        assert_eq!(
+            parse_attempt_line("attempt 2/9: structural failure: could not compile"),
+            None
+        );
+        assert_eq!(
+            parse_attempt_line("attempt 2/9 | 3 fail | 100 pass | 4 skip"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn release_suite_records_the_attempts_its_loop_reports() {
+        let mut attempts = FakeAttempts {
+            records: vec![
+                failing_among(1, "flaky", &["flaky", "keeps"]),
+                clean(2, &["keeps"]),
+            ]
+            .into(),
+            skipped: Arc::new(Mutex::new(Vec::new())),
+            seen_filters: Arc::new(Mutex::new(Vec::new())),
+        };
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = lines.clone();
+        let sink = move |line: &str| captured.lock().expect("log lines").push(line.to_string());
+        let outcome = run_quarantine_suite(
+            &mut attempts,
+            &sink,
+            RELEASE_SUITE_MAX_ATTEMPTS,
+            RELEASE_SUITE_CONSECUTIVE_FAILURES,
+        )
+        .await;
+        assert_eq!(outcome.code, 0);
+        let recorded: Vec<SuiteAttempt> = lines
+            .lock()
+            .expect("log lines")
+            .iter()
+            .filter_map(|line| parse_attempt_line(line))
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                SuiteAttempt {
+                    attempt: 1,
+                    passed: 0,
+                    failed: 1,
+                },
+                SuiteAttempt {
+                    attempt: 2,
+                    passed: 1,
+                    failed: 0,
+                },
+            ]
+        );
     }
 
     #[tokio::test]

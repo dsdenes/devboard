@@ -24,7 +24,8 @@ use devboard::publish::{
     RELEASE_INSTALLERS, RELEASE_TARGETS,
 };
 use devboard::release_suite::{
-    BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport, EVERY_TEST_QUARANTINED,
+    attempt_line, BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
+    EVERY_TEST_QUARANTINED, RELEASE_SUITE_MAX_ATTEMPTS,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -2164,8 +2165,8 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
 type LogLines = Arc<Mutex<Vec<String>>>;
 type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// A suite gate that reports whole attempts on the log, the shape the
-/// production suite uses for every attempt it runs.
+/// A suite gate that reports whole attempts on the log through the production
+/// formatter, so `publish` reads exactly the line the real suite writes.
 struct LoggingSuiteGate;
 
 impl ReleaseSuiteGate for LoggingSuiteGate {
@@ -2176,8 +2177,8 @@ impl ReleaseSuiteGate for LoggingSuiteGate {
         let log = options.log.clone();
         Box::pin(async move {
             if let Some(log) = log {
-                log("attempt 1/9: 2 fail, 98 pass, 0 skip");
-                log("attempt 2/9: 0 fail, 100 pass, 2 skip");
+                log(&attempt_line(1, RELEASE_SUITE_MAX_ATTEMPTS, 2, 98, 0));
+                log(&attempt_line(2, RELEASE_SUITE_MAX_ATTEMPTS, 0, 100, 2));
             }
             Ok(ReleaseSuiteReport {
                 code: 0,
@@ -2207,7 +2208,7 @@ impl ReleaseSuiteGate for RunDirWatchingGate {
                 .contains_key(devboard::publish::RELEASE_RUN_DIR_VARIABLE),
         );
         if let Some(log) = options.log.clone() {
-            log("attempt 1/9: 0 fail, 100 pass, 0 skip");
+            log(&attempt_line(1, RELEASE_SUITE_MAX_ATTEMPTS, 0, 100, 0));
         }
         let report = ReleaseSuiteReport {
             code: 0,

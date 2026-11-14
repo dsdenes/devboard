@@ -500,19 +500,6 @@ pub fn read_publish_progress(path: &Path) -> Vec<PublishProgressRecord> {
     records
 }
 
-/// The release suite reports one whole attempt as
-/// `attempt 2/9: 3 fail, 100 pass, 4 skip`; that line is the attempt's record.
-fn parse_suite_attempt(line: &str) -> Option<PublishProgressRecord> {
-    let rest = line.strip_prefix("attempt ")?;
-    let (index, rest) = rest.split_once('/')?;
-    let attempt: u32 = index.trim().parse().ok()?;
-    let (_, counts) = rest.split_once(": ")?;
-    let mut parts = counts.split(", ");
-    let failed: u64 = parts.next()?.strip_suffix(" fail")?.trim().parse().ok()?;
-    let passed: u64 = parts.next()?.strip_suffix(" pass")?.trim().parse().ok()?;
-    Some(PublishProgressRecord::new("suite", line.to_string()).attempt(attempt, passed, failed))
-}
-
 // ---------------------------------------------------------------------------
 // Release version derivation
 
@@ -2302,8 +2289,14 @@ async fn run_release_suite_gate(
         let progress = progress.clone();
         Arc::new(move |line: &str| {
             log(line);
-            if let Some(record) = parse_suite_attempt(line) {
-                progress.record(record);
+            if let Some(attempt) = release_suite::parse_attempt_line(line) {
+                progress.record(
+                    PublishProgressRecord::new("suite", line.to_string()).attempt(
+                        attempt.attempt,
+                        attempt.passed,
+                        attempt.failed,
+                    ),
+                );
             }
         })
     };
