@@ -1497,6 +1497,68 @@ async fn a_start_answers_the_polled_projection_without_walking_the_state_tree() 
     kill_stand_in(pid);
 }
 
+/// A Stop's answer is the projection the poll already published, with the one
+/// fact the command changed. Rebuilding it inside the command walked the
+/// family's whole state tree on the request path, which is the term that
+/// pushed `stopAgent watchdog` past the client's 1000 ms budget on a populated
+/// checkout, so the answer names the issue the poll read rather than the
+/// document that replaced it.
+#[tokio::test]
+async fn a_stop_answers_the_polled_projection_without_walking_the_state_tree() {
+    let root = scratch("stop-projection");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let pid = stand_in_watchdog();
+    write_watchdog_lock(&repo, &state, pid);
+    let directory = repo.join(".devboard").join(".tmp").join("watchdog");
+    write_json(
+        &directory.join("state.json"),
+        json!({
+            "findings": {
+                "fingerprint-1": {
+                    "disposition": "filed: https://example.test/owner/repo/issues/1",
+                    "url": "https://example.test/owner/repo/issues/1",
+                    "category": "stalled-lane",
+                    "line": "run-2026",
+                    "createdAt": "2026-01-01T00:00:00.000Z"
+                }
+            }
+        }),
+    );
+
+    // The poll is the one projection owner; the Stop answers from it.
+    devboard::agents_mode::poll_once(&app);
+    let (conn, mut inbox) = connection_for(&app).await;
+    // The connect replay defers the poll, so no tick can replace the
+    // projection between the ledger rewrite and the command.
+    devboard::agents_mode::replay(&app, &conn);
+    let _ = frames(&mut inbox);
+
+    // A rebuild would read this ledger now and answer no issue; the projection
+    // the poll already published still names it.
+    write_json(&directory.join("state.json"), json!({"findings": {}}));
+
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StopAgent {
+            id: Some(json!("watchdog")),
+        },
+    )
+    .await;
+    let answered = frames(&mut inbox);
+    let snapshot = agent(&answered, "watchdog").expect("the answering snapshot");
+    assert_eq!(
+        snapshot["issues"][0]["title"],
+        json!("[watchdog] stalled-lane: run-2026"),
+        "the Stop walked the family's state tree instead of answering its projection: {answered:?}"
+    );
+    assert_eq!(snapshot["lifecycle"], json!("stopping"), "{answered:?}");
+    assert!(snapshot["runId"].is_null(), "{answered:?}");
+    kill_stand_in(pid);
+}
+
 #[tokio::test]
 async fn a_changed_open_issue_read_republishes_the_prompt_template() {
     let root = scratch("prompt-refresh");

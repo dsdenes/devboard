@@ -983,6 +983,28 @@ fn start_answer(answer: &mut Value, facts: StartFacts) {
     }
 }
 
+/// Overlays the facts one accepted Stop changed onto the projection the poll
+/// already published, replacing only those fields.
+///
+/// A Stop's answer used to rebuild that projection, and the rebuild walked the
+/// family's whole state tree and every cap slot's liveness on the command path
+/// — the term that pushed `stopAgent` past the client's 1000 ms budget on a
+/// populated checkout. The poll owns that read; the answer states what this
+/// command changed, and the next tick publishes the worker's own draining
+/// state.
+fn stop_answer(answer: &mut Value) {
+    let Some(object) = answer.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "lifecycle".to_string(),
+        Value::String("stopping".to_string()),
+    );
+    // A Stop ends the run a Start named; the stop proof publishes whatever run
+    // the family holds next.
+    object.insert("runId".to_string(), Value::Null);
+}
+
 #[cfg(test)]
 thread_local! {
     /// State-tree walks this thread performed. A projection answers from one
@@ -2572,6 +2594,15 @@ impl Adapter {
         }
     }
 
+    fn apply_stop(&self, answer: &mut Value) {
+        match self {
+            Adapter::Repo(family) => family.stop_projection(answer),
+            Adapter::Watchdog(family) => family.stop_projection(answer),
+            Adapter::Mcp(family) => family.stop_projection(answer),
+            Adapter::Release(family) => family.stop_projection(answer),
+        }
+    }
+
     fn replay(&self, conn: &Conn, shared: &Shared, snapshot: Value) {
         match self {
             Adapter::Repo(family) => family.replay(conn, shared, snapshot),
@@ -3228,13 +3259,14 @@ impl AgentsMode {
         );
     }
 
-    /// Publishes a Start's answer: the projection the poll maintains, with the
-    /// facts this command changed. Rebuilding that projection here is what
-    /// read the family's state tree on the command path and pushed
-    /// `startAgent` past the client's 1000 ms budget on a populated checkout.
-    fn publish_start(&self, adapter: &Adapter) {
+    /// Publishes a command's answer: the projection the poll maintains, with
+    /// the facts this command changed. Rebuilding that projection here read the
+    /// family's state tree and every cap slot's liveness on the command path,
+    /// which is what pushed `startAgent` and `stopAgent` past the client's
+    /// 1000 ms budget on a populated checkout.
+    fn publish_command_answer(&self, adapter: &Adapter, overlay: fn(&Adapter, &mut Value)) {
         let mut agent = self.project(adapter);
-        adapter.apply_start(&mut agent);
+        overlay(adapter, &mut agent);
         self.store_projection(adapter, &agent);
         let text = crate::jsjson::stringify(&agent);
         if let Ok(mut signatures) = self.signatures.lock() {
@@ -3247,6 +3279,17 @@ impl AgentsMode {
             }),
             None,
         );
+    }
+
+    fn publish_start(&self, adapter: &Adapter) {
+        self.publish_command_answer(adapter, Adapter::apply_start);
+    }
+
+    /// Publishes a Stop's answer the same way. The stop proof publishes the
+    /// worker's own draining state on the next tick, and the answer states the
+    /// one fact this command changed now.
+    fn publish_stop(&self, adapter: &Adapter) {
+        self.publish_command_answer(adapter, Adapter::apply_stop);
     }
 
     fn send_agent(&self, conn: &Conn, adapter: &Adapter) {
@@ -3401,7 +3444,8 @@ impl AgentsMode {
                     return true;
                 };
                 let result = adapter.stop();
-                self.finish(conn, adapter, result);
+                self.publish_stop(adapter);
+                self.answer_fault(conn, result);
                 true
             }
             Command::SetAgentSettings {
@@ -4972,6 +5016,19 @@ impl RepoFamily {
                 error: mutable.start_error.clone(),
             },
         )
+    }
+
+    /// Overlays this Stop's one changed fact: a family the operator asked to
+    /// stop reads `stopping` until its worker publishes the state that ends it.
+    fn stop_projection(&self, answer: &mut Value) {
+        if self
+            .mutable
+            .lock()
+            .map(|mutable| mutable.stop_requested)
+            .unwrap_or(false)
+        {
+            stop_answer(answer);
+        }
     }
 
     fn snapshot(&self) -> Value {
@@ -7539,6 +7596,19 @@ impl WatchdogFamily {
         )
     }
 
+    /// Overlays this Stop's one changed fact: a family the operator asked to
+    /// stop reads `stopping` until its worker publishes the state that ends it.
+    fn stop_projection(&self, answer: &mut Value) {
+        if self
+            .mutable
+            .lock()
+            .map(|mutable| mutable.stop_requested)
+            .unwrap_or(false)
+        {
+            stop_answer(answer);
+        }
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         // One ledger read answers the forge-URL check, the issue rows, the
@@ -8849,6 +8919,19 @@ impl McpFamily {
         )
     }
 
+    /// Overlays this Stop's one changed fact: a family the operator asked to
+    /// stop reads `stopping` until its worker publishes the state that ends it.
+    fn stop_projection(&self, answer: &mut Value) {
+        if self
+            .mutable
+            .lock()
+            .map(|mutable| mutable.stop_requested)
+            .unwrap_or(false)
+        {
+            stop_answer(answer);
+        }
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         if self.forge_urls().is_empty() {
@@ -9821,6 +9904,19 @@ impl ReleaseFamily {
                 error: mutable.start_error.clone(),
             },
         )
+    }
+
+    /// Overlays this Stop's one changed fact: a family the operator asked to
+    /// stop reads `stopping` until its worker publishes the state that ends it.
+    fn stop_projection(&self, answer: &mut Value) {
+        if self
+            .mutable
+            .lock()
+            .map(|mutable| mutable.stop_requested)
+            .unwrap_or(false)
+        {
+            stop_answer(answer);
+        }
     }
 
     fn snapshot(&self) -> Value {

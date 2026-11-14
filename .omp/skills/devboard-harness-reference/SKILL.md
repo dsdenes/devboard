@@ -2695,7 +2695,10 @@ A Start answers its `starting` snapshot before the preflight. That answer restat
 the poll already published and replaces only the facts the command changed — an in-flight start,
 the run identity the spawn named, its notice, and its error — so `POST /agents/{id}/runs` never
 reads a family's state tree, and neither the preview frame nor the frame after the spawn pays for
-one. The 1000 ms poll fingerprints each family's durable state, reads the cap's live slots once
+one. A Stop answers the same way: it restates the polled projection with lifecycle `stopping` and
+a null `runId`, so `DELETE /agents/{id}/runs` never reads a family's state tree or the cap's
+slots either, and the stop proof publishes the worker's own draining state on the next tick.
+The 1000 ms poll fingerprints each family's durable state, reads the cap's live slots once
 for every family, and serializes a snapshot only after either changes; an idle dashboard
 rebroadcasts nothing. Every family snapshot carries `peers`, the live governed slots whose starter
 is the family's label. A family between cadence ticks reads lifecycle `running` while `peers` is
