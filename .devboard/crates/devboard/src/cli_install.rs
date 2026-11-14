@@ -440,6 +440,10 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     repair_prefix_symlink(host)?;
     let package = package();
     let omp = host.join(".omp");
+    // Every write below resolves through `omp`: a symlinked component is
+    // replaced with a real directory first, exactly as `ensure_real_dir` does
+    // for the deeper paths, so nothing is written through a link.
+    ensure_real_dir(&omp)?;
     let mut drift: Vec<String> = Vec::new();
 
     let mut installed_files = 0usize;
@@ -478,6 +482,12 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     }
 
     let skills_dir = omp.join("skills");
+    // The marked skills are package-owned: a symlinked `skills` directory is
+    // replaced before the first removal or copy, so no `rm -rf` and no write
+    // ever reaches the link target.
+    if !package.skills.is_empty() {
+        ensure_real_dir(&skills_dir)?;
+    }
     for skill in &package.skills {
         let destination = skills_dir.join(&skill.name);
         if skill_matches(skill, &destination)? {
@@ -604,6 +614,12 @@ fn install_payload(
 ) -> Result<usize> {
     let mut files = Vec::new();
     collect_files(dir, &mut files);
+    // The payload is written and pruned below a real directory: a symlinked
+    // payload directory is replaced before any entry is read or removed, so
+    // neither a write nor a removal reaches the link target.
+    if !files.is_empty() {
+        ensure_real_dir(target)?;
+    }
     let shipped: BTreeSet<String> = files.iter().map(|(relative, _)| relative.clone()).collect();
     let mut written = 0usize;
     for (relative, contents) in &files {

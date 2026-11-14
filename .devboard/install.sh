@@ -14,6 +14,11 @@
 # --force, an entry the package does not ship is deleted, and a symlinked
 # marked entry becomes a real directory. Every unmarked skill belongs to the
 # host and is never read, rewritten, or deleted.
+#
+# Every write lands under a real directory below the host root: a symlinked
+# `.omp`, `.omp/skills`, or payload component is replaced, never followed, and
+# a symlinked `.devboard` prefix is refused so the binary installer repairs it
+# instead. Nothing is ever written into a link target.
 set -euo pipefail
 
 usage() {
@@ -74,9 +79,45 @@ if ! host=$(cd -- "$host_arg" 2>/dev/null && pwd); then
   exit 1
 fi
 
-mkdir -p -- "$host/.devboard"
+# Create `<host>/<relative>` and every missing ancestor below the host as real
+# directories. A symlink or a file in the way is replaced: the link itself is
+# unlinked, never followed, so a write can never escape the host tree. Every
+# component below the host root is walked from there, so the host path's own
+# ancestors are never touched.
+ensure_real_dir() {
+  local path=${1#"$host"/}
+  if [ "$1" = "$path" ]; then
+    printf 'install: %s is outside the host root\n' "$1" >&2
+    return 1
+  fi
+  local current=$host
+  local -a components=()
+  local component
+  IFS='/' read -r -a components <<<"$path"
+  for component in ${components[@]+"${components[@]}"}; do
+    case "$component" in
+      '' | .) continue ;;
+    esac
+    current="$current/$component"
+    if [ -d "$current" ] && [ ! -L "$current" ]; then continue; fi
+    if [ -L "$current" ] || [ -e "$current" ]; then rm -f -- "$current"; fi
+    mkdir -- "$current"
+  done
+}
+
+# A symlinked `.devboard` is repaired by the binary installer, which moves the
+# target's state into a real directory. The shell installer never writes
+# through the link and never deletes the target's contents, so it refuses
+# instead of rewriting a tree it does not own.
+if [ -L "$host/.devboard" ]; then
+  printf 'install: %s is a symlink; run the binary installer to repair the prefix\n' \
+    "$host/.devboard" >&2
+  exit 1
+fi
+ensure_real_dir "$host/.devboard"
 
 target_omp="$host/.omp"
+ensure_real_dir "$target_omp"
 source_skills="$source_omp/skills"
 managed_prefix='devboard-'
 
@@ -87,14 +128,15 @@ for payload in prompts extensions; do
   source_payload="$source_dir/$payload"
   target_payload="$host/.devboard/$payload"
   [ -d "$source_payload" ] || continue
-  mkdir -p -- "$target_payload"
+  ensure_real_dir "$target_payload"
   while IFS= read -r -d '' source_file; do
     relative_path="${source_file#"$source_payload"/}"
     destination="$target_payload/$relative_path"
     if [ -f "$destination" ] && cmp -s -- "$source_file" "$destination"; then
       continue
     fi
-    mkdir -p -- "$(dirname -- "$destination")"
+    ensure_real_dir "$(dirname -- "$destination")"
+    if [ -L "$destination" ]; then rm -f -- "$destination"; fi
     cp -- "$source_file" "$destination"
     payload_installed=$((payload_installed + 1))
   done < <(find "$source_payload" -type f -print0)
@@ -105,11 +147,14 @@ done
 if [ ! -f "$host/.devboard/package.json" ]; then
   version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$source_dir/Cargo.toml" | head -n 1)"
   if [ -n "$version" ]; then
+    manifest="$host/.devboard/devboard.json"
+    if [ -L "$manifest" ] || [ -d "$manifest" ]; then rm -rf -- "$manifest"; fi
     printf '{"name":"@dsdenes/devboard","version":"%s"}\n' "$version" \
-      > "$host/.devboard/devboard.json"
+      > "$manifest"
   fi
 fi
-mkdir -p -- "$host/.omp/extensions" "$host/.devboard/extensions"
+ensure_real_dir "$host/.omp/extensions"
+ensure_real_dir "$host/.devboard/extensions"
 # The harness no longer ships runtime extensions: remove the retired
 # TypeScript wrappers an older install left behind.
 for retired in "$host/.omp/extensions" "$host/.devboard/extensions"; do
@@ -171,7 +216,8 @@ for relative_path in ${regular_paths[@]+"${regular_paths[@]}"}; do
   if [ -f "$destination" ] && cmp -s -- "$source_omp/$relative_path" "$destination"; then
     continue
   fi
-  mkdir -p -- "$(dirname -- "$destination")"
+  ensure_real_dir "$(dirname -- "$destination")"
+  if [ -L "$destination" ]; then rm -f -- "$destination"; fi
   cp -- "$source_omp/$relative_path" "$destination"
   installed=$((installed + 1))
 done
@@ -201,6 +247,13 @@ skill_matches() {
   return 0
 }
 
+# The marked skills live under a real `.omp/skills` directory: a symlinked
+# component is replaced before the first unlink or copy, so no `rm -rf` and no
+# copy ever reaches the link target.
+if [ "${#managed_skills[@]}" -gt 0 ]; then
+  ensure_real_dir "$target_omp/skills"
+fi
+
 for skill_name in ${managed_skills[@]+"${managed_skills[@]}"}; do
   skill_source="$source_skills/$skill_name"
   destination="$target_omp/skills/$skill_name"
@@ -212,7 +265,7 @@ for skill_name in ${managed_skills[@]+"${managed_skills[@]}"}; do
   if [ -L "$destination" ] || [ -e "$destination" ]; then
     rm -rf -- "$destination"
   fi
-  mkdir -p -- "$(dirname -- "$destination")"
+  ensure_real_dir "$(dirname -- "$destination")"
   cp -R -- "$skill_source" "$destination"
   copied=$(find "$skill_source" -type f -print | wc -l)
   installed=$((installed + copied))
@@ -221,7 +274,7 @@ done
 # A marked directory the package no longer ships is package-owned too: prune
 # it. Every unmarked name is left exactly as the host wrote it. A package that
 # ships no skills/ tree at all is a partial fixture, so nothing is pruned.
-if [ -d "$source_skills" ] && [ -d "$target_omp/skills" ]; then
+if [ -d "$source_skills" ] && [ -d "$target_omp/skills" ] && [ ! -L "$target_omp/skills" ]; then
   while IFS= read -r -d '' entry; do
     entry_name=$(basename -- "$entry")
     case "$entry_name" in
@@ -273,8 +326,11 @@ if [ "${#missing[@]}" -gt 0 ]; then
   } >>"$ignore_path"
 fi
 
-# The root contract is copied only when absent; host content is left alone.
-if [ -f "$source_dir/templates/host-AGENTS.md" ] && [ ! -e "$host/AGENTS.md" ]; then
+# The root contract is copied only when absent; host content is left alone. A
+# dangling symlink is not absent: writing through it would land outside the
+# host tree, so it is left untouched.
+if [ -f "$source_dir/templates/host-AGENTS.md" ] && [ ! -e "$host/AGENTS.md" ] \
+  && [ ! -L "$host/AGENTS.md" ]; then
   cp -- "$source_dir/templates/host-AGENTS.md" "$host/AGENTS.md"
 fi
 

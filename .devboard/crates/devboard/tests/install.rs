@@ -148,6 +148,14 @@ fn assert_real_file(path: &Path) {
     );
 }
 
+fn run_install_script(host: &Path) -> std::process::Output {
+    std::process::Command::new("bash")
+        .arg(package_dir().join("install.sh"))
+        .arg(host)
+        .output()
+        .expect("the installer runs")
+}
+
 #[test]
 fn install_writes_real_files_and_one_gitignore_line_per_skill() {
     let scratch = Scratch::new("fresh");
@@ -529,11 +537,7 @@ fn install_sh_produces_the_same_host_tree_as_the_binary() {
     cli_install::install(Some(binary.host()), false).unwrap();
 
     let scripted = Scratch::new("parity-script");
-    let output = std::process::Command::new("bash")
-        .arg(package_dir().join("install.sh"))
-        .arg(scripted.host())
-        .output()
-        .expect("the installer runs");
+    let output = run_install_script(scripted.host());
     assert!(
         output.status.success(),
         "install.sh failed: {}",
@@ -547,6 +551,87 @@ fn install_sh_produces_the_same_host_tree_as_the_binary() {
     assert_eq!(left, right);
     left.clear();
     right.clear();
+
+    // A host that shares `.omp/skills` through a symlink must come out with a
+    // real `skills` directory under both installers, and the link target must
+    // stay byte-identical: neither installer follows the link to remove,
+    // replace, or create anything there.
+    let linked_binary = Scratch::new("parity-binary-linked");
+    let linked_scripted = Scratch::new("parity-scripted-linked");
+    let shared = b"the host's own shared skill\n";
+    for host in [linked_binary.host(), linked_scripted.host()] {
+        fs::create_dir_all(host.join(".omp")).unwrap();
+        fs::create_dir_all(host.join("shared-skills/devboard-ui-ux")).unwrap();
+        fs::write(host.join("shared-skills/devboard-ui-ux/SKILL.md"), shared).unwrap();
+        std::os::unix::fs::symlink("../shared-skills", host.join(".omp/skills")).unwrap();
+    }
+
+    cli_install::install(Some(linked_binary.host()), false).unwrap();
+    let output = run_install_script(linked_scripted.host());
+    assert!(
+        output.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for host in [linked_binary.host(), linked_scripted.host()] {
+        let skills = fs::symlink_metadata(host.join(".omp/skills")).unwrap();
+        assert!(
+            skills.is_dir() && !skills.file_type().is_symlink(),
+            "{} kept the symlinked skills directory",
+            host.display()
+        );
+        assert_real_file(&host.join(".omp/skills/devboard-ui-ux/SKILL.md"));
+        assert_eq!(
+            fs::read(host.join("shared-skills/devboard-ui-ux/SKILL.md")).unwrap(),
+            shared,
+            "{} rewrote the link target",
+            host.display()
+        );
+        let entries: Vec<_> = fs::read_dir(host.join("shared-skills"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            [std::ffi::OsString::from("devboard-ui-ux")],
+            "{} wrote into the link target",
+            host.display()
+        );
+    }
+    assert_eq!(
+        snapshot(linked_binary.host()),
+        snapshot(linked_scripted.host())
+    );
+}
+
+#[test]
+fn install_sh_refuses_a_symlinked_prefix() {
+    let scratch = Scratch::new("scripted-prefix");
+    let host = scratch.host();
+    let target = host.join("prefix-target");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("state.json"), b"host state\n").unwrap();
+    fs::remove_dir_all(host.join(".devboard")).unwrap();
+    std::os::unix::fs::symlink(&target, host.join(".devboard")).unwrap();
+
+    let output = run_install_script(host);
+    assert!(
+        !output.status.success(),
+        "install.sh followed a symlinked prefix"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("symlink"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(target.join("state.json")).unwrap(),
+        b"host state\n"
+    );
+    assert!(
+        !host.join(".omp").exists(),
+        "a refused install writes nothing"
+    );
 }
 
 #[test]
