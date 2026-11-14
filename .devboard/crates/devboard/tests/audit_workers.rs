@@ -321,6 +321,8 @@ struct DeadForge {
     closing_calls: AtomicU64,
     open_title_calls: AtomicU64,
     read_delay_ms: AtomicU64,
+    resolve_failure: Mutex<Option<String>>,
+    tags_failure: Mutex<Option<String>>,
 }
 
 impl dead::ForgeClient for DeadForge {
@@ -362,7 +364,12 @@ impl dead::ForgeClient for DeadForge {
     }
 
     fn resolve_commit(&self, short: String) -> dead::ForgeFuture<'_, Option<String>> {
-        Box::pin(async move { Ok(Some(short)) })
+        Box::pin(async move {
+            if let Some(detail) = self.resolve_failure.lock().expect("the fake").clone() {
+                return Err(detail);
+            }
+            Ok(Some(short))
+        })
     }
 
     fn containing_release_tags(
@@ -370,7 +377,12 @@ impl dead::ForgeClient for DeadForge {
         _commit: String,
         releases: Vec<dead::Release>,
     ) -> dead::ForgeFuture<'_, Vec<String>> {
-        Box::pin(async move { Ok(releases.into_iter().map(|release| release.tag).collect()) })
+        Box::pin(async move {
+            if let Some(detail) = self.tags_failure.lock().expect("the fake").clone() {
+                return Err(detail);
+            }
+            Ok(releases.into_iter().map(|release| release.tag).collect())
+        })
     }
 }
 
@@ -1141,6 +1153,135 @@ async fn dead_code_resolves_a_release_once_and_retries_after_a_new_one() {
     assert_eq!(row.version.as_deref(), Some("v0.1.0"));
     assert!(row.version_error.is_none());
     assert_eq!(forge.closing_calls.load(Ordering::SeqCst), 2);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn dead_code_resolves_the_release_nearest_a_close_with_no_closing_commit() {
+    let fixture = Fixture::new("dead-close");
+    fixture.write("src/a.ts", "export const dead = 1;\n");
+    let forge = Arc::new(DeadForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 1,
+            title: "Remove dead fixture code".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "closed".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            closed_at: Some("2026-01-02T00:00:00.000Z".to_string()),
+            body: "## Category\n\nunreferenced-symbol\n".to_string(),
+        });
+    *forge.releases.lock().expect("the fake") = vec![
+        dead::Release {
+            tag: "v0.1.0".to_string(),
+            published_at: "2026-01-01T12:00:00Z".to_string(),
+        },
+        dead::Release {
+            tag: "v0.2.0".to_string(),
+            published_at: "2026-01-03T00:00:00Z".to_string(),
+        },
+    ];
+    let worker = dead_worker(
+        &fixture,
+        Arc::clone(&forge),
+        fake_connect(|_prompt| Box::pin(async move { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert_eq!(
+        row.version.as_deref(),
+        Some("v0.1.0"),
+        "the release published before the close is the one that shipped it"
+    );
+    assert_eq!(row.version_error, None);
+    assert_eq!(forge.closing_calls.load(Ordering::SeqCst), 1);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn dead_code_records_a_failed_commit_read_as_the_version_error() {
+    let fixture = Fixture::new("dead-resolve-error");
+    fixture.write("src/a.ts", "export const dead = 1;\n");
+    let forge = Arc::new(DeadForge::default());
+    let commit = "0123456789abcdef0123456789abcdef01234567";
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 1,
+            title: "Remove dead fixture code".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "closed".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            closed_at: Some("2026-01-01T00:00:00.000Z".to_string()),
+            body: "## Category\n\nunreferenced-symbol\n".to_string(),
+        });
+    forge
+        .closing
+        .lock()
+        .expect("the fake")
+        .push(commit.to_string());
+    let detail = format!("gh: could not resolve {commit}: HTTP 502");
+    *forge.resolve_failure.lock().expect("the fake") = Some(detail.clone());
+    let worker = dead_worker(
+        &fixture,
+        Arc::clone(&forge),
+        fake_connect(|_prompt| Box::pin(async move { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert!(row.version.is_none());
+    assert_eq!(row.version_error.as_deref(), Some(detail.as_str()));
+    assert!(row.version_attempt_at.is_some());
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn dead_code_records_a_failed_release_tag_read_as_the_version_error() {
+    let fixture = Fixture::new("dead-tags-error");
+    fixture.write("src/a.ts", "export const dead = 1;\n");
+    let forge = Arc::new(DeadForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 1,
+            title: "Remove dead fixture code".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "closed".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            closed_at: Some("2026-01-01T00:00:00.000Z".to_string()),
+            body: "## Category\n\nunreferenced-symbol\n".to_string(),
+        });
+    forge
+        .closing
+        .lock()
+        .expect("the fake")
+        .push("0123456789abcdef".to_string());
+    *forge.releases.lock().expect("the fake") = vec![dead::Release {
+        tag: "v0.1.0".to_string(),
+        published_at: "2026-01-01T00:00:00Z".to_string(),
+    }];
+    let detail = "gh: release tag containment failed: HTTP 500".to_string();
+    *forge.tags_failure.lock().expect("the fake") = Some(detail.clone());
+    let worker = dead_worker(
+        &fixture,
+        Arc::clone(&forge),
+        fake_connect(|_prompt| Box::pin(async move { Ok(()) })),
+    );
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert!(row.version.is_none());
+    assert_eq!(row.version_error.as_deref(), Some(detail.as_str()));
+    assert!(row.version_attempt_at.is_some());
     worker.stop().await;
 }
 

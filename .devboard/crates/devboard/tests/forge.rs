@@ -2487,6 +2487,56 @@ async fn list_labelled_asks_the_gitea_forge_for_the_label() {
 }
 
 #[tokio::test]
+async fn list_labelled_carries_the_close_time_of_a_closed_row() {
+    let server =
+        StubServer::start(
+            move |request| match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/api/v1/repos/owner/name") => json_response(json!({
+                    "permissions": {"pull": true, "push": true, "admin": false},
+                })),
+                ("GET", "/api/v1/user") => json_response(json!({"login": "alice"})),
+                ("GET", "/api/v1/repos/owner/name/issues") => json_response(json!([{
+                    "number": 7,
+                    "title": "Issue 7",
+                    "html_url": "https://gitea.test/owner/name/issues/7",
+                    "created_at": "2024-01-02T03:04:05Z",
+                    "closed_at": "2024-01-04T05:06:07Z",
+                    "state": "closed",
+                    "body": "body 7",
+                    "labels": [{"name": "dead-code"}],
+                }])),
+                _ => text_response(500, "unexpected"),
+            },
+        )
+        .await;
+    let repo = git_repo("list-labelled-closed", "git@localhost:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[
+            ("DEVBOARD_GITEA_URL", server.base.as_str()),
+            ("GITEA_TOKEN", "secret"),
+        ]),
+        transport: Some(default_transport(5_000)),
+        exec: None,
+        run: None,
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    let documents = client
+        .list_labelled(IssueQueryState::All, "dead-code")
+        .await
+        .expect("a labelled read");
+    assert_eq!(documents.len(), 1);
+    assert_eq!(
+        documents[0].closed_at.as_deref(),
+        Some("2024-01-04T05:06:07Z"),
+        "the close time the release resolution falls back on survives the read"
+    );
+    assert!(documents[0].state == IssueState::Closed);
+}
+
+#[tokio::test]
 async fn the_design_forge_asks_the_gitea_forge_for_the_design_label() {
     let labelled = |number: i64| {
         json!({

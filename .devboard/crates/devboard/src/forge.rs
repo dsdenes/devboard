@@ -4852,6 +4852,7 @@ pub struct ForgeIssueDocument {
     pub labels: Vec<String>,
     pub url: String,
     pub created_at: Option<String>,
+    pub closed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5073,6 +5074,10 @@ fn github_document(value: &Value) -> Result<ForgeIssueDocument, ForgeIssueError>
             .get("createdAt")
             .and_then(Value::as_str)
             .map(str::to_string),
+        closed_at: value
+            .get("closedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -5085,6 +5090,7 @@ fn gitea_document(document: GiteaIssueDocument) -> ForgeIssueDocument {
         labels: document.labels,
         url: document.url,
         created_at: Some(document.created_at),
+        closed_at: document.closed_at,
     }
 }
 
@@ -5428,7 +5434,7 @@ impl ForgeIssuesClient {
                     "--repo".to_string(),
                     self.remote.project.clone(),
                     "--json".to_string(),
-                    "number,title,body,state,labels,url,createdAt".to_string(),
+                    "number,title,body,state,labels,url,createdAt,closedAt".to_string(),
                 ],
                 String::new(),
             )

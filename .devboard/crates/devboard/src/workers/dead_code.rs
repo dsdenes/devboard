@@ -1755,7 +1755,7 @@ impl ForgeClient for RealForge {
                         crate::forge::IssueState::Open => "open".to_string(),
                     },
                     created_at: document.created_at.unwrap_or_default(),
-                    closed_at: None,
+                    closed_at: document.closed_at,
                     body: document.body,
                 });
             }
@@ -1809,122 +1809,88 @@ pub fn create_forge(repo_dir: &Path) -> Result<Arc<dyn ForgeClient>, String> {
     Ok(Arc::new(RealForge::new(repo_dir)?))
 }
 
-/// The earliest published release containing any of the tags.
-pub fn earliest_release(releases: &[Release], tags: &[String]) -> Option<String> {
-    let mut candidates: Vec<&Release> = releases
-        .iter()
-        .filter(|release| tags.iter().any(|tag| tag == &release.tag))
-        .collect();
-    candidates.sort_by(|left, right| {
-        parse_iso_millis(&left.published_at)
-            .unwrap_or(0)
-            .cmp(&parse_iso_millis(&right.published_at).unwrap_or(0))
-            .then_with(|| left.tag.cmp(&right.tag))
-    });
-    candidates.first().map(|release| release.tag.clone())
+/// The shared release resolver's view of this family's forge.
+///
+/// The forge seam predates the shared resolver and speaks this family's own
+/// row types; this adapter is the whole difference, so the resolution itself
+/// is the same one Scout and agent runs use.
+struct ClosingClient {
+    forge: Arc<dyn ForgeClient>,
 }
 
-fn release_at_close(releases: &[Release], issue: &ForgeIssue) -> Option<String> {
-    let closed = issue.closed_at.as_deref().and_then(parse_iso_millis)?;
-    let filed = parse_iso_millis(&issue.created_at);
-    let mut candidates: Vec<(&Release, i64)> = releases
-        .iter()
-        .filter_map(|release| {
-            let at = parse_iso_millis(&release.published_at)?;
-            if filed.is_some_and(|filed| at < filed) {
-                return None;
-            }
-            Some((release, at))
+impl crate::forge::ClosingCommitClient for ClosingClient {
+    fn closing_commit(&self, issue_number: i64) -> crate::forge::ClientFuture<'_, Option<String>> {
+        Box::pin(async move {
+            Ok(self
+                .forge
+                .closing_commits(issue_number)
+                .await?
+                .into_iter()
+                .next())
         })
-        .collect();
-    candidates.sort_by(|left, right| {
-        left.1
-            .cmp(&right.1)
-            .then_with(|| left.0.tag.cmp(&right.0.tag))
-    });
-    candidates
-        .iter()
-        .filter(|(_release, at)| *at <= closed)
-        .next_back()
-        .or_else(|| candidates.first())
-        .map(|(release, _at)| release.tag.clone())
+    }
+
+    fn closing_commits(&self, issue_number: i64) -> crate::forge::ClientFuture<'_, Vec<String>> {
+        Box::pin(async move { self.forge.closing_commits(issue_number).await })
+    }
+
+    fn landed_commits(&self, issue_number: i64) -> Vec<String> {
+        self.forge.landed_commits(issue_number)
+    }
+
+    fn resolve_commit(&self, short: String) -> crate::forge::ClientFuture<'_, Option<String>> {
+        Box::pin(async move { self.forge.resolve_commit(short).await })
+    }
+
+    fn containing_release_tags(
+        &self,
+        commit: String,
+        releases: Vec<crate::forge::GitHubRelease>,
+    ) -> crate::forge::ClientFuture<'_, Vec<String>> {
+        let releases: Vec<Release> = releases
+            .into_iter()
+            .map(|release| Release {
+                tag: release.tag,
+                published_at: release.published_at,
+            })
+            .collect();
+        Box::pin(async move { self.forge.containing_release_tags(commit, releases).await })
+    }
 }
 
-/// The release that shipped the issue's closing commit, with every failure
-/// reported rather than thrown.
-pub async fn resolve_shipped_version(
+fn closing_issue(issue: &ForgeIssue) -> crate::forge::ClosingCommitIssue {
+    crate::forge::ClosingCommitIssue {
+        number: issue.number,
+        state: if issue.state == "closed" {
+            crate::forge::IssueState::Closed
+        } else {
+            crate::forge::IssueState::Open
+        },
+        created_at: Some(issue.created_at.clone()).filter(|at| !at.is_empty()),
+        closed_at: issue.closed_at.clone(),
+    }
+}
+
+/// The release that shipped the issue's closing commit, with every forge
+/// failure reported verbatim rather than judged as a missing release.
+async fn resolve_row_version(
     issue: &ForgeIssue,
-    forge: &dyn ForgeClient,
+    forge: &Arc<dyn ForgeClient>,
     releases: &[Release],
 ) -> (Option<String>, Option<String>) {
-    if issue.state != "closed" {
-        return (None, None);
-    }
-    let nearest = release_at_close(releases, issue);
-    let without_commit = |error: String| match &nearest {
-        Some(version) => (Some(version.clone()), None),
-        None => (None, Some(error)),
+    let client = ClosingClient {
+        forge: Arc::clone(forge),
     };
-    let landed = forge.landed_commits(issue.number);
-    if !landed.is_empty() {
-        let mut tags: HashSet<String> = HashSet::new();
-        let mut resolved: Option<String> = None;
-        for candidate in landed {
-            let Some(commit) = forge.resolve_commit(candidate).await.ok().flatten() else {
-                continue;
-            };
-            if resolved.is_none() {
-                resolved = Some(commit.clone());
-            }
-            for tag in forge
-                .containing_release_tags(commit, releases.to_vec())
-                .await
-                .unwrap_or_default()
-            {
-                tags.insert(tag);
-            }
-        }
-        if let Some(resolved) = resolved {
-            let tags: Vec<String> = tags.into_iter().collect();
-            return match earliest_release(releases, &tags) {
-                Some(version) => (Some(version), None),
-                None => (
-                    None,
-                    Some(format!("no published release contains {resolved}")),
-                ),
-            };
-        }
-    }
-    let candidates = match forge.closing_commits(issue.number).await {
-        Ok(candidates) => candidates,
-        Err(error) => return (None, Some(error)),
-    };
-    if candidates.is_empty() {
-        return without_commit("no closing commit was found".to_string());
-    }
-    let mut error = format!(
-        "closing commit {} could not be resolved",
-        candidates.first().cloned().unwrap_or_default()
-    );
-    let mut resolved: Option<String> = None;
-    for candidate in candidates {
-        let Some(commit) = forge.resolve_commit(candidate).await.ok().flatten() else {
-            continue;
-        };
-        resolved = Some(commit.clone());
-        let tags = forge
-            .containing_release_tags(commit.clone(), releases.to_vec())
-            .await
-            .unwrap_or_default();
-        if let Some(version) = earliest_release(releases, &tags) {
-            return (Some(version), None);
-        }
-        error = format!("no published release contains {commit}");
-    }
-    match resolved {
-        None => without_commit(error),
-        Some(_) => (None, Some(error)),
-    }
+    let releases: Vec<crate::forge::GitHubRelease> = releases
+        .iter()
+        .map(|release| crate::forge::GitHubRelease {
+            tag: release.tag.clone(),
+            published_at: release.published_at.clone(),
+        })
+        .collect();
+    let resolution =
+        crate::forge::resolve_shipped_version(&closing_issue(issue), &client, &releases).await;
+    (resolution.version, resolution.error)
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2524,7 +2490,7 @@ impl Worker {
             if !releases_changed && now - attempt < RESOLUTION_RETRY_MS {
                 continue;
             }
-            let (version, error) = resolve_shipped_version(&issue, forge.as_ref(), &releases).await;
+            let (version, error) = resolve_row_version(&issue, &forge, &releases).await;
             row.version_attempt_at = Some(iso_from_millis(self.now()));
             row.version_error = error;
             if let Some(version) = version {
