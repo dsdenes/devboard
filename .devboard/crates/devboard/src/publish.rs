@@ -2518,88 +2518,38 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             );
         }
     }
-    // A tag for the derived version may already exist. If it covers the
-    // pinned target its release either shipped (refused here, before any
-    // write) or failed its tail (completed by this run, never re-derived or
-    // re-tagged).
-    let bound = tag_bound(&api, &git, &tag).await?;
-    let covers = match bound.as_deref() {
-        Some(bound) => git.commit_names_or_contains(bound, &target).await,
-        None => false,
-    };
-    let existing = if covers {
-        if release_is_complete(&api, &tag, &version).await? {
+    // The forge's newest release is the floor of this derivation, so a
+    // version at or below it names a range that is already released. The
+    // tag's own state is settled after the suite, so no concurrent run can
+    // slip a tag in between the check and the tag creation.
+    if let Some(newest) = highest_version(
+        api.gitea_published_versions()
+            .await?
+            .iter()
+            .map(String::as_str),
+    ) {
+        let order = compare_versions(&version, &newest)
+            .ok_or_else(|| anyhow!("cannot order {version} against {newest}"))?;
+        if order <= 0 {
             bail!(
-                "{tag} is already released for {}; nothing to publish, the next tick re-gates \
-                 at the current main",
-                short_sha(&target)
-            );
-        }
-        (log)(&format!(
-            "{tag} already covers {}; completing that release",
-            short_sha(&target)
-        ));
-        bound.clone()
-    } else {
-        None
-    };
-    if existing.is_none() {
-        // The forge's newest release is the floor of this derivation, so a
-        // version at or below it names a range that is already released.
-        if let Some(newest) = highest_version(
-            api.gitea_published_versions()
-                .await?
-                .iter()
-                .map(String::as_str),
-        ) {
-            let order = compare_versions(&version, &newest)
-                .ok_or_else(|| anyhow!("cannot order {version} against {newest}"))?;
-            if order <= 0 {
-                bail!(
-                    "the pinned target {} derives {tag}, which is not newer than the published \
-                     v{newest}; nothing was tagged or dispatched",
-                    short_sha(&target)
-                );
-            }
-        }
-        if derivation.level.is_none() {
-            bail!(
-                "nothing to release: the pinned target {} is covered by {}; the next tick \
-                 re-gates at the current main",
-                short_sha(&target),
-                derivation
-                    .previous
-                    .as_ref()
-                    .map(|tag| tag.tag.as_str())
-                    .unwrap_or("no release tag")
-            );
-        }
-        // A tag naming another commit is a refusal before anything is written.
-        if let Some(bound) = bound {
-            bail!(
-                "{tag} already names {}, which neither names nor contains the pinned target \
-                 {}; refusing to report a release for another commit",
-                short_sha(&bound),
+                "the pinned target {} derives {tag}, which is not newer than the published \
+                 v{newest}; the pinned target is already released, so nothing was tagged or \
+                 dispatched",
                 short_sha(&target)
             );
         }
     }
-
-    if existing.is_none() {
-        let violations = commit_violations(&derivation.commits);
-        if !violations.is_empty() {
-            for violation in &violations {
-                (log)(&format!(
-                    "commit-gate: {} {}\n  {}",
-                    violation.sha, violation.subject, violation.rule
-                ));
-            }
-            bail!(
-                "the commits in {} are not Conventional Commits",
-                derivation.range
-            );
-        }
-        (log)(&format!("{tag} at {}", short_sha(&target)));
+    if derivation.level.is_none() {
+        bail!(
+            "nothing to release: the pinned target {} is covered by {}; the next tick \
+             re-gates at the current main",
+            short_sha(&target),
+            derivation
+                .previous
+                .as_ref()
+                .map(|tag| tag.tag.as_str())
+                .unwrap_or("no release tag")
+        );
     }
 
     // The Gitea manifest is written only after the tag push and the GitHub
@@ -2641,7 +2591,9 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     ));
 
     // Nothing is bumped, tagged, pushed, or dispatched before the suite
-    // passes.
+    // passes. The tag's own state is read here, after the suite, so a tag
+    // another run created while the suite worked is never mistaken for a
+    // fresh tag or silently overwritten.
     run_release_suite_gate(
         &release,
         &log,
@@ -2651,6 +2603,24 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         &target,
     )
     .await?;
+    let existing =
+        settle_existing_tag(&api, &git, &preflight, &tag, &version, &target, &log).await?;
+    if existing.is_none() {
+        let violations = commit_violations(&derivation.commits);
+        if !violations.is_empty() {
+            for violation in &violations {
+                (log)(&format!(
+                    "commit-gate: {} {}\n  {}",
+                    violation.sha, violation.subject, violation.rule
+                ));
+            }
+            bail!(
+                "the commits in {} are not Conventional Commits",
+                derivation.range
+            );
+        }
+        (log)(&format!("{tag} at {}", short_sha(&target)));
+    }
     let created_tag = existing.is_none();
     let commit = match existing {
         Some(bound) => {
@@ -3028,6 +2998,93 @@ async fn tag_bound(api: &Api, git: &Git<'_>, tag: &str) -> Result<Option<String>
         (None, Some(forge)) => Ok(Some(forge)),
         (None, None) => Ok(None),
     }
+}
+
+/// Decides what an existing tag for the derived version means for this pinned
+/// release, reading the tag after the suite so a concurrent run's tag is seen.
+///
+/// A tag that covers the pinned target is completed when its release is
+/// incomplete, and refused when the release already ships. A tag that does not
+/// cover the target and whose release never shipped is withdrawn: it would
+/// otherwise advance every later derivation past a version with no artifacts
+/// while itself refusing the pinned target forever. Only a tag whose release
+/// exists is left for an operator to reconcile, because deleting it would drop
+/// published work.
+async fn settle_existing_tag(
+    api: &Api,
+    git: &Git<'_>,
+    preflight: &Preflight,
+    tag: &str,
+    version: &str,
+    target: &str,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<Option<String>> {
+    let Some(bound) = tag_bound(api, git, tag).await? else {
+        return Ok(None);
+    };
+    if git.commit_names_or_contains(&bound, target).await {
+        if release_is_complete(api, tag, version).await? {
+            bail!(
+                "{tag} is already released for {}; nothing to publish, the next tick re-gates \
+                 at the current main",
+                short_sha(target)
+            );
+        }
+        (log)(&format!(
+            "{tag} already covers {}; completing that release",
+            short_sha(target)
+        ));
+        return Ok(Some(bound));
+    }
+    if release_exists(api, tag).await? {
+        bail!(
+            "{tag} already names {}, which neither names nor contains the pinned target {}; \
+             a release exists for it, so refusing to report a release for another commit",
+            short_sha(&bound),
+            short_sha(target)
+        );
+    }
+    // Only a release commit of this line is withdrawn: a tag an operator made
+    // for another line is refused, never deleted.
+    if !is_release_commit_for(git, &bound, target, version).await {
+        bail!(
+            "{tag} already names {}, which neither names nor contains the pinned target {}; \
+             refusing to report a release for another commit",
+            short_sha(&bound),
+            short_sha(target)
+        );
+    }
+    (log)(&format!(
+        "withdrawing {tag}: it names {} and its release never shipped; the range is released \
+         at the pinned target instead",
+        short_sha(&bound)
+    ));
+    delete_tag(git, preflight, tag, log).await;
+    Ok(None)
+}
+
+/// Whether `commit` is a release commit of the pinned line: its subject is the
+/// `chore(release)` bump for this version and its parent is on the target's
+/// history. That is exactly the commit an earlier run of this line created and
+/// failed to release.
+async fn is_release_commit_for(git: &Git<'_>, commit: &str, target: &str, version: &str) -> bool {
+    let subject = git.run(&["log", "-1", "--format=%s", commit]).await;
+    if subject.code != 0 || subject.stdout.trim() != format!("chore(release): v{version}") {
+        return false;
+    }
+    let parent = git.run(&["rev-parse", &format!("{commit}^")]).await;
+    if parent.code != 0 {
+        return false;
+    }
+    git.is_ancestor(parent.stdout.trim(), target).await
+}
+
+/// Whether either half of a release exists for `tag`.
+async fn release_exists(api: &Api, tag: &str) -> Result<bool> {
+    if api.github_release_by_tag(tag).await?.is_some() {
+        return Ok(true);
+    }
+    Ok(api.gitea_release_by_tag(tag).await?.is_some())
 }
 
 /// Whether both halves of a release already exist: verified GitHub assets and

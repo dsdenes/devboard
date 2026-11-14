@@ -188,6 +188,26 @@ fn percent_decode(value: &str) -> String {
     out
 }
 
+/// A minimal Gitea stub for a publish that must reach its own refusal: the
+/// repository read proves write access, release lookups answer 404, and every
+/// other route answers an empty list.
+fn writable_gitea(request: &RecordedRequest) -> StubResponse {
+    if request.method == "GET" && request.path == "/api/v1/repos/dsdenes/devboard" {
+        return json_response(json!({
+            "full_name": "dsdenes/devboard",
+            "private": false,
+            "permissions": {"admin": false, "push": true, "pull": true},
+        }));
+    }
+    if request
+        .path
+        .starts_with("/api/v1/repos/dsdenes/devboard/releases/tags/")
+    {
+        return not_found();
+    }
+    json_response(json!([]))
+}
+
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
@@ -1694,7 +1714,7 @@ async fn an_invalid_subject_refuses_the_range() {
     commit_message(&app, "bad subject");
     git_output(&app, &["push", "-q", "origin", "main"]);
 
-    let gitea = StubServer::start(|_| json_response(json!([]))).await;
+    let gitea = StubServer::start(writable_gitea).await;
     let gh = StubServer::start(|_| not_found()).await;
     let error = publish(test_args(&app, &gitea, &gh, None))
         .await
@@ -1720,7 +1740,7 @@ async fn a_tag_for_an_unrelated_commit_is_refused_before_any_write() {
     git_output(&app, &["checkout", "-q", "main"]);
     git_output(&app, &["tag", "v1.1.0", "elsewhere"]);
 
-    let gitea = StubServer::start(|_| json_response(json!([]))).await;
+    let gitea = StubServer::start(writable_gitea).await;
     let gh = StubServer::start(|_| not_found()).await;
     let error = publish(test_args(&app, &gitea, &gh, None))
         .await
@@ -2960,6 +2980,101 @@ async fn an_already_released_pinned_target_fails_before_any_write() {
         1,
         "no second Gitea release is written"
     );
+}
+
+#[tokio::test]
+async fn a_superseded_unpublished_tag_is_withdrawn_and_the_range_is_retagged() {
+    let live = live("pinned-superseded", release_assets()).await;
+    // An earlier run tagged a release commit for v1.1.0 but its release never
+    // shipped, and `main` has since moved past that commit.
+    git_output(&live.seed, &["checkout", "-q", "-b", "stale-release"]);
+    let stale_bump = commit_message(&live.seed, "chore(release): v1.1.0");
+    git_output(&live.seed, &["tag", "-a", "v1.1.0", "-m", "Devboard 1.1.0"]);
+    git_output(&live.seed, &["checkout", "-q", "main"]);
+    git_output(&live.seed, &["branch", "-q", "-D", "stale-release"]);
+    git_output(&live.seed, &["push", "-q", "origin", "refs/tags/v1.1.0"]);
+    let target = commit_file(
+        &live.seed,
+        "README.md",
+        "after the stale tag\n",
+        "fix: after the stale tag",
+    );
+    git_output(&live.seed, &["push", "-q", "origin", "main"]);
+    // No release exists for the stale tag on either forge.
+    live.github_stub.release_exists(false);
+
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = lines.clone();
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
+    args.log = Some(Arc::new(move |line: &str| {
+        recorded.lock().expect("log").push(line.to_string());
+    }));
+    let report = publish(args)
+        .await
+        .expect("the stale tag is withdrawn and the range is retagged");
+
+    assert!(report.published);
+    let lines = lines.lock().expect("log").clone();
+    assert!(
+        lines.iter().any(|line| line.contains("withdrawing v1.1.0")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit,
+        "the tag names the new release commit"
+    );
+    assert_ne!(report.commit, stale_bump);
+    let range = git_output(&live.origin, &["rev-list", &format!("{target}..v1.1.0")]);
+    assert_eq!(range.lines().count(), 1, "{range}");
+    assert_eq!(
+        git_output(
+            &live.origin,
+            &["show", "-s", "--format=%s", "v1.1.0^{commit}"]
+        ),
+        "chore(release): v1.1.0"
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+    assert!(live
+        .gitea_stub
+        .release_bytes("v1.1.0", "devboard-manifest.json")
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_superseded_tag_with_a_release_is_refused_and_kept() {
+    let live = live("pinned-superseded-released", release_assets()).await;
+    git_output(&live.seed, &["checkout", "-q", "-b", "stale-release"]);
+    let stale_bump = commit_message(&live.seed, "chore(release): v1.1.0");
+    git_output(&live.seed, &["tag", "-a", "v1.1.0", "-m", "Devboard 1.1.0"]);
+    git_output(&live.seed, &["checkout", "-q", "main"]);
+    git_output(&live.seed, &["branch", "-q", "-D", "stale-release"]);
+    git_output(&live.seed, &["push", "-q", "origin", "refs/tags/v1.1.0"]);
+    let target = commit_file(
+        &live.seed,
+        "README.md",
+        "after the stale tag\n",
+        "fix: after the stale tag",
+    );
+    git_output(&live.seed, &["push", "-q", "origin", "main"]);
+
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target);
+    let error = publish(args)
+        .await
+        .expect_err("a released tag off the target's range is refused");
+    let message = format!("{error:#}");
+    assert!(message.contains("neither names nor contains"), "{message}");
+    assert!(message.contains("a release exists for it"), "{message}");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        stale_bump,
+        "a released tag is never deleted"
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
 #[tokio::test]
