@@ -294,6 +294,71 @@ fn scratch_visit(
     (false, bytes)
 }
 
+/// True while a test binary runs from a build tree. A test's fixtures may
+/// carry deliberately ancient mtimes, so a sweep never reaches inside a fresh
+/// tree while one runs; it only removes whole trees that already aged out.
+pub fn test_process_running() -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(exe) = std::fs::read_link(entry.path().join("exe")) else {
+            continue;
+        };
+        let text = exe.to_string_lossy();
+        if text.contains("/target/debug/deps/") || text.contains("/target/release/deps/") {
+            return true;
+        }
+    }
+    false
+}
+
+fn scratch_top_level(
+    root: &Path,
+    path: &Path,
+    cutoff: i64,
+    protected: &HashSet<PathBuf>,
+    kind: ScratchKind,
+    dry_run: bool,
+    report: &mut ScratchCleanupReport,
+) {
+    if protected.contains(path) {
+        return;
+    }
+    if kind == ScratchKind::Tmp && path.parent() == Some(root) {
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            if durable_tmp_entry(name) {
+                return;
+            }
+        }
+    }
+    let Some(modified) = modified_ms(path) else {
+        return;
+    };
+    if modified >= cutoff {
+        return;
+    }
+    let candidate = ScratchCandidate {
+        path: path.to_path_buf(),
+        kind,
+    };
+    if dry_run {
+        report.candidates.push(candidate);
+        return;
+    }
+    match remove_entry(path) {
+        Ok(()) => report.removed.push(candidate),
+        Err(error) => report.errors.push(format!("{}: {error}", path.display())),
+    }
+}
+
 /// Sweeps every `.devboard/.test-tmp` tree under the checkout and its
 /// worktrees, plus every worktree's `.devboard/.tmp`, removing an entry only
 /// when it is older than its window and no live process holds a working
@@ -303,6 +368,25 @@ pub fn run_scratch_cleanup(
     now_ms: i64,
     dry_run: bool,
     live_directories: &dyn Fn() -> Vec<PathBuf>,
+) -> ScratchCleanupReport {
+    run_scratch_cleanup_with(
+        root,
+        now_ms,
+        dry_run,
+        live_directories,
+        !test_process_running(),
+    )
+}
+
+/// `run_scratch_cleanup` with an explicit mode: `recursive` reaches old files
+/// inside a tree whose top-level entry is fresh, which is safe only when no
+/// test binary is running.
+pub fn run_scratch_cleanup_with(
+    root: &Path,
+    now_ms: i64,
+    dry_run: bool,
+    live_directories: &dyn Fn() -> Vec<PathBuf>,
+    recursive: bool,
 ) -> ScratchCleanupReport {
     let mut report = ScratchCleanupReport::default();
     let root = canonical(root);
@@ -316,15 +400,28 @@ pub fn run_scratch_cleanup(
         names.sort();
         let cutoff = now_ms - scratch.window_ms;
         for name in names {
-            scratch_visit(
-                &scratch.directory,
-                &scratch.directory.join(name),
-                cutoff,
-                &protected,
-                scratch.kind,
-                dry_run,
-                &mut report,
-            );
+            let path = scratch.directory.join(name);
+            if recursive {
+                scratch_visit(
+                    &scratch.directory,
+                    &path,
+                    cutoff,
+                    &protected,
+                    scratch.kind,
+                    dry_run,
+                    &mut report,
+                );
+            } else {
+                scratch_top_level(
+                    &scratch.directory,
+                    &path,
+                    cutoff,
+                    &protected,
+                    scratch.kind,
+                    dry_run,
+                    &mut report,
+                );
+            }
         }
     }
     report

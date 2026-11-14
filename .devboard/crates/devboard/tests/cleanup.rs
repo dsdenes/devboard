@@ -1220,7 +1220,8 @@ fn a_dry_run_predicts_the_real_state_worktree_and_build_candidates() {
 // ---------------------------------------------------------------------------
 
 use devboard::workers::scopes::{
-    evaluate_scope, run_scope_cleanup, run_scratch_cleanup, ScopeContext, ScopeFacts, ScopeProcess,
+    evaluate_scope, run_scope_cleanup, run_scratch_cleanup_with, ScopeContext, ScopeFacts,
+    ScopeProcess,
 };
 
 fn empty_context(root: &Path, now: i64) -> ScopeContext {
@@ -1269,7 +1270,7 @@ fn a_stale_test_tree_leaves_and_a_tree_with_a_live_process_stays() {
     let live = vec![std::fs::canonicalize(&busy).unwrap()];
     let live_dirs = || live.clone();
 
-    let dry = run_scratch_cleanup(&directory, now, true, &live_dirs);
+    let dry = run_scratch_cleanup_with(&directory, now, true, &live_dirs, true);
     assert!(
         dry.candidates
             .iter()
@@ -1286,12 +1287,17 @@ fn a_stale_test_tree_leaves_and_a_tree_with_a_live_process_stays() {
     );
     assert!(stale.exists(), "a dry run removes nothing");
 
-    let real = run_scratch_cleanup(&directory, now, false, &live_dirs);
+    let real = run_scratch_cleanup_with(&directory, now, false, &live_dirs, true);
     assert!(
         real.removed.iter().any(|candidate| candidate.path == stale),
         "the real pass removes the dry run's candidate: {:?}",
         real.removed
     );
+    let dry_paths: std::collections::BTreeSet<PathBuf> =
+        dry.candidates.iter().map(|c| c.path.clone()).collect();
+    let real_paths: std::collections::BTreeSet<PathBuf> =
+        real.removed.iter().map(|c| c.path.clone()).collect();
+    assert_eq!(dry_paths, real_paths, "the dry run predicts the real pass");
     assert!(
         !stale.exists(),
         "an old tree with no live process is removed"
