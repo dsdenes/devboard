@@ -2580,12 +2580,16 @@ command answers the current `agentState` with HTTP 202 whether or not it starts 
 server coalesces a repeat per family inside `SYNC_REQUEST_MIN_INTERVAL_MS` (5,000 ms): a repeat
 inside the interval starts no worker refresh and no forge read, and a request past the interval
 starts the next one.
-A Start answers its `starting` snapshot before the preflight, and the 1000 ms poll fingerprints
-each family's durable state and serializes a snapshot only after the fingerprint changes; an idle
-dashboard rebroadcasts nothing. A `GET /agents` read is answered from the same current snapshots
-and does not wait for a provider or a worker. Only the connect replay defers the poll, inside its
-one-second settle window; a read never does, because a running family's page polls that read every
-second and a deferred poll would freeze the snapshot the read answers with.
+A Start answers its `starting` snapshot before the preflight. That answer restates the projection
+the poll already published and replaces only the facts the command changed — an in-flight start,
+the run identity the spawn named, its notice, and its error — so `POST /agents/{id}/runs` never
+reads a family's state tree, and neither the preview frame nor the frame after the spawn pays for
+one. The 1000 ms poll fingerprints each family's durable state and serializes a snapshot only after
+the fingerprint changes; an idle dashboard rebroadcasts nothing. A `GET /agents` read is answered
+from the same current snapshots and does not wait for a provider or a worker. Only the connect
+replay defers the poll, inside its one-second settle window; a read never does, because a running
+family's page polls that read every second and a deferred poll would freeze the snapshot the read
+answers with.
 A REST reply carries only the frames the command's own task wrote. A request handle joins the
 client map so a mutation can answer through a broadcast, but its fan-out is attributed to that
 task: a worker's activity line or the poll's republished snapshot reaches every durable page and

@@ -810,6 +810,53 @@ fn started_run_id(family: &str, spawned: bool, version: Option<&str>) -> Option<
     spawned.then(|| format!("{family}--{}", worker_version_key(version)))
 }
 
+/// The facts one Start command changed in its family's projection.
+struct StartFacts {
+    /// The start this dashboard accepted is in flight.
+    starting: bool,
+    /// The family's operator asked it to stop, so the answer says so.
+    stopping: bool,
+    /// The run identity the spawn named, or `None` while nothing spawned.
+    run_id: Option<String>,
+    /// The refusal or fault this command raised, if any.
+    notice: Option<String>,
+    error: Option<String>,
+}
+
+/// Overlays the facts a Start command changed onto the projection the poll
+/// already published, replacing only those fields.
+///
+/// A Start's answer used to rebuild that projection, and the rebuild read and
+/// parsed the family's whole state tree on the command path — the term that
+/// pushed `startAgent` past the client's 1000 ms budget on a populated
+/// checkout. The poll owns that read; a command answer restates what the poll
+/// keeps current and replaces only the fields the command changed.
+fn start_answer(answer: &mut Value, facts: StartFacts) {
+    let Some(object) = answer.as_object_mut() else {
+        return;
+    };
+    if facts.starting || facts.stopping {
+        let lifecycle = if facts.starting {
+            "starting"
+        } else {
+            "stopping"
+        };
+        object.insert(
+            "lifecycle".to_string(),
+            Value::String(lifecycle.to_string()),
+        );
+    }
+    object.insert("runId".to_string(), nullable_text(facts.run_id));
+    // A preview clears both fields before the worker exists, so a start in
+    // flight answers no earlier refusal; a settled start states its own.
+    if facts.starting || facts.notice.is_some() {
+        object.insert("notice".to_string(), nullable_text(facts.notice));
+    }
+    if facts.starting || facts.error.is_some() {
+        object.insert("error".to_string(), nullable_text(facts.error));
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// State-tree walks this thread performed. A projection answers from one
@@ -2310,10 +2357,10 @@ struct AgentsMode {
     adapters: Vec<Adapter>,
     signatures: Mutex<HashMap<&'static str, String>>,
     /// The last projected snapshot of each family. The poll replaces it when
-    /// the family changes, and a connect replay, `getAgents`, and the page
-    /// open's `refreshAgent` answer from it instead of walking a family's state
-    /// on a read's critical path. `getAgent` still projects fresh: it is the
-    /// proof read a Start's published lock answers.
+    /// the family changes, and a connect replay, `getAgents`, a Start's answer,
+    /// and the page open's `refreshAgent` answer from it instead of walking a
+    /// family's state on a command's critical path. `getAgent` still projects
+    /// fresh: it is the proof read a Start's published lock answers.
     cached: Mutex<HashMap<&'static str, Value>>,
     /// The cheap state signature each family's last snapshot was built from.
     /// The 250 ms poll rebuilds and serializes a family only after this
@@ -2359,6 +2406,17 @@ impl Adapter {
             Adapter::Watchdog(family) => family.snapshot(),
             Adapter::Mcp(family) => family.snapshot(),
             Adapter::Release(family) => family.snapshot(),
+        }
+    }
+
+    /// The answer a Start command publishes: the polled projection with the
+    /// facts that command changed, overlaid in place.
+    fn apply_start(&self, answer: &mut Value) {
+        match self {
+            Adapter::Repo(family) => family.start_projection(answer),
+            Adapter::Watchdog(family) => family.start_projection(answer),
+            Adapter::Mcp(family) => family.start_projection(answer),
+            Adapter::Release(family) => family.start_projection(answer),
         }
     }
 
@@ -2956,6 +3014,27 @@ impl AgentsMode {
         );
     }
 
+    /// Publishes a Start's answer: the projection the poll maintains, with the
+    /// facts this command changed. Rebuilding that projection here is what
+    /// read the family's state tree on the command path and pushed
+    /// `startAgent` past the client's 1000 ms budget on a populated checkout.
+    fn publish_start(&self, adapter: &Adapter) {
+        let mut agent = self.project(adapter);
+        adapter.apply_start(&mut agent);
+        self.store_projection(adapter, &agent);
+        let text = crate::jsjson::stringify(&agent);
+        if let Ok(mut signatures) = self.signatures.lock() {
+            signatures.insert(adapter.id(), text);
+        }
+        self.shared.send_all(
+            json!({
+                "type": "agentState",
+                "agent": agent,
+            }),
+            None,
+        );
+    }
+
     fn send_agent(&self, conn: &Conn, adapter: &Adapter) {
         // A targeted read is a fresh projection. This is the proof read: a
         // Start's worker proves itself by publishing its lock, and the answer
@@ -3089,10 +3168,11 @@ impl AgentsMode {
                 adapter.preview_start();
                 let preview = PreviewWindow(adapter);
                 let pending = adapter.start();
-                self.publish_agent(adapter);
+                self.publish_start(adapter);
                 let result = pending.await;
                 drop(preview);
-                self.finish(conn, adapter, result);
+                self.publish_start(adapter);
+                self.answer_fault(conn, result);
                 true
             }
             Command::StopAgent { id } => {
@@ -3183,10 +3263,15 @@ impl AgentsMode {
 
     fn finish(&self, conn: &Conn, adapter: &Adapter, result: AgentResult) {
         self.publish_agent(adapter);
-        // A latency refusal already reached every page as the family's notice
-        // in the snapshot published above. Answering it as an error frame
-        // raises a page notification that files a board issue against the same
-        // forge, so only a fault is answered here.
+        self.answer_fault(conn, result);
+    }
+
+    /// Answers a command whose frames were already published. Only a fault
+    /// reaches the connection as an error frame; a latency refusal already
+    /// reached every page as the family's notice in the published snapshot.
+    /// Answering it as an error frame raises a page notification that files a
+    /// board issue against the same forge, so it is never one.
+    fn answer_fault(&self, conn: &Conn, result: AgentResult) {
         if result.ok || result.latency {
             return;
         }
@@ -4648,11 +4733,32 @@ impl RepoFamily {
         })
     }
 
+    /// Overlays a Start's own facts onto the published projection, so the
+    /// answer walks no state tree.
+    fn start_projection(&self, answer: &mut Value) {
+        let mutable = self.mutable.lock().expect("family state");
+        start_answer(
+            answer,
+            StartFacts {
+                starting: mutable.starting || mutable.preview_starting,
+                stopping: mutable.stop_requested,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
+                notice: mutable.notice.clone(),
+                error: mutable.start_error.clone(),
+            },
+        )
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         // One read of the family's state tree answers the forge URLs and the
-        // projection it feeds: a Start's answer walks that tree once, never
-        // once per question.
+        // projection it feeds: a projection walks that tree once, never once
+        // per question. A command answer restates the polled projection
+        // instead, so the walk stays on the poll.
         let states = self.all_states();
         if self.family_id.uses_forge() && forge_urls_of(&states).is_empty() {
             self.forge.note_empty_read(now);
@@ -7125,6 +7231,26 @@ impl WatchdogFamily {
             || mutable.timer_reading
     }
 
+    /// Overlays a Start's own facts onto the published projection, so the
+    /// answer walks no state tree.
+    fn start_projection(&self, answer: &mut Value) {
+        let mutable = self.mutable.lock().expect("watchdog state");
+        start_answer(
+            answer,
+            StartFacts {
+                starting: mutable.starting || mutable.preview_starting,
+                stopping: mutable.stop_requested,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
+                notice: mutable.notice.clone(),
+                error: mutable.start_error.clone(),
+            },
+        )
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         // One ledger read answers the forge-URL check, the issue rows, the
@@ -8410,6 +8536,26 @@ impl McpFamily {
             || !mutable.stopping.is_empty()
     }
 
+    /// Overlays a Start's own facts onto the published projection, so the
+    /// answer walks no state tree.
+    fn start_projection(&self, answer: &mut Value) {
+        let mutable = self.mutable.lock().expect("mcp state");
+        start_answer(
+            answer,
+            StartFacts {
+                starting: mutable.starting || mutable.preview_starting,
+                stopping: mutable.stop_requested,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
+                notice: mutable.notice.clone(),
+                error: mutable.start_error.clone(),
+            },
+        )
+    }
+
     fn snapshot(&self) -> Value {
         let now = (self.now)();
         if self.forge_urls().is_empty() {
@@ -9339,6 +9485,26 @@ impl ReleaseFamily {
             return true;
         };
         mutable.starting || mutable.preview_starting || mutable.stop_requested
+    }
+
+    /// Overlays a Start's own facts onto the published projection, so the
+    /// answer walks no state tree.
+    fn start_projection(&self, answer: &mut Value) {
+        let mutable = self.mutable.lock().expect("release-train state");
+        start_answer(
+            answer,
+            StartFacts {
+                starting: mutable.starting || mutable.preview_starting,
+                stopping: mutable.stop_requested,
+                run_id: started_run_id(
+                    self.descriptor.id,
+                    mutable.starting && mutable.start_deadline.is_none(),
+                    self.running_version.as_deref(),
+                ),
+                notice: mutable.notice.clone(),
+                error: mutable.start_error.clone(),
+            },
+        )
     }
 
     fn snapshot(&self) -> Value {

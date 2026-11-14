@@ -561,6 +561,18 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
         );
     }
 
+    // The Start's own answer reports the start; the worker it spawned proves
+    // its attachment through the projection the next read walks.
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
     let attached = agent(&all, "dead-code").expect("a dead-code snapshot");
     assert_eq!(attached["lifecycle"], "running", "{all:?}");
     assert_eq!(attached["attached"], true);
@@ -1341,6 +1353,97 @@ async fn a_refresh_answers_the_polled_projection_without_walking_the_state_tree(
         answered["issues"], warmed["issues"],
         "the refresh walked the family's state tree instead of answering its projection"
     );
+    kill_stand_in(pid);
+}
+
+/// A Start's answer is the projection the poll already published. Rebuilding
+/// that projection inside the command read the family's whole state tree on
+/// the request path, which is what pushed `startAgent` past the client's
+/// 1000 ms budget on a populated checkout, so the answer names the issue the
+/// poll read rather than the one the document holds now.
+#[tokio::test]
+async fn a_start_answers_the_polled_projection_without_walking_the_state_tree() {
+    let root = scratch("start-projection");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let pid = stand_in_watchdog();
+    let directory = state.join("dead-code").join(repo_key(&repo));
+    let mut seeded = dead_code_state(&root, &repo, &state, pid);
+    seeded["issues"] = json!([{
+        "number": 1,
+        "title": "delete the unused helper",
+        "url": "https://example.test/owner/repo/issues/1",
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "state": "pending",
+        "category": "unreferenced-symbol",
+        "version": null,
+        "versionAttemptAt": null,
+        "versionError": null
+    }]);
+    write_json(&directory.join("state.json"), seeded);
+
+    // The poll is the one projection owner; the Start answers from it.
+    devboard::agents_mode::poll_once(&app);
+
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&pids);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let pid = stand_in_reapable();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+    // The preflight never settles, so no later publication can reach the
+    // frames this Start answers with.
+    let preflight: devboard::agents_mode::PreflightCallback = Arc::new(|_request| {
+        Box::pin(async { std::future::pending::<Result<String, String>>().await })
+    });
+    devboard::agents_mode::set_preflight(&app, "dead-code", preflight);
+
+    // The document is gone before the Start. A rebuild inside the command
+    // would answer no row at all; the projection the poll published still
+    // names the issue. The connect replay defers the poll, so no tick can
+    // replace that projection between the removal and the command.
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let _ = frames(&mut inbox);
+    std::fs::remove_dir_all(&directory).expect("the state directory");
+
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let answered = frames(&mut inbox);
+    let snapshots: Vec<&Value> = answered
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("agentState"))
+        .filter_map(|frame| frame.get("agent"))
+        .collect();
+    assert_eq!(
+        snapshots.len(),
+        2,
+        "a Start publishes its preview and its answer: {answered:?}"
+    );
+    for snapshot in &snapshots {
+        assert_eq!(
+            snapshot["issues"][0]["title"],
+            json!("delete the unused helper"),
+            "the Start rebuilt the projection instead of answering it: {answered:?}"
+        );
+    }
+    let answer = snapshots.last().expect("an answer");
+    assert_eq!(answer["lifecycle"], json!("starting"), "{answered:?}");
+    assert!(
+        answer["runId"].is_string(),
+        "the spawned run is named: {answered:?}"
+    );
+    assert_eq!(pids.lock().expect("pids").len(), 1, "{answered:?}");
+    kill_recorded(&pids);
     kill_stand_in(pid);
 }
 
