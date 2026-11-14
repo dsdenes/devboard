@@ -1008,11 +1008,6 @@ impl Governor {
         self.slice_enabled
     }
 
-    /// The slice unit this governor owns, without the parent path.
-    pub fn slice_unit(&self) -> &str {
-        leaf_slice_name(&self.slice_name)
-    }
-
     /// The full slice path, which the tests treat as a child of the root.
     pub fn slice_name(&self) -> &str {
         &self.slice_name
@@ -1165,11 +1160,6 @@ impl Governor {
             }
         }
         vec![record]
-    }
-
-    /// Every kernel kill the governor recorded.
-    pub fn read_kills(&self) -> Vec<Value> {
-        read_json_lines(&self.directory.join(KILLS_FILE))
     }
 
     /// The Resources tab's readback: the saved values, the effective values,
@@ -1367,11 +1357,6 @@ pub fn slice_cgroup_path_for(_name: &str) -> Option<PathBuf> {
     None
 }
 
-/// The absolute cgroup directory of the production slice, when it exists.
-pub fn slice_cgroup_path() -> Option<PathBuf> {
-    slice_cgroup_path_for(SLICE_NAME)
-}
-
 /// The unit description that names which dashboard owns the slice budget.
 fn slice_owner_marker(state_dir: &Path) -> String {
     format!("devboard owner {}", state_dir.display())
@@ -1528,11 +1513,6 @@ fn apply_slice_properties_owned(
     AppliedSlice::default()
 }
 
-/// Applies the budget to the production slice.
-pub fn apply_slice_properties(settings: Settings) -> SliceInfo {
-    apply_slice_properties_for(SLICE_NAME, settings)
-}
-
 fn slice_info_from_cgroup(path: Option<&Path>) -> SliceInfo {
     let Some(path) = path else {
         return SliceInfo::default();
@@ -1605,11 +1585,6 @@ pub fn stop_slice_for(name: &str) -> bool {
 #[cfg(not(target_os = "linux"))]
 pub fn stop_slice_for(_name: &str) -> bool {
     false
-}
-
-/// Stops the production slice. Only tests that created it call this.
-pub fn stop_slice() -> bool {
-    stop_slice_for(SLICE_NAME)
 }
 
 /* ------------------------------------------------------------------------ */
