@@ -3,7 +3,6 @@
 
 mod common;
 
-use common::ReservedPort;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -72,6 +71,11 @@ fn base_env(repo: &Path, state: &Path, command: &mut ProcessCommand) {
         .env("AGENT_COMMAND", format!("{} acp-stub", binary()))
         .env("DEVBOARD_OWNER_EXECUTABLE", binary())
         .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
+        // A fixture is its own release source: this local directory carries no
+        // manifest, so every update check fails offline and no published
+        // release installs a newer binary over the scratch host and replaces
+        // the dashboard under the assertion.
+        .env("DEVBOARD_RELEASE_URL", state.join("releases"))
         .env("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
 }
 
@@ -279,17 +283,10 @@ async fn a_second_start_for_the_same_host_dir_is_refused() {
     let state = scratch.state("state");
     let other = scratch.state("second-state");
     // The updater's one startup check is the live dashboard's last journal
-    // write after readiness. A reserved port that refuses connections makes
-    // that check fail at once and name itself, so the baseline below is taken
-    // after the write instead of racing it.
-    let refused = ReservedPort::bind();
-    let github = format!("http://127.0.0.1:{}", refused.port());
-    let mut first = start_dashboard(
-        &repo,
-        &state,
-        &scratch.path.join("first.log"),
-        &[("DEVBOARD_GITHUB_API_URL", &github)],
-    );
+    // write after readiness. The fixture's own empty release directory makes
+    // that check fail offline, so the baseline below is taken after the write
+    // instead of racing it.
+    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
     let port = wait_ready(&state).await;
     let pid = first.id();
     let before_version = version_bytes(&state);
