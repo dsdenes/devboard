@@ -567,8 +567,10 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `needs answer` warning badge only while the agent is waiting on a question. Rows are 28px tall
   with 6px 10px padding, separated by a `border-subtle` rule; hover takes `row-hover`, and the
   selected row takes `accent-surface` with a 2px `accent` left edge and an `accent` issue number,
-  matching `aria-current="true"`. The per-row state word is omitted because the panel is the
-  running list, so color never repeats the header.
+  marked by `data-current="true"` on the row. The row itself is layout only: the button that
+  selects the agent carries `aria-current="true"` while its row is the one the output pane shows,
+  so the focusable control, never the surrounding `div`, announces the selection. The per-row
+  state word is omitted because the panel is the running list, so color never repeats the header.
 - **Running agent close control** (`.issues-agent-row__close`) — the quiet destructive control
   beside a running-agent row: 24px tall, 11px text word `Close`, transparent fill, a
   `border-subtle` outline, 4px radius, `muted-foreground` until its row is pointed at. Its own

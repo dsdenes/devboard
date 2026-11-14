@@ -296,7 +296,7 @@
                   data-run={agent.runId}
                   data-issue={agent.issueNumber}
                   title={issueTitle(agent.issueNumber)}
-                  aria-current={selectedAgent?.runId === agent.runId}
+                  data-current={selectedAgent?.runId === agent.runId ? "true" : undefined}
                 >
                   {#if issueHref}
                     <a
@@ -320,6 +320,7 @@
                     data-command="issues.agent.open"
                     data-run={agent.runId}
                     data-issue={agent.issueNumber}
+                    aria-current={selectedAgent?.runId === agent.runId ? "true" : undefined}
                     onclick={() => (selectedRunId = agent.runId)}
                   >
                     <span class="issues-agent-row__title">{issueTitle(agent.issueNumber)}</span>

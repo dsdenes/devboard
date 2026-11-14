@@ -3671,8 +3671,8 @@ span.issues-agent__issue {
   background: var(--row-hover);
 }
 
-.issues-agent-row[aria-current="true"],
-.issues-agent-row[aria-current="true"]:hover {
+.issues-agent-row[data-current="true"],
+.issues-agent-row[data-current="true"]:hover {
   background: var(--accent-surface);
   border-left-color: var(--accent);
 }
@@ -3707,7 +3707,7 @@ a.issues-agent-row__issue:focus-visible {
   text-decoration: underline;
 }
 
-.issues-agent-row[aria-current="true"] a.issues-agent-row__issue {
+.issues-agent-row[data-current="true"] a.issues-agent-row__issue {
   color: var(--accent);
 }
 
