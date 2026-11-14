@@ -2600,6 +2600,7 @@ impl Adapter {
             Adapter::Watchdog(family) => family.stop_projection(answer),
             Adapter::Mcp(family) => family.stop_projection(answer),
             Adapter::Release(family) => family.stop_projection(answer),
+            Adapter::Deploy(family) => family.stop_projection(answer),
         }
     }
 
@@ -10720,6 +10721,19 @@ impl DeployFamily {
                 error: mutable.start_error.clone(),
             },
         );
+    }
+
+    /// Overlays this Stop's one changed fact: a family the operator asked to
+    /// stop reads `stopping` until its worker publishes the state that ends it.
+    fn stop_projection(&self, answer: &mut Value) {
+        if self
+            .mutable
+            .lock()
+            .map(|mutable| mutable.stop_requested)
+            .unwrap_or(false)
+        {
+            stop_answer(answer);
+        }
     }
 
     fn snapshot(&self) -> Value {
