@@ -6,6 +6,13 @@
 //! at once, and files it on this process's runtime. The record is the report's
 //! state — `FILING`, `FILED`, or `FAILED` — and `GET /reports/<id>` serves it
 //! until the dashboard settles it.
+//!
+//! The acceptance reads and writes memory alone. The ledger a later start loads
+//! is written by the delivery, never by the claim: every filesystem read and
+//! write this dashboard performs is queued on the runtime's blocking pool, so an
+//! acceptance that awaited its own ledger write carried that pool's latency into
+//! the operator's action budget, though no part of its answer comes from the
+//! file.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -137,48 +144,51 @@ impl ReportStore {
     /// A keyed claim replays a `FILED` record and joins a `FILING` one, so one
     /// key files one issue. A `FAILED` record is filed again under the same id,
     /// because a failed delivery is the retry the operator asked for.
-    pub async fn claim(&self, key: Option<&str>, title: &str) -> ReportClaim {
-        let claim = {
-            let mut inner = self.inner.lock().expect("the report records");
-            let threshold = Self::now_ms().saturating_sub(RETENTION_MS);
-            let existing = key.and_then(|key| {
-                inner.records.iter().position(|record| {
-                    record.key.as_deref() == Some(key) && record.created_at >= threshold
-                })
-            });
-            match existing {
-                Some(index) => match inner.records[index].status {
-                    ReportStatus::Filing | ReportStatus::Filed => {
-                        ReportClaim::Replay(inner.records[index].to_json())
-                    }
-                    ReportStatus::Failed => {
-                        let record = &mut inner.records[index];
-                        record.status = ReportStatus::Filing;
-                        record.href = None;
-                        record.detail = None;
-                        record.created_at = Self::now_ms();
-                        ReportClaim::Start(record.id)
-                    }
-                },
-                None => {
-                    let id = inner.next_id;
-                    inner.next_id += 1;
-                    inner.records.push(ReportRecord {
-                        id,
-                        title: title.to_string(),
-                        status: ReportStatus::Filing,
-                        href: None,
-                        detail: None,
-                        key: key.map(str::to_string),
-                        created_at: Self::now_ms(),
-                    });
-                    prune(&mut inner.records);
-                    ReportClaim::Start(id)
+    ///
+    /// The claim decides in memory and writes nothing: the answer the operator
+    /// waits for is built from the record this returns, so it never queues
+    /// behind the blocking pool every filesystem read and write this dashboard
+    /// performs shares. The delivery the claim starts calls [`Self::persist`]
+    /// before it asks the forge, so the record becomes durable there, where a
+    /// stalled filesystem costs the report rather than the action.
+    pub fn claim(&self, key: Option<&str>, title: &str) -> ReportClaim {
+        let mut inner = self.inner.lock().expect("the report records");
+        let threshold = Self::now_ms().saturating_sub(RETENTION_MS);
+        let existing = key.and_then(|key| {
+            inner.records.iter().position(|record| {
+                record.key.as_deref() == Some(key) && record.created_at >= threshold
+            })
+        });
+        match existing {
+            Some(index) => match inner.records[index].status {
+                ReportStatus::Filing | ReportStatus::Filed => {
+                    ReportClaim::Replay(inner.records[index].to_json())
                 }
+                ReportStatus::Failed => {
+                    let record = &mut inner.records[index];
+                    record.status = ReportStatus::Filing;
+                    record.href = None;
+                    record.detail = None;
+                    record.created_at = Self::now_ms();
+                    ReportClaim::Start(record.id)
+                }
+            },
+            None => {
+                let id = inner.next_id;
+                inner.next_id += 1;
+                inner.records.push(ReportRecord {
+                    id,
+                    title: title.to_string(),
+                    status: ReportStatus::Filing,
+                    href: None,
+                    detail: None,
+                    key: key.map(str::to_string),
+                    created_at: Self::now_ms(),
+                });
+                prune(&mut inner.records);
+                ReportClaim::Start(id)
             }
-        };
-        self.persist().await;
-        claim
+        }
     }
 
     /// Records the outcome of one delivery.
@@ -326,7 +336,13 @@ impl ReportStore {
         Ok(text)
     }
 
-    async fn persist(&self) {
+    /// Writes the ledger a later start loads.
+    ///
+    /// The delivery's own work, never the operator's: an accepted report is
+    /// answered from memory, so only the delivery task that files it and the
+    /// settle that ends it await this write. A filesystem or blocking pool that
+    /// stalls therefore delays durability and the filing, never the action.
+    pub async fn persist(&self) {
         let Ok(text) = self.ledger() else {
             return;
         };
@@ -363,11 +379,11 @@ mod tests {
     #[tokio::test]
     async fn a_claim_starts_one_delivery_and_a_replay_answers_the_same_record() {
         let (store, _root) = store("claim");
-        let id = match store.claim(Some("key-1"), "[ui] Fix it").await {
+        let id = match store.claim(Some("key-1"), "[ui] Fix it") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("the first claim starts the delivery"),
         };
-        let replay = match store.claim(Some("key-1"), "[ui] Fix it").await {
+        let replay = match store.claim(Some("key-1"), "[ui] Fix it") {
             ReportClaim::Replay(view) => view,
             ReportClaim::Start(_) => panic!("the second claim replays the record"),
         };
@@ -379,7 +395,7 @@ mod tests {
                 Ok("https://gitea.test/dsdenes/devboard/issues/7".into()),
             )
             .await;
-        let filed = match store.claim(Some("key-1"), "[ui] Fix it").await {
+        let filed = match store.claim(Some("key-1"), "[ui] Fix it") {
             ReportClaim::Replay(view) => view,
             ReportClaim::Start(_) => panic!("a filed record is never filed twice"),
         };
@@ -393,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_record_is_filed_again_under_the_same_id() {
         let (store, _root) = store("retry");
-        let id = match store.claim(Some("key-2"), "[ui] Fix it").await {
+        let id = match store.claim(Some("key-2"), "[ui] Fix it") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("the first claim starts the delivery"),
         };
@@ -403,7 +419,7 @@ mod tests {
         let view = store.view(id).expect("the failed record");
         assert_eq!(view["status"], "FAILED");
         assert_eq!(view["detail"], "The issue could not be filed.");
-        match store.claim(Some("key-2"), "[ui] Fix it").await {
+        match store.claim(Some("key-2"), "[ui] Fix it") {
             ReportClaim::Start(again) => assert_eq!(again, id),
             ReportClaim::Replay(_) => panic!("a failed record is filed again"),
         }
@@ -413,11 +429,11 @@ mod tests {
     #[tokio::test]
     async fn an_unkeyed_claim_never_replays_another_report() {
         let (store, _root) = store("unkeyed");
-        let first = match store.claim(None, "[ui] One").await {
+        let first = match store.claim(None, "[ui] One") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("an unkeyed claim always starts"),
         };
-        let second = match store.claim(None, "[ui] One").await {
+        let second = match store.claim(None, "[ui] One") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("an unkeyed claim always starts"),
         };
@@ -427,15 +443,18 @@ mod tests {
     #[tokio::test]
     async fn an_interrupted_filing_is_answered_failed_after_a_restart() {
         let (store, root) = store("restart");
-        let id = match store.claim(Some("key-3"), "[ui] Fix it").await {
+        let id = match store.claim(Some("key-3"), "[ui] Fix it") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("the first claim starts the delivery"),
         };
+        // The delivery makes the claimed record durable before it asks the
+        // forge; the claim itself answers from memory and writes nothing.
+        store.persist().await;
         let reopened = ReportStore::open(&root, &root);
         let view = reopened.view(id).expect("the reloaded record");
         assert_eq!(view["status"], "FAILED");
         assert_eq!(view["detail"], INTERRUPTED_DETAIL);
-        match reopened.claim(Some("key-3"), "[ui] Fix it").await {
+        match reopened.claim(Some("key-3"), "[ui] Fix it") {
             ReportClaim::Start(again) => assert_eq!(again, id),
             ReportClaim::Replay(_) => panic!("an interrupted record is filed again"),
         }
@@ -444,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn a_settled_record_survives_a_restart() {
         let (store, root) = store("durable");
-        let id = match store.claim(Some("key-4"), "[ui] Fix it").await {
+        let id = match store.claim(Some("key-4"), "[ui] Fix it") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("the first claim starts the delivery"),
         };
@@ -461,7 +480,7 @@ mod tests {
             view["links"]["issue"]["href"],
             "https://gitea.test/dsdenes/devboard/issues/9"
         );
-        let third = match reopened.claim(None, "[ui] Next").await {
+        let third = match reopened.claim(None, "[ui] Next") {
             ReportClaim::Start(id) => id,
             ReportClaim::Replay(_) => panic!("a fresh claim always starts"),
         };

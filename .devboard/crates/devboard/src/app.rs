@@ -1384,7 +1384,7 @@ impl App {
         let timeout_ms = feedback.timeout_ms;
         let title = crate::feedback::feedback_title(&submission);
         let origin = url.origin().ascii_serialization();
-        let id = match self.reports.claim(key.as_deref(), &title).await {
+        let id = match self.reports.claim(key.as_deref(), &title) {
             crate::reports::ReportClaim::Replay(view) => {
                 // Only a filed record answers as a settled resource; one still
                 // filing keeps the 202 its first request earned.
@@ -1404,6 +1404,10 @@ impl App {
         let app = self.arc_self();
         let owned_flow = flow_id.map(str::to_string);
         tokio::spawn(async move {
+            // Durability belongs to the delivery, never to the action that
+            // earned the record: this write lands before the forge is asked, on
+            // the blocking pool the answer itself never joins.
+            app.reports.persist().await;
             let outcome = crate::feedback::file_feedback_issue(
                 &submission,
                 &target,

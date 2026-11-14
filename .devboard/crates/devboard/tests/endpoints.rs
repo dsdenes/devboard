@@ -493,6 +493,64 @@ async fn an_accepted_report_answers_before_the_forge_finishes_filing_it() {
     fixture.stub.abort();
 }
 
+/// The regression this operator report describes: the acceptance answers from
+/// the record it claimed in memory, so it never waits on the runtime's blocking
+/// pool — the one place every filesystem read and write this dashboard performs
+/// is queued.
+///
+/// This runtime has a single blocking thread, and the test holds it longer than
+/// the action's whole budget, which is what a dashboard that is already writing
+/// state looks like to one more task on that pool. Nothing the acceptance
+/// answers comes from a file: the record it returns is the one it just claimed.
+#[test]
+fn an_accepted_report_answers_while_the_blocking_pool_is_held() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    runtime.block_on(async {
+        let fixture = start("feedback-held-pool").await;
+        let (occupied, held) = std::sync::mpsc::channel();
+        let hold = tokio::task::spawn_blocking(move || {
+            occupied.send(()).expect("the test holds the pool");
+            std::thread::sleep(Duration::from_millis(1_200));
+        });
+        held.recv_timeout(Duration::from_secs(5))
+            .expect("the blocking thread is held before the action");
+
+        let started = Instant::now();
+        let response = client()
+            .post(format!("{}/reports", fixture.base))
+            .headers(bearer())
+            .json(&json!({"report": "Fix the header"}))
+            .send()
+            .await
+            .expect("an answer");
+        let elapsed = started.elapsed();
+        assert_eq!(response.status(), 202);
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "the action waited {elapsed:?} for a filesystem write its answer never reads"
+        );
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .expect("a Location")
+            .to_string();
+        hold.await.expect("the held blocking thread finishes");
+        // Durability is the delivery's work, never the action's: once the pool
+        // is free the record is filed from the ledger it wrote first.
+        let record = settled_report(&location).await;
+        assert_eq!(record["status"], "FILED");
+        assert_eq!(fixture.count.load(Ordering::SeqCst), 1);
+        fixture.handle.abort();
+        fixture.stub.abort();
+    });
+}
+
 #[tokio::test]
 async fn a_busy_forge_is_an_upstream_failure_not_a_server_error() {
     let fixture = start_failing("feedback-busy").await;
