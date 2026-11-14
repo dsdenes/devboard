@@ -2583,6 +2583,73 @@ async fn a_growing_progress_record_holds_off_the_silence_bound() {
     );
 }
 
+/// The incident this rule answers, at the peer loop rather than the watch: the
+/// peer's shell reports once and is then silent for longer than the whole
+/// silence window, while its own publish keeps appending phases. The run
+/// follows the record, so it outlives the window and settles on the turn's
+/// own end instead of the silence detail.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_peer_whose_publish_record_grows_is_never_settled() {
+    let root = scratch_root("release-agent-record-live");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let record = root
+        .join("run")
+        .join(devboard::publish::PUBLISH_PROGRESS_FILE);
+    let stub = format!(
+        "{} acp-stub --delay-ms=2000",
+        env!("CARGO_BIN_EXE_devboard")
+    );
+    let input = stub_run_input(
+        &root,
+        stub,
+        ReleaseRunTimeouts {
+            silence: std::time::Duration::from_millis(1_000),
+            max: std::time::Duration::from_secs(60),
+        },
+    );
+    // publish's own writer: a new phase every 100 ms, well inside the window,
+    // while the peer itself sends nothing after its first line.
+    let writer = tokio::spawn(async move {
+        for attempt in 0..20 {
+            let line = format!("{{\"phase\":\"suite\",\"detail\":\"attempt {attempt}\"}}\n");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&record)
+                .expect("the record");
+            file.write_all(line.as_bytes()).expect("a record");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+    let verify: VerifyFn = Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Ok {
+                version: options.version.clone(),
+                url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+            }
+        })
+    });
+    let run =
+        devboard::workers::release_train::default_release_agent_runner(verify, HashMap::new());
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), run(input))
+        .await
+        .expect("the recording peer's turn ends");
+    writer.await.expect("the record writer");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(1_500),
+        "the run outlived the silence window while publish kept recording phases"
+    );
+    assert_eq!(
+        result,
+        ReleaseRunResult::Ok {
+            version: "1.1.0".to_string(),
+            url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+        }
+    );
+}
+
 /// The run's outer bound comes from publish's whole budget, so no constant can
 /// settle a release publish may legitimately keep working in, and the failure
 /// detail names that derived bound.
