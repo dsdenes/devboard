@@ -1589,6 +1589,204 @@ fn a_staged_skill_description_is_published_by_character_count() {
     assert!(published.contains(&description), "{published}");
 }
 
+fn bound(value: Value, evidence: &str, confidence: &str) -> Value {
+    json!({"value": value, "evidence": [evidence], "confidence": confidence})
+}
+
+fn unbound(reason: &str) -> Value {
+    json!({"value": null, "evidence": [], "confidence": "unknown", "reason": reason})
+}
+
+/// One staged `sheet.json` whose `ci.qualityGates` leaf carries `gates`.
+fn staged_sheet(gates: Value) -> Value {
+    let ci = ".github/workflows/ci.yml";
+    json!({
+        "schemaVersion": 1,
+        "definition": bound(
+            json!("A fixture host with a small order domain."),
+            "README.md",
+            "declared",
+        ),
+        "stack": bound(json!(["Bun", "TypeScript"]), "package.json", "declared"),
+        "deployment": {
+            "class": bound(json!("package"), "package.json", "observed"),
+            "artifact": bound(json!("fixture-host"), "package.json", "declared"),
+            "target": unbound("No publication target was found in the fixture."),
+            "pipelineSources": bound(json!([ci]), ci, "observed"),
+        },
+        "environments": bound(
+            json!([{
+                "name": "production",
+                "purpose": "Changes reach production through a direct push.",
+            }]),
+            "README.md",
+            "inferred",
+        ),
+        "commands": {
+            "install": bound(json!("bun install"), "package.json", "declared"),
+            "build": bound(json!("bun run build"), "package.json", "declared"),
+            "test": bound(json!("bun test"), "package.json", "declared"),
+            "lint": unbound("No lint command was found in the fixture."),
+            "typecheck": unbound("No typecheck command was found in the fixture."),
+            "dev": unbound("No dev command was found in the fixture."),
+            "tryOut": unbound("No try-out command was found in the fixture."),
+            "release": unbound("No release command was found in the fixture."),
+        },
+        "branching": {
+            "defaultBranch": bound(json!("main"), "package.json", "observed"),
+            "mergeMethod": bound(json!("merge commit"), "package.json", "inferred"),
+            "releaseBranches": bound(json!([]), "package.json", "observed"),
+            "model": bound(json!("pull-request"), "package.json", "inferred"),
+        },
+        "testing": {
+            "levels": bound(
+                json!([{
+                    "level": "unit",
+                    "tests": "1",
+                    "happyPath": "1",
+                    "paths": ["test/order.test.ts"],
+                    "command": "bun test",
+                    "fixtures": [],
+                }]),
+                "test/order.test.ts",
+                "observed",
+            ),
+            "pyramid": bound(
+                json!("Unit tests are the only observed level."),
+                "test/order.test.ts",
+                "inferred",
+            ),
+        },
+        "architecture": {
+            "contexts": bound(
+                json!([{
+                    "name": "Orders",
+                    "path": "src",
+                    "responsibility": "Owns order records.",
+                    "entryPoints": ["src/order.ts"],
+                }]),
+                "src/order.ts",
+                "observed",
+            ),
+            "dependencies": bound(json!([]), "src/order.ts", "observed"),
+            "dependencyDirection": bound(
+                json!("Dependencies point inward toward the Orders code."),
+                "src/order.ts",
+                "inferred",
+            ),
+            "externalBoundaries": bound(json!(["PostgreSQL"]), "src/order.ts", "observed"),
+            "sharedKernels": bound(json!(["src"]), "src/order.ts", "observed"),
+        },
+        "ci": {
+            "provider": bound(json!("GitHub Actions"), ci, "observed"),
+            "triggers": bound(json!(["push"]), ci, "observed"),
+            "jobs": bound(json!(["test"]), ci, "observed"),
+            "qualityGates": bound(gates, ci, "declared"),
+            "artifacts": bound(json!([]), ci, "observed"),
+        },
+        "runtime": {
+            "languages": bound(json!(["TypeScript"]), "package.json", "declared"),
+            "runtimes": bound(json!(["Bun"]), "package.json", "declared"),
+            "packageManagers": bound(json!(["bun"]), "package.json", "declared"),
+            "versions": bound(json!([]), "package.json", "observed"),
+            "manifests": bound(json!(["package.json"]), "package.json", "observed"),
+        },
+        "dependencyMap": {
+            "binaries": bound(json!([]), "package.json", "observed"),
+            "packages": bound(json!([]), "package.json", "observed"),
+            "routes": bound(json!([]), "package.json", "observed"),
+            "jobs": bound(json!([]), "package.json", "observed"),
+            "externalServices": bound(json!([]), "package.json", "observed"),
+            "dataStores": bound(json!([]), "package.json", "observed"),
+            "keyDependencies": bound(json!([]), "package.json", "declared"),
+        },
+        "delivery": {
+            "artifactTarget": bound(json!("package"), "package.json", "declared"),
+            "releaseChannels": bound(json!([]), "package.json", "declared"),
+            "versionScheme": unbound("No versioning scheme was found in the fixture."),
+            "migrationPolicy": unbound("No migration policy was found in the fixture."),
+        },
+    })
+}
+
+#[test]
+fn a_staged_quality_gate_record_reads_back_after_publication() {
+    let scratch = Scratch::new("quality-gate-roundtrip");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet(json!([{
+            "name": "bun test",
+            "checks": "Runs the whole fixture test suite in CI.",
+        }])))
+        .expect("a staged sheet"),
+    );
+
+    let facts = devboard::discover_mode::host_facts(&repo);
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-gate-record",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    )
+    .expect("a record gate publishes");
+
+    let published: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.join(".omp/discover/sheet.json"))
+            .expect("the published sheet"),
+    )
+    .expect("a JSON sheet");
+    assert_eq!(
+        published["ci"]["qualityGates"]["value"][0]["checks"],
+        json!("Runs the whole fixture test suite in CI."),
+        "the published gate keeps its non-empty checks"
+    );
+
+    let read = devboard::discover_mode::read_artifacts(&repo);
+    assert_eq!(read.error, None, "the published sheet reads back");
+    let artifacts = read.artifacts.expect("the publication is readable");
+    let sheet = artifacts.sheet.expect("the published sheet");
+    assert_eq!(
+        sheet["ci"]["qualityGates"]["value"][0]["checks"],
+        json!("Runs the whole fixture test suite in CI.")
+    );
+}
+
+#[test]
+fn a_staged_string_quality_gate_is_refused_and_publishes_nothing() {
+    let scratch = Scratch::new("quality-gate-string");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet(json!(["bun test"]))).expect("a staged sheet"),
+    );
+
+    let facts = devboard::discover_mode::host_facts(&repo);
+    let error = match devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-gate-string",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    ) {
+        Ok(_) => panic!("a bare string gate is refused"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        "ci.qualityGates.value[0]: must be a {name, checks} record, not a string"
+    );
+    assert!(
+        !repo.join(".omp/discover/sheet.json").exists(),
+        "a refused sheet publishes nothing"
+    );
+}
+
 #[test]
 fn usage_examples_order_case_insensitively() {
     let scratch = Scratch::new("usage-order");

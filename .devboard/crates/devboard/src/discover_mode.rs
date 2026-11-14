@@ -808,18 +808,19 @@ fn quality_gates(value: &Value, path: &str) -> Result<Vec<Value>, String> {
     let mut seen = HashSet::new();
     for (index, entry) in items.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
-        let gate = if entry.is_string() {
-            let name = text_value(entry, &entry_path, 160)?;
-            json!({"name": name, "checks": ""})
-        } else {
-            let fields = record_fields(
-                entry,
+        if entry.is_string() {
+            return Err(invalid(
                 &entry_path,
-                &[("name", plain_text), ("checks", plain_text)],
-                &[],
-            )?;
-            Value::Object(fields)
-        };
+                "must be a {name, checks} record, not a string",
+            ));
+        }
+        let fields = record_fields(
+            entry,
+            &entry_path,
+            &[("name", plain_text), ("checks", plain_text)],
+            &[],
+        )?;
+        let gate = Value::Object(fields);
         let name = gate
             .get("name")
             .and_then(Value::as_str)
