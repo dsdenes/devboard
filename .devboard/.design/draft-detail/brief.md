@@ -11,9 +11,8 @@
 ## Goal
 - Primary goal: decide whether a proposed goal draft is worth elaborating, then start and
   supervise that elaboration.
-- Success signal: the draft's proposal and its captured evidence are readable, the
-  elaboration starts or stops on request, and a pending question can be answered without
-  losing the draft identity.
+- Success signal: the draft's proposal is readable without raw bytes, the elaboration starts or
+  stops on request, and a pending question can be answered without losing the draft identity.
 - Secondary goals: follow the elaboration activity, understand why the start control is
   disabled, and recover from a draft or peer error.
 
@@ -40,11 +39,10 @@
 
 ### Review a draft
 - Trigger: the operator opens Draft goals and selects a row, or a reload restores the path.
-- Steps: read the heading and file name, read the proposal, inspect the captured UI context,
-  then decide whether to elaborate.
-- Decision points: is this draft worth a spec; is the captured evidence the right one.
-- Success: the proposal is legible without scrolling through duplicated raw bytes, and the
-  captured route, URL, element, and evidence are identifiable.
+- Steps: read the heading and file name, read the proposal, then decide whether to elaborate.
+- Decision points: is this draft worth a spec.
+- Success: the proposal is legible without duplicated raw bytes, and its writer notice tells
+  the operator that the draft is not a goal yet.
 - Failure routes: the file vanished after selection — the page clears the selection and shows
   the list; the read is refused — an error banner states the reason.
 - Recovery: reselect a listed draft or write a new one through the report panel.
@@ -66,9 +64,13 @@
 - Editing the draft text in place, deleting the draft, or writing the final spec.
 - Starting several elaborations at once.
 - Showing another draft's activity inside the selected draft.
+- Rendering the writer's capture section — the page facts, the Visible text, and the DOM
+  excerpt. `draftProposal` cuts the proposal at that section, and the panel shows the proposal
+  half only.
 - Changing the Draft goals list or the page header.
 
 ## Assumptions
 - The draft's first heading is the human title; the file name remains the durable identity.
-- `## Captured UI context` is the only structural marker guaranteed by the writers
-  (`server/feedback.ts`, `server/goal-proposal.ts`). Inferred from those writers.
+- The only structural marker the writers guarantee is the capture heading that
+  `client/lib/draft-format.ts` splits on: the last top-level marker whose body opens with a page
+  fact or an evidence heading. Inferred from `server/reports.ts` and `server/goal-proposal.ts`.

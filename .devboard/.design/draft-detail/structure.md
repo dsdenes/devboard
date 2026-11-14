@@ -5,12 +5,11 @@
 | Order | A2UI ID | Region | Journey | Items | Priority |
 |---|---|---|---|---|---|
 | 1 | region_identity | Draft title, file name | Review, Start | C1, C2 | P0 / P1 |
-| 2 | region_actions | Status badge, Stop | Review, Start | C3, C5 | P0 / P1 |
+| 2 | region_actions | Status badge, Stop; the group is absent at idle | Review, Start | C3, C5 | P0 / P1 |
 | 3 | region_alert | Error banner, only when present | Review, Start | C7 | P1 |
 | 4 | region_question | Elaboration question, only while pending | Start | C14, C15, C16 | P0 while pending |
 | 5 | region_proposal | Proposed goal text | Review | C8 | P0 |
 | 6 | region_activity | Streamed elaboration log, only while a run exists | Start | C13 | P1 |
-| 7 | region_context | Captured facts, then inline Visible text and DOM excerpt | Review | C9, C10, C11, C20 | P1 / P2 |
 
 ```
 Panel (surface, border, 4px radius, fills the grid cell)
@@ -18,30 +17,30 @@ Panel (surface, border, 4px radius, fills the grid cell)
     identity (column)
       h2 heading, ellipsis, full value in title          P0
       file name, mono-small muted, ellipsis              P1
-    actions (row, 6px gaps, never shrinks)
-      [status badge] [Stop?]                              P0 / P1
+    actions (row, 6px gaps, never shrinks)               P1, only while status ≠ idle
+      [status badge] [Stop while running]                P0 / P1
   body (column, 12px padding, 16px between sections, scrolls)
     [error alert]                                         P1
     section question (warning border + surface)           P0 while pending
-      question heading, h3
+      question heading, h3, the question message
       option cards (one recommended label)
       free-text answer + submit
-    section proposal
-      overline "Draft"
+    section proposal (aria-label "Draft", no visible overline)
       pre-wrap proposal text (no box)
     section activity (only while a run exists)
       overline "Elaboration activity"
       auto-following log, min 180px
-    section captured context
-      overline "Captured UI context"
-      fact grid: Route, URL, Selected element, Viewport, Captured at   P1
-      inline sections: Visible text, DOM excerpt                        P2
 ```
+
+The proposal is the only rendered copy of the draft. `draftProposal` cuts the text at the
+writer's capture section and strips a leading H1, so the captured page facts, the Visible text,
+and the DOM excerpt have no surface in this panel and no region of their own.
 
 ## Primary action
 
-- Start elaboration is the one filled primary and lives on each draft row, next to the draft it
-  starts; the detail header does not repeat it beside the status it changes.
+- Start elaboration is an outlined `sm` control on each draft row, next to the draft it starts;
+  the panel header's `New goal` stays the only filled primary, and the detail header does not
+  repeat Start beside the status it changes.
 - The row's Start is disabled while that draft runs, and its tooltip states the blocker.
 - Stop takes the documented quiet-destructive style (24px word, `border-subtle`, muted until
   hover/focus turns `error-surface`/`error`). It appears only while this draft's run is live.
@@ -52,24 +51,28 @@ Panel (surface, border, 4px radius, fills the grid cell)
 
 - Identity and action share the header, so the operator sees what is selected and what can be
   done before reading content.
+- The action group is rendered only while the status is not `idle`, so an idle draft's header
+  carries no badge and no Stop: there is nothing to report and nothing to stop.
 - A pending question moves above the proposal and the log: it is the only thing blocking the
-  elaboration, and the old layout buried it below a long activity stream.
+  elaboration.
 - The proposal is the first content block because the review decision precedes the run.
-- Activity sits above the captured facts: live progress is P1 and changes; the capture is
-  reference. It is omitted entirely when no run exists, instead of showing an empty box.
-- Captured facts are one compact grid; the visible text and DOM excerpt follow inline.
+- Activity sits below the proposal: live progress is what changes while the operator watches.
+  It is omitted entirely when no run exists, instead of showing an empty box.
 
 ## State coverage
 
-- Idle: badge `idle`, row Start enabled, no activity section, no question.
-- Another draft running: badge `idle` for this draft, its row Start remains enabled.
+- Idle: no action group at all — no badge and no Stop (`{#if status !== "idle"}`); row Start
+  enabled, no activity section, no question.
+- Another draft running: this draft's status is `idle`, so its header stays bare and its row
+  Start remains enabled.
 - This draft running: badge `running`, row Start disabled with the blocker tooltip, quiet Stop,
   activity section streaming, question block on top as soon as one arrives.
-- Stopped: badge `stopped`, row Start re-enabled, activity retained.
+- Stopped: badge `stopped`, no Stop, row Start re-enabled, activity retained.
+- Succeeded: badge `succeeded`, no Stop, activity retained until the draft leaves the list.
 - Failed: badge `failed`, error alert with the server reason, draft retained, row Start retries.
 - Read refused / vanished: the store clears the selection and the page renders the list; a
   refused read on a still-listed draft shows the alert.
-- No captured context marker: "No captured UI context." in the context section.
+- Empty proposal: `This draft holds no proposal text yet.` in place of the text block.
 - Loading: the detail is absent until `getGoalDraft` answers; the list panel remains usable.
 
 ## Responsive order
@@ -78,20 +81,20 @@ Panel (surface, border, 4px radius, fills the grid cell)
 - <1100px: the list and the detail stack; the detail keeps the same internal order.
 - At the 1024×720 floor the header title truncates, the path truncates, and the action group
   keeps its size; nothing wraps below the identity and no horizontal scroll appears.
-- The body owns vertical scrolling; the log and the context sections never create a scroll
-  trap outside it.
+- The body owns vertical scrolling; the log never creates a scroll trap outside it.
 
 ## Rationale
 
-- The current panel is a stack of boxed blobs in raw-byte order: context, then the whole
-  draft (context again), then a nested `Activity` header, then the log, then the question.
-  Reading order follows data storage, not the operator's decisions.
-- Splitting the bytes at the writer's `## Captured UI context` marker is the only parsing the
-  writers guarantee. It removes the duplicate context from the reading surface; the raw source
-  block added no content the structured proposal and evidence do not already show.
+- The panel reads in decision order: identity, state, the blocking question, the proposal, then
+  live progress.
+- Splitting the bytes at the writer's capture marker is the only parsing the writers guarantee,
+  and the panel keeps only the proposal half of that split; the raw source block and its
+  disclosure are gone.
+- The header omits the action group at idle because a status badge naming `idle` beside a Stop
+  that cannot run adds two controls that answer no question.
 - Reusing `IssuesQuestion` (generalised from `IssuesAgentQuestion`) and `IssuesAgentLog`
   keeps the question grammar and the auto-following log identical to the Agents surface.
 - Alternatives rejected: a three-column layout (the panel is a side column already), a
-  modal question (the activity would disappear), tabs for proposal/context (the proposal must
+  modal question (the activity would disappear), tabs for proposal/evidence (the proposal must
   stay visible while the question is answered), and rendering Markdown (the proposal is shown
   as plain text and no Markdown renderer is wired into the client).

@@ -1,90 +1,101 @@
 # Draft detail — validation
 
 - Page: `/` → Issues → Draft goals → second panel (`section.issues-draft-detail`).
-- Branch: `issue-275` in `.worktree/issue-275`.
-- Commands run from `.devboard`:
-  - `bun install --frozen-lockfile`
-  - `bun run build`
-  - `bun run check` — 0 errors, 0 warnings.
-  - `bunx tsc --noEmit` — pass.
-  - `bun test` — 630 pass, 0 fail (includes `client/lib/draft-format.test.ts`).
-  - `bun run verify:interface` — passed after integrating `origin/main`: shell, modes, sidebar,
-    pages, splits, palette, keyboard, theme, tables, editors, terminals, accessibility,
-    notifications, status bar, issues mode, ask transcript, persistence, and boundary.
-- Playwright source: the project's `@playwright/test` Chromium driven by
-  `scripts/verify-interface.ts`, plus OMP browser Playwright for the live draft and wireframe.
-- Viewports: 1440×900 and 1024×720 (the shell's supported floor). The wireframe additionally
-  rendered at 390 px to prove its own responsiveness; the product has no mobile layout.
+- Scope: the design record reconciled with the shipped panel. No product code, test, or
+  design-system artifact was changed, so this pass ran no product UI gate; the earlier captures
+  of the removed capture block were deleted with the regions they showed. The rewritten
+  wireframe was rendered once at 1200×1000 to confirm its own layout.
+- Source of truth:
+  - `.devboard/client/lib/components/DraftsPage.svelte:251-339` — header, optional alert,
+    question, proposal, activity.
+  - `.devboard/client/lib/components/DraftsPage.svelte:271-295` — the action group renders only
+    while `status !== "idle"`, and Stop only while `running`.
+  - `.devboard/client/lib/draft-format.ts:75-79` — `draftProposal` cuts the draft at the writer's
+    capture section and strips the leading H1.
+  - `.devboard/crates/devboard/src/goal_proposal.rs:21` — `UNPROCESSED_NOTICE`, the proposal's
+    first line.
+  - `.devboard/client/app.css:3916-4060` — panel, header, section, and quiet Stop styles.
+- Commands declared in `.devboard/package.json` and run from `.devboard` when the change itself
+  needs them:
+  - `bun run build` — client bundle and the embedded-asset copy.
+  - `bun run check` — `svelte-check` over the client.
+  - `bun run test` — the workspace test runner.
+  - `bun run test:client` — the client unit suite.
+- What this pass checked instead: the three state rules the record states were read from the
+  component above (`{#if status !== "idle"}`, `{#if running}`, `{#if run !== null}`), the
+  proposal copy was compared with `UNPROCESSED_NOTICE`, and the acceptance searches over
+  `.devboard/.design/a2ui/draft-detail.*` and `.devboard/.design/draft-detail/` were run for the
+  removed region and for every script the record names.
 
 ## Journeys exercised
 
-- Review a draft: open the report-written draft, read the proposal before the marker, read the
-  five captured facts, and the inline Visible text and DOM excerpt.
-- Read a draft without captured context: 001-question shows `No captured UI context.`.
-- Start, question, answer: start 001-question from its row, see the question above the
-  activity log, answer an option, see the draft leave the list and the spec written.
-- Status scoping: while 001-question runs, 002-hang shows `idle` and stays startable.
-- Stop: start 002-hang from its row, see `Stop`, stop it, see `stopped` and its row Start
-  re-enabled.
+The panel and these journeys shipped in #275 and its follow-ups; this pass re-read the record
+against the source instead of re-running them. What a reviewer reads:
+
+- Review a draft: header identity, then the proposal without its leading H1 and without the
+  writer's capture section.
+- Start, question, answer: start a draft from its row, see the question above the proposal and
+  the activity log, answer an option, see the draft leave the list and the spec written.
+- Status scoping: while one draft runs, an idle draft's header stays bare and its row Start
+  stays enabled.
+- Stop: start a draft, see `Stop` beside the `running` badge, stop it, see `stopped` with no
+  Stop and its row Start re-enabled.
 - Refresh/reload: the report-panel write appears without reload; a reload restores the selected
   path.
-- Read refusal / vanished draft: the suite's refused-path and missing-file checks pass.
+- Read refusal / vanished draft: the page clears the selection and shows the list, or reports
+  the refusal in the panel's alert.
 
-## States exercised
+## States
 
-| State | Evidence | Result |
+| State | Source | Surface |
 |---|---|---|
-| Idle with captured context, dark | `idle-dark-1440.png` | heading + path, idle badge; row Start; proposal, five facts, inline evidence |
-| Idle with captured context, light | `idle-light-1440.png` | same content; labels and borders hold in the light palette |
-| Question pending and running | `question-dark-1440.png` | warning question block above the proposal and log; disabled row Start; quiet Stop; activity follows |
-| Question pending at the floor | `question-dark-1024x720.png` | header fits, title truncates, no horizontal overflow |
-| No captured context | `verify:interface` assertion | `No captured UI context.` |
-| Stopped / failed | `verify:interface` assertions | `stopped` badge, row Start re-enabled; error banner path covered |
-
-## Dependent pages
-
-`IssuesQuestion` is the generalised `IssuesAgentQuestion`; the component is also rendered by the
-Issues overview output panel, the Agents page cards, and the agent focus tab. `verify:interface`
-exercises all three (agents grid, overview output, focus tab, answer flow) after the change and
-reports them passing; their test ids and store submit path are unchanged.
+| Idle | `DraftsPage.svelte:271` | identity only: no badge, no Stop; row Start |
+| Another draft running | `DraftsPage.svelte:32-36` | as idle here: the run is filtered by this draft's path |
+| This draft running | `DraftsPage.svelte:271-295` | `running` badge, quiet Stop, activity section |
+| Question pending | `DraftsPage.svelte:300-317` | warning block above the proposal and the log |
+| Stopped | `DraftsPage.svelte:271-295` | `stopped` badge, no Stop, activity retained |
+| Failed | `DraftsPage.svelte:297-299` | `failed` badge and the alert with the server reason |
+| Empty proposal | `DraftsPage.svelte:318-323` | `This draft holds no proposal text yet.` |
+| No selection | `DraftsPage.svelte:340-353` | the detail column's selection stack |
 
 ## Spacing and accessibility
 
 - Spacing uses the approved scale only: 2/4/6/8/12/16/24/28 px. The 44px header matches the
-  documented Flow goal header; 104px is the documented fact-label column; 24px is the documented
-  quiet-destructive control height. Radius 3/4px, panel and badge rules unchanged.
-- One `h1` (page), panel `h2`, section `h3`, evidence `h4`; native `dl`/`dt`/`dd` for facts,
-  native buttons and form.
+  documented Flow goal header; 24px is the documented quiet-destructive control height. Radius
+  3/4px, panel and badge rules unchanged.
+- One `h1` (page), panel `h2`, question `h3`, activity overline `h3`; native buttons and form.
 - Status is written as a word; color is redundant. Focus rings come from the existing Button and
   Input primitives.
+- The proposal section is labelled `aria-label="Draft"` and renders no visible overline; the
+  question block is labelled `aria-label="Elaboration question"` and renders no visible label
+  above its `h3`.
 
 ## Duplicate information
 
-The previous detail rendered the captured context once as its own box and again inside the whole
-draft. Now the structured facts and inline evidence are the only visible copy; the raw source
-block and its disclosure are gone. The heading lives in the header only and is stripped from the
-proposal body. The nested `Activity` header and its run path are gone.
+The proposal renders once, cut at the writer's capture section, with its H1 moved into the
+header. The captured page facts and the inline evidence are not rendered on any surface. The
+nested `Activity` header and its run path are gone.
 
 ## Wireframe
 
-`.devboard/.design/a2ui/draft-detail.a2ui.jsonl` and `draft-detail.wireframe.html`; rendered at
-1440 and 390 px (`wireframe-1440.png`, `wireframe-390.png`). Scroll width equals client width at
-both sizes; the primary action stays visible.
-
-## Console and network
-
-No runtime page error in the exercised states. The suite itself briefly shows a
-`Not connected to the server` toast during its reconnect check; the evidence helpers dismiss
-notifications before capture, so the screenshots show the surface only.
+`.devboard/.design/a2ui/draft-detail.a2ui.jsonl` and `draft-detail.wireframe.html`, rendered
+state `running` with a pending question: the header carries the `running` badge and Stop, the
+question block sits above the proposal, and the activity section follows it. The region
+annotations state where the action group and the activity section are absent: the group at idle,
+Stop outside `running`, activity without a run. Both files carry no page facts, Visible text, or
+DOM excerpt.
 
 ## Not run / blocked
 
+- Product UI gates (`bun run build`, `bun run check`, `bun run test`, `bun run test:client`):
+  this change edits design records only; no code those gates compile or exercise changed.
+- Browser pass: not required for a documentation reconciliation; the record names the source
+  lines each state claim came from.
 - Product mobile layout: the shell declares 1024×720 its minimum and renders the
   unsupported-viewport notice below it.
-- Storybook: no OpenUI primitive, token, or story changed. `IssuesQuestion` is a page component,
-  not a catalog primitive.
+- Storybook: no OpenUI primitive, token, or story changed.
 - `designmd` research: not required; no design-system artifact was mutated.
 
 ## Verdict
 
-pass.
+reconciled with the shipped panel.
