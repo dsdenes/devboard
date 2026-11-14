@@ -639,6 +639,10 @@ pub struct Governor {
     /// The budget the live slice was last proved to carry. A save that repeats
     /// it has nothing to write, so it costs the user manager no round trip.
     applied: Mutex<Option<Settings>>,
+    /// Serializes the slice's property transaction. A save answers before its
+    /// apply, so the applier a save leaves behind and the startup apply must
+    /// never write the same slice's properties at once.
+    apply_lock: Mutex<()>,
     slice_wrap: AtomicBool,
     last_oom_kills: AtomicU64,
     deferral_stamp: Mutex<BTreeMap<String, u64>>,
@@ -708,6 +712,7 @@ impl Governor {
             slice: Mutex::new(SliceInfo::default()),
             slice_cgroup: Mutex::new(None),
             applied: Mutex::new(None),
+            apply_lock: Mutex::new(()),
             slice_wrap: AtomicBool::new(options.slice),
             last_oom_kills: AtomicU64::new(0),
             deferral_stamp: Mutex::new(BTreeMap::new()),
@@ -793,12 +798,25 @@ impl Governor {
         }
     }
 
-    /// Persists the operator's values and applies them to the live slice.
+    /// Persists the operator's values and applies them to the live slice
+    /// before returning.
     ///
     /// A budget whose marks the live slice already carries costs the user
     /// manager no round trip: the peer cap and the reserve reach admission, so
     /// only a changed memory mark rewrites the slice.
     pub fn save(&self, settings: Settings) -> Result<Settings, String> {
+        let settings = self.persist(settings)?;
+        self.converge();
+        Ok(settings)
+    }
+
+    /// Validates the budget and writes it where every process reads it.
+    ///
+    /// This is the half of a save that answers the operator: the settings file
+    /// is renamed into place and the in-memory budget follows it. The live
+    /// slice is not touched here, so a caller that owes an answer owes it
+    /// after this call and before any apply.
+    fn persist(&self, settings: Settings) -> Result<Settings, String> {
         settings.validate_for(self.memory.total_mb())?;
         let saved = SavedSettings::from_settings(&settings);
         write_json_atomically(&settings_path(&self.state_dir), &saved.to_json())
@@ -812,10 +830,46 @@ impl Governor {
         if let Ok(mut current) = self.settings_stamp.lock() {
             *current = file_stamp(&settings_path(&self.state_dir));
         }
-        if self.slice_enabled && self.slice_owned && !self.slice_carries(settings) {
-            self.apply_slice();
-        }
         Ok(settings)
+    }
+
+    /// Applies the budget in force when the live slice does not carry it.
+    ///
+    /// The applier a save leaves behind and the startup apply both land here,
+    /// so the slice's properties are written by one caller at a time. The
+    /// budget is read at apply time rather than captured at save time: two
+    /// saves in flight converge on the newest one, never on the older.
+    fn converge(&self) {
+        if !self.slice_enabled || !self.slice_owned {
+            return;
+        }
+        let _guard = self
+            .apply_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let settings = self.settings();
+        if self.slice_carries(settings) {
+            return;
+        }
+        self.apply_slice_locked();
+    }
+
+    /// Applies the saved budget after the caller has answered.
+    ///
+    /// One changed save costs the user manager a `show` and a `set-property`,
+    /// and each is a serialized bus request: on a manager draining scope work
+    /// one transaction measured over a second, which put the operator's answer
+    /// behind work the answer does not need. The settings file is the save;
+    /// the slice follows on its own thread, and a later save's applier skips
+    /// the write the earlier one already made.
+    fn schedule_apply(self: &Arc<Self>) {
+        if !self.slice_enabled || !self.slice_owned || self.slice_carries(self.settings()) {
+            return;
+        }
+        let governor = Arc::clone(self);
+        let _ = std::thread::Builder::new()
+            .name("slice-budget".to_string())
+            .spawn(move || governor.converge());
     }
 
     /// True when the live slice still carries the marks this budget sets: the
@@ -845,8 +899,12 @@ impl Governor {
     /// Each argument is the client's field: absent or `null` keeps the value
     /// already in force. The decode and the cap rule are the governor's own,
     /// so the refusal text a client sees has one owner.
+    ///
+    /// This is the operator's path, so it answers after the settings write and
+    /// never waits for the user manager: the slice's memory marks follow on
+    /// the applier [`Self::schedule_apply`] leaves behind.
     pub fn apply_update(
-        &self,
+        self: &Arc<Self>,
         max_agent_peers: Option<&Value>,
         memory_high_mb: Option<&Value>,
         memory_max_mb: Option<&Value>,
@@ -876,7 +934,9 @@ impl Governor {
         if let Some(value) = number(memory_reserve_mb, "Reserve")? {
             settings.memory_reserve_mb = value;
         }
-        self.save(settings)
+        let settings = self.persist(settings)?;
+        self.schedule_apply();
+        Ok(settings)
     }
 
     /* -------------------------------------------------------------------- */
@@ -1078,6 +1138,15 @@ impl Governor {
         if !self.slice_enabled {
             return SliceInfo::default();
         }
+        let _guard = self
+            .apply_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        self.apply_slice_locked()
+    }
+
+    /// One slice transaction with the apply lock already held.
+    fn apply_slice_locked(&self) -> SliceInfo {
         let settings = self.settings();
         let marker = slice_owner_marker(&self.state_dir);
         let applied = apply_slice_properties_owned(&self.slice_name, settings, Some(&marker));

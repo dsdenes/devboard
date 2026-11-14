@@ -268,7 +268,10 @@ memory max, and the reserve 64 MB up to but below memory max; the server also re
 max whose sum with the reserve exceeds the host's `MemTotal`, so the reserve stays free. The
 refusal renders in a `role="alert"` paragraph beside the form. A save confirms through
 `SaveFeedback` scope `resources.budget` only after the server broadcasts the frame that follows
-it. The slice's owning dashboard is named in the unit description; a second dashboard, a worker,
+it. The save answers after the settings write, not after the slice: the governor leaves the
+slice's memory marks to an applier that reads the budget in force at apply time, so two saves in
+flight converge on the newest values and the live panel shows them on a later frame. The slice's
+owning dashboard is named in the unit description; a second dashboard, a worker,
 or a CLI only joins it and never rewrites its budget.
 
 The page asks for `getResources` when the connection opens and renders every `resourcesState`
@@ -728,6 +731,41 @@ starts, so a polled `getVersion` read answers without reading a manifest or spaw
 install that lands beside the process records its version in that frame, which is what a failed
 replacement names. The status bar labels that value `installed` or `source` accordingly; the reload
 control appears only when a replacement could not start.
+
+### Landing a branch
+
+`devboard land <branch> [--repo-dir <dir>] [--json]` is the one command that lands a worktree branch
+into the integration checkout and proves it. It resolves that checkout from any directory inside
+the repository — a linked worktree included — so a run names only its branch, and it needs no `cd`
+prefix and no host path. Its output names the merged commit, the verified remote tip, and the
+checkout's divergence:
+
+```
+landed issue-1944 into main
+merged 66b60d92…
+remote origin/main 66b60d92… verified
+ahead 0 behind 0
+```
+
+The command fetches the integration branch's upstream with `--prune`. It fast-forwards the checkout
+to that tip when the checkout is behind, rebases the checkout onto it when the checkout itself
+carries unpublished commits, rebases the named branch onto the integration tip inside the branch's
+own worktree when its base advanced — reported as `rebased <branch> onto <integration>` — and merges
+the branch with `--ff-only`, never writing a merge commit. It then pushes the integration branch,
+reads the remote tip back with `git ls-remote`, and exits nonzero when that tip does not name the
+merged commit. `ahead` and `behind` are the checkout's own divergence after the push.
+
+A concurrent landing in the same shared checkout makes the ref update fail with `cannot lock ref
+'HEAD'`; the command retries it with doubling, capped backoff, six attempts at most, and reports the
+commit that won, so no operator reruns the merge by hand. A rejected push re-fetches the new tip,
+integrates it, and retries, three attempts at most. A checkout with an unfinished merge, rebase,
+cherry-pick, or revert is refused before anything moves, and so is uncommitted work in a path the
+branch itself changes, because the fast-forward would overwrite it; an uncommitted path the branch
+does not touch is preserved untouched, so another worker's scratch edit never blocks a landing and
+untracked paths never do either. A rebase that does not apply cleanly is aborted and its conflict
+paths are named, so the caller finishes that rebase in the branch's worktree and calls the command
+again. `--json` prints the same record as one object, and `--repo-dir` names the directory the
+checkout is resolved from when the caller is not standing inside the repository.
 
 ### Release suite
 
@@ -3836,19 +3874,19 @@ task-list issue reference), it writes `blocked: #<prerequisite>` as the first st
 nonzero, leaves the issue open and unhandled, and never implements the prerequisite in another
 agent's place. It is
 non-interactive: no `question` tool, no confirmation, no interactive editor, no login prompt. It
-fetches the canonical integration line, integrates concurrent changes, resolves every conflict
-itself, reruns every check the integration invalidates, and publishes directly to that line with
-bounded retry when a push is rejected; it never creates a pull request or merge request and never
-force-pushes. It lands with one fast-forward merge and one push, then proves the push with a
-single verification block read once: `git fetch origin main`,
-`git rev-parse --verify origin/main`, `git rev-parse --short HEAD`,
-`git rev-parse --short origin/main`, `git rev-list --left-right --count HEAD...origin/main`,
-`git merge-base --is-ancestor HEAD origin/main`, and `git status --short --branch`. It never
-chains those ref probes with `&&`, never passes two revisions to `--short` or `--verify`, never
-repeats the block to reconfirm printed output, and forbids `git ls-remote` and a second
-`git status` readback. It closes the issue only after the block reports `ancestor=0` with no
-`ahead` marker and the required checks pass, and puts the revision and the verification evidence
-in the final response.
+lands and publishes with one `devboard land <branch>` call, run from the repository root: the
+command fetches the canonical integration line, integrates concurrent changes, rebases the branch
+onto a moved tip, resolves nothing by itself, and publishes directly to that line with bounded
+retry when a push is rejected. The prompt therefore issues no `git fetch`, `git merge`, `git
+rebase`, `git push`, or `git ls-remote` of its own, and the command's own output is the proof:
+`merged <sha>`, `remote <upstream> <sha> verified`, and `ahead 0 behind 0`, printed once and never
+re-derived with a status readback or a ref probe. A rebase the command cannot apply cleanly is
+aborted with its conflict paths named, and that is the one landing step the agent finishes by hand
+in its worktree before calling the command again; a `rebased` line means the branch landed on a base
+it was not verified against, so the agent reruns the checks the change needs once and reports their
+verdict. It never creates a pull request or merge request and never force-pushes. It closes the
+issue only after the verified line names the merged commit and the required checks pass, and puts
+the revision and the verification evidence in the final response.
 A proven duplicate, invalid, or already-fixed issue is closed with evidence and without committing
 unrelated work. A successful agent removes only the worktree and branch it created; a failed or
 blocked agent leaves its worktree in place and reports its path.
