@@ -544,6 +544,38 @@ fn install_sh_produces_the_same_host_tree_as_the_binary() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // An upgraded host keeps what an older release shipped. Both installers
+    // must delete the same stale entries on the rerun, and doctor must then
+    // pass instead of reporting each one as unshipped.
+    let stale = [
+        ".omp/commands/retired.md",
+        ".devboard/prompts/retired.md",
+        ".devboard/extensions/retired.js",
+    ];
+    for host in [binary.host(), scripted.host()] {
+        for relative in stale {
+            let path = host.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"shipped by an older release\n").unwrap();
+        }
+    }
+    cli_install::install(Some(binary.host()), false).unwrap();
+    let output = run_install_script(scripted.host());
+    assert!(
+        output.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for host in [binary.host(), scripted.host()] {
+        for relative in stale {
+            assert!(
+                !host.join(relative).exists(),
+                "{} kept the stale {relative}",
+                host.display()
+            );
+        }
+    }
+
     let mut left = snapshot(binary.host());
     let mut right = snapshot(scripted.host());
     // The two hosts are different roots; every relative path and byte must
@@ -551,6 +583,9 @@ fn install_sh_produces_the_same_host_tree_as_the_binary() {
     assert_eq!(left, right);
     left.clear();
     right.clear();
+
+    let report = doctor(scripted.host()).unwrap();
+    assert!(report.ok(), "{:?}", report.failures);
 
     // A host that shares `.omp/skills` through a symlink must come out with a
     // real `skills` directory under both installers, and the link target must
@@ -602,6 +637,37 @@ fn install_sh_produces_the_same_host_tree_as_the_binary() {
         snapshot(linked_binary.host()),
         snapshot(linked_scripted.host())
     );
+}
+
+#[test]
+fn both_installers_keep_a_tracked_stale_wrapper() {
+    let binary = Scratch::new("tracked-stale-binary");
+    let scripted = Scratch::new("tracked-stale-script");
+    for host in [binary.host(), scripted.host()] {
+        let stale = host.join(".omp/commands/retired.md");
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, b"host-owned\n").unwrap();
+        git(host, &["add", ".omp/commands/retired.md"]);
+    }
+
+    cli_install::install(Some(binary.host()), false).unwrap();
+    let output = run_install_script(scripted.host());
+    assert!(
+        output.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // A tracked file belongs to the host: the binary reports it as drift and
+    // the script leaves it alone, so neither installer deletes host data.
+    for host in [binary.host(), scripted.host()] {
+        assert_eq!(
+            fs::read(host.join(".omp/commands/retired.md")).unwrap(),
+            b"host-owned\n",
+            "{} lost the tracked host file",
+            host.display()
+        );
+    }
 }
 
 #[test]

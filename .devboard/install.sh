@@ -6,8 +6,13 @@
 # Copies every file under this directory's omp/ tree to the same relative path
 # under <host>/.omp/. The host path is discovered with
 # `git rev-parse --show-toplevel` when omitted. Files that already match are left
-# untouched, unrelated files in <host>/.omp/ are never removed, and a differing
-# file stops the run unless --force is given.
+# untouched, a differing file stops the run unless --force is given, and an
+# entry outside the paths the package owns is never removed.
+#
+# A file below `.omp/commands`, `.omp/extensions`, `.devboard/prompts`, or
+# `.devboard/extensions` that this release no longer ships is stale, exactly as
+# `devboard install` treats it: an untracked one is deleted, and a git-tracked
+# one belongs to the host and is left in place.
 #
 # Skills under omp/skills/devboard-* follow the ownership rule instead: the
 # package always wins a marked name, so a differing copy is replaced without
@@ -28,6 +33,8 @@ Usage: install.sh [--force] [host-path]
 Copies every file under omp/ to <host>/.omp/ at the same relative path.
 The host path defaults to the git repository root of the current directory.
 Skills in omp/skills/devboard-* are package-owned and always replaced.
+An untracked file the package no longer ships is deleted from
+.omp/commands, .omp/extensions, .devboard/prompts, and .devboard/extensions.
 The install also adds one /.omp/skills/devboard-* line per shipped skill to
 the host .gitignore.
 
@@ -116,6 +123,32 @@ if [ -L "$host/.devboard" ]; then
 fi
 ensure_real_dir "$host/.devboard"
 
+# A file the host tracks is the host's own: `devboard install` preserves it and
+# reports drift, and a host outside a git work tree tracks nothing.
+is_tracked() {
+  git -C "$host" ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+# Deletes every file or symlink below `root` that `shipped` — one relative path
+# per line, wrapped in newlines — does not name. A directory itself stays, an
+# empty list makes every entry stale, and a tracked entry is preserved. This is
+# the binary's stale-package-file rule, so both installers leave the same tree.
+prune_unshipped() {
+  local root=$1 shipped=$2 label=$3
+  [ -d "$root" ] || return 0
+  local entry relative
+  while IFS= read -r -d '' entry; do
+    relative="${entry#"$root"/}"
+    if grep -Fxq -- "$relative" <<<"$shipped"; then
+      continue
+    fi
+    if is_tracked "$label/$relative"; then
+      continue
+    fi
+    rm -rf -- "$entry"
+  done < <(find "$root" -mindepth 1 ! -type d -print0)
+}
+
 target_omp="$host/.omp"
 ensure_real_dir "$target_omp"
 source_skills="$source_omp/skills"
@@ -129,8 +162,10 @@ for payload in prompts extensions; do
   target_payload="$host/.devboard/$payload"
   [ -d "$source_payload" ] || continue
   ensure_real_dir "$target_payload"
+  shipped_payload=$'\n'
   while IFS= read -r -d '' source_file; do
     relative_path="${source_file#"$source_payload"/}"
+    shipped_payload+="$relative_path"$'\n'
     destination="$target_payload/$relative_path"
     if [ -f "$destination" ] && cmp -s -- "$source_file" "$destination"; then
       continue
@@ -140,6 +175,7 @@ for payload in prompts extensions; do
     cp -- "$source_file" "$destination"
     payload_installed=$((payload_installed + 1))
   done < <(find "$source_payload" -type f -print0)
+  prune_unshipped "$target_payload" "$shipped_payload" ".devboard/$payload"
 done
 
 # An installed host records its version beside the payload. A source checkout
@@ -155,11 +191,12 @@ if [ ! -f "$host/.devboard/package.json" ]; then
 fi
 ensure_real_dir "$host/.omp/extensions"
 ensure_real_dir "$host/.devboard/extensions"
-# The harness no longer ships runtime extensions: remove the retired
-# TypeScript wrappers an older install left behind.
-for retired in "$host/.omp/extensions" "$host/.devboard/extensions"; do
-  find "$retired" -type f -name '*.ts' -delete
-done
+# The harness ships no runtime extensions. A release that ships an `extensions`
+# payload is pruned by the payload loop above; when it ships none, every entry
+# an older install left behind is stale, not only its TypeScript wrappers.
+if [ ! -d "$source_dir/extensions" ]; then
+  prune_unshipped "$host/.devboard/extensions" $'\n' ".devboard/extensions"
+fi
 
 # The fixed wrapper files keep the refuse-unless---force rule; the marked
 # skills are collected separately because the package owns them outright.
@@ -221,6 +258,21 @@ for relative_path in ${regular_paths[@]+"${regular_paths[@]}"}; do
   cp -- "$source_omp/$relative_path" "$destination"
   installed=$((installed + 1))
 done
+
+# A wrapper an older release shipped and this one does not is a stale package
+# file: prune it the way `devboard install` does. The marked skills keep their
+# own ownership rule below, and every unshipped `.omp` entry outside these two
+# prefixes is unrelated host content, which is never removed.
+shipped_commands=$'\n'
+shipped_extensions=$'\n'
+for relative_path in ${regular_paths[@]+"${regular_paths[@]}"}; do
+  case "$relative_path" in
+    commands/*) shipped_commands+="${relative_path#commands/}"$'\n' ;;
+    extensions/*) shipped_extensions+="${relative_path#extensions/}"$'\n' ;;
+  esac
+done
+prune_unshipped "$target_omp/commands" "$shipped_commands" ".omp/commands"
+prune_unshipped "$target_omp/extensions" "$shipped_extensions" ".omp/extensions"
 
 # True when `destination` is exactly the package tree `source`: every shipped
 # file present with identical bytes, no extra entry, no symlink, no extra
