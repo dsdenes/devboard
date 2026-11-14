@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::app::App;
-use crate::release::{self, ManifestSource, ReleaseInfo};
+use crate::release::{self, ManifestSource};
 
 /// The default check interval.
 pub const DEFAULT_UPDATE_INTERVAL_MS: u64 = 60_000;
@@ -350,6 +350,3 @@ fn names_server_error_status(text: &str) -> bool {
 pub fn installed_version(prefix: &std::path::Path) -> Option<String> {
     release::installed_version(prefix)
 }
-
-#[allow(dead_code)]
-fn _release_info_is_shared(_info: &ReleaseInfo) {}
