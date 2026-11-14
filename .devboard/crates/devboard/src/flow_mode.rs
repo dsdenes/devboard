@@ -328,17 +328,36 @@ fn diff_header_paths(rest: &str) -> Option<(String, String)> {
         }
         return Some((first[2..].to_string(), second[2..].to_string()));
     }
-    let prefix = "a/";
-    if !rest.starts_with(prefix) {
+    if !rest.starts_with("a/") {
         return None;
     }
-    let separator = rest.rfind(" b/")?;
-    let first = &rest[2..separator];
-    let second = &rest[separator + 3..];
-    if first.is_empty() || second.is_empty() {
-        return None;
+    // Git quotes a path only for the characters it must escape, never for a
+    // space, so an unquoted path may itself carry the ` b/` that separates the
+    // header's two paths. Every such boundary yields a syntactically valid
+    // pair, so the split is chosen among them: a change that renames nothing
+    // names the same path on both sides, which identifies its boundary exactly,
+    // and a rename keeps the pair whose paths are closest in length.
+    let mut best: Option<(String, String)> = None;
+    let mut best_skew = usize::MAX;
+    for (separator, _) in rest.match_indices(" b/") {
+        if separator < 2 {
+            continue;
+        }
+        let first = &rest[2..separator];
+        let second = &rest[separator + 3..];
+        if first.is_empty() || second.is_empty() {
+            continue;
+        }
+        if first == second {
+            return Some((first.to_string(), second.to_string()));
+        }
+        let skew = first.len().abs_diff(second.len());
+        if skew < best_skew {
+            best_skew = skew;
+            best = Some((first.to_string(), second.to_string()));
+        }
     }
-    Some((first.to_string(), second.to_string()))
+    best
 }
 
 /// Splits one `git diff` result into per-path chunks.
@@ -6275,6 +6294,33 @@ mod tests {
         let text = "diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\"\n--- a/caf\\303\\251.txt\n+++ b/caf\\303\\251.txt\n@@ -1 +1 @@\n-old\n+new\n";
         let files = diff_files(text);
         assert_eq!(files[0].path, "café.txt");
+    }
+
+    #[test]
+    fn a_header_path_containing_a_separator_is_not_split() {
+        let text = "diff --git a/docs b/guide.md b/docs b/guide.md\n--- a/docs b/guide.md\n+++ b/docs b/guide.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let files = diff_files(text);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "docs b/guide.md");
+        assert_eq!(files[0].status, "modified");
+        assert_eq!(files[0].insertions, 1);
+    }
+
+    #[test]
+    fn a_header_path_containing_a_space_keeps_its_name() {
+        let text = "diff --git a/docs guide.md b/docs guide.md\n--- a/docs guide.md\n+++ b/docs guide.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let files = diff_files(text);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "docs guide.md");
+    }
+
+    #[test]
+    fn a_renamed_header_keeps_both_paths_whole() {
+        let text = "diff --git a/docs b/old.md b/src b/new.md\nsimilarity index 100%\nrename from docs b/old.md\nrename to src b/new.md\n";
+        let files = diff_files(text);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src b/new.md");
+        assert_eq!(files[0].status, "renamed");
     }
 
     #[test]
