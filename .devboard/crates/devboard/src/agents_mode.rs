@@ -9418,7 +9418,24 @@ fn release_run_view(shared: &Value, directory: &Path, now: i64) -> Value {
         .and_then(Value::as_str)
         .and_then(parse_millis);
     let phase = records.last();
-    let phase_at_ms = phase.and_then(|record| parse_millis(&record.at));
+    // The record that opened the current phase: the first of the trailing
+    // records that share the newest phase. The newest phase opened the run
+    // when no earlier record names another one, so the run's start is then the
+    // phase's start.
+    let phase_started_at = phase.and_then(|current| {
+        match records
+            .iter()
+            .rposition(|record| record.phase != current.phase)
+        {
+            Some(index) => Some(records[index + 1].at.clone()),
+            None => run
+                .get("startedAt")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| Some(current.at.clone())),
+        }
+    });
+    let phase_started_ms = phase_started_at.as_deref().and_then(parse_millis);
     json!({
         "id": id,
         "state": "running",
@@ -9429,7 +9446,8 @@ fn release_run_view(shared: &Value, directory: &Path, now: i64) -> Value {
         "startedAt": run.get("startedAt").cloned().unwrap_or(Value::Null),
         "elapsedMs": started_ms.map(|started| now - started),
         "phase": phase.map(|record| record.phase.clone()),
-        "phaseElapsedMs": phase_at_ms.map(|at| now - at),
+        "phaseStartedAt": phase_started_at,
+        "phaseElapsedMs": phase_started_ms.map(|start| now - start),
         "records": records,
     })
 }

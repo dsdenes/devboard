@@ -611,9 +611,10 @@ test("the Release Train page renders the live phase and follows new records with
         target: "abc",
         version: "1.1.0",
         peerPid: 4242,
-        startedAt: started,
+        startedAt: new Date(Date.parse(started) - 125_000).toISOString(),
         elapsedMs: 125_000,
         phase,
+        phaseStartedAt: new Date(Date.parse(started) - phaseElapsedMs).toISOString(),
         phaseElapsedMs,
         records,
       },
@@ -627,35 +628,79 @@ test("the Release Train page renders the live phase and follows new records with
       },
     });
 
-  const view = present(live("suite", 45_000, [fetched, suite]));
-  const page = within(view.container);
-  const phase = page.getByTestId("release-run-phase");
-  expect(phase.getAttribute("data-phase")).toBe("suite");
-  expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("45s");
-  expect(page.getByTestId("release-run-elapsed").textContent).toContain("2m 5s");
-  expect(page.getByTestId("release-run-range").textContent).toContain("v1.0.0..abc");
-  expect(page.getByTestId("release-run-target").textContent).toContain("abc");
-  expect(page.getByTestId("release-run-version").textContent).toContain("1.1.0");
-  expect(page.getByTestId("release-run-peer").textContent).toContain("4242");
-  expect(page.getByTestId("release-run-gate-state").textContent).toContain("unreleased");
-  expect(page.getByTestId("release-run-gate-range").textContent).toContain("v1.0.0..abc");
-  expect(page.getByTestId("release-run-gate-version").textContent).toContain("1.1.0");
-  expect(page.getByTestId("release-run-next").textContent).toContain("10:10");
-  expect(page.getByTestId("release-progress-log").querySelectorAll(".release-log__line").length).toBe(
-    2,
-  );
+  jest.useFakeTimers();
+  jest.setSystemTime(Date.parse(started));
+  try {
+    const view = present(live("suite", 45_000, [fetched, suite]));
+    const page = within(view.container);
+    const phase = page.getByTestId("release-run-phase");
+    expect(phase.getAttribute("data-phase")).toBe("suite");
+    expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("45s");
+    expect(page.getByTestId("release-run-elapsed").textContent).toContain("2m 5s");
+    expect(page.getByTestId("release-run-range").textContent).toContain("v1.0.0..abc");
+    expect(page.getByTestId("release-run-target").textContent).toContain("abc");
+    expect(page.getByTestId("release-run-version").textContent).toContain("1.1.0");
+    expect(page.getByTestId("release-run-peer").textContent).toContain("4242");
+    expect(page.getByTestId("release-run-gate-state").textContent).toContain("unreleased");
+    expect(page.getByTestId("release-run-gate-range").textContent).toContain("v1.0.0..abc");
+    expect(page.getByTestId("release-run-gate-version").textContent).toContain("1.1.0");
+    expect(page.getByTestId("release-run-next").textContent).toContain("10:10");
+    expect(
+      page.getByTestId("release-progress-log").querySelectorAll(".release-log__line").length,
+    ).toBe(2);
 
-  // A pushed frame is the only thing that changes: no operator reload.
-  agents.handleEvent({
-    type: "agentState",
-    agent: live("tag", 3_000, [fetched, suite, tag]),
-  });
-  await tick();
-  expect(page.getByTestId("release-run-phase").getAttribute("data-phase")).toBe("tag");
-  expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("3s");
-  expect(page.getByTestId("release-progress-log").querySelectorAll(".release-log__line").length).toBe(
-    3,
-  );
+    // A pushed frame is the only thing that changes: no operator reload.
+    agents.handleEvent({
+      type: "agentState",
+      agent: live("tag", 3_000, [fetched, suite, tag]),
+    });
+    await tick();
+    expect(page.getByTestId("release-run-phase").getAttribute("data-phase")).toBe("tag");
+    expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("3s");
+    expect(
+      page.getByTestId("release-progress-log").querySelectorAll(".release-log__line").length,
+    ).toBe(3);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a live release run's durations tick without a new frame", async () => {
+  const now = Date.parse("2026-11-13T12:00:00.000Z");
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
+  try {
+    const view = present(
+      releaseSnapshot({
+        run: {
+          id: "run-1",
+          state: "running",
+          range: "v1.0.0..abc",
+          target: "abc",
+          version: "1.1.0",
+          peerPid: 4242,
+          startedAt: new Date(now - 125_000).toISOString(),
+          elapsedMs: 125_000,
+          phase: "suite",
+          phaseStartedAt: new Date(now - 45_000).toISOString(),
+          phaseElapsedMs: 45_000,
+          records: [],
+        },
+      }),
+    );
+    const page = within(view.container);
+    expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("45s");
+    expect(page.getByTestId("release-run-elapsed").textContent).toContain("2m 5s");
+
+    // The projection froze when the suite heartbeat last wrote; a minute of
+    // page time advances both durations with nothing new on disk.
+    jest.advanceTimersByTime(60_000);
+    await tick();
+    expect(page.getByTestId("release-run-phase-elapsed").textContent).toContain("1m 45s");
+    expect(page.getByTestId("release-run-elapsed").textContent).toContain("3m 5s");
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("a page mounted while the connection connects refresh sends once when it opens", async () => {

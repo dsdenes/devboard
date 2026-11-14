@@ -11,6 +11,26 @@
 
   let { run, gate, nextRunAt }: Props = $props();
 
+  // Both durations follow this page's own clock: the projection is rebuilt
+  // only when the run's state tree changes, so a CI wait or a suite heartbeat
+  // would otherwise freeze them at the last write.
+  let now = $state(Date.now());
+  $effect(() => {
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
+
+  /**
+   * The duration from one projected instant to now. The server's count is the
+   * fallback for a frame whose instant the page cannot read.
+   */
+  function since(at: string | null, projected: number | null): number | null {
+    if (at === null) return projected;
+    const start = Date.parse(at);
+    if (!Number.isFinite(start)) return projected;
+    return Math.max(0, now - start);
+  }
+
   function stamp(value: string | null): string {
     if (value === null) return "never";
     const date = new Date(value);
@@ -39,7 +59,7 @@
           <dd data-testid="release-run-phase" data-phase={run.phase ?? "starting"}>
             {run.phase ?? "starting"}
             <span class="mono release-run__elapsed" data-testid="release-run-phase-elapsed">
-              {elapsedText(run.phaseElapsedMs)}
+              {elapsedText(since(run.phaseStartedAt, run.phaseElapsedMs))}
             </span>
           </dd>
         </div>
@@ -57,7 +77,9 @@
         </div>
         <div>
           <dt>Elapsed</dt>
-          <dd class="mono" data-testid="release-run-elapsed">{elapsedText(run.elapsedMs)}</dd>
+          <dd class="mono" data-testid="release-run-elapsed">
+            {elapsedText(since(run.startedAt, run.elapsedMs))}
+          </dd>
         </div>
         {#if run.peerPid !== null}
           <div>

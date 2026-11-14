@@ -34,6 +34,11 @@ export interface ReleaseRunView {
   elapsedMs: number | null;
   /** The newest recorded phase, or null before publish records one. */
   phase: string | null;
+  /**
+   * ISO 8601 of the record that opened that phase, or null when no phase is
+   * recorded. The page measures the phase's duration from this instant.
+   */
+  phaseStartedAt: string | null;
   phaseElapsedMs: number | null;
   records: ReleaseProgressRecord[];
 }
@@ -110,6 +115,7 @@ export function releaseRunFrom(value: unknown): ReleaseRunView | null {
     startedAt,
     elapsedMs: count(value.elapsedMs),
     phase: text(value.phase),
+    phaseStartedAt: text(value.phaseStartedAt),
     phaseElapsedMs: count(value.phaseElapsedMs),
     records,
   };

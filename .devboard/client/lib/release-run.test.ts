@@ -12,6 +12,7 @@ function frame(overrides: Record<string, unknown> = {}): Record<string, unknown>
     startedAt: "2026-11-13T10:00:00.000Z",
     elapsedMs: 125000,
     phase: "suite",
+    phaseStartedAt: "2026-11-13T10:00:30.000Z",
     phaseElapsedMs: 45000,
     records: [
       {
@@ -37,6 +38,7 @@ test("a run frame projects its phase, elapsed times, peer, and records", () => {
   expect(run?.peerPid).toBe(4242);
   expect(run?.elapsedMs).toBe(125000);
   expect(run?.phase).toBe("suite");
+  expect(run?.phaseStartedAt).toBe("2026-11-13T10:00:30.000Z");
   expect(run?.phaseElapsedMs).toBe(45000);
   expect(run?.records.length).toBe(1);
   expect(run?.records[0]?.attempt).toBe(1);

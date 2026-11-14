@@ -1994,6 +1994,16 @@ fn release_train_snapshot(frames: &[Value]) -> Value {
         .unwrap_or_else(|| panic!("a release-train snapshot: {frames:?}"))
 }
 
+/// The Release Train's snapshot as a freshly opened page reads it. A test that
+/// reads the same state twice uses this for its second read, because a live
+/// mode serves the projection it cached at its last rebuild.
+async fn release_run_at(root: &Path) -> Value {
+    let app = app_at(root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    release_train_snapshot(&frames(&mut inbox))
+}
+
 /// The release-train shared state one failure record produces, with the runs
 /// the page reads beside it.
 fn write_release_failure(state: &Path, failure: Value) {
@@ -2176,6 +2186,7 @@ async fn the_release_snapshot_carries_the_active_run_and_its_phase() {
     assert!(run["startedAt"].is_string(), "{run:?}");
     assert!(run["elapsedMs"].is_i64(), "{run:?}");
     assert_eq!(run["phase"], json!("suite"));
+    assert_eq!(run["phaseStartedAt"], json!("2026-11-13T10:01:00.000Z"));
     assert!(run["phaseElapsedMs"].is_i64(), "{run:?}");
     assert_eq!(run["records"].as_array().map(Vec::len), Some(2));
     assert_eq!(run["records"][1]["attempt"], json!(1));
@@ -2185,6 +2196,111 @@ async fn the_release_snapshot_carries_the_active_run_and_its_phase() {
     assert_eq!(snapshot["gate"]["target"], json!(target));
     assert_eq!(snapshot["gate"]["range"], json!(range));
     assert_eq!(snapshot["gate"]["version"], json!("1.47.0"));
+}
+
+/// A running release run at the given start instant, with progress records as
+/// `devboard publish` writes them.
+fn write_release_run(state: &Path, started: &str, records: &[(&str, &str)]) {
+    let target = "d".repeat(40);
+    write_json(
+        &state.join("release-train/state.json"),
+        json!({
+            "version": 1,
+            "repo": "",
+            "root": "",
+            "release": null,
+            "failure": null,
+            "gate": null,
+            "runs": [
+                {
+                    "id": "run-1",
+                    "startedAt": started,
+                    "endedAt": null,
+                    "state": "running",
+                    "range": format!("v1.46.13..{target}"),
+                    "target": target,
+                    "version": "1.47.0",
+                    "url": null,
+                    "detail": null,
+                    "commits": 1,
+                    "peer": null,
+                },
+            ],
+            "activity": [],
+            "updatedAt": started,
+        }),
+    );
+    let run_dir = state.join("release-train/runs/run-1");
+    std::fs::create_dir_all(&run_dir).expect("a run directory");
+    std::fs::write(
+        run_dir.join(devboard::publish::PUBLISH_PROGRESS_FILE),
+        records
+            .iter()
+            .map(|(at, phase)| json!({"at": at, "phase": phase, "detail": "recorded"}).to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .expect("a progress record");
+}
+
+/// The phase elapsed is measured from the record that opened the phase, so a
+/// phase that records several times reports its whole duration, and the value
+/// follows the clock while no file changes.
+#[tokio::test]
+async fn the_release_phase_elapsed_measures_from_the_record_that_opened_the_phase() {
+    let root = scratch("release-phase-start");
+    let state = root.join("state");
+    let started = "2026-11-13T09:59:00.000Z";
+    write_release_run(
+        &state,
+        started,
+        &[
+            ("2026-11-13T10:00:00.000Z", "fetch"),
+            ("2026-11-13T10:01:00.000Z", "suite"),
+            ("2026-11-13T10:02:00.000Z", "suite"),
+        ],
+    );
+
+    let first = release_run_at(&root).await;
+    let run = &first["run"];
+    assert_eq!(run["phase"], json!("suite"), "{first:?}");
+    assert_eq!(
+        run["phaseStartedAt"],
+        json!("2026-11-13T10:01:00.000Z"),
+        "the phase start is the suite record that opened it, not the newest one: {first:?}"
+    );
+    // One snapshot reads one clock, so the two durations differ by exactly the
+    // distance from the run's start to the phase's start.
+    let elapsed = run["elapsedMs"].as_i64().expect("a run elapsed");
+    let phase_elapsed = run["phaseElapsedMs"].as_i64().expect("a phase elapsed");
+    assert_eq!(elapsed - phase_elapsed, 120_000, "{run:?}");
+
+    // No file is rewritten between the reads, so only the clock moved both.
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    let second = release_run_at(&root).await;
+    let grown = second["run"]["phaseElapsedMs"]
+        .as_i64()
+        .expect("a phase elapsed");
+    assert!(
+        grown >= phase_elapsed + 900,
+        "the phase elapsed stayed at {phase_elapsed} ms: {second:?}"
+    );
+}
+
+/// A phase holding the run's only record opened the run, so its elapsed counts
+/// from the run's start and agrees with the run elapsed.
+#[tokio::test]
+async fn the_release_phase_elapsed_measures_from_the_run_start_when_the_phase_opened_it() {
+    let root = scratch("release-phase-single");
+    let state = root.join("state");
+    let started = "2026-11-13T09:59:00.000Z";
+    write_release_run(&state, started, &[("2026-11-13T10:01:00.000Z", "suite")]);
+
+    let snapshot = release_run_at(&root).await;
+    let run = &snapshot["run"];
+    assert_eq!(run["phase"], json!("suite"), "{snapshot:?}");
+    assert_eq!(run["phaseStartedAt"], json!(started), "{snapshot:?}");
+    assert_eq!(run["phaseElapsedMs"], run["elapsedMs"], "{run:?}");
 }
 
 /// The other side of that shape: a train with no running run carries no run at
