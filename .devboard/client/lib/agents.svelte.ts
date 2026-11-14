@@ -220,11 +220,6 @@ export class AgentsStore {
     void queryClient.invalidateQueries({ queryKey: ["getAgentPrompt", id] });
   }
 
-  /** The prompt section closed; nothing shows that document any more. */
-  forgetPrompt(id: string): void {
-    this.requestedPrompts = this.requestedPrompts.filter((agent) => agent !== id);
-  }
-
   handleEvent(message: Record<string, unknown>): void {
     if (message.type === "agentPromptState" && typeof message.id === "string") {
       const prompt = message.prompt as AgentPromptState | null;
