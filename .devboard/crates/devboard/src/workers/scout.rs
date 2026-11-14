@@ -1514,13 +1514,40 @@ pub fn live_scan_claim(repo_dir: &Path) -> Option<ScoutScanClaim> {
     None
 }
 
-fn clear_scan_claim(repo_dir: &Path, pid: u32) {
-    if let Some(existing) = read_scan_claim(repo_dir) {
-        if existing.pid != pid {
-            return;
-        }
+/// Removes the claim only when it still holds `judged`: the path is renamed
+/// aside and the claim is unlinked only when the file's content reads back
+/// byte-identical, so a claim another process created after the caller's read
+/// is never deleted. A differing claim is linked back untouched.
+fn clear_scan_claim_if_unchanged(repo_dir: &Path, judged: &[u8]) -> bool {
+    let path = scan_claim_path(repo_dir);
+    let aside = PathBuf::from(format!(
+        "{}.reclaim-{}-{}",
+        path.display(),
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    if std::fs::rename(&path, &aside).is_err() {
+        return false;
     }
-    let _ = std::fs::remove_file(scan_claim_path(repo_dir));
+    let moved = std::fs::read(&aside).ok();
+    if moved.as_deref() == Some(judged) {
+        let _ = std::fs::remove_file(&aside);
+        return true;
+    }
+    let _ = std::fs::hard_link(&aside, &path);
+    let _ = std::fs::remove_file(&aside);
+    false
+}
+
+fn clear_scan_claim(repo_dir: &Path, pid: u32) {
+    let Ok(judged) = std::fs::read(scan_claim_path(repo_dir)) else {
+        return;
+    };
+    let parsed = std::str::from_utf8(&judged).ok().and_then(parse_claim);
+    if parsed.is_some_and(|existing| existing.pid != pid) {
+        return;
+    }
+    let _ = clear_scan_claim_if_unchanged(repo_dir, &judged);
 }
 
 /// Claims the repository's one scan slot; false means another live worker owns
@@ -1541,24 +1568,32 @@ pub fn claim_scan(repo_dir: &Path, harness_version: Option<&str>, scan_id: Optio
         crate::jsjson::stringify(&serde_json::to_value(&claim).unwrap_or(Value::Null))
     );
     for _attempt in 0..2 {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                let _ = file.write_all(text.as_bytes());
-                return true;
-            }
+        let staged = PathBuf::from(format!(
+            "{}.new-{}-{}",
+            path.display(),
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let staged_result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&staged)?;
+            file.write_all(text.as_bytes())?;
+            std::fs::hard_link(&staged, &path)
+        })();
+        let _ = std::fs::remove_file(&staged);
+        match staged_result {
+            Ok(()) => return true,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let Some(existing) = read_scan_claim(repo_dir) else {
-                    let _ = std::fs::remove_file(&path);
+                let Ok(judged) = std::fs::read(&path) else {
                     continue;
                 };
-                if live_process(existing.pid) {
+                let parsed = std::str::from_utf8(&judged).ok().and_then(parse_claim);
+                if parsed.is_some_and(|existing| live_process(existing.pid)) {
                     return false;
                 }
-                clear_scan_claim(repo_dir, existing.pid);
+                let _ = clear_scan_claim_if_unchanged(repo_dir, &judged);
             }
             Err(_) => return false,
         }
@@ -5537,6 +5572,83 @@ mod tests {
                 .iter()
                 .any(|entry| entry.as_str() == Some(".test-tmp")),
             "the written request names the tree: {excluded:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrent_claimants_never_see_a_partial_claim_and_one_owns_the_slot() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("scout-claim-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch tree");
+        let path = scan_claim_path(&root);
+        std::fs::create_dir_all(path.parent().expect("a claim directory"))
+            .expect("the claim directory");
+
+        std::fs::write(&path, "{").expect("a truncated claim");
+        assert!(
+            claim_scan(&root, Some("1.0.0"), Some("scan-1")),
+            "an unparsable claim is reclaimed"
+        );
+        assert_eq!(
+            read_scan_claim(&root).map(|claim| claim.pid),
+            Some(std::process::id())
+        );
+        let _ = std::fs::remove_file(&path);
+
+        let stop = AtomicBool::new(false);
+        let partial: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        let Ok(text) = std::fs::read_to_string(&path) else {
+                            continue;
+                        };
+                        if let Err(error) = serde_json::from_str::<ScoutScanClaim>(&text) {
+                            partial
+                                .lock()
+                                .expect("the reader list")
+                                .push(format!("{error}: {text}"));
+                        }
+                        let _ = read_scan_claim(&root);
+                    }
+                });
+            }
+            for round in 0..40 {
+                let _ = std::fs::remove_file(&path);
+                let claimants: Vec<_> = (0..8)
+                    .map(|_| scope.spawn(|| claim_scan(&root, Some("1.0.0"), None)))
+                    .collect();
+                let mut winners = 0;
+                for claimant in claimants {
+                    if claimant.join().expect("a claimant") {
+                        winners += 1;
+                    }
+                }
+                assert_eq!(winners, 1, "round {round} has exactly one owner");
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+
+        let unparsable = partial.lock().expect("the reader list");
+        assert!(
+            unparsable.is_empty(),
+            "an observable claim never failed to parse: {unparsable:?}"
+        );
+        drop(unparsable);
+        let leftovers: Vec<String> = std::fs::read_dir(path.parent().expect("a claim directory"))
+            .expect("the claim directory")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".new-") || name.contains(".reclaim-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staged claims survive the call: {leftovers:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
