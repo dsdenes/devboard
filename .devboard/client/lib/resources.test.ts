@@ -170,6 +170,52 @@ test("a resources frame updates the budget and confirms the pending save", () =>
   expect(saveFeedback.scope).toBe("resources.budget");
 });
 
+test("a polled frame that still carries the pre-save budget confirms nothing", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({ type: "resourcesState", state: frame() });
+
+  store.save(SAVED, "resources.budget");
+
+  // A refused save produces no frame of its own, so the poll answers instead.
+  socket.deliver({ type: "resourcesState", state: frame({ effective: DERIVED }) });
+  expect(store.state?.effective).toEqual(DERIVED);
+  expect(saveFeedback.text).toBeNull();
+
+  // A second such poll leaves it unconfirmed too; it stays pending.
+  socket.deliver({ type: "resourcesState", state: frame({ effective: DERIVED }) });
+  expect(saveFeedback.text).toBeNull();
+
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: SAVED, effective: SAVED }),
+  });
+  expect(saveFeedback.text).toBe("Resource settings saved.");
+  expect(saveFeedback.scope).toBe("resources.budget");
+});
+
+test("the confirming frame clears the save, so a later poll never re-announces it", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+
+  store.save(SAVED, "resources.budget");
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: SAVED, effective: SAVED }),
+  });
+  expect(saveFeedback.text).toBe("Resource settings saved.");
+  expect(saveFeedback.scope).toBe("resources.budget");
+
+  // Once confirmed, the budget's own frame is a poll like any other.
+  saveFeedback.dismiss();
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: SAVED, effective: SAVED }),
+  });
+  expect(saveFeedback.text).toBeNull();
+  expect(saveFeedback.scope).toBeNull();
+});
+
 test("a malformed live figure drops the frame rather than storing NaN", () => {
   const store = new ResourcesStore();
   const socket = opened(store);

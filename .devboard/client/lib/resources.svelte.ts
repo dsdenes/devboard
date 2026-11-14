@@ -96,19 +96,30 @@ export function parseResourcesState(value: unknown): ResourcesState | undefined 
   return { saved, effective, live };
 }
 
+/** True when both rows carry the same four figures. */
+function sameBudget(left: ResourceSettings, right: ResourceSettings): boolean {
+  return (
+    left.maxAgentPeers === right.maxAgentPeers &&
+    left.memoryHighMb === right.memoryHighMb &&
+    left.memoryMaxMb === right.memoryMaxMb &&
+    left.memoryReserveMb === right.memoryReserveMb
+  );
+}
+
 /**
  * Holds the resource governor's budget. The scheduler reads it at the
  * Resources page's cadence and renders each frame the server pushes; a save
- * only reports success once the server broadcasts the frame that follows it.
+ * only reports success once a frame's effective row is the budget that save
+ * submitted, so a refused save stays unconfirmed however many polls follow it.
  */
 export class ResourcesStore {
   state = $state<ResourcesState | null>(null);
-  /** The Save control waiting for the next frame, if any. */
-  private pendingScope: string | null = null;
+  /** The Save control waiting for its budget, and the budget it submitted. */
+  private pending: { scope: string; budget: ResourceSettings } | null = null;
 
   save(settings: ResourceSettings, scope: string): void {
     if (connection.send({ type: "setResources", ...settings })) {
-      this.pendingScope = scope;
+      this.pending = { scope, budget: { ...settings } };
     }
   }
 
@@ -117,9 +128,11 @@ export class ResourcesStore {
     const state = parseResourcesState(message.state);
     if (state === undefined) return;
     this.state = state;
-    if (this.pendingScope === null) return;
-    saveFeedback.saved(this.pendingScope, "Resource settings saved.");
-    this.pendingScope = null;
+    const pending = this.pending;
+    if (pending === null) return;
+    if (!sameBudget(state.effective, pending.budget)) return;
+    this.pending = null;
+    saveFeedback.saved(pending.scope, "Resource settings saved.");
   }
 }
 
