@@ -69,7 +69,7 @@ impl Fixture {
                         "lastSeen": "2026-01-02T00:00:00.000Z",
                         "count": 2,
                         "disposition": "filed:https://forge.test/acme/fixture/issues/7",
-                        "filedAt": "2026-01-02T00:00:01.000Z",
+                        "createdAt": "2026-01-02T00:00:01.000Z",
                         "instances": [],
                     }
                 },
@@ -287,8 +287,8 @@ fn persisted_workers_answer_without_a_dashboard() {
         "filed 1 of the 2 requested"
     );
     assert_eq!(
-        dead_code["issues"][0]["filedAt"], "2026-01-02T00:00:05.000Z",
-        "a row filed without a filedAt names its creation instant"
+        dead_code["issues"][0]["createdAt"], "2026-01-02T00:00:05.000Z",
+        "a row filed without a createdAt names its creation instant"
     );
 
     let release = find("release-train");

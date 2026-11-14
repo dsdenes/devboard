@@ -77,7 +77,7 @@ test("a frame whose issue row has no url is dropped and the stored snapshot stan
         {
           title: "A finding",
           category: null,
-          filedAt: "2026-11-03T10:15:00.000Z",
+          createdAt: "2026-11-03T10:15:00.000Z",
           state: "pending",
           version: null,
         },

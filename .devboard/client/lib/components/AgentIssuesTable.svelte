@@ -133,9 +133,9 @@
                 </a>
               </td>
               <td class="mono" data-testid="agent-issue-category">{row.category ?? "—"}</td>
-              <td class="mono" title={row.filedAt}>
-                <time data-testid="agent-issue-filed" datetime={row.filedAt}>
-                  {filedLabel(row.filedAt)}
+              <td class="mono" title={row.createdAt}>
+                <time data-testid="agent-issue-filed" datetime={row.createdAt}>
+                  {filedLabel(row.createdAt)}
                 </time>
               </td>
               <td>

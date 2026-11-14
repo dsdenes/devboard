@@ -3835,7 +3835,7 @@ pub struct LedgerEntry {
     /// `filed:<url>`, `duplicate:<url>`, or `none`.
     pub disposition: String,
     pub url: Option<String>,
-    pub filed_at: Option<String>,
+    pub created_at: Option<String>,
     pub last_comment_at: Option<String>,
     /// The open issue the deduplication agent matched.
     pub duplicate_of: Option<String>,
@@ -3889,8 +3889,8 @@ impl Ledger {
             if let Some(duplicate_of) = &entry.duplicate_of {
                 row.insert("duplicateOf".into(), json!(duplicate_of));
             }
-            if let Some(filed_at) = &entry.filed_at {
-                row.insert("filedAt".into(), json!(filed_at));
+            if let Some(created_at) = &entry.created_at {
+                row.insert("createdAt".into(), json!(created_at));
             }
             if let Some(last_comment_at) = &entry.last_comment_at {
                 row.insert("lastCommentAt".into(), json!(last_comment_at));
@@ -4002,8 +4002,8 @@ fn parse_ledger_entry(value: &Value) -> Option<LedgerEntry> {
         count,
         disposition: disposition.to_string(),
         url,
-        filed_at: record
-            .get("filedAt")
+        created_at: record
+            .get("createdAt")
             .and_then(Value::as_str)
             .map(str::to_string),
         last_comment_at: record
@@ -4095,7 +4095,7 @@ pub fn record_findings(ledger: &mut Ledger, findings: &[Finding], now_ms: i64) {
                     count: 1,
                     disposition: "none".to_string(),
                     url: None,
-                    filed_at: None,
+                    created_at: None,
                     last_comment_at: None,
                     duplicate_of: None,
                     matched_at: None,
@@ -4128,7 +4128,7 @@ pub fn mark_filed(ledger: &mut Ledger, fingerprint: &str, url: &str, now_ms: i64
     if let Some(entry) = ledger.get_mut(fingerprint) {
         entry.disposition = format!("filed:{url}");
         entry.url = Some(url.to_string());
-        entry.filed_at = Some(stamp);
+        entry.created_at = Some(stamp);
     }
     ledger.remove_pending(fingerprint);
 }
@@ -5834,8 +5834,8 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
             if !entry.disposition.starts_with("filed:") {
                 continue;
             }
-            let filed_at = entry.filed_at.as_deref().and_then(parse_iso_ms);
-            if filed_at.is_some_and(|filed| filed > hour_start) {
+            let created_at = entry.created_at.as_deref().and_then(parse_iso_ms);
+            if created_at.is_some_and(|created| created > hour_start) {
                 filed_this_hour += 1;
             }
         }
@@ -6159,7 +6159,7 @@ pub fn run_cycle(options: &CycleOptions, deps: &CycleDeps) -> anyhow::Result<Cyc
         let baseline = entry
             .last_comment_at
             .as_deref()
-            .or(entry.filed_at.as_deref())
+            .or(entry.created_at.as_deref())
             .and_then(parse_iso_ms);
         let Some(baseline) = baseline else {
             continue;

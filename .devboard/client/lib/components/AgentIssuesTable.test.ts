@@ -80,7 +80,7 @@ test("an aged read with surviving rows keeps the table", () => {
         {
           title: "A finding",
           category: "correctness",
-          filedAt: readAt,
+          createdAt: readAt,
           url: "https://forge.test/issues/1",
           state: "pending",
           version: null,

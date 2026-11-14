@@ -2891,7 +2891,7 @@ pub struct StatusIssue {
     /// The exact title the filed issue carries.
     pub title: String,
     pub kind: FamilyKind,
-    pub filed_at: String,
+    pub created_at: String,
 }
 
 /// The newest cycle, the filed families, the pending depth, and the retained
@@ -2937,7 +2937,7 @@ impl Status {
                             "family": issue.family,
                             "title": issue.title,
                             "kind": issue.kind.as_str(),
-                            "filedAt": issue.filed_at,
+                            "createdAt": issue.created_at,
                         })
                     })
                     .collect(),
@@ -3072,7 +3072,7 @@ pub fn read_status(directory: &Path) -> Status {
                     .clone()
                     .unwrap_or_else(|| format!("[mcp-optimizer] {family}")),
                 kind: entry.kind,
-                filed_at: entry
+                created_at: entry
                     .last_filed_at
                     .clone()
                     .unwrap_or_else(|| entry.last_seen.clone()),
@@ -3081,8 +3081,8 @@ pub fn read_status(directory: &Path) -> Status {
         .collect();
     issues.sort_by(|left, right| {
         right
-            .filed_at
-            .cmp(&left.filed_at)
+            .created_at
+            .cmp(&left.created_at)
             .then_with(|| left.url.cmp(&right.url))
     });
     Status {
@@ -6964,7 +6964,7 @@ impl Activity {
                 json!({
                     "title": issue.title,
                     "category": issue.kind.as_str(),
-                    "filedAt": issue.filed_at,
+                    "createdAt": issue.created_at,
                     "url": issue.url,
                     "state": fact.as_ref().map(|fact| fact.state.clone()).unwrap_or_else(|| "unknown".to_string()),
                     "version": fact.and_then(|fact| fact.version),

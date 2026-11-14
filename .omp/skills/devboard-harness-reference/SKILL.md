@@ -2727,7 +2727,7 @@ is not `ok`, and never caps comments. With both caps empty its cycle behaves exa
 ### Filed issues
 
 All five pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
-Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `filedAt`
+Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `createdAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
 (`pending`/`implemented`/`unknown`), and `agent-issue-version` (`—` when absent). With no rows,

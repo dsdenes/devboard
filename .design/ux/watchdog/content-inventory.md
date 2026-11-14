@@ -17,7 +17,7 @@ Redesign of issue #362. The current page is evidence, not a constraint; hard con
 | C10 | Cycle issue links | `cycles[].issues` | 3 | Reach the exact issues a run produced | Keep | Anchor per issue, opening in a new tab |
 | C11 | Filed issue title anchor `[watchdog] category: line` | `issues[].category`, `.line` | 2, 4 | Recognize and open the issue | Keep | Documented anchor text |
 | C12 | Filed issue category | `issues[].category` | 2, 4 | Group or filter by failure class | Keep | Short mono column |
-| C13 | Filed issue time | `issues[].filedAt` | 2, 4 | Judge recency | Keep | Mono `<time>` |
+| C13 | Filed issue time | `issues[].createdAt` | 2, 4 | Judge recency | Keep | Mono `<time>` |
 | C14 | Filed issue state | `issues[].state` | 2, 4 | Know open vs implemented | Keep | Badge with the word |
 | C15 | Filed issue shipped version | `issues[].version` | 2, 4 | Know which release carries the fix | Keep | Mono, `—` when absent |
 | C16 | Filed count | `issues.length` | 2 | See the result of the runs | Keep | Panel header |

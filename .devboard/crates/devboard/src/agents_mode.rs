@@ -621,8 +621,8 @@ fn normalize_issue(row: Value) -> Value {
     json!({
         "title": object.and_then(|map| map.get("title")).cloned().unwrap_or(Value::Null),
         "category": nullable_text(text("category")),
-        "filedAt": object
-            .and_then(|map| map.get("filedAt").or_else(|| map.get("createdAt")))
+        "createdAt": object
+            .and_then(|map| map.get("createdAt"))
             .cloned()
             .unwrap_or(Value::Null),
         "url": object.and_then(|map| map.get("url")).cloned().unwrap_or(Value::Null),
@@ -690,12 +690,12 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
     let mut issues: Vec<Value> = input.issues.into_iter().map(normalize_issue).collect();
     issues.sort_by(|left, right| {
         let left_at = left
-            .get("filedAt")
+            .get("createdAt")
             .and_then(Value::as_str)
             .and_then(parse_millis)
             .unwrap_or(0);
         let right_at = right
-            .get("filedAt")
+            .get("createdAt")
             .and_then(Value::as_str)
             .and_then(parse_millis)
             .unwrap_or(0);
@@ -3689,7 +3689,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
                         Some(json!({
                             "title": finding.get("line").cloned().unwrap_or(Value::Null),
                             "category": finding.get("category").cloned().unwrap_or(Value::Null),
-                            "filedAt": finding.get("filedAt").cloned().unwrap_or(Value::Null),
+                            "createdAt": finding.get("createdAt").cloned().unwrap_or(Value::Null),
                             "url": url,
                             "state": "filed",
                         }))
@@ -3735,7 +3735,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
                         json!({
                             "title": row.get("title").cloned().unwrap_or(Value::Null),
                             "category": row.get("category").cloned().unwrap_or(Value::Null),
-                            "filedAt": value_of(&projection)
+                            "createdAt": value_of(&projection)
                                 .and_then(|value| value.get("at"))
                                 .cloned()
                                 .unwrap_or(Value::Null),
@@ -4261,9 +4261,9 @@ fn project_repo_issue(family_id: RepoFamilyId, issue: &Value) -> Value {
         ),
     );
     row.insert(
-        "filedAt".to_string(),
+        "createdAt".to_string(),
         object
-            .and_then(|map| map.get("filedAt").or_else(|| map.get("createdAt")))
+            .and_then(|map| map.get("createdAt"))
             .cloned()
             .unwrap_or(Value::Null),
     );
@@ -6869,8 +6869,8 @@ fn watchdog_issue_rows(ledger: &Value) -> Vec<Value> {
                 "url": url,
                 "category": entry.get("category").and_then(Value::as_str).unwrap_or(""),
                 "line": entry.get("line").and_then(Value::as_str).unwrap_or(""),
-                "filedAt": entry
-                    .get("filedAt")
+                "createdAt": entry
+                    .get("createdAt")
                     .and_then(Value::as_str)
                     .or_else(|| entry.get("firstSeen").and_then(Value::as_str))
                     .unwrap_or(""),
@@ -6878,8 +6878,8 @@ fn watchdog_issue_rows(ledger: &Value) -> Vec<Value> {
         })
         .collect();
     rows.sort_by(|left, right| {
-        let left_at = left.get("filedAt").and_then(Value::as_str).unwrap_or("");
-        let right_at = right.get("filedAt").and_then(Value::as_str).unwrap_or("");
+        let left_at = left.get("createdAt").and_then(Value::as_str).unwrap_or("");
+        let right_at = right.get("createdAt").and_then(Value::as_str).unwrap_or("");
         right_at.cmp(left_at).then_with(|| {
             left.get("url")
                 .and_then(Value::as_str)
@@ -7063,7 +7063,7 @@ fn watchdog_status(
                 issue.get("line").and_then(Value::as_str).unwrap_or("")
             ),
             "category": issue.get("category").cloned().unwrap_or(Value::Null),
-            "filedAt": issue.get("filedAt").cloned().unwrap_or(Value::Null),
+            "createdAt": issue.get("createdAt").cloned().unwrap_or(Value::Null),
             "url": url,
         }));
     }
@@ -7487,7 +7487,7 @@ impl WatchdogFamily {
                 json!({
                     "title": row.get("title").cloned().unwrap_or(Value::Null),
                     "category": row.get("category").cloned().unwrap_or(Value::Null),
-                    "filedAt": row.get("filedAt").cloned().unwrap_or(Value::Null),
+                    "createdAt": row.get("createdAt").cloned().unwrap_or(Value::Null),
                     "url": row.get("url").cloned().unwrap_or(Value::Null),
                     "state": fact.as_ref().map(|fact| fact.state.clone()).unwrap_or_else(|| "unknown".to_string()),
                     "version": fact.and_then(|fact| fact.version),
@@ -8329,7 +8329,7 @@ fn mcp_family_entries(directory: &Path) -> Vec<Value> {
                         .map(str::to_string)
                         .unwrap_or_else(|| format!("[mcp-optimizer] {family}")),
                     "kind": kind,
-                    "filedAt": entry
+                    "createdAt": entry
                         .get("lastFiledAt")
                         .and_then(Value::as_str)
                         .or_else(|| entry.get("lastSeen").and_then(Value::as_str))
@@ -8341,8 +8341,8 @@ fn mcp_family_entries(directory: &Path) -> Vec<Value> {
         .map(|(row, _)| row)
         .collect();
     rows.sort_by(|left, right| {
-        let left_at = left.get("filedAt").and_then(Value::as_str).unwrap_or("");
-        let right_at = right.get("filedAt").and_then(Value::as_str).unwrap_or("");
+        let left_at = left.get("createdAt").and_then(Value::as_str).unwrap_or("");
+        let right_at = right.get("createdAt").and_then(Value::as_str).unwrap_or("");
         right_at.cmp(left_at).then_with(|| {
             left.get("url")
                 .and_then(Value::as_str)
@@ -8777,7 +8777,7 @@ impl McpFamily {
                 json!({
                     "title": issue.get("title").cloned().unwrap_or(Value::Null),
                     "category": issue.get("kind").cloned().unwrap_or(Value::Null),
-                    "filedAt": issue.get("filedAt").cloned().unwrap_or(Value::Null),
+                    "createdAt": issue.get("createdAt").cloned().unwrap_or(Value::Null),
                     "url": issue.get("url").cloned().unwrap_or(Value::Null),
                     "state": fact.as_ref().map(|fact| fact.state.clone()).unwrap_or_else(|| "unknown".to_string()),
                     "version": fact.and_then(|fact| fact.version),

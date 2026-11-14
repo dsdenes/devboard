@@ -26,7 +26,7 @@ export type AgentIssueState = (typeof AGENT_ISSUE_STATES)[number];
 export const AGENT_ISSUE_COLUMNS = [
   "title",
   "category",
-  "filedAt",
+  "createdAt",
   "state",
   "version",
 ] as const;
@@ -69,7 +69,7 @@ export interface AgentIssueRow {
   title: string;
   category: string | null;
   /** The issue's creation time, UTC ISO 8601. */
-  filedAt: string;
+  createdAt: string;
   url: string;
   state: AgentIssueState;
   version: string | null;
@@ -503,17 +503,17 @@ function normalizeIssue(descriptor: AgentDescriptor, row: unknown): AgentIssueRo
     !isRecord(row) ||
     typeof row.title !== "string" ||
     typeof row.url !== "string" ||
-    typeof row.filedAt !== "string"
+    typeof row.createdAt !== "string"
   ) {
     throw new AgentRegistryError(
-      `${descriptor.id}: an issue row needs a title, a url, and a filedAt`,
+      `${descriptor.id}: an issue row needs a title, a url, and a createdAt`,
     );
   }
   const state = AGENT_ISSUE_STATES.find((candidate) => candidate === row.state) ?? "unknown";
   return {
     title: row.title,
     category: typeof row.category === "string" && row.category.length > 0 ? row.category : null,
-    filedAt: row.filedAt,
+    createdAt: row.createdAt,
     url: row.url,
     state,
     version: typeof row.version === "string" && row.version.length > 0 ? row.version : null,
@@ -596,8 +596,8 @@ export function sortAgentIssues(rows: readonly AgentIssueRow[]): AgentIssueRow[]
     return Number.isFinite(parsed) ? parsed : 0;
   };
   return [...rows].sort((left, right) => {
-    const leftAt = instant(left.filedAt);
-    const rightAt = instant(right.filedAt);
+    const leftAt = instant(left.createdAt);
+    const rightAt = instant(right.createdAt);
     if (leftAt !== rightAt) return rightAt - leftAt;
     return left.url.localeCompare(right.url);
   });

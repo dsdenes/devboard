@@ -142,7 +142,7 @@ function filed(filedCount: number, pending: number): AgentSnapshot {
     issues: Array.from({ length: filedCount }, (_, index) => ({
       title: `Filed issue ${index + 1}`,
       category: null,
-      filedAt: "2026-10-30T00:00:00.000Z",
+      createdAt: "2026-10-30T00:00:00.000Z",
       url: `https://example.invalid/issues/${index + 1}`,
       state: "pending" as const,
       version: null,
