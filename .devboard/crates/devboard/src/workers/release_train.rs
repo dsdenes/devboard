@@ -2861,12 +2861,16 @@ async fn run_release_agent(
         input.run_dir.to_string_lossy().into_owned(),
     );
     // The agent's tool shell may not inherit every variable the worker was
-    // started with, so the forge coordinates ride in a private file beside the
-    // request; the prompt sources it before running publish.
+    // started with, so the forge coordinates and the run directory ride in a
+    // private file beside the request; the prompt sources it before running
+    // publish. The run directory is what makes publish append its phase
+    // records to this run's progress file, so a sanitized shell that sources
+    // the file still records them.
     let env_path = input.run_dir.join("env.sh");
     if std::fs::create_dir_all(&input.run_dir).is_ok() {
         let mut script = String::new();
         for key in [
+            crate::publish::RELEASE_RUN_DIR_VARIABLE,
             "DEVBOARD_GITEA_URL",
             "GITEA_URL",
             "GITEA_TOKEN",

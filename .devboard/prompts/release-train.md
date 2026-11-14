@@ -21,9 +21,11 @@ request is the whole unresolved range; never recompute a different one and never
   already collected, and `devboard publish` derives the same Conventional Commit version.
 - `devboard publish` fetches canonical `main` itself and fast-forwards a clean integration
   checkout to that tip before it derives the range; never fetch it by hand first.
-- The run directory carries `env.sh`, the forge coordinates this worker was started with. Source
-  it in the same shell as the release command and never print it:
-  `set -a; . <run-dir>/env.sh; set +a`.
+- The run directory carries `env.sh`, the forge coordinates and the run directory this worker was
+  started with. Source it in the same shell as the release command and never print it:
+  `set -a; . <run-dir>/env.sh; set +a`. Sourcing it also points `devboard publish` at this run's
+  progress record, `<run-dir>/publish-progress.jsonl`; a command started without it records no
+  phase and the run reads as silent.
 - Release through the harness publish path only. From the repository root run `devboard publish
   --repo . --wait-timeout 1800`; in a source checkout where the binary is not on `PATH`, run
   `cargo run --manifest-path .devboard/Cargo.toml -p devboard -- publish --repo .

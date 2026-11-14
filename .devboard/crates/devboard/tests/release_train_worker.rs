@@ -2715,3 +2715,113 @@ async fn a_stop_before_the_publish_proves_a_release_records_a_stopped_run() {
         )
     );
 }
+
+/// One verify function that proves a release, for the tests that only need the
+/// peer to end its turn and the run to settle.
+fn verify_released() -> VerifyFn {
+    Arc::new(|options| {
+        Box::pin(async move {
+            ReleaseVerification::Ok {
+                version: options.version.clone(),
+                url: "https://forge.test/releases/tag/v1.1.0".to_string(),
+            }
+        })
+    })
+}
+
+/// The run's `env.sh` carries the progress destination beside the forge
+/// coordinates, so a tool shell that does not inherit the worker's environment
+/// still points publish at `<run-dir>/publish-progress.jsonl`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_started_run_exports_its_run_directory_beside_the_forge_coordinates() {
+    let root = scratch_root("release-agent-env");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let stub = format!("{} acp-stub --delay-ms=0", env!("CARGO_BIN_EXE_devboard"));
+    let input = stub_run_input(&root, stub, ReleaseRunTimeouts::default());
+    let run_dir = input.run_dir.clone();
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify_released(),
+        gitea_environment(),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(30), run(input))
+        .await
+        .expect("the stub peer ends its turn");
+    let script = std::fs::read_to_string(run_dir.join("env.sh")).expect("the env file");
+    assert_eq!(
+        script,
+        format!(
+            "export DEVBOARD_RELEASE_RUN_DIR={}\n\
+             export DEVBOARD_GITEA_URL=http://localhost:3001\n\
+             export GITEA_TOKEN=secret-token\n",
+            run_dir.display()
+        ),
+        "{script}"
+    );
+}
+
+/// A shell stripped of the worker's variables — the case `env.sh` exists for —
+/// records publish's phases after it sources the file, and records nothing when
+/// it does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stripped_shell_records_publish_progress_only_after_sourcing_env_sh() {
+    let root = scratch_root("release-agent-env-publish");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("repo")).expect("a repo");
+    let stub = format!("{} acp-stub --delay-ms=0", env!("CARGO_BIN_EXE_devboard"));
+    let input = stub_run_input(&root, stub, ReleaseRunTimeouts::default());
+    let run_dir = input.run_dir.clone();
+    let run = devboard::workers::release_train::default_release_agent_runner(
+        verify_released(),
+        gitea_environment(),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(30), run(input))
+        .await
+        .expect("the stub peer ends its turn");
+    let record = run_dir.join(devboard::publish::PUBLISH_PROGRESS_FILE);
+    let checkout = root.join("checkout");
+    std::fs::create_dir_all(&checkout).expect("a checkout");
+    let binary = env!("CARGO_BIN_EXE_devboard");
+
+    // The checkout is not a git repository, so publish records its start phase
+    // and stops at preflight. The record path is the whole subject here.
+    let sourced = Command::new("sh")
+        .arg("-c")
+        .arg("set -a; . \"$1\"; set +a; exec \"$2\" publish --repo \"$3\"")
+        .arg("sh")
+        .arg(run_dir.join("env.sh"))
+        .arg(binary)
+        .arg(&checkout)
+        .env_remove(devboard::publish::RELEASE_RUN_DIR_VARIABLE)
+        .output()
+        .expect("the peer's shell runs");
+    assert!(
+        !sourced.status.success(),
+        "publish fails outside a git checkout"
+    );
+    let records = devboard::publish::read_publish_progress(&record);
+    assert_eq!(
+        records.first().map(|record| record.phase.as_str()),
+        Some("start"),
+        "{records:?}"
+    );
+
+    std::fs::remove_file(&record).expect("the run's record");
+    let unsourced = Command::new("sh")
+        .arg("-c")
+        .arg("exec \"$1\" publish --repo \"$2\"")
+        .arg("sh")
+        .arg(binary)
+        .arg(&checkout)
+        .env_remove(devboard::publish::RELEASE_RUN_DIR_VARIABLE)
+        .output()
+        .expect("the unsourced shell runs");
+    assert!(
+        !unsourced.status.success(),
+        "publish fails outside a git checkout"
+    );
+    assert!(
+        !record.exists(),
+        "an unsourced publish records no phase without the run directory"
+    );
+}
