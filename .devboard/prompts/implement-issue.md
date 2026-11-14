@@ -19,20 +19,16 @@ comment on, close, or reopen another issue.
 
 ## Inputs and paths
 
-- **MCP routes.** Compose a Devboard tool's route as `xd://mcp__devboard_` plus its catalog name
-  with a leading `devboard_` removed: `devboard_status` is `xd://mcp__devboard_status`,
-  `issue_create` is `xd://mcp__devboard_issue_create`, and `journal_search` is
-  `xd://mcp__devboard_journal_search`. The catalog name and the mounted name are different
-  strings: a catalog name that already begins `devboard_` keeps exactly one `devboard_` after
-  `mcp__`, and one that does not — `issue_create` — gains none. Never insert a second `devboard_`
-  segment and never drop the `mcp__devboard_` prefix, so `xd://mcp__devboard_devboard_status` and
-  a bare `xd://devboard_status` are not tools. A `write` carries the whole device route in `path`
-  and nothing else: a selector suffix such as `:raw` is a `read` spelling, never part of a device
-  route, so `xd://mcp__devboard_mcp_optimizer_proposal_skip:raw` is not a tool either. Copy each
-  mount from the device list; never infer it. A write that answers `No such tool` gets exactly one
-  corrected attempt: copy a name from the `Mounted devices:` list in that same error or recompose
-  it by this rule, and change nothing else. Never re-issue the identical call and never retry a
-  variant whose `i` text is the only difference.
+- **MCP routes.** A Devboard MCP tool mounts as `xd://mcp__devboard_` plus its catalog name with
+  any leading `devboard_` dropped — `devboard_status` is `xd://mcp__devboard_status` — so never
+  write `xd://<name>` and never repeat the prefix as `xd://mcp__devboard_devboard_<name>`. Copy
+  each mount from the device list; never infer it. A `write` carries the whole device route in
+  `path` and nothing else: a selector suffix such as `:raw` is a `read` spelling, never part of a
+  device route, so `xd://mcp__devboard_mcp_optimizer_proposal_skip:raw` is not a tool either. A
+  write that answers `No such tool` gets exactly one corrected attempt: copy a name from the
+  `Mounted devices:` list in that same error or recompose it by this rule, and change nothing
+  else. Never re-issue the identical call and never retry a variant whose `i` text is the only
+  difference.
 - Resolve the session's host and checkout state exactly once, before any forge read or write: make
   one argument-free `devboard_status` MCP call. Take `<REPO_DIR>` from its `repositoryRoot` — the
   checkout's worktree path — along with `harnessDirectory`, `stateDirectory`, and its `git`
