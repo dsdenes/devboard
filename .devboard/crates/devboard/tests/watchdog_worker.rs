@@ -1418,6 +1418,42 @@ fn a_session_exit_record_is_not_a_finding() {
 }
 
 #[test]
+fn a_daemon_broker_list_failure_is_not_a_finding() {
+    let root = production_root("daemon-broker-list");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let mut timed_out = event(
+        now,
+        1,
+        "Daemon broker list failed; continuing without service state: Daemon list request timed out",
+        "omp-log",
+        &instance,
+    );
+    timed_out.level = Some("warn".to_string());
+    let mut unsent = event(
+        now,
+        2,
+        "Daemon broker send failed: Daemon broker client is closed",
+        "omp-log",
+        &instance,
+    );
+    unsent.level = Some("warn".to_string());
+
+    let findings = analyze_evidence(&[timed_out, unsent], window, window);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].category, "omp-warn");
+    assert!(
+        findings[0].quote.starts_with("Daemon broker send failed"),
+        "{findings:?}"
+    );
+}
+
+#[test]
 fn a_retired_release_check_record_is_not_a_finding() {
     let root = production_root("retired-release-check");
     let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));

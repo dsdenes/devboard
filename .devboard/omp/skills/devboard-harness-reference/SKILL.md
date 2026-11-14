@@ -3138,6 +3138,11 @@ An omp `Session exit recorded` warning is that peer writing down the exit of a s
 the signal it received, its session file, and the tool calls still in flight — whenever a
 supervisor stops it, so it is omp's own shutdown bookkeeping rather than a failure and is never a
 finding; the same record carrying an attached error still files its `omp-warn` record.
+A `Daemon broker list failed; continuing without service state:` warning is omp's local daemon
+broker not answering the service-state list a turn attaches — a timed-out request, an unavailable
+socket, a closed connection, or an unset token or environment — and omp continues the turn without
+that state. Every cause is broker or operator environment state on the host, the warning records
+the recovery omp performs, and no repository change fixes it, so it is never a finding.
 An `update-error` record reading `release check failed: ...` is the retired Bun harness's `npm`
 release check, with its forge feed as fallback, failing on a host that still runs that harness:
 this line reads the published release manifest and journals `update check failed: ...`,

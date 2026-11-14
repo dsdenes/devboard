@@ -3511,6 +3511,23 @@ fn session_exit_recorded(event: &EvidenceEvent) -> bool {
         && normalize_evidence_line(&event.text) == SESSION_EXIT_RECORDED
 }
 
+const DAEMON_BROKER_LIST_FAILED: &str =
+    "Daemon broker list failed; continuing without service state";
+
+/// omp asks its local daemon broker for the service state it attaches to a
+/// turn, and continues without that state when the list fails: the request
+/// times out, the socket is unavailable, the connection closes, or the
+/// broker's token and environment are unset. Every cause is broker or operator
+/// environment state on this host, and the warning itself records the recovery
+/// omp performs — it turns without service state — so no repository change can
+/// fix it and nothing here can complete an issue filed for it. It is therefore
+/// not a finding.
+fn daemon_broker_list_failed(event: &EvidenceEvent) -> bool {
+    event.kind == "omp-log"
+        && event.level.as_deref() == Some("warn")
+        && normalize_evidence_line(&event.text).starts_with(DAEMON_BROKER_LIST_FAILED)
+}
+
 const RETIRED_RELEASE_CHECK: &str = "release check failed: ";
 
 /// The retired Bun harness resolved the newest release by running `npm view`,
@@ -3645,6 +3662,7 @@ pub fn analyze_evidence(
                     && !skipped_judgment_candidate(event)
                     && !denied_codex_account(event)
                     && !session_exit_recorded(event)
+                    && !daemon_broker_list_failed(event)
                 {
                     add(&format!("omp-{level}"), event, &mut findings);
                 }
