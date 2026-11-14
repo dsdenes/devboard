@@ -427,11 +427,16 @@ the prerequisite in another agent's place.
   may run, and exit 1 means `main` moved again, so rebase the task branch onto `main` inside its
   worktree, rerun the checks that rebase invalidates, and probe once more.
 - Merge into the integration checkout with exactly one command,
-  `git merge --ff-only <task-branch>`: never `--no-ff`, never a forced merge, and never a merge
-  that writes a merge commit. When it refuses with `fatal: Not possible to fast-forward,
-  aborting.` or `hint: Diverging branches can't be fast-forwarded`, do not repeat it unchanged:
-  rebase the task branch onto the integration tip inside its worktree, resolve every conflict
-  there, rerun the checks the rebase invalidates, and only then retry the same
+  `git merge --ff-only <task-branch>`, run bare from the canonical checkout whose working
+  directory is already set: never a `cd` prefix, never a `| tail` or `| head`, and never a
+  trailing `; echo "..._EXIT:$?"`, whose status belongs to the filter rather than the merge.
+  Never `--no-ff`, never a forced merge, and never a merge that writes a merge commit. That
+  command's own exit status is the verdict — zero is the fast-forward, any nonzero exit is a
+  refusal — and the push block below proves the landing with `git status --short --branch` and
+  `git ls-remote origin refs/heads/main`. When it refuses with `fatal: Not possible to
+  fast-forward, aborting.` or `hint: Diverging branches can't be fast-forwarded`, do not repeat
+  it unchanged: rebase the task branch onto the integration tip inside its worktree, resolve
+  every conflict there, rerun the checks the rebase invalidates, and only then retry the same
   `git merge --ff-only <task-branch>`. Name the refusal and the retry in the final response.
 - Land through the one sequence below. Never create a pull request or merge request, never
   force-push, and never rewrite published history.
@@ -578,6 +583,14 @@ unpublished commits, so the task branch must contain that tip for the second mer
 `origin/main` cannot supply it and the fetch budget allows no second fetch. Run the sequence once
 per landing attempt: no `&&` chain between its lines, no `tail` pipe, and no `PIPESTATUS` probe.
 Never create a pull request or merge request.
+
+The landing merge is that final line and nothing else: `git merge --ff-only <task-branch>`, run
+in the canonical checkout whose working directory is already set, so the command carries no `cd`
+prefix, no `| tail`, no `| head`, and no trailing `; echo "..._EXIT:$?"`. Its own exit status is
+the landing verdict — exit 0 is the fast-forward, a nonzero exit is the refusal handled above —
+and no second read of `$?` after a pipeline reports it. The merge's printed output is not the
+push proof: the sync check below is, `git status --short --branch` with no ahead or behind marker
+beside `git ls-remote origin refs/heads/main` naming the SHA `git rev-parse HEAD` printed.
 
 Before pushing, read the behind state against the tip the run's fetch named with this
 one pre-push probe, run in the canonical checkout and read as-is:
