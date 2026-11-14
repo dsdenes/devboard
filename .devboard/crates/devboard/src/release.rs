@@ -288,17 +288,38 @@ async fn release_json(response: reqwest::Response, url: &str) -> Result<Value, S
         .map_err(|error| format!("GET {url} returned a body that is not JSON: {error}"))
 }
 
+/// Reads one local release directory's manifest.
+///
+/// `DEVBOARD_RELEASE_URL` names a directory that a publish run or a
+/// verification fixture fills. A directory that carries no manifest yet is
+/// that release still being written, so the failure names it with
+/// `RELEASE_STILL_BEING_WRITTEN` and `updates::is_transient_update_failure`
+/// retries it instead of the journal recording an update error. Every other
+/// read failure, and a manifest that does not parse, stays a real error.
+fn local_manifest(directory: &std::path::Path) -> Result<ReleaseInfo, String> {
+    let path = directory.join(MANIFEST_ASSET);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "the local release directory {} {RELEASE_STILL_BEING_WRITTEN}: it carries no \
+                 {MANIFEST_ASSET} yet",
+                directory.display()
+            ));
+        }
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    let manifest: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
+    ReleaseInfo::from_manifest(&manifest)
+        .ok_or_else(|| format!("{} is not a release manifest", path.display()))
+}
+
 /// Reads the newest release's manifest from Gitea or GitHub, or from a local
 /// release directory when `DEVBOARD_RELEASE_URL` names one.
 pub async fn latest_manifest(source: &ManifestSource) -> Result<ReleaseInfo, String> {
     if let Some(directory) = &source.local_dir {
-        let path = directory.join(MANIFEST_ASSET);
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let manifest: Value = serde_json::from_str(&text)
-            .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
-        return ReleaseInfo::from_manifest(&manifest)
-            .ok_or_else(|| format!("{} is not a release manifest", path.display()));
+        return local_manifest(directory);
     }
     match source.forge {
         ReleaseForge::Gitea => latest_gitea_manifest(source).await,
@@ -398,14 +419,7 @@ pub async fn latest_manifest_for(
     running: Option<&str>,
 ) -> Result<Option<ReleaseInfo>, String> {
     if let Some(directory) = &source.local_dir {
-        let path = directory.join(MANIFEST_ASSET);
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let manifest: Value = serde_json::from_str(&text)
-            .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
-        return ReleaseInfo::from_manifest(&manifest)
-            .map(Some)
-            .ok_or_else(|| format!("{} is not a release manifest", path.display()));
+        return local_manifest(directory).map(Some);
     }
     match source.forge {
         ReleaseForge::Gitea => {

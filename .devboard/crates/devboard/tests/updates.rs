@@ -258,6 +258,61 @@ async fn a_release_that_precedes_its_assets_is_a_transient_failure() {
     assert_eq!(requests.len(), 1, "no manifest is downloaded: {requests:?}");
 }
 
+fn local_source(directory: &std::path::Path) -> devboard::release::ManifestSource {
+    devboard::release::ManifestSource {
+        base_url: String::new(),
+        repository: "dsdenes/devboard".to_string(),
+        token: None,
+        timeout_ms: 5_000,
+        local_dir: Some(directory.to_path_buf()),
+        forge: devboard::release::ReleaseForge::Gitea,
+        download_base: String::new(),
+    }
+}
+
+fn local_scratch(label: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("updates-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a local release directory");
+    root
+}
+
+/// A local release directory is filled by a publish run or a verification
+/// fixture, so a directory that carries no manifest yet is the release it will
+/// hold still being written: the check records activity and retries instead of
+/// raising the update error the watchdog files an issue for. A manifest that
+/// exists and does not parse stays a real error.
+#[tokio::test]
+async fn a_local_release_directory_without_a_manifest_is_a_transient_failure() {
+    let directory = local_scratch("no-manifest");
+    let source = local_source(&directory);
+    let error = devboard::release::latest_manifest_for(&source, Some("1.2.3"))
+        .await
+        .expect_err("an empty release directory carries no manifest");
+    assert!(
+        error.contains(&directory.display().to_string()),
+        "the failure names the directory: {error}"
+    );
+    assert!(
+        devboard::updates::is_transient_update_failure(&error),
+        "the next interval retries an unwritten manifest: {error}"
+    );
+
+    std::fs::write(directory.join("devboard-manifest.json"), "{not json")
+        .expect("a malformed manifest");
+    let error = devboard::release::latest_manifest_for(&source, Some("1.2.3"))
+        .await
+        .expect_err("a malformed manifest is no release");
+    assert!(
+        !devboard::updates::is_transient_update_failure(&error),
+        "a manifest that does not parse stays a real error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 /// A Gitea manifest source never carries the operator's credential.
 #[test]
 fn the_gitea_update_source_is_anonymous() {
