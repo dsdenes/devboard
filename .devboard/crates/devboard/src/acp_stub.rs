@@ -1316,6 +1316,17 @@ impl Stub {
                  Keep policy separate from delivery and storage concerns.\n",
                 None,
             );
+            // The contradiction check pairs one positive directive with the
+            // same subject stated negatively in another skill. The conflict
+            // fixture writes that second skill, so the flag produces the
+            // contradiction it is named for.
+            self.write_skill(
+                "cohesive-units",
+                "Organize units of code so each owns one cohesive responsibility.",
+                "# Cohesive units\n\n- Never use dependency injection.\n- \
+                 Keep each public interface narrow and explicit.\n",
+                None,
+            );
         }
         if self.arguments.contains("prepare-skills-collision") {
             let name = self

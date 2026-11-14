@@ -666,6 +666,169 @@ async fn creation_writes_and_reads_the_configured_goal_file() {
     assert_eq!(state["text"], "# Created goal\n\nThe agent wrote this.");
 }
 
+/// One hand-authored skill the preparation feature does not own.
+fn hand_authored_skill(name: &str) -> String {
+    format!(
+        "---\nname: {name}\ndescription: A hand-authored skill the operator owns.\n---\n\n\
+         # Hand-authored style\n\n- Keep every rule in this file.\n"
+    )
+}
+
+/// One managed skill an earlier preparation run left behind, so a refused run
+/// must restore a skill it deleted before the peer started.
+fn previously_prepared_skill() -> String {
+    "---\nname: legacy-style\ndescription: A prepared skill from an earlier run.\n\
+     metadata:\n  devboard-managed: \"true\"\n---\n\n# Legacy style\n\n\
+     - Keep one writer for every installed skill.\n"
+        .to_string()
+}
+
+/// Drives one refused preparation through the app and proves both its verdict
+/// and its rollback: the error names the cause, the stopped frame reports
+/// `completed: false`, and `.omp/skills` is byte-identical to the pre-run tree.
+async fn assert_preparation_refused(
+    label: &str,
+    arguments: &[&str],
+    fixtures: &[(&str, String)],
+    expected: &[&str],
+) {
+    let scratch = Scratch::new(label);
+    std::fs::write(scratch.path().join("GOAL.md"), "# Fixture goal\n").expect("the goal");
+    let skills_dir = scratch.path().join(".omp").join("skills");
+    for (name, text) in fixtures {
+        let directory = skills_dir.join(name);
+        std::fs::create_dir_all(&directory).expect("the fixture skill directory exists");
+        std::fs::write(directory.join("SKILL.md"), text).expect("the fixture skill is written");
+    }
+    let before = skill_tree(&skills_dir);
+    assert!(!before.is_empty(), "{label}: the pre-run tree has files");
+
+    let app = app_with(&scratch, stub_command(&scratch, arguments)).await;
+    let (conn, mut inbox) = connected(&app).await;
+    app.command(&conn, Command::PrepareSkills).await;
+    frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "skillsPreparationStarted",
+        5_000,
+    )
+    .await;
+
+    let (stopped, frames) = collect_until(
+        &mut inbox,
+        |frame| frame["type"] == "skillsPreparationStopped",
+        10_000,
+    )
+    .await;
+    assert_eq!(
+        stopped,
+        json!({"type": "skillsPreparationStopped", "completed": false}),
+        "{label}: the refused preparation ends without a success payload"
+    );
+    let message = frames
+        .iter()
+        .filter(|frame| frame["type"] == "error")
+        .filter_map(|frame| frame["message"].as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        message.starts_with("Skills preparation failed: "),
+        "{label}: no failure verdict: {frames:?}"
+    );
+    for fragment in expected {
+        assert!(
+            message.contains(fragment),
+            "{label}: the verdict does not name {fragment:?}: {message}"
+        );
+    }
+    assert_eq!(
+        skill_tree(&skills_dir),
+        before,
+        "{label}: a refused preparation restored the pre-run skills tree"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_refuses_an_unmanaged_write_and_restores_the_tree() {
+    assert_preparation_refused(
+        "skills-unmanaged-write",
+        &["--prepare-skills", "--prepare-skills-unmanaged-write"],
+        &[
+            ("house-style", hand_authored_skill("house-style")),
+            ("legacy-style", previously_prepared_skill()),
+        ],
+        &["unmanaged skill \"house-style\" must not be changed by skills preparation."],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_refuses_an_invented_unmanaged_skill_and_restores_the_tree() {
+    assert_preparation_refused(
+        "skills-unmanaged-skill",
+        &["--prepare-skills", "--prepare-skills-unmanaged-skill"],
+        &[
+            ("house-style", hand_authored_skill("house-style")),
+            ("legacy-style", previously_prepared_skill()),
+        ],
+        &["unmanaged skill \"stray-style\" must not be changed by skills preparation."],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_refuses_an_empty_result_and_restores_the_tree() {
+    assert_preparation_refused(
+        "skills-empty",
+        &["--prepare-skills", "--prepare-skills-empty"],
+        &[
+            ("house-style", hand_authored_skill("house-style")),
+            ("legacy-style", previously_prepared_skill()),
+        ],
+        &["no managed skill was prepared."],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_refuses_a_collision_and_restores_the_tree() {
+    assert_preparation_refused(
+        "skills-collision",
+        &[
+            "--prepare-skills",
+            "--prepare-skills-collision",
+            "--collision-name=custom-skill",
+        ],
+        &[
+            ("house-style", hand_authored_skill("house-style")),
+            ("legacy-style", previously_prepared_skill()),
+            ("custom-skill", hand_authored_skill("custom-skill")),
+        ],
+        &[
+            "managed skill \"custom-skill\" collides with a skill of another family or owner.",
+            "unmanaged skill \"custom-skill\" must not be changed by skills preparation.",
+        ],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_refuses_a_contradiction_and_restores_the_tree() {
+    assert_preparation_refused(
+        "skills-conflict",
+        &["--prepare-skills", "--prepare-skills-conflict"],
+        &[
+            ("house-style", hand_authored_skill("house-style")),
+            ("legacy-style", previously_prepared_skill()),
+        ],
+        &[
+            "Contradiction between \"cohesive-units\" and \"dependency-direction\"",
+            "two managed skills",
+            "\"Never use dependency injection.\" vs \"Always use dependency injection.\"",
+        ],
+    )
+    .await;
+}
+
 /// Goal creation preempts runs, never the long-lived Issues worker.
 #[tokio::test]
 async fn preemption_keeps_the_issues_worker() {
