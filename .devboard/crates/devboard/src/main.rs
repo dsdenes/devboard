@@ -34,6 +34,7 @@ async fn run() -> anyhow::Result<()> {
         Some("acp-stub") => devboard::acp_stub::run_stub(&args[1..]),
         Some("mcp") => devboard::mcp_server::run_server().await,
         Some("bench") => bench_command(&args).await,
+        Some("land") => devboard::land::command(&args[1..]).await,
         Some("publish") => publish_command(&args).await,
         Some("release-suite") => release_suite_command(&args).await,
         Some("check-runtime") => runtime_command(&args),
@@ -45,7 +46,7 @@ async fn run() -> anyhow::Result<()> {
         Some("preflight") => preflight_command(&args),
         Some("forge-auth") => std::process::exit(devboard::forge_auth::main(&args[1..]).await),
         Some(other) => anyhow::bail!(
-            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, resources, instances, acp-stub, mcp, bench, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
+            "unknown command {other}; expected serve, version, install, update, doctor, cleanup, watchdog, worker, resources, instances, acp-stub, mcp, bench, land, publish, release-suite, check-runtime, gate-prepush, hooks, preflight, or forge-auth"
         ),
     }
 }

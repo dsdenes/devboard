@@ -337,12 +337,13 @@ Never outside the repo root. Never edit the opened checkout. One worktree per ta
 and test inside it.
 
 Done means merged into main **and pushed to the upstream that tracks it**. A local commit, a local
-merge, or a deleted worktree branch is not done. Before deleting the worktree, verify the push:
-`git ls-remote <remote> refs/heads/main` must name the integration commit, and
-`git status --short --branch` must report no commits ahead of the upstream. A local merge that is
-never pushed is a failed task, even when every test passes. If a push is rejected, fetch the new
-tip, integrate it, resolve every conflict yourself, rerun the checks it invalidates, and push
-again. Never finish, hand off, or delete the worktree with local-only changes.
+merge, or a deleted worktree branch is not done. `devboard land <branch>` performs that landing and
+its proof: one fast-forward merge into the integration checkout, one push, and the remote tip read
+back and printed beside the merged commit and the checkout's ahead/behind. A local merge that is
+never pushed is a failed task, even when every test passes. If the command refuses a push, reread
+its first stderr line, integrate what it names, resolve every conflict yourself, rerun the checks
+it invalidates, and call it again. Never finish, hand off, or delete the worktree with local-only
+changes.
 
 After the push, advance the integration checkout to the published revision without discarding
 its uncommitted work, then run `cd .devboard && cargo run -p devboard -- publish` so every
@@ -383,6 +384,8 @@ never hand-edit them.
 
 - `.devboard/` — harness root: interface, toolchain, prompts, extensions, goals, tests,
   `omp/`, `install.sh`, `scripts/publish.ts`.
+- `.devboard/crates/devboard/src/land.rs` — `devboard land <branch>`: the one fast-forward landing,
+  its lock retry, its push, and the remote-tip proof a finished task reports.
 - `.devboard/crates/devboard/src/publish.rs` — tags the released commit, dispatches the cargo-dist
   workflow, waits for it, proves the GitHub assets and the Gitea manifest, and reports dashboards
   without restarting them. Only the Release Train invokes it.

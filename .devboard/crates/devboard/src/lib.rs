@@ -41,6 +41,7 @@ pub mod instances;
 pub mod issues_mode;
 pub mod journal;
 pub mod jsjson;
+pub mod land;
 pub mod mcp;
 pub mod mcp_server;
 pub mod providers;
