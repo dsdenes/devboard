@@ -31,6 +31,15 @@ use serde_json::{json, Value};
 pub const RESOURCES_DIRECTORY: &str = "resources";
 /// The transient slice every agentic process joins on Linux.
 pub const SLICE_NAME: &str = "devboard.slice";
+/// The `IOWeight` the slice and every transient scope under it carry. The
+/// desktop's session stays at io.weight's default 100, so a busy workspace
+/// build yields the device to the desktop instead of competing one-for-one.
+pub const DEFAULT_IO_WEIGHT: u64 = 10;
+/// The environment variable that overrides [`DEFAULT_IO_WEIGHT`].
+pub const IO_WEIGHT_ENV: &str = "DEVBOARD_IO_WEIGHT";
+/// `io.weight` accepts 1..=10000; anything else is not a value the kernel
+/// would take.
+const IO_WEIGHT_RANGE: std::ops::RangeInclusive<u64> = 1..=10_000;
 const SETTINGS_FILE: &str = "settings.json";
 const SLOTS_DIRECTORY: &str = "slots";
 const LOCK_FILE: &str = "lock";
@@ -242,6 +251,41 @@ fn env_u32(env: &BTreeMap<String, String>, key: &str) -> Option<u32> {
     env.get(key)
         .and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|value| *value > 0)
+}
+
+/// The `IOWeight` every harness-launched build carries: the default, or the
+/// operator's `DEVBOARD_IO_WEIGHT` when it names a value the kernel accepts.
+pub fn io_weight() -> u64 {
+    io_weight_from(std::env::var(IO_WEIGHT_ENV).ok().as_deref())
+}
+
+/// Parses one `DEVBOARD_IO_WEIGHT` value. An absent, unparsable, or
+/// out-of-range value keeps the default rather than writing a weight the
+/// kernel rejects.
+pub fn io_weight_from(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| IO_WEIGHT_RANGE.contains(value))
+        .unwrap_or(DEFAULT_IO_WEIGHT)
+}
+
+/// The transient scope's property arguments. Every scope the harness starts
+/// carries the IO weight, so a build's processes are never left at the
+/// default weight while they compete with the desktop. A caller that proves a
+/// memory bound adds its memory properties here too.
+pub fn scope_property_arguments(weight: u64, limit: Option<Settings>) -> Vec<String> {
+    let mut arguments = vec![format!("--property=IOWeight={weight}")];
+    if let Some(settings) = limit {
+        arguments.push(format!(
+            "--property=MemoryHigh={}",
+            settings.memory_high_mb.saturating_mul(MIB)
+        ));
+        arguments.push(format!(
+            "--property=MemoryMax={}",
+            settings.memory_max_mb.saturating_mul(MIB)
+        ));
+        arguments.push("--property=MemorySwapMax=0".to_string());
+    }
+    arguments
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1109,17 +1153,7 @@ impl Governor {
             "--quiet".to_string(),
             "--collect".to_string(),
         ];
-        if let Some(settings) = limit {
-            wrapped.push(format!(
-                "--property=MemoryHigh={}",
-                settings.memory_high_mb.saturating_mul(MIB)
-            ));
-            wrapped.push(format!(
-                "--property=MemoryMax={}",
-                settings.memory_max_mb.saturating_mul(MIB)
-            ));
-            wrapped.push("--property=MemorySwapMax=0".to_string());
-        }
+        wrapped.extend(scope_property_arguments(io_weight(), limit));
         wrapped.push(format!("--slice={}", self.slice_name));
         wrapped.push("--".to_string());
         wrapped.extend(argv);
@@ -1456,7 +1490,12 @@ fn apply_slice_properties_owned(
     let max = format!("MemoryMax={}", settings.memory_max_mb.saturating_mul(MIB));
     // The hard limit bounds RAM. Unlimited swap would let a runaway agent
     // grow past it and pressure the session instead.
-    let mut properties = vec![high, max, "MemorySwapMax=0".to_string()];
+    let mut properties = vec![
+        high,
+        max,
+        "MemorySwapMax=0".to_string(),
+        format!("IOWeight={}", io_weight()),
+    ];
     if let Some(marker) = marker {
         // A slice already named for this dashboard is left as it is; the
         // description is a claim, not a value a save has to rewrite.
@@ -1466,8 +1505,15 @@ fn apply_slice_properties_owned(
     }
     let mut wrote = set_slice_properties(leaf, &properties);
     if !wrote {
+        // A systemd or cgroup that does not take an IO weight still gets the
+        // memory bounds; the build weight is the optional half of this
+        // transaction.
+        properties.retain(|property| !property.starts_with("IOWeight="));
+        wrote = set_slice_properties(leaf, &properties);
+    }
+    if !wrote {
         // An older systemd that cannot set the swap bound still gets the RAM
-        // bound: the second transaction drops that one property.
+        // bound: the next transaction drops that one property too.
         properties.retain(|property| !property.starts_with("MemorySwapMax="));
         wrote = set_slice_properties(leaf, &properties);
     }

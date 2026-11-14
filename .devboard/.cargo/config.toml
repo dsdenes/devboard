@@ -1,0 +1,5 @@
+# Link the workspace with mold: the system GNU ld serializes 29 link jobs
+# over a debug-heavy target tree and turns a build into a filesystem-wide IO
+# stall. `mold` is the apt package of the same name.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

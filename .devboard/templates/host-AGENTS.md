@@ -314,6 +314,18 @@ same values, refuses a maximum that reaches into the reserve, applies the values
 without a restart, and persists them in the dashboard state directory. A CLI invocation, a
 workspace test, and a worker only join the slice; only the dashboard ever rewrites its budget.
 
+The host write path is bounded too. `/etc/sysctl.d/99-io-tuning.conf` sets
+`vm.dirty_background_bytes=268435456` and `vm.dirty_bytes=1073741824`, so a workspace build cannot
+accumulate several GiB of dirty page cache before the kernel throttles it. The
+`devboard-io-tuning.service` system unit delegates the `io` controller to the user slice and
+calibrates iocost for the root device. The slice and every transient scope under it carry
+`IOWeight=10`; `DEVBOARD_IO_WEIGHT` overrides it. `IOWriteBandwidthMax` is unset unless a
+measured build proves the weight insufficient. The workspace links with `mold` from the apt
+package `mold` (2.40.4 or newer) through `.cargo/config.toml`. Build output is reclaimed only when
+no process works inside it: `target/` and `.devboard/target/` under `.worktree/*`,
+`.devboard/.test-tmp`, and `.devboard/target/debug` beyond its 20 GiB cap; a live worktree target is
+skipped and named, and no worktree, branch, tracked file, or commit is removed.
+
 ## Cross-boundary changes
 
 Split, never mix: host-specific detail in host files; generic mechanism in `.devboard/` taking that detail as input. A host name, path, or stack inside `.devboard/` is a bug. A harness dependency outside it is a bug.
