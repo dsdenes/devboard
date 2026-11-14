@@ -2434,12 +2434,15 @@ further descriptor projects and validates unchanged.
 All seven continuous agents publish the same lifecycle: `stopped`, `starting`, `running`, `stopping`, `failed`.
 `starting` appears before a spawned worker exists, `running` once its state is readable, and
 `stopping` from the moment Stop is accepted until the worker exits. A Start answers before its
-preflight can delay it: the server publishes the `starting` snapshot first, and the socket writes
-it while the preflight is still pending. A start that neither spawns a
-worker nor refuses within its preflight bound plus the preflight and abandonment graces is reset to
-`stopped` with `the <agent> start did not finish; press Start to retry.`, so a command whose answer
-was lost never leaves the agent starting; a worker that attaches ends `starting` on the next
-snapshot, whatever preview the page is still showing. A stopped agent is never
+worker exists: the server publishes the `starting` snapshot, naming the run that Start is
+creating, and the socket writes it while the worker is still being spawned and the preflight is
+still pending. The spawn — the provider environment the dashboard generates and the detached fork
+of a resident dashboard — runs beside that answer, so a slow fork never holds the control's busy
+word. A start that neither spawns a worker nor refuses within its preflight bound plus the
+preflight and abandonment graces is reset to `stopped` with `the <agent> start did not finish;
+press Start to retry.`, so a command whose answer was lost never leaves the agent starting; a
+worker that attaches ends `starting` on the next snapshot, whatever preview the page is still
+showing. A stopped agent is never
 restarted by a dashboard restart, a page open, or a tab restore. A live worker owned by another
 dashboard's `STATE_DIR` reads `running` with `owned: false`; that dashboard cannot Stop it, and
 Start is a no-op with a notice. Every Start that spawns nothing still answers with a changed

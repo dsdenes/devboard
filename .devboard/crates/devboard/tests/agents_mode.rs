@@ -526,6 +526,8 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
     .await;
     let all = frames(&mut inbox);
     assert!(find(&all, "error").is_empty(), "start refused: {all:?}");
+    // The spawn runs beside the answer, so the recorded argv is awaited.
+    wait_until_spawned(&recorded, "dead-code").await;
     {
         let spawned = recorded.lock().expect("recorded spawns");
         assert_eq!(spawned.len(), 1);
@@ -562,7 +564,8 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
     }
 
     // The Start's own answer reports the start; the worker it spawned proves
-    // its attachment through the projection the next read walks.
+    // its attachment through the projection the next read walks. The spawn runs
+    // beside that answer, so its pid is awaited before this read.
     let (conn, mut inbox) = connection_for(&app).await;
     devboard::agents_mode::handle(
         &app,
@@ -754,8 +757,18 @@ async fn a_slow_preflight_never_trips_the_state_publication_proof() {
 
     // A live worker that has not published yet is not a failure, however long
     // the publish takes: the process is the proof, the lock only proves
-    // attachment.
-    let pid = child_pid.lock().expect("a pid").expect("a pid");
+    // attachment. The spawn runs beside the answer, so its pid is awaited.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let pid = loop {
+        if let Some(pid) = *child_pid.lock().expect("a pid") {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Start never spawned its worker"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    };
     tokio::time::sleep(std::time::Duration::from_millis(5_400)).await;
     let (conn, mut inbox) = connection_for(&app).await;
     devboard::agents_mode::handle(
@@ -1442,6 +1455,15 @@ async fn a_start_answers_the_polled_projection_without_walking_the_state_tree() 
         answer["runId"].is_string(),
         "the spawned run is named: {answered:?}"
     );
+    // The spawn runs beside the answer, so the pid it records is awaited.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while pids.lock().expect("pids").is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Start never spawned its worker: {answered:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     assert_eq!(pids.lock().expect("pids").len(), 1, "{answered:?}");
     kill_recorded(&pids);
     kill_stand_in(pid);
@@ -2693,6 +2715,26 @@ async fn family_harness(
     }
 }
 
+/// Waits for the spawn an armed Start runs beside its answer.
+///
+/// A repo family answers its Start from the armed state and forks the worker on
+/// a task of its own, so a test that inspects the spawn or the pid it recorded
+/// waits for it instead of reading an empty list.
+async fn wait_until_spawned(spawns: &RecordedSpawns, family: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while spawns.lock().expect("spawns").is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{family}: Start never spawned its worker"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+async fn wait_for_spawn(harness: &FamilyHarness, family: &str) {
+    wait_until_spawned(&harness.spawns, family).await;
+}
+
 async fn start_family(
     harness: &mut FamilyHarness,
     family: &str,
@@ -2707,6 +2749,7 @@ async fn start_family(
     )
     .await;
     let elapsed = started.elapsed();
+    wait_for_spawn(harness, family).await;
     (frames(&mut harness.inbox), elapsed)
 }
 
@@ -2788,6 +2831,7 @@ async fn every_family_reaches_running_inside_two_seconds() {
             },
         )
         .await;
+        wait_for_spawn(&harness, family).await;
         assert_spawned_program(&harness, family);
         let deadline = started + std::time::Duration::from_millis(2_000);
         let snapshot = loop {

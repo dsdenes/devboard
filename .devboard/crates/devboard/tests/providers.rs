@@ -777,10 +777,15 @@ async fn a_start_never_waits_for_the_usage_transport() {
     )
     .await
     .expect("a start waited for the usage transport");
-    assert!(
-        spawned.load(Ordering::SeqCst),
-        "the start never reached its spawn"
-    );
+    // The spawn runs beside the answer: await the flag it sets.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !spawned.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the start never reached its spawn"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     let all = all_frames(&mut inbox);
     let refused: Vec<Value> = all
         .iter()

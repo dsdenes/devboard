@@ -894,6 +894,109 @@ async fn a_starting_frame_arrives_while_the_preflight_is_pending() {
     }
 }
 
+/// A Start answers the state it armed, never the worker it forks.
+///
+/// One `startAgent` action measured 3473 ms on a fresh family and 122 ms on a
+/// running one: the answer waited for `spawn_worker`, which writes the provider
+/// environment this dashboard generates and forks the detached worker through
+/// `systemd-run`. That is over the client's 1000 ms budget. The answer must
+/// reach the page with the spawn still in flight, and the run it names must be
+/// the run the Start creates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_start_answers_before_its_spawn_completes() {
+    let instance = start("start-spawn-budget").await;
+    // A spawn that outlasts the operator's budget. Its gate opens from a thread
+    // of its own, so a reply that waits for the fork is bounded rather than
+    // hung, and the released spawn is observed afterwards.
+    let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let spawned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate_for_spawn = std::sync::Arc::clone(&gate);
+    let spawned_for_spawn = std::sync::Arc::clone(&spawned);
+    devboard::agents_mode::set_preflight(
+        &instance.server.app,
+        "dead-code",
+        std::sync::Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) })),
+    );
+    devboard::agents_mode::set_agent_environment(&instance.server.app, || {
+        Box::pin(async { Ok(std::collections::HashMap::new()) })
+    });
+    devboard::agents_mode::set_spawn(&instance.server.app, move |_argv, _environment| {
+        let (lock, condvar) = &*gate_for_spawn;
+        let mut open = lock.lock().expect("the spawn gate");
+        while !*open {
+            open = condvar.wait(open).expect("the spawn gate");
+        }
+        spawned_for_spawn.store(true, std::sync::atomic::Ordering::SeqCst);
+        Some(std::process::id())
+    });
+    // The gate opens from a thread of its own after the client's budget and its
+    // ceiling, so a reply that does wait for the fork is answered — and fails
+    // the assertion below — instead of hanging the suite.
+    let release_gate = std::sync::Arc::clone(&gate);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        let (lock, condvar) = &*release_gate;
+        *lock.lock().expect("the spawn gate") = true;
+        condvar.notify_all();
+    });
+
+    let response = client()
+        .post(format!("{}/agents/dead-code/runs", instance.base))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .expect("a response");
+    // The gate is still closed, so an answer that names the worker would be one
+    // that waited for the fork.
+    assert!(
+        !spawned.load(std::sync::atomic::Ordering::SeqCst),
+        "the answer waited for its spawn"
+    );
+    assert_eq!(response.status().as_u16(), 201);
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let body: serde_json::Value = response.json().await.expect("JSON");
+    let frames = body["frames"].as_array().expect("a frame list");
+    // The answer's last frame is the armed state the Start settled on: the
+    // preview before it only announces the click.
+    let settled = frames
+        .iter()
+        .filter(|frame| frame["type"] == "agentState" && frame["agent"]["id"] == "dead-code")
+        .next_back()
+        .expect("a settled frame");
+    assert_eq!(
+        settled["agent"]["lifecycle"],
+        serde_json::json!("starting"),
+        "{settled}"
+    );
+    let run_id = settled["agent"]["runId"]
+        .as_str()
+        .expect("the answer names the run the Start creates")
+        .to_string();
+    assert_eq!(
+        location.as_deref(),
+        Some(format!("{}/agent-runs/{run_id}", instance.base).as_str()),
+        "a Start names the run it creates, before the fork"
+    );
+
+    {
+        let (lock, condvar) = &*gate;
+        *lock.lock().expect("the spawn gate") = true;
+        condvar.notify_all();
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !spawned.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the released spawn never ran"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 /// A Start's answer belongs to the command, never to whatever else the
 /// dashboard is broadcasting. The request connection used to receive every
 /// broadcast, so another family's live activity line — the agent poll ticks

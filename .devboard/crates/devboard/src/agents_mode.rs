@@ -543,8 +543,8 @@ struct SnapshotInput {
     enabled: bool,
     owned: bool,
     attached: bool,
-    /// The `/agent-runs` identity a start of this family's own version created,
-    /// or `None` while no such run exists.
+    /// The `/agent-runs` identity of the run this family's armed start is
+    /// creating, or `None` while no start is armed.
     run_id: Option<String>,
     minutes: u32,
     last_run_at: Option<String>,
@@ -802,12 +802,15 @@ fn worker_version_key(version: Option<&str>) -> String {
         .collect()
 }
 
-/// The `/agent-runs` identity a family's own worker publishes, while a start of
-/// that version has actually spawned a process. The run collection names a
+/// The `/agent-runs` identity a family's own worker publishes, named while this
+/// dashboard's start of that version is armed. The run collection names a
 /// family worker `<family>--<version directory>`, so this is the identity its
-/// `agentState` answer names and a creation's `Location` points at.
-fn started_run_id(family: &str, spawned: bool, version: Option<&str>) -> Option<String> {
-    spawned.then(|| format!("{family}--{}", worker_version_key(version)))
+/// `agentState` answer names and a creation's `Location` points at: a Start
+/// answers the state it armed before it forks, and the identity is the run that
+/// Start is creating. A spawn that fails clears the armed state, and the
+/// identity with it.
+fn started_run_id(family: &str, armed: bool, version: Option<&str>) -> Option<String> {
+    armed.then(|| format!("{family}--{}", worker_version_key(version)))
 }
 
 /// The facts one Start command changed in its family's projection.
@@ -4744,7 +4747,7 @@ impl RepoFamily {
                 stopping: mutable.stop_requested,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 notice: mutable.notice.clone(),
@@ -5096,7 +5099,7 @@ impl RepoFamily {
                 attached,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 minutes: settings.interval_minutes,
@@ -5294,7 +5297,11 @@ impl RepoFamily {
         {
             return;
         }
-        let started = self.spawn_worker().await;
+        let program = match self.resolve_program() {
+            Ok(program) => program,
+            Err(_) => return,
+        };
+        let started = self.spawn_worker(program).await;
         if !started.ok {
             return;
         }
@@ -5423,6 +5430,13 @@ impl RepoFamily {
                 ));
             }
         }
+        // The executable a worker runs is resolved before the answer: a
+        // missing installation is a refusal the operator reads on the card, not
+        // a spawn that silently never happens.
+        let program = match self.resolve_program() {
+            Ok(program) => program,
+            Err(result) => return result,
+        };
         let attempt = {
             let mut mutable = self.mutable.lock().expect("family state");
             mutable.starting = true;
@@ -5437,22 +5451,65 @@ impl RepoFamily {
             mutable.start_attempt += 1;
             mutable.start_attempt
         };
-        // The worker exists before the preflight is asked: Start's observable
-        // outcome is the spawned process, and a forge read slower than the
-        // page's budget must not hold it back. A refusal settles beside it.
-        let started = self.spawn_worker().await;
-        if !started.ok {
-            return started;
+        // The armed state is the answer. The worker is spawned beside it: this
+        // host writes the provider environment the dashboard generates and forks
+        // the detached worker through `systemd-run`, which measured 0.9 to 3.5
+        // seconds for one Start — well past the page's one-second budget. The
+        // poll publishes the projection once the worker exists, and a spawn that
+        // fails settles the same fields the synchronous path published.
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.spawn_and_preflight(attempt, program).await;
+        });
+        AgentResult::ok()
+    }
+
+    /// The executable this family's worker runs, or the refusal that settles
+    /// the start it was resolved for. A missing installation is the operator's
+    /// refusal to read, never a spawn that silently never happens.
+    fn resolve_program(&self) -> Result<PathBuf, AgentResult> {
+        match self.program.resolve(&self.repo_dir) {
+            Ok(program) => Ok(program),
+            Err(message) => {
+                let mut mutable = self.mutable.lock().expect("family state");
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.start_error = Some(message.clone());
+                Err(AgentResult::failure(message))
+            }
         }
-        if let Some(pid) = self
+    }
+
+    /// Spawns the worker one armed Start owns, then runs its preflight.
+    ///
+    /// Both run beside the answer, so a slow provider write or a slow fork is
+    /// never the operator's wait. A refusal settles through the family's
+    /// publisher, so the card updates without a poll whose disk fingerprint a
+    /// failed spawn never changed.
+    async fn spawn_and_preflight(self: Arc<Self>, attempt: u64, program: PathBuf) {
+        let started = self.spawn_worker(program).await;
+        let (owned, spawned_pid) = self
             .mutable
             .lock()
-            .ok()
-            .and_then(|mutable| mutable.started_pid)
-        {
+            .map(|mutable| (mutable.start_attempt == attempt, mutable.started_pid))
+            .unwrap_or((false, None));
+        if !owned {
+            // A later Start or Stop owns the state this spawn was armed for, so
+            // the process this attempt started belongs to neither.
+            if let Some(pid) = spawned_pid {
+                terminate_spawned(pid).await;
+            }
+            return;
+        }
+        if !started.ok {
+            let refusal = StartRefusal::classify(started.message.unwrap_or_default());
+            self.publish_refusal(&refusal);
+            return;
+        }
+        if let Some(pid) = spawned_pid {
             self.begin_preflight(attempt, pid);
         }
-        AgentResult::ok()
     }
 
     /// Runs this Start's preflight beside the worker it already spawned.
@@ -5531,18 +5588,13 @@ impl RepoFamily {
         !pid_alive(pid)
     }
 
-    async fn spawn_worker(&self) -> AgentResult {
-        let program = match self.program.resolve(&self.repo_dir) {
-            Ok(program) => program,
-            Err(message) => {
-                let mut mutable = self.mutable.lock().expect("family state");
-                mutable.starting = false;
-                mutable.starting_since = None;
-                mutable.start_deadline = None;
-                mutable.start_error = Some(message.clone());
-                return AgentResult::failure(message);
-            }
-        };
+    /// Spawns one worker for an armed Start, with the executable [`Self::start`]
+    /// already resolved.
+    ///
+    /// The provider environment this dashboard generates and the detached
+    /// process it forks are the slow half of a Start, so this runs on the
+    /// Start's own task and never on the operator's request.
+    async fn spawn_worker(&self, program: PathBuf) -> AgentResult {
         let argv = harness_argv(
             &program,
             self.family_id.directory(),
@@ -5579,7 +5631,16 @@ impl RepoFamily {
             ],
         );
         let spawn = self.spawn.lock().map(|slot| slot.clone()).ok();
-        let pid = spawn.and_then(|spawn| spawn(&argv, environment));
+        // The fork itself belongs to the blocking pool: a dashboard holding a
+        // resident gigabyte copies its page tables to spawn a worker, and that
+        // copy must never occupy a thread the page's reads answer on.
+        let pid = match spawn {
+            Some(spawn) => tokio::task::spawn_blocking(move || spawn(&argv, environment))
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
         match pid {
             Some(spawn_pid) => {
                 // The proof clock starts when the worker exists, never at the
@@ -7242,7 +7303,7 @@ impl WatchdogFamily {
                 stopping: mutable.stop_requested,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 notice: mutable.notice.clone(),
@@ -7444,7 +7505,7 @@ impl WatchdogFamily {
                 attached,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 minutes: settings.interval_minutes,
@@ -8547,7 +8608,7 @@ impl McpFamily {
                 stopping: mutable.stop_requested,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 notice: mutable.notice.clone(),
@@ -8734,7 +8795,7 @@ impl McpFamily {
                 attached,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 minutes: settings.interval_minutes,
@@ -9498,7 +9559,7 @@ impl ReleaseFamily {
                 stopping: mutable.stop_requested,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 notice: mutable.notice.clone(),
@@ -9736,7 +9797,7 @@ impl ReleaseFamily {
                 attached,
                 run_id: started_run_id(
                     self.descriptor.id,
-                    mutable.starting && mutable.start_deadline.is_none(),
+                    mutable.starting,
                     self.running_version.as_deref(),
                 ),
                 minutes: settings.interval_minutes,
