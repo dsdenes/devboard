@@ -298,6 +298,75 @@ test("Save limits dispatches one settings command and waits for its answer", asy
   }
 });
 
+test("a non-numeric limit entry is refused instead of being saved as unlimited", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const hourField = within(view.container).getByTestId("agent-limit-hour") as HTMLInputElement;
+    const pendingField = within(view.container).getByTestId(
+      "agent-limit-pending",
+    ) as HTMLInputElement;
+    await fireEvent.input(hourField, { target: { value: "-" } });
+    await fireEvent.input(pendingField, { target: { value: "." } });
+    // The fields keep what the operator typed, so the refusal stays reachable.
+    expect(hourField.value).toBe("-");
+    expect(pendingField.value).toBe(".");
+
+    const limits = within(view.container).getByTestId("agent-save-limits");
+    await fireEvent.click(limits);
+
+    const error = within(view.container).getByTestId("agent-settings-error");
+    expect(error.textContent).toContain(
+      "Both limits must be empty or integers from 1 through 100.",
+    );
+    // The refusal sits beside the limit fields, not in the page alert stack.
+    expect(error.closest('[aria-label="Filing limits"]')).not.toBeNull();
+    // Nothing was dispatched, so no save is confirmed and none is awaited.
+    expect(settingsFrames(socket.sent)).toEqual([]);
+    expect(limits.getAttribute("aria-busy")).toBeNull();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+    // The refused save leaves the visible text where the operator left it.
+    expect(hourField.value).toBe("-");
+    expect(pendingField.value).toBe(".");
+  } finally {
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
+test("a limit field holding an integer sends that integer", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const hourField = within(view.container).getByTestId("agent-limit-hour") as HTMLInputElement;
+    const pendingField = within(view.container).getByTestId(
+      "agent-limit-pending",
+    ) as HTMLInputElement;
+    await fireEvent.input(hourField, { target: { value: "5" } });
+    await fireEvent.input(pendingField, { target: { value: "7" } });
+    await fireEvent.click(within(view.container).getByTestId("agent-save-limits"));
+    expect(settingsFrames(socket.sent)).toEqual([
+      {
+        type: "setAgentSettings",
+        id: "release-train",
+        minutes: 10,
+        maxPerHour: 5,
+        maxPending: 7,
+      },
+    ]);
+    expect(within(view.container).queryByTestId("agent-settings-error")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
 test("switching to an agent with the same saved settings rewrites the fields from its snapshot", async () => {
   const previous = connection.state;
   connection.state = "open";

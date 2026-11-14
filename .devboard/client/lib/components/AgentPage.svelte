@@ -112,7 +112,9 @@
   let cadenceText = $state("");
   let maxPerHourText = $state("");
   let maxPendingText = $state("");
-  let settingsError = $state<string | null>(null);
+  // The refusal names the settings group that owns the invalid field, so the
+  // page renders it beside those fields instead of in the page alert stack.
+  let settingsError = $state<{ field: "cadence" | "limits"; message: string } | null>(null);
   let settingsAgent = $state("");
   let lastSettings = $state("");
 
@@ -173,19 +175,33 @@
       minutes < 1 ||
       minutes > 1440
     ) {
-      settingsError = "The cadence must be an integer from 1 through 1440 minutes.";
+      settingsError = {
+        field: "cadence",
+        message: "The cadence must be an integer from 1 through 1440 minutes.",
+      };
       return false;
     }
     const perHour = parseLimit(maxPerHourText);
     const pending = parseLimit(maxPendingText);
     if (perHour === undefined || pending === undefined) {
-      settingsError = "Both limits must be empty or integers from 1 through 100.";
+      settingsError = {
+        field: "limits",
+        message: "Both limits must be empty or integers from 1 through 100.",
+      };
       return false;
     }
     settingsError = null;
     return agents.saveSettings(agentId, minutes, perHour, pending, scope);
   }
 </script>
+
+{#snippet settingsAlert(field: "cadence" | "limits")}
+  {#if settingsError?.field === field}
+    <p class="issues-error agent-settings__error" data-testid="agent-settings-error" role="alert">
+      {settingsError.message}
+    </p>
+  {/if}
+{/snippet}
 
 {#if descriptor === undefined}
   <section class="agent-page" data-testid="agent-page" data-agent={agentId}>
@@ -312,16 +328,16 @@
               Save cadence
             </CommandButton>
             <SaveFeedback scope={`agent.cadence.${agentId}`} />
+            {@render settingsAlert("cadence")}
           </div>
           <div class="agent-settings__group" role="group" aria-label="Filing limits">
             <span class="agent-settings__title">Filing limits</span>
+            <!-- The raw text is the model: a number input reports "" for text it
+                 cannot represent, which would read as an unlimited limit. -->
             <label class="agent-settings__field">
               <span>Per hour</span>
               <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
+                type="text"
                 inputmode="numeric"
                 placeholder="unlimited"
                 class="w-20 text-center"
@@ -333,10 +349,7 @@
             <label class="agent-settings__field">
               <span>Open issues</span>
               <Input
-                type="number"
-                min="1"
-                max="100"
-                step="1"
+                type="text"
                 inputmode="numeric"
                 placeholder="unlimited"
                 class="w-20 text-center"
@@ -358,6 +371,7 @@
               Save limits
             </CommandButton>
             <SaveFeedback scope={`agent.limits.${agentId}`} />
+            {@render settingsAlert("limits")}
           </div>
         </div>
       {/snippet}
@@ -394,18 +408,13 @@
       <p class="agent-notice" data-testid="agent-notice" role="status">{snapshot.notice}</p>
     {/if}
 
-    {#if snapshot?.error !== null || sync.error !== null || settingsError !== null}
+    {#if snapshot?.error !== null || sync.error !== null}
       <div class="agent-page__alerts">
         {#if sync.error !== null}
           <p class="issues-error" data-testid="agent-sync-error" role="alert">{sync.error}</p>
         {/if}
         {#if snapshot?.error !== null && snapshot?.error !== undefined}
           <p class="issues-error" data-testid="agent-error" role="alert">{snapshot.error}</p>
-        {/if}
-        {#if settingsError !== null}
-          <p class="issues-error" data-testid="agent-settings-error" role="alert">
-            {settingsError}
-          </p>
         {/if}
       </div>
     {/if}
@@ -547,6 +556,12 @@
     color: var(--muted-foreground);
     font-size: 11px;
     white-space: nowrap;
+  }
+
+  /* The refusal wraps onto its own line under the fields it names. */
+  .agent-settings__error {
+    flex-basis: 100%;
+    font-size: 11px;
   }
 
   .agent-settings__run {
