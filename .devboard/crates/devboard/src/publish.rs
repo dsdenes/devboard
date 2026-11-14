@@ -31,8 +31,6 @@ use crate::jsjson;
 use crate::release::{configured_project, MANIFEST_ASSET, RELEASE_REPOSITORY};
 use crate::release_suite;
 
-/// The workflow cargo-dist generates for the GitHub release host.
-pub const RELEASE_WORKFLOW: &str = "release.yml";
 /// The Gitea workflow whose success gates the release tag.
 pub const CI_WORKFLOW: &str = "devboard-ci.yml";
 /// The GitHub workflow that builds the artifacts from the canonical source.
