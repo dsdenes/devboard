@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent};
 use crate::forge::{
     classify_forge_read_failure, git, gitea_closing_commits, gitea_json, gitea_list_issues,
-    gitea_list_labelled_issues, is_forge_read_latency, is_forge_read_outage, origin_forge_with,
+    gitea_list_labelled_issues, is_forge_read_outage, is_forge_read_stall, origin_forge_with,
     resolve_shipped_version, ClosingCommitClient, ClosingCommitIssue, Forge, ForgeReadFailureKind,
     ForgeReadRetry, GitHubRelease, IssueQueryState, IssueState, RepositoryGitHub,
     RepositoryGitHubOptions, VersionResolution,
@@ -3634,7 +3634,7 @@ impl ScoutWorker {
         // more work for the same forge. Keep the card stale with no reason and
         // read again on the normal cadence; a read that actually failed still
         // spends the failure schedule.
-        if kind == ForgeReadFailureKind::Transient && is_forge_read_latency(detail) {
+        if is_forge_read_stall(detail) {
             runtime.state.sync = ScoutSync {
                 state: "stale".to_string(),
                 at: runtime.state.sync.at.clone(),

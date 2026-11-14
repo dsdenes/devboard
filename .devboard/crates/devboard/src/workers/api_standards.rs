@@ -26,7 +26,8 @@ use crate::acp::{
     AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent, AcpQuestion, PermissionPolicy,
 };
 use crate::forge::{
-    classify_forge_read_failure, Forge, ForgeReadFailureKind, ForgeReadRetry, ForgeRemote,
+    classify_forge_read_failure, is_forge_read_latency, is_forge_read_stall, Forge,
+    ForgeReadFailureKind, ForgeReadRetry, ForgeRemote,
 };
 use crate::journal::repo_key;
 use crate::providers::{
@@ -3264,6 +3265,28 @@ impl Worker {
 
     fn record_sync_failure(&self, detail: &str) {
         let kind = classify_forge_read_failure(detail);
+        // A read that ran out of time is a slow forge, not a broken one. The
+        // last read's rows still describe the repository, the four short
+        // retries only add walks of the pages that stalled, and the fifth
+        // attempt would set `last_error`, which the page raises as an error
+        // notification and which files a board issue back into the same forge.
+        // Keep the card stale with no reason and read again on the normal
+        // cadence; a read that actually failed still spends the schedule.
+        if is_forge_read_stall(detail) {
+            let inner_at = lock(&self.inner).state.sync.at.clone();
+            {
+                let mut inner = lock(&self.inner);
+                inner.state.sync = SyncStatus {
+                    state: SyncState::Stale,
+                    at: inner_at,
+                    error: None,
+                };
+                inner.next_sync_at = self.now() + self.sync_ms as i64;
+            }
+            self.publish();
+            (self.log)(format!("the forge read is slow: {detail}"));
+            return;
+        }
         if kind == ForgeReadFailureKind::Transient {
             if let Some(delay) = lock(&self.inner).retry.record(kind) {
                 let inner_at = lock(&self.inner).state.sync.at.clone();
@@ -3788,6 +3811,18 @@ impl Worker {
                 Err(failure) => record(format!("could not re-read the forge: {failure}")),
             }
         }
+        // A filing that failed because the forge ran out of time is latency,
+        // not a fault: the request was still in flight, the next cycle files
+        // again, and keeping the reason would raise an error notification that
+        // returns as a new board issue for the forge already behind. A tool
+        // error that names no latency still spends the cycle's reason.
+        let error = match error {
+            Some(detail) if is_forge_read_latency(&detail) => {
+                record("the forge is slow: the next cycle files again".to_string());
+                None
+            }
+            other => other,
+        };
         self.finish_cycle(&directory, cycle_id, error);
     }
 

@@ -605,6 +605,25 @@ fn a_read_that_ran_out_of_time_is_latency_rather_than_a_fault() {
     assert!(!is_forge_read_latency("bad credentials"));
 }
 
+/// Only a transient diagnostic that ran out of time is latency a periodic read
+/// tolerates: a refusal the forge answered still spends the retry schedule and
+/// is reported, even when its text also names a timeout.
+#[test]
+fn a_refusal_is_not_latency_even_when_its_text_names_a_timeout() {
+    assert!(is_forge_read_stall(
+        "the forge read did not finish within 30000 ms"
+    ));
+    assert!(is_forge_read_stall(
+        "GET /repos/owner/name/issues failed: the request timed out after 30000 ms"
+    ));
+    assert!(!is_forge_read_stall(
+        "GET /repos/owner/name/issues failed (HTTP 401): bad credentials, request timed out"
+    ));
+    assert!(!is_forge_read_stall(
+        "GET /repos/owner/name/issues failed (HTTP 500): internal server error"
+    ));
+}
+
 /// A read the forge could not answer — a `5xx`, a reset connection, or nothing
 /// at all — is an unavailable forge, not a refused read. The cycle defers on it
 /// instead of raising the error notification that files a board issue, while a

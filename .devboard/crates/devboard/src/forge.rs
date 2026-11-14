@@ -2581,6 +2581,19 @@ pub fn is_forge_read_latency(message: &str) -> bool {
     message.contains("did not finish within") || message.contains("timed out")
 }
 
+/// True when a periodic read stalled: the forge was still working when the
+/// deadline expired, and nothing it said describes a fault.
+///
+/// Every audit family answers this one predicate the same way — keep the last
+/// read's rows on a stale card with no reason, and read again on the normal
+/// cadence — so the tolerated stall is decided once here rather than by each
+/// worker's copy of the branch. A diagnostic that also matches a permanent
+/// pattern is a refusal the forge answered, and still spends the schedule.
+pub fn is_forge_read_stall(message: &str) -> bool {
+    is_forge_read_latency(message)
+        && classify_forge_read_failure(message) == ForgeReadFailureKind::Transient
+}
+
 /// True when a read met a forge that could not answer it, rather than one that
 /// answered a refusal.
 ///

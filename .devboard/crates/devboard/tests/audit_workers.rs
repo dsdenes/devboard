@@ -282,11 +282,16 @@ struct ApiForge {
     fail: Mutex<Option<String>>,
     open_title_calls: AtomicU64,
     title_delay_ms: AtomicU64,
+    read_delay_ms: AtomicU64,
 }
 
 impl api::ForgeClient for ApiForge {
     fn list_issues(&self) -> api::ForgeFuture<'_, Vec<api::ForgeIssue>> {
+        let delay = self.read_delay_ms.load(Ordering::SeqCst);
         Box::pin(async move {
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
             if let Some(error) = self.fail.lock().expect("the fake").clone() {
                 return Err(error);
             }
@@ -390,11 +395,18 @@ impl dead::ForgeClient for DeadForge {
 struct SrpForge {
     issues: Mutex<Vec<srp::ForgeIssue>>,
     open_title_calls: AtomicU64,
+    read_delay_ms: AtomicU64,
 }
 
 impl srp::ForgeClient for SrpForge {
     fn list_issues(&self) -> srp::ForgeFuture<'_, Vec<srp::ForgeIssue>> {
-        Box::pin(async move { Ok(self.issues.lock().expect("the fake").clone()) })
+        let delay = self.read_delay_ms.load(Ordering::SeqCst);
+        Box::pin(async move {
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            Ok(self.issues.lock().expect("the fake").clone())
+        })
     }
 
     fn list_open_issue_titles(&self) -> srp::ForgeFuture<'_, Vec<String>> {
@@ -1006,6 +1018,100 @@ fn api_standards_inventory_reads_the_rust_http_surface() {
             ".devboard/crates/devboard/src/http.rs",
         ]
     );
+}
+
+/// A read that outlives its deadline is a slow forge, not a fault: the card
+/// stays stale with no reason, the last read's rows stay, and no error
+/// notification that would file a board issue for the same forge is raised.
+#[tokio::test]
+async fn api_standards_keeps_a_stalled_forge_read_on_the_card() {
+    let fixture = Fixture::new("api-slow-read");
+    fixture.api_inputs();
+    let forge = Arc::new(ApiForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(api::ForgeIssue {
+            number: 7,
+            title: "POST /api/ready ignores the method".to_string(),
+            url: "https://forge.test/acme/fixture/issues/7".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: "## Chapter\n\nHTTP requests\n".to_string(),
+            labels: vec!["api-standards".to_string()],
+        });
+    let mut options = api::WorkerOptions::new(&fixture.repo, &fixture.state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    options.sync_ms = Some(60_000);
+    options.cadence_ms = Some(60 * 60_000);
+    options.manual_cycles = true;
+    options.read_timeout_ms = Some(20);
+    options.connect = Some(fake_connect(|_prompt| Box::pin(async move { Ok(()) })));
+    options.forge = Some(Arc::clone(&forge) as Arc<dyn api::ForgeClient>);
+    let worker = api::Worker::new(options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let synced = worker.current_state();
+    assert_eq!(synced.sync.state, api::SyncState::Ok);
+    assert_eq!(synced.issues.len(), 1);
+
+    forge.read_delay_ms.store(200, Ordering::SeqCst);
+    // Six stalled reads outlast the whole transient schedule, which is where a
+    // stalled read became a fault and raised the error notification.
+    for _ in 0..6 {
+        worker.refresh().await;
+    }
+    let stalled = worker.current_state();
+    assert_eq!(stalled.sync.state, api::SyncState::Stale);
+    assert_eq!(stalled.sync.error, None);
+    assert_eq!(stalled.last_error, None);
+    assert_eq!(stalled.notice, None);
+    assert_eq!(stalled.issues.len(), 1, "the last read's rows stay");
+
+    forge.read_delay_ms.store(0, Ordering::SeqCst);
+    worker.refresh().await;
+    let recovered = worker.current_state();
+    assert_eq!(recovered.sync.state, api::SyncState::Ok);
+    assert_eq!(recovered.issues.len(), 1);
+    worker.stop().await;
+}
+
+/// A filing that failed because the forge ran out of time is latency, not a
+/// fault: the cycle keeps no reason, so the page raises no error notification
+/// and files no board issue against the forge already behind.
+#[tokio::test]
+async fn api_standards_keeps_a_slow_forge_filing_on_the_card() {
+    let fixture = Fixture::new("api-slow-filing");
+    fixture.api_inputs();
+    let forge = Arc::new(ApiForge::default());
+    let connect = fake_connect(|prompt| {
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/api-standards-audit ");
+            let line = json!({
+                "tool": "issue_create",
+                "ok": false,
+                "error": "the request timed out after 30000 ms",
+            });
+            std::fs::write(directory.join("tool-log.jsonl"), format!("{line}\n"))
+                .expect("a tool record");
+            Ok(())
+        })
+    });
+    let worker = api_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    let state = worker.current_state();
+    assert_eq!(state.lifecycle, api::Lifecycle::Idle);
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.notice, None);
+    let directory = api::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
+    let activity = api::read_activity(&directory).join("\n");
+    assert!(activity.contains("the request timed out after 30000 ms"));
+    assert!(activity.contains("the forge is slow: the next cycle files again"));
+    worker.stop().await;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1954,6 +2060,70 @@ fn dead_exec(output: (&str, i32)) -> devboard::forge::ExecResult {
         code: output.1,
         killed: false,
     }
+}
+
+/// A read that outlives its deadline is a slow forge, not a fault for Single
+/// Responsibility too: the card stays stale with no reason, the last read's
+/// rows stay, and no error notification that would file a board issue for the
+/// same forge is raised.
+#[tokio::test]
+async fn single_responsibility_keeps_a_stalled_forge_read_on_the_card() {
+    let fixture = Fixture::new("srp-slow-read");
+    let skill = fixture.srp_inputs();
+    let forge = Arc::new(SrpForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(srp::ForgeIssue {
+            number: 1,
+            title: "Split the fixture handler".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: srp_body(
+                "mixed-responsibilities",
+                "src/handler.ts",
+                1,
+                "export const handle = 1;",
+                &skill,
+            ),
+            labels: vec!["single-responsibility".to_string()],
+        });
+    let mut options = srp::WorkerOptions::new(&fixture.repo, &fixture.state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    options.sync_ms = Some(60_000);
+    options.cadence_ms = Some(60 * 60_000);
+    options.manual_cycles = true;
+    options.read_timeout_ms = Some(20);
+    options.connect = Some(fake_connect(|_prompt| Box::pin(async move { Ok(()) })));
+    options.forge = Some(Arc::clone(&forge) as Arc<dyn srp::ForgeClient>);
+    let worker = srp::Worker::new(options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let synced = worker.current_state();
+    assert_eq!(synced.sync.state, srp::SyncState::Ok);
+    assert_eq!(synced.issues.len(), 1);
+
+    forge.read_delay_ms.store(200, Ordering::SeqCst);
+    // Six stalled reads outlast the whole transient schedule, which is where a
+    // stalled read became a fault and raised the error notification.
+    for _ in 0..6 {
+        worker.refresh().await;
+    }
+    let stalled = worker.current_state();
+    assert_eq!(stalled.sync.state, srp::SyncState::Stale);
+    assert_eq!(stalled.sync.error, None);
+    assert_eq!(stalled.last_error, None);
+    assert_eq!(stalled.notice, None);
+    assert_eq!(stalled.issues.len(), 1, "the last read's rows stay");
+
+    forge.read_delay_ms.store(0, Ordering::SeqCst);
+    worker.refresh().await;
+    let recovered = worker.current_state();
+    assert_eq!(recovered.sync.state, srp::SyncState::Ok);
+    assert_eq!(recovered.issues.len(), 1);
+    worker.stop().await;
 }
 
 /* ------------------------------------------------------------------------ */

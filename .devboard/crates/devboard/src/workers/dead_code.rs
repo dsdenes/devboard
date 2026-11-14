@@ -22,8 +22,8 @@ use serde_json::{json, Value};
 
 use crate::acp::AcpActivity;
 use crate::forge::{
-    classify_forge_read_failure, is_forge_read_latency, Forge, ForgeReadFailureKind,
-    ForgeReadRetry, ForgeRemote,
+    classify_forge_read_failure, is_forge_read_stall, Forge, ForgeReadFailureKind, ForgeReadRetry,
+    ForgeRemote,
 };
 use crate::journal::repo_key;
 use crate::providers::{
@@ -2527,7 +2527,7 @@ impl Worker {
         // notification and which files a board issue back into the same forge.
         // Keep the card stale with no reason and read again on the normal
         // cadence; a read that actually failed still spends the schedule.
-        if kind == ForgeReadFailureKind::Transient && is_forge_read_latency(detail) {
+        if is_forge_read_stall(detail) {
             {
                 let mut inner = lock(&self.inner);
                 let at = inner.state.sync.at.clone();
