@@ -630,3 +630,98 @@ async fn release_suite_fails_when_every_test_is_quarantined() {
         issues[0].body
     );
 }
+
+// ---------------------------------------------------------------------------
+// Build lease
+
+struct RecordingRunner {
+    seen: Arc<Mutex<Vec<devboard::publish::CommandInvocation>>>,
+}
+
+impl devboard::publish::CommandRunner for RecordingRunner {
+    fn run<'a>(
+        &'a self,
+        invocation: devboard::publish::CommandInvocation,
+    ) -> devboard::release_suite::BoxFuture<'a, devboard::publish::CommandOutcome> {
+        Box::pin(async move {
+            self.seen.lock().expect("invocations").push(invocation);
+            devboard::publish::CommandOutcome {
+                code: 0,
+                stdout:
+                    "running 1 test\ntest fixture::passes ... ok\ntest result: ok. 1 passed; 0 \
+failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+                        .to_string(),
+                stderr: "     Running unittests src/lib.rs \
+(target/debug/deps/fixture-0000000000000000)\n"
+                    .to_string(),
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn release_suite_takes_the_shared_build_lease_with_the_derived_jobs() {
+    let scratch = Scratch::new("build-lease");
+    let suite = scratch.root.join("suite");
+    fs::create_dir_all(&suite).expect("the suite directory");
+    let state = scratch.root.join("state");
+    let environment: devboard::forge::Environment = [
+        ("STATE_DIR", state.to_string_lossy().into_owned()),
+        ("DEVBOARD_MAX_BUILDS", "1".to_string()),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect();
+
+    let lane = devboard::build_lane::BuildLane::new(
+        state.join(devboard::build_lane::BUILD_LANE_DIRECTORY),
+        1,
+    );
+    let held = lane.acquire();
+    let seen: Arc<Mutex<Vec<devboard::publish::CommandInvocation>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let mut options = devboard::release_suite::ReleaseSuiteOptions::new(&suite);
+    options.environment = environment;
+    options.runner = Some(Arc::new(RecordingRunner {
+        seen: Arc::clone(&seen),
+    }));
+    options.log = Some(Arc::new(|_: &str| {}));
+    options.max_attempts = 1;
+    options.file_issues = false;
+    options.attempt_timeout = std::time::Duration::from_secs(60);
+
+    let running = tokio::spawn(devboard::release_suite::run_suite(options));
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert!(
+        seen.lock().expect("invocations").is_empty(),
+        "the suite's cargo invocation ran while the lane was full"
+    );
+    drop(held);
+
+    let report = running.await.expect("the suite task").expect("a report");
+    assert_eq!(report.code, 0, "{report:?}");
+    let invocations = seen.lock().expect("invocations").clone();
+    assert_eq!(invocations.len(), 1, "{invocations:?}");
+    let invocation = &invocations[0];
+    assert_eq!(invocation.program, "cargo");
+    assert_eq!(
+        invocation.args,
+        vec![
+            "test".to_string(),
+            "--workspace".to_string(),
+            "--no-fail-fast".to_string()
+        ]
+    );
+    assert_eq!(
+        invocation
+            .env
+            .get("DEVBOARD_BUILD_SLOT")
+            .map(String::as_str),
+        Some("0")
+    );
+    let jobs = devboard::build_lane::jobs(devboard::build_lane::cpu_count(), 1).to_string();
+    assert_eq!(
+        invocation.env.get("CARGO_BUILD_JOBS").map(String::as_str),
+        Some(jobs.as_str())
+    );
+}

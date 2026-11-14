@@ -328,10 +328,18 @@ suite under `.devboard/e2e/`, run by hand with
 not a CI gate, and it is the only place a browser test belongs. Add no `verify-*` script and wire
 no browser step into a workflow.
 
-- The Rust checks have exact entry points through `verification_run`:
-  `{"check": "rust:fmt"}` runs `cargo fmt --check --all`, `{"check": "rust:clippy"}` runs
-  `cargo clippy --workspace --all-targets -- -D warnings`, and `{"check": "rust:test"}` runs the
-  workspace runner `bun run test`, all from the resolved `harnessDirectory`.
+- The Rust checks have exact entry points through `verification_run`, all from the resolved
+  `harnessDirectory`: `{"check": "rust:fmt"}` runs `cargo fmt --check --all` and
+  `{"check": "rust:clippy"}` runs `cargo clippy --workspace --all-targets -- -D warnings`.
+- The local Rust test gate is focused: `{"check": "rust:test", "packages": ["devboard"]}` runs
+  `cargo test -p devboard`, and adding `"tests": ["http_surface"]` runs
+  `cargo test -p devboard --test http_surface`. Name the packages and test targets the change can
+  break, at most 16 of each. `tests` requires `packages`; an empty list, a non-string entry, and a
+  name that could read as a cargo flag are refused.
+- The full workspace suite is not every change's local gate: the Gitea CI Test step runs it on
+  every push and the Release Train runs it before any tag, so iterating never needs it. A
+  `{"check": "rust:test"}` with neither argument still runs the full runner when one check must
+  reproduce a suite failure.
 - The client checks keep their existing entry points: `{"check": "build"}` runs the client build,
   `{"check": "check"}` runs its typecheck, `{"check": "typecheck"}` is the raw typecheck, and
   `{"check": "test"}` runs the client unit suite (optionally with `paths`).
@@ -343,8 +351,9 @@ no browser step into a workflow.
 - `truncated: true` means the 16 KiB bound cut the returned `output`; the `log` file still holds
   the complete output, and `exitCode` is still the verdict. A result ending
   `[timed out after 900000 ms]` is a failed verification.
-- Run the gates the change can break: `rust:fmt` and `rust:clippy` for Rust edits, `rust:test` for
-  behavior changes, and `build`, `check`, and `test` for client edits. A client edit lands with
+- Run the gates the change can break: `rust:fmt` and `rust:clippy` for Rust edits, a `rust:test`
+  naming the `packages` the change can break (with `tests` when one test target is the subject)
+  for behavior changes, and `build`, `check`, and `test` for client edits. A client edit lands with
   the `crates/devboard/assets` copy `bun run build` refreshes, so commit that rewritten tree with
   the change. When one fails, quote its first error line and the failing command in the session
   transcript; a bare exit code or an empty `(no output)` is never a report.

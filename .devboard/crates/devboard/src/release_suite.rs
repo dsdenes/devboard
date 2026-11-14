@@ -51,6 +51,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::build_lane::BuildLane;
 use crate::forge::{
     self, CreateIssueInput, Environment, GiteaCallOptions, GiteaTarget, IssueQueryState, Transport,
 };
@@ -834,7 +835,8 @@ impl SuiteAttempts for CommandAttempts<'_> {
         for key in ["TMPDIR", "TMP", "TEMP"] {
             environment.insert(key.to_string(), temp_value.clone());
         }
-        let invocation = CommandInvocation {
+        let lane = BuildLane::for_checkout(self.dir, self.environment);
+        let mut invocation = CommandInvocation {
             program: "cargo".to_string(),
             args,
             cwd: self.dir.to_path_buf(),
@@ -843,7 +845,14 @@ impl SuiteAttempts for CommandAttempts<'_> {
         };
         let runner = self.runner;
         Box::pin(async move {
+            // One attempt is a full workspace build, so it takes the same lane
+            // slot every harness build takes. The slot is held for the whole
+            // cargo invocation and released before the attempt is classified;
+            // waiting for it is not part of the attempt's own timeout.
+            let lease = lane.acquire_async().await;
+            lane.export(&lease, &mut invocation.env);
             let outcome = runner.run(invocation).await;
+            drop(lease);
             classify_attempt(index, outcome.code, &outcome.stdout, &outcome.stderr)
         })
     }
@@ -1591,6 +1600,17 @@ Caused by:
         assert!(record.failures.is_empty());
     }
 
+    /// A scratch workspace inside the harness for one unit test.
+    fn scratch_workspace(label: &str) -> PathBuf {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("release-suite-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::fs::create_dir_all(&workspace).expect("a scratch workspace");
+        workspace
+    }
+
     struct StubRunner {
         outcome: CommandOutcome,
     }
@@ -1706,7 +1726,8 @@ error: failed to write work product index to `target/debug/incremental/issues_mo
 
 error: could not compile `fixture` (test \"issues_mode\") due to 1 previous error
 ";
-        let mut options = ReleaseSuiteOptions::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace = scratch_workspace("full-disk");
+        let mut options = ReleaseSuiteOptions::new(workspace.clone());
         options.runner = Some(Arc::new(StubRunner {
             outcome: CommandOutcome {
                 code: 101,
@@ -1743,6 +1764,7 @@ error: could not compile `fixture` (test \"issues_mode\") due to 1 previous erro
                 .any(|line| line.contains("the host filesystem is full")),
             "{lines:?}"
         );
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     #[tokio::test]
@@ -1757,7 +1779,8 @@ Caused by:
 Caused by:
   Permission denied (os error 13)
 ";
-        let mut options = ReleaseSuiteOptions::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace = scratch_workspace("unexecuted");
+        let mut options = ReleaseSuiteOptions::new(workspace.clone());
         options.runner = Some(Arc::new(StubRunner {
             outcome: CommandOutcome {
                 code: 101,
@@ -1793,6 +1816,7 @@ Caused by:
                 == "release suite: structural failure after 2 attempt(s); nothing was filed"),
             "{lines:?}"
         );
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     struct FakeAttempts {

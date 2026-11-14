@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::agent_sessions::{self, ListSessionsOptions};
+use crate::build_lane::BuildLane;
 use crate::forge::{
     CloseReason, CommentTarget, CreateForgeIssueInput, ForgeIssueDocument, ForgeIssuesClient,
     ForgeIssuesOptions, IssueQueryState,
@@ -41,6 +42,8 @@ const ISSUE_TITLE_MAX_BYTES: usize = 255;
 pub const VERIFICATION_TIMEOUT_MS: u64 = 900_000;
 pub const VERIFICATION_OUTPUT_MAX_BYTES: usize = 16 * 1024;
 pub const VERIFICATION_PATH_MAX: usize = 50;
+/// The most `packages` or `tests` names one focused Rust check can carry.
+pub const VERIFICATION_TARGET_MAX: usize = 16;
 
 pub const JOURNAL_SEARCH_MAX_RECORDS: usize = 200;
 pub const JOURNAL_SEARCH_MAX_BYTES: usize = 64 * 1024;
@@ -3561,6 +3564,45 @@ fn test_paths(context: &McpContext, value: Option<&Value>) -> Result<Vec<String>
     Ok(paths)
 }
 
+/// One `packages` or `tests` argument of a focused Rust check.
+///
+/// A name is a cargo package or test target name, so a leading `-` is refused
+/// rather than forwarded as a cargo flag.
+fn verification_targets(
+    args: &Map<String, Value>,
+    key: &str,
+    noun: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let Some(entries) = value.as_array() else {
+        return Err(format!("{key} must be an array of {noun}s."));
+    };
+    if entries.is_empty() {
+        return Err(format!("{key} must name at least one {noun}."));
+    }
+    if entries.len() > VERIFICATION_TARGET_MAX {
+        return Err(format!(
+            "At most {VERIFICATION_TARGET_MAX} {key} entries are accepted."
+        ));
+    }
+    let mut names = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(name) = entry.as_str() else {
+            return Err(format!("Each entry in {key} must be a string."));
+        };
+        let name = name.trim();
+        if name.is_empty() || name.starts_with('-') || name.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "A {noun} must not start with '-', contain whitespace, or be empty."
+            ));
+        }
+        names.push(name.to_string());
+    }
+    Ok(Some(names))
+}
+
 fn captured_output(
     stdout: &[u8],
     stderr: &[u8],
@@ -3628,7 +3670,37 @@ async fn run_verification_with(
             "-D".into(),
             "warnings".into(),
         ]),
-        "rust:test" => Some(vec!["bun".into(), "run".into(), "test".into()]),
+        "rust:test" => {
+            // The local Rust gate is focused: the packages and test targets the
+            // change can break. The full workspace suite belongs to CI on every
+            // push and to the Release Train before a tag, so it is spawned only
+            // when neither argument is given.
+            match verification_targets(args, "packages", "package name")? {
+                None => {
+                    if args.contains_key("tests") {
+                        return Err(
+                            "tests requires packages: name the packages whose test targets run."
+                                .to_string(),
+                        );
+                    }
+                    Some(vec!["bun".into(), "run".into(), "test".into()])
+                }
+                Some(packages) => {
+                    let tests =
+                        verification_targets(args, "tests", "test name")?.unwrap_or_default();
+                    let mut argv = vec!["cargo".to_string(), "test".to_string()];
+                    for package in packages {
+                        argv.push("-p".to_string());
+                        argv.push(package);
+                    }
+                    for test in tests {
+                        argv.push("--test".to_string());
+                        argv.push(test);
+                    }
+                    Some(argv)
+                }
+            }
+        }
         _ => None,
     };
     let argv: Vec<String> = if let Some(argv) = rust_argv {
@@ -3682,6 +3754,16 @@ async fn run_verification_with(
     if !cwd.exists() {
         return Err(format!("{} does not exist.", cwd.to_string_lossy()));
     }
+    // Every cargo build the harness starts takes one slot of the shared build
+    // lane. The slot is taken before the check's own clock starts, so waiting
+    // for a busy lane never reads as a timeout and never fails the check.
+    let build = if matches!(check, "rust:clippy" | "rust:test") {
+        let lane = BuildLane::for_state(&context.state_dir, &context.environment);
+        let lease = lane.acquire_async().await;
+        Some((lane, lease))
+    } else {
+        None
+    };
     let stable_path = verification_log_path(context, check);
     let log_path = verification_run_log_path(context, check);
     if let Some(parent) = log_path.parent() {
@@ -3693,14 +3775,18 @@ async fn run_verification_with(
     let log = std::sync::Arc::new(tokio::sync::Mutex::new(log_file));
     let log_relative = relative_to(&resolve_path(&context.repo_dir), &resolve_path(&log_path));
 
+    let mut child_environment = context.environment.clone();
+    if let Some((lane, lease)) = &build {
+        lane.export(lease, &mut child_environment);
+    }
     let mut command = tokio::process::Command::new(&argv[0]);
     command.args(&argv[1..]);
     command.current_dir(&cwd);
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
-    command.envs(context.environment.iter());
-    if !context.environment.contains_key("CI") {
+    command.envs(child_environment.iter());
+    if !child_environment.contains_key("CI") {
         command.env("CI", "1");
     }
     command.env("NO_COLOR", "1");

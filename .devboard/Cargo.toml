@@ -38,6 +38,15 @@ time = { version = "0.3", features = ["formatting", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 
+# The test profile carries no debug info and keeps no incremental cache. A
+# test binary with full debug info weighs a quarter gigabyte, and the
+# incremental tree a worktree leaves behind reaches several gigabytes; both are
+# write amplification on a host that runs several builds, and neither changes a
+# test's verdict. `[profile.release]` and `[profile.dist]` stay as they are.
+[profile.test]
+debug = 0
+incremental = false
+
 [profile.release]
 lto = "thin"
 strip = true

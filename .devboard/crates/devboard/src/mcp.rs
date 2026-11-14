@@ -500,11 +500,23 @@ fn catalog() -> Vec<Value> {
         tool(
             "verification_run",
             "Run a verification check",
-            "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. `rust:fmt` and `rust:clippy` run their exact cargo argv from the harness directory, `rust:test` runs the workspace runner (`bun run test`), and `test` runs the client entry point (`bun run test:client`); both suites declare a concurrency derived from the host's available cores. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
+            "Runs one allowlisted check from `.devboard/package.json` with a 900-second timeout and at most 16 KiB of captured output. `rust:fmt` and `rust:clippy` run their exact cargo argv from the harness directory, `test` runs the client entry point (`bun run test:client`), and `rust:test` runs `cargo test -p` over the `packages` it names, narrowed by `tests`; with neither argument it runs the workspace runner (`bun run test`). `tests` requires `packages`, and each argument names at most 16 cargo packages or test targets. Both suites declare a concurrency derived from the host's available cores. The check's complete output is written to a log unique to that invocation and that path is returned as `log`; when the run settles the same output is published to `<stateDir>/<check>.log`.",
             object_schema(
                 json!({
                     "check": string_schema(),
                     "paths": json!({"type": "array", "items": string_schema(), "maxItems": 50}),
+                    "packages": json!({
+                        "type": "array",
+                        "items": string_schema(),
+                        "minItems": 1,
+                        "maxItems": 16,
+                    }),
+                    "tests": json!({
+                        "type": "array",
+                        "items": string_schema(),
+                        "minItems": 1,
+                        "maxItems": 16,
+                    }),
                 }),
                 &["check"],
             ),

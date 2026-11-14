@@ -14,6 +14,7 @@ pub mod app;
 pub mod ask_mode;
 pub mod assets;
 pub mod bench;
+pub mod build_lane;
 pub mod cli_install;
 pub mod command;
 pub mod commit_gate;

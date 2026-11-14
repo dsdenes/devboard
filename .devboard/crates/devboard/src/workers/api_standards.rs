@@ -1215,10 +1215,39 @@ fn line_count(text: &str) -> usize {
     }
 }
 
+/// The dispatcher's match over the request path. The path is read once from
+/// `uri.path()`, decoded, and matched on the decoded value; the two forms are
+/// the same dispatcher.
+fn dispatches_request_path(line: &str) -> bool {
+    line.contains("match uri.path()") || line.contains("match pathname.as_str()")
+}
+
+/// Whether a line begins a function declaration.
+fn is_function_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with('*') {
+        return false;
+    }
+    trimmed.starts_with("fn ") || trimmed.starts_with("async fn ") || trimmed.contains(" fn ")
+}
+
+/// The span of the function that reads `uri.path()`. Only that function
+/// dispatches the request path; a helper that takes a path parameter declares
+/// no route, so its lines are left out.
+fn request_path_function(lines: &[&str]) -> Option<(usize, usize)> {
+    let read = lines.iter().position(|line| line.contains("uri.path()"))?;
+    let start = lines[..=read]
+        .iter()
+        .rposition(|line| is_function_declaration(line))?;
+    Some((start, block_end(lines, start)))
+}
+
 /// A Rust file belongs to the dashboard's HTTP surface when it names axum's
 /// request types or dispatches on the request path.
 fn is_api_source(text: &str) -> bool {
-    text.contains("axum::") || text.contains("HeaderMap") || text.contains("match uri.path()")
+    text.contains("axum::")
+        || text.contains("HeaderMap")
+        || text.lines().any(dispatches_request_path)
 }
 
 /// The audit walks the crate's Rust modules; `is_api_source` selects the
@@ -1358,7 +1387,7 @@ fn brace_delta(line: &str) -> (i32, i32) {
     (opens, closes)
 }
 
-/// One `match uri.path()` block: the last line it covers and its arms.
+/// One dispatcher block: the last line it covers and its arms.
 fn dispatch_block(lines: &[&str], start: usize) -> Option<(usize, Vec<(usize, String)>)> {
     static ARM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r#"^\s*"([^"]+)"\s*=>"#).expect("an arm pattern")
@@ -1390,7 +1419,7 @@ fn dispatch_block(lines: &[&str], start: usize) -> Option<(usize, Vec<(usize, St
 fn dispatcher_arms(lines: &[&str]) -> Vec<(usize, String, usize)> {
     let mut routes = Vec::new();
     for (start, line) in lines.iter().enumerate() {
-        if !line.contains("match uri.path()") {
+        if !dispatches_request_path(line) {
             continue;
         }
         let Some((end, arms)) = dispatch_block(lines, start) else {
@@ -1437,14 +1466,15 @@ fn captured(pattern: &regex::Regex, line: &str) -> Option<String> {
 /// with its line, its path, and the line its own block ends on.
 fn guard_routes(lines: &[&str]) -> Vec<(usize, String, usize)> {
     static STRIP_PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"uri\.path\(\)\.strip_prefix\("([^"]+)"\)"#)
+        regex::Regex::new(r#"(?:uri\.path\(\)|(?:^|[^.\w])pathname)\.strip_prefix\("([^"]+)"\)"#)
             .expect("a prefix-route pattern")
     });
     static EQUALS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"uri\.path\(\)\s*==\s*"([^"]+)""#).expect("an equality-route pattern")
+        regex::Regex::new(r#"(?:uri\.path\(\)|(?:^|[^.\w])pathname)\s*==\s*"([^"]+)""#)
+            .expect("an equality-route pattern")
     });
     static STARTS_WITH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"uri\.path\(\)\.starts_with\("([^"]+)"\)"#)
+        regex::Regex::new(r#"(?:uri\.path\(\)|(?:^|[^.\w])pathname)\.starts_with\("([^"]+)"\)"#)
             .expect("a subtree-route pattern")
     });
     let mut routes = Vec::new();
@@ -1581,9 +1611,10 @@ fn merged_routes(mut routes: Vec<RouteEntry>) -> Vec<RouteEntry> {
     merged
 }
 
-/// Every route form the server declares: a `route!` operation, a
-/// `match uri.path()` arm, or a `uri.path()` guard. One entry per path names
-/// the methods it answers, whether it upgrades, and where it is declared.
+/// Every route form the server declares: a `route!` operation, an arm of the
+/// dispatcher's match over the decoded path, or a guard on that path. One
+/// entry per path names the methods it answers, whether it upgrades, and where
+/// it is declared.
 pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
     let handlers = handler_index(sources);
     let mut routes = Vec::new();
@@ -1593,18 +1624,25 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
             serves_files = true;
         }
         let lines: Vec<&str> = source.text.split('\n').collect();
-        let mut found = dispatcher_arms(&lines);
-        found.extend(guard_routes(&lines));
+        let (dispatch, offset) = match request_path_function(&lines) {
+            Some((first, last)) => (
+                &lines[first..=last.min(lines.len().saturating_sub(1))],
+                first,
+            ),
+            None => (&lines[..], 0),
+        };
+        let mut found = dispatcher_arms(dispatch);
+        found.extend(guard_routes(dispatch));
         found.sort_by_key(|(start, _, _)| *start);
         for (start, path, end) in found {
-            let span = lines[start..=end.min(lines.len().saturating_sub(1))].join("\n");
+            let span = dispatch[start..=end.min(dispatch.len().saturating_sub(1))].join("\n");
             let (methods, upgrade) = route_reading(&span, sources, &handlers);
             routes.push(RouteEntry {
                 path,
                 methods,
                 kind: if upgrade { "upgrade" } else { "endpoint" }.to_string(),
                 source: source.path.clone(),
-                line: start + 1,
+                line: offset + start + 1,
             });
         }
         for (line, path, method) in declared_operations(&source.text) {
