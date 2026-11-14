@@ -22,8 +22,6 @@ pub mod startup;
 pub mod watchdog;
 pub mod worktrees;
 
-use std::path::Path;
-
 /// One worker invocation's resolved inputs.
 #[derive(Debug, Clone)]
 pub struct WorkerInvocation {
@@ -180,9 +178,4 @@ pub fn state_path(invocation: &WorkerInvocation, name: &str) -> std::path::PathB
 /// A path inside the repository, for family workers.
 pub fn repo_path(invocation: &WorkerInvocation, name: &str) -> std::path::PathBuf {
     invocation.repo_dir.join(name)
-}
-
-#[allow(dead_code)]
-fn _is_dir(path: &Path) -> bool {
-    path.is_dir()
 }
