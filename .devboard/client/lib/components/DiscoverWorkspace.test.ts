@@ -41,11 +41,14 @@ function payload(
     activeAgent?: string | null;
     runningAll?: boolean;
     glossaries?: Glossary[];
+    cloning?: { url: string } | null;
+    starting?: boolean;
   } = {},
 ): DiscoverStatePayload {
   const activeAgent = options.activeAgent ?? null;
   return {
     active: activeAgent !== null,
+    starting: options.starting ?? false,
     runId: null,
     startedAt: activeAgent === null ? null : "2026-11-02T15:20:23.238Z",
     activeAgent,
@@ -61,7 +64,7 @@ function payload(
     retained: [],
     repository: null,
     target: { kind: "host" },
-    cloning: null,
+    cloning: options.cloning ?? null,
     manifest: null,
     freshness: null,
     sheet: null,
@@ -107,6 +110,17 @@ async function show(
   discover.handleEvent({ type: "discoverState", state });
   render(DiscoverWorkspace, { props: { tab } });
   await tick();
+}
+
+/** Renders with an open socket, so a refusal title names the server state, not the link. */
+async function withOpenConnection(run: () => Promise<void>): Promise<void> {
+  const previous = connection.state;
+  connection.state = "open";
+  try {
+    await run();
+  } finally {
+    connection.state = previous;
+  }
 }
 
 function bar(): Element {
@@ -351,9 +365,60 @@ test("an agent card keeps its own start control", async () => {
   expect(controlCommand()).toBe("discover.agent.start.sheet");
 });
 
+test("a running clone disables the Overview start control", async () => {
+  await withOpenConnection(async () => {
+    await show(
+      { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+      payload({ cloning: { url: "https://github.com/acme/repo" } }),
+    );
+    const start = document.querySelector('[data-testid="discover-start"]');
+    expect(start?.hasAttribute("disabled")).toBe(true);
+    expect(start?.getAttribute("title")).toBe("A repository clone is running");
+  });
+});
+
+test("the clone-to-first-run handoff disables the Overview start control", async () => {
+  await withOpenConnection(async () => {
+    await show(
+      { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
+      payload({ starting: true }),
+    );
+    const start = document.querySelector('[data-testid="discover-start"]');
+    expect(start?.hasAttribute("disabled")).toBe(true);
+    expect(start?.getAttribute("title")).toBe("A Discover run is active");
+  });
+});
+
+test("a running clone disables an agent's Start control", async () => {
+  await withOpenConnection(async () => {
+    await show(
+      { id: "sheet", kind: "agent", resourceId: "sheet", title: "Data Sheet" },
+      payload({ cloning: { url: "https://github.com/acme/repo" } }),
+    );
+    const start = document.querySelector('[data-testid="discover-agent-start"]');
+    expect(start?.hasAttribute("disabled")).toBe(true);
+    expect(start?.getAttribute("title")).toBe("A repository clone is running");
+  });
+});
+
+test("the clone-to-first-run handoff disables an agent's Start control", async () => {
+  await withOpenConnection(async () => {
+    await show(
+      { id: "sheet", kind: "agent", resourceId: "sheet", title: "Data Sheet" },
+      payload({ starting: true }),
+    );
+    const start = document.querySelector('[data-testid="discover-agent-start"]');
+    expect(start?.hasAttribute("disabled")).toBe(true);
+    expect(start?.getAttribute("title")).toBe("A Discover run is active");
+  });
+});
+
 test("a start latch armed on one agent never follows the operator to another agent", async () => {
   const previous = connection.state;
+  const send = connection.send;
   connection.state = "open";
+  // The latch's subject is the test's; the transport's own success is not.
+  connection.send = () => true;
   try {
     discover.handleEvent({ type: "discoverState", state: payload() });
     const view = render(DiscoverWorkspace, {
@@ -388,6 +453,7 @@ test("a start latch armed on one agent never follows the operator to another age
     expect(next?.textContent?.trim()).toBe("Start");
     expect(next?.hasAttribute("disabled")).toBe(false);
   } finally {
+    connection.send = send;
     connection.state = previous;
   }
 });

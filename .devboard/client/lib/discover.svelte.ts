@@ -144,12 +144,23 @@ export class DiscoverStore {
     return this.remoteChangeTitle !== undefined;
   }
 
-  get remoteChangeTitle(): string | undefined {
+  /**
+   * The one start refusal: every reason a start or a remote change is refused,
+   * in the order the strip reads them. A control with agent-specific wording
+   * passes it as `runningTitle`; `starting` names no agent and keeps the
+   * shared phrase.
+   */
+  startRefusal(runningTitle = "A Discover run is active"): string | undefined {
     if (!this.socket.open) return "Not connected";
     if (this.cloning !== null) return "A repository clone is running";
     if (this.runningAll) return "Run all is running";
-    if (this.active || this.starting) return "A Discover run is active";
+    if (this.active) return runningTitle;
+    if (this.starting) return "A Discover run is active";
     return this.busy ?? undefined;
+  }
+
+  get remoteChangeTitle(): string | undefined {
+    return this.startRefusal();
   }
 
   get cloning(): { url: string } | null {
@@ -203,13 +214,11 @@ export class DiscoverStore {
 
   /** The first reason this card cannot start, or undefined when it can. */
   agentStartTitle(id: string): string | undefined {
-    if (!this.socket.open) return "Not connected";
-    if (this.runningAll) return "Run all is running";
-    if (this.active) {
-      if (this.activeAgent === id) return `${this.agent(id)?.label ?? id} is running`;
-      return `${this.agent(this.activeAgent ?? "")?.label ?? "Another discovery agent"} is running`;
-    }
-    return this.busy ?? undefined;
+    const runningTitle =
+      this.activeAgent === id
+        ? `${this.agent(id)?.label ?? id} is running`
+        : `${this.agent(this.activeAgent ?? "")?.label ?? "Another discovery agent"} is running`;
+    return this.startRefusal(runningTitle);
   }
 
   agentStartDisabled(id: string): boolean {
@@ -336,12 +345,9 @@ export class DiscoverStore {
 
   /** The Overview run control's disabled reason; a single run disables it too. */
   get startTitle(): string | undefined {
-    if (!this.socket.open) return "Not connected";
-    if (this.runningAll) return "Run all is running";
-    if (this.active) {
-      return `${this.agent(this.activeAgent ?? "")?.label ?? "A discovery agent"} is running`;
-    }
-    return this.busy ?? undefined;
+    return this.startRefusal(
+      `${this.agent(this.activeAgent ?? "")?.label ?? "A discovery agent"} is running`,
+    );
   }
 
   get startDisabled(): boolean {
@@ -363,15 +369,15 @@ export class DiscoverStore {
   }
 
   /** Runs the six agents in their fixed order from the Overview page. */
-  start(): void {
-    if (this.startDisabled) return;
-    this.socket.send({ type: "discoverProject" });
+  start(): boolean {
+    if (this.startRefusal() !== undefined) return false;
+    return this.socket.send({ type: "discoverProject" });
   }
 
   /** Starts exactly one agent; another live run refuses it at the server too. */
-  startAgent(id: string): void {
-    if (this.agentStartTitle(id) !== undefined) return;
-    this.socket.send({ type: "discoverAgent", agent: id });
+  startAgent(id: string): boolean {
+    if (this.startRefusal() !== undefined) return false;
+    return this.socket.send({ type: "discoverAgent", agent: id });
   }
 
   /**

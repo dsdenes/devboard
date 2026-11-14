@@ -137,3 +137,71 @@ describe("discover remote start", () => {
     expect(discover.errorRevision).toBe(before + 2);
   });
 });
+
+describe("discover start controls", () => {
+  test("an idle state leaves both start controls enabled", () => {
+    const discover = store({ active: false, starting: false, cloning: null, busy: null });
+
+    expect(discover.startDisabled).toBe(false);
+    expect(discover.startTitle).toBeUndefined();
+    expect(discover.agentStartDisabled("sheet")).toBe(false);
+    expect(discover.agentStartTitle("sheet")).toBeUndefined();
+  });
+
+  test("a running clone refuses both starts without dispatching", () => {
+    const socket = new RecordingSocket();
+    const discover = new DiscoverStore(socket as unknown as ConnectionStore);
+    discover.handleEvent({
+      type: "discoverState",
+      state: payload({ active: false, cloning: { url: "https://github.com/acme/repo" } }),
+    });
+
+    expect(discover.startDisabled).toBe(true);
+    expect(discover.startTitle).toBe("A repository clone is running");
+    expect(discover.agentStartDisabled("sheet")).toBe(true);
+    expect(discover.agentStartTitle("sheet")).toBe("A repository clone is running");
+    expect(discover.start()).toBe(false);
+    expect(discover.startAgent("sheet")).toBe(false);
+    expect(socket.sent).toEqual([]);
+  });
+
+  test("the clone-to-first-run handoff refuses both starts too", () => {
+    const socket = new RecordingSocket();
+    const discover = new DiscoverStore(socket as unknown as ConnectionStore);
+    discover.handleEvent({
+      type: "discoverState",
+      state: payload({ active: false, starting: true }),
+    });
+
+    expect(discover.startDisabled).toBe(true);
+    expect(discover.startTitle).toBe("A Discover run is active");
+    expect(discover.agentStartDisabled("sheet")).toBe(true);
+    expect(discover.agentStartTitle("sheet")).toBe("A Discover run is active");
+    expect(discover.start()).toBe(false);
+    expect(discover.startAgent("sheet")).toBe(false);
+    expect(socket.sent).toEqual([]);
+  });
+
+  test("an active run keeps its agent-specific wording", () => {
+    const discover = store({
+      active: true,
+      activeAgent: "sheet",
+      agents: [
+        {
+          id: "sheet",
+          label: "Data Sheet",
+          command: "/discover-sheet",
+          state: "running",
+          startedAt: null,
+          endedAt: null,
+          error: null,
+          prompt: null,
+        },
+      ],
+    });
+
+    expect(discover.startTitle).toBe("Data Sheet is running");
+    expect(discover.agentStartTitle("sheet")).toBe("Data Sheet is running");
+    expect(discover.agentStartTitle("discover-glossary")).toBe("Data Sheet is running");
+  });
+});
