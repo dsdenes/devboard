@@ -115,7 +115,7 @@ pub async fn cpu(options: &CpuOptions) -> anyhow::Result<Value> {
         seed_runs(&repo, &state)?;
     }
 
-    let dashboard = Scratch::start(&repo, &state, &root.join("dashboard.log"))?;
+    let dashboard = Scratch::start(&repo, &state, &root)?;
     let base = format!("http://127.0.0.1:{}", dashboard.port);
     wait_ready(&base, Duration::from_secs(30)).await?;
     let workers = if scenario == "all-workers" {
@@ -373,9 +373,15 @@ struct Scratch {
 }
 
 impl Scratch {
-    fn start(repo: &Path, state: &Path, log: &Path) -> anyhow::Result<Self> {
+    fn start(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Self> {
         let binary = std::env::current_exe()?;
-        let output = std::fs::File::create(log)?;
+        // The fixture is its own release source. The empty directory answers a
+        // check as a release still being written, so no published artifact
+        // installs a newer binary and replaces the process this window samples.
+        let releases = root.join("releases");
+        std::fs::create_dir_all(&releases)?;
+        let log = root.join("dashboard.log");
+        let output = std::fs::File::create(&log)?;
         let child = Command::new(&binary)
             .arg("serve")
             .env_clear()
@@ -390,6 +396,7 @@ impl Scratch {
             .env("AGENT_COMMAND", "true")
             .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
             .env("DEVBOARD_SOURCE_REFRESH_INTERVAL_MS", "3600000")
+            .env("DEVBOARD_RELEASE_URL", &releases)
             .env("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1")
             // A caller that asked for a request log reads the scratch
             // dashboard's requests too; an empty value writes nothing.
@@ -401,11 +408,15 @@ impl Scratch {
             .stdout(Stdio::from(output.try_clone()?))
             .stderr(Stdio::from(output))
             .spawn()?;
-        let port = read_port(log, Duration::from_secs(30))?;
+        let port = read_port(&log, Duration::from_secs(30))?;
         Ok(Self { child, port })
     }
 
     fn sample(&self) -> anyhow::Result<ProcSample> {
+        let state = proc_state(self.child.id())?;
+        if matches!(state.as_deref(), None | Some("Z") | Some("X")) {
+            anyhow::bail!("the scratch dashboard exited before its measurement window");
+        }
         sample_proc(self.child.id())
     }
 }
@@ -425,6 +436,7 @@ struct WorkerProcess {
 
 impl WorkerProcess {
     fn sample(&self) -> anyhow::Result<ProcSample> {
+        self.require_live()?;
         sample_proc(self.child.id())
     }
 
