@@ -1564,6 +1564,7 @@ impl App {
             .run("goal-proposal", key.as_deref(), || async {
                 crate::goal_proposal::write_goal_proposal(&submission, &repo_dir, Some(&origin))
                     .await
+                    .map(crate::idempotency::Answer::Settled)
             })
             .await;
         match outcome {

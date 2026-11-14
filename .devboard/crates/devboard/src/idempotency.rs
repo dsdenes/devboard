@@ -1,6 +1,7 @@
 //! The replay cache that makes one keyed `POST` create one resource.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -48,6 +49,27 @@ fn entry_id(scope: &str, key: &str) -> String {
     format!("{scope}\u{0}{key}")
 }
 
+/// What one keyed operation answered, and whether it settles the key.
+///
+/// A refusal travels under the route's success status, so the dispatcher —
+/// never the status — decides whether the answer completed the operation.
+pub enum Answer {
+    /// The operation completed: the key keeps this answer, and every retry
+    /// replays it.
+    Settled(Value),
+    /// The operation refused the request: the answer travels back unchanged
+    /// and the key stays free, so a retry after the refusal condition clears
+    /// runs the operation again.
+    Refused(Value),
+}
+
+/// The value one keyed answer carries, whether or not it settled the key.
+fn into_value(answer: Answer) -> Value {
+    match answer {
+        Answer::Settled(value) | Answer::Refused(value) => value,
+    }
+}
+
 #[derive(Clone)]
 struct StoredEntry {
     scope: String,
@@ -85,6 +107,10 @@ impl IdempotencyStore {
     }
 
     /// Runs `operation` once per `(scope, key)`.
+    ///
+    /// An answer that completed the operation is kept under the key; one that
+    /// refused the request is answered and dropped, so the retry after the
+    /// refusal condition clears is dispatched again.
     pub async fn run<F, Fut>(
         &self,
         scope: &str,
@@ -93,10 +119,10 @@ impl IdempotencyStore {
     ) -> Result<Value, RequestError>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<Value, RequestError>>,
+        Fut: Future<Output = Result<Answer, RequestError>>,
     {
         let Some(key) = key else {
-            return operation().await;
+            return operation().await.map(into_value);
         };
         let id = entry_id(scope, key);
         if let Some(entry) = self
@@ -123,20 +149,25 @@ impl IdempotencyStore {
         {
             return Ok(entry.result);
         }
-        let result = operation().await?;
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(
-                id,
-                StoredEntry {
-                    scope: scope.to_string(),
-                    key: key.to_string(),
-                    result: result.clone(),
-                    created_at: Self::now_ms(),
-                },
-            );
-            prune(&mut entries);
+        let (result, settled) = match operation().await? {
+            Answer::Settled(value) => (value, true),
+            Answer::Refused(value) => (value, false),
+        };
+        if settled {
+            if let Ok(mut entries) = self.entries.lock() {
+                entries.insert(
+                    id,
+                    StoredEntry {
+                        scope: scope.to_string(),
+                        key: key.to_string(),
+                        result: result.clone(),
+                        created_at: Self::now_ms(),
+                    },
+                );
+                prune(&mut entries);
+            }
+            self.persist().await;
         }
-        self.persist().await;
         Ok(result)
     }
 
@@ -224,5 +255,108 @@ fn prune(entries: &mut HashMap<String, StoredEntry>) {
     ordered.sort_by(|left, right| right.1.cmp(&left.1));
     for (id, _) in ordered.into_iter().skip(MAX_ENTRIES) {
         entries.remove(&id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// A scratch state and repository pair under `.devboard/.test-tmp`.
+    fn scratch(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("the devboard harness directory exists")
+            .join(".test-tmp")
+            .join(format!("{label}-{}-{nanos}", std::process::id()));
+        let state = root.join("state");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&state).expect("a state directory");
+        std::fs::create_dir_all(&repo).expect("a repository");
+        (root, state, repo)
+    }
+
+    /// A refusal answers its value and leaves the key free, so the retry runs
+    /// the operation again; a settled answer is kept and replays unchanged,
+    /// across a reopen of the store.
+    #[tokio::test]
+    async fn a_refusal_does_not_settle_the_key() {
+        let (root, state, repo) = scratch("idempotency-refused");
+        let scope = "POST /inquiries/conversations";
+        let calls = Arc::new(AtomicU64::new(0));
+        let store = IdempotencyStore::open(&state, &repo);
+
+        let counted = Arc::clone(&calls);
+        let refused = store
+            .run(scope, Some("retry-1"), || async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(Answer::Refused(json!({"status": 201, "frames": ["busy"]})))
+            })
+            .await
+            .expect("a refused answer");
+        assert_eq!(refused, json!({"status": 201, "frames": ["busy"]}));
+
+        let counted = Arc::clone(&calls);
+        let settled = store
+            .run(scope, Some("retry-1"), || async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(Answer::Settled(
+                    json!({"status": 201, "frames": ["inquiry"]}),
+                ))
+            })
+            .await
+            .expect("a settled answer");
+        assert_eq!(
+            settled,
+            json!({"status": 201, "frames": ["inquiry"]}),
+            "the retry ran once the refusal cleared"
+        );
+
+        let counted = Arc::clone(&calls);
+        let replay = store
+            .run(scope, Some("retry-1"), || async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(Answer::Settled(json!({"status": 500})))
+            })
+            .await
+            .expect("a replayed answer");
+        assert_eq!(
+            replay,
+            json!({"status": 201, "frames": ["inquiry"]}),
+            "a settled answer replays instead of dispatching"
+        );
+
+        let settled_again = {
+            let counted = Arc::clone(&calls);
+            IdempotencyStore::open(&state, &repo)
+                .run(scope, Some("retry-1"), || async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Ok(Answer::Settled(json!({"status": 500})))
+                })
+                .await
+                .expect("a replayed answer after a reopen")
+        };
+        assert_eq!(
+            settled_again,
+            json!({"status": 201, "frames": ["inquiry"]}),
+            "the settled answer survives the store's reload"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the refusal and the settled answer each ran once"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

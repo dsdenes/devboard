@@ -69,8 +69,10 @@ Replace the command socket with a resource-oriented REST API at root paths.
   issues no request. Every resource GET supports `ETag`, `If-None-Match`/304, gzip negotiation,
   and `HEAD`.
 - Every 4xx and 5xx is `application/problem+json`. A creation answers `201` with `Location` and
-  honors `Idempotency-Key`. A collection that can exceed 200 entries accepts `cursor` and `limit`
-  and answers a page object with `self`, `next`, and `prev`.
+  honors `Idempotency-Key`. A keyed request keeps its answer only when that answer settled the
+  operation; a refusal answers its status and body without recording the key, so the identical
+  retry after the refusal condition clears is dispatched again. A collection that can exceed 200
+  entries accepts `cursor` and `limit` and answers a page object with `self`, `next`, and `prev`.
 - `POST /reports` replaces `POST /feedback` with the same submission fields, `201`, `Location`,
   idempotency, and `503` without `DEVBOARD_GITEA_URL`. `/feedback` answers 404.
 - One WebSocket remains: a live ACP run's own output endpoint at

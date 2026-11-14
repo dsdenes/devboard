@@ -147,6 +147,28 @@ async fn settled(
     }
 }
 
+/// The answer one keyed REST ask receives at its own route.
+async fn rest_ask(app: &App, key: &str, body: &Value) -> (u16, Value) {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/inquiries/conversations")
+        .header("content-type", "application/json")
+        .header("idempotency-key", key)
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("a keyed ask request");
+    let response = devboard::rest::handle(app, request)
+        .await
+        .expect("the ask route answers");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("the response body");
+    (
+        status,
+        serde_json::from_slice(&bytes).expect("a JSON envelope"),
+    )
+}
+
 /// The stub streams its answer in two chunks, trimming each; the client joins
 /// them verbatim, which loses the space the split consumed.
 fn streamed(answer: &str) -> String {
@@ -1002,6 +1024,110 @@ async fn ask_refuses_a_second_turn_while_one_runs() {
     settled(&app, &owner, &mut owner_inbox, "conversation-1").await;
     app.command(
         &owner,
+        Command::CloseAsk {
+            conversation_id: Some(json!("conversation-1")),
+        },
+    )
+    .await;
+}
+
+/// A keyed ask the dispatcher refused does not settle its `Idempotency-Key`:
+/// once the turn that refused it settles, the identical request is dispatched
+/// again instead of replaying the refusal for the store's retention window.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn a_keyed_ask_refused_while_busy_is_dispatched_again() {
+    let _env = env_guard();
+    let scratch = Scratch::new("keyed-refusal");
+    let log = scratch.path.join("agent.log");
+    save_subscriptions(
+        &scratch.state(),
+        &[StoredSubscription {
+            id: "subscription-1".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "Test".to_string(),
+            key: "test-key".to_string(),
+            enabled: true,
+            created_at: "2026-11-03T00:00:00.000Z".to_string(),
+            updated_at: "2026-11-03T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("the credentials file is written");
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = app_for(&scratch, stub_command(&log));
+    let (conn, mut inbox) = connection();
+
+    // A first ask holds the conversation's one turn.
+    app.command(
+        &conn,
+        Command::Ask {
+            conversation_id: Some(json!("conversation-1")),
+            question: Some(json!("What does the issues indicator show?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    let frames = drain(&mut inbox);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
+        "the first ask is admitted while its turn runs: {frames:?}"
+    );
+
+    // The keyed request the running turn refuses. Its key must stay free.
+    let question = "Which component renders it?";
+    let body = json!({
+        "conversationId": "conversation-1",
+        "question": question,
+        "context": context(),
+    });
+    let (status, refused) = rest_ask(&app, "retry-busy", &body).await;
+    assert_eq!(status, 201, "a refusal keeps its route status: {refused}");
+    assert_eq!(
+        refused["frames"],
+        json!([{
+            "type": "askError",
+            "conversationId": "conversation-1",
+            "message": "The agent is still answering the previous question.",
+        }])
+    );
+
+    settled(&app, &conn, &mut inbox, "conversation-1").await;
+
+    // The identical keyed ask, now that the refusal condition cleared.
+    let (status, admitted) = rest_ask(&app, "retry-busy", &body).await;
+    assert_eq!(status, 201);
+    let frames = admitted["frames"].as_array().expect("an answer's frames");
+    assert_eq!(
+        frames[0]["type"], "inquiry",
+        "the settled key is dispatched again, not replayed: {admitted}"
+    );
+    assert_eq!(frames[0]["busy"], json!(true));
+    assert!(
+        frames.iter().all(|frame| frame["type"] != "askError"),
+        "the refusal was not kept under the key: {admitted}"
+    );
+
+    let frames = settled(&app, &conn, &mut inbox, "conversation-1").await;
+    let inquiry = frames
+        .iter()
+        .rev()
+        .find(|frame| frame["type"] == "inquiry")
+        .expect("a settled inquiry");
+    assert!(
+        inquiry["transcript"]
+            .as_array()
+            .expect("a transcript")
+            .iter()
+            .any(|entry| entry["role"] == "developer" && entry["text"] == question),
+        "the admitted retry asked its question: {inquiry}"
+    );
+
+    app.command(
+        &conn,
         Command::CloseAsk {
             conversation_id: Some(json!("conversation-1")),
         },

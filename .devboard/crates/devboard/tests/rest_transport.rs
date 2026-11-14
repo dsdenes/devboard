@@ -1684,7 +1684,7 @@ async fn one_idempotency_key_starts_one_agent() {
     let counted = std::sync::Arc::clone(&spawns);
     devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
         counted.fetch_add(1, Ordering::SeqCst);
-        None
+        Some(std::process::id())
     });
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1719,16 +1719,24 @@ async fn one_idempotency_key_starts_one_agent() {
     let second = second.await.expect("the second request");
     assert_eq!(first.status().as_u16(), 201);
     assert_eq!(second.status().as_u16(), 201);
-    // This Start's stub spawn fails, so its answer names no addressable run.
+    // This Start's stub spawn succeeds, so its answer settles the key and
+    // names the run it created; the second request replays that answer.
+    let first_location = first
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let second_location = second
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    assert!(
+        first_location.is_some(),
+        "a settled creation names the run its answer reports"
+    );
     assert_eq!(
-        first
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok()),
-        second
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok()),
+        first_location, second_location,
         "a replay answers the same Location"
     );
     let first_body: Value = first.json().await.expect("a JSON body");

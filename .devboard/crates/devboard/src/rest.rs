@@ -1249,6 +1249,7 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
         .idempotency
         .run(&scope, idempotency_key.as_deref(), || async move {
             let frames = app.dispatch_captured(command).await;
+            let refused = frames_refuse(&frames);
             let mut response_body = envelope(frames);
             if matched.route.command == "listRecords" {
                 let mut records = response_body
@@ -1265,7 +1266,12 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
             if let Some(item) = created_location(matched.route, path, &response_body) {
                 extra.push(("Location", absolute(&url, &item)));
             }
-            Ok(stored_rest(matched.route.status, &response_body, &extra))
+            let answer = stored_rest(matched.route.status, &response_body, &extra);
+            Ok(if refused {
+                crate::idempotency::Answer::Refused(answer)
+            } else {
+                crate::idempotency::Answer::Settled(answer)
+            })
         })
         .await
     {
@@ -1285,6 +1291,34 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
         .map(|(name, value)| (name.as_str(), value.clone()))
         .collect();
     Some(representation(&method, &headers, status, body, &extra))
+}
+
+/// The frame types a mode answers when it refuses the operation a request
+/// asked for.
+///
+/// Every refusal travels under the route's success status, so the store learns
+/// it from the frame type, never from the status.
+const REFUSAL_FRAMES: &[&str] = &[
+    "error",
+    "agentPromptError",
+    "askError",
+    "discoverError",
+    "flowError",
+    "issuesDraftError",
+    "providerError",
+];
+
+/// Whether the dispatched frames refuse the request's operation.
+///
+/// A refused answer is the dispatcher's own verdict: the operation changed
+/// nothing, so it must not settle the request's `Idempotency-Key`.
+fn frames_refuse(frames: &[Value]) -> bool {
+    frames.iter().any(|frame| {
+        frame
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| REFUSAL_FRAMES.contains(&kind))
+    })
 }
 
 /// The answer one keyed request keeps in the idempotency store.
@@ -1365,6 +1399,30 @@ mod tests {
             assert!(!route.path.ends_with('/'));
             assert!(!route.path.contains("/ws"));
         }
+    }
+
+    #[test]
+    fn only_a_refusal_frame_type_refuses_the_operation() {
+        assert!(frames_refuse(&[json!({
+            "type": "askError",
+            "conversationId": "conversation-1",
+            "message": "The agent is still answering the previous question.",
+        })]));
+        assert!(
+            frames_refuse(&[
+                json!({"type": "agentState", "agent": {"id": "scout", "runId": null}}),
+                json!({"type": "error", "message": "The agent failed to start."}),
+            ]),
+            "a start that created no run was refused"
+        );
+        assert!(
+            !frames_refuse(&[
+                json!({"type": "issuesState", "startError": "An earlier start failed."}),
+                json!({"type": "agentState", "agent": {"id": "scout", "runId": "scout--1.2.3"}}),
+            ]),
+            "an error field in a state frame is not a refusal"
+        );
+        assert!(!frames_refuse(&[]));
     }
 
     #[test]
