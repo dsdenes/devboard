@@ -1355,17 +1355,26 @@ fn process_started_at(pid: u32) -> Option<i64> {
     process_age_ms(pid).map(|age| now_millis() - age as i64)
 }
 
-fn owner_alive(owner: &LockOwner) -> bool {
-    if !live_process(owner.pid) {
+/// True when a record's pid and its recorded process start time both name one
+/// live process. A bare pid is an existence check that pid recycling defeats,
+/// so a start time that disagrees with the live process names a different
+/// owner, and a record whose start time cannot be read proves no identity at
+/// all.
+fn identity_alive(pid: u32, started_at: &str) -> bool {
+    if !live_process(pid) {
         return false;
     }
-    let Some(recorded) = parse_iso_millis(&owner.started_at) else {
+    let Some(recorded) = parse_iso_millis(started_at) else {
         return false;
     };
-    match process_started_at(owner.pid) {
+    match process_started_at(pid) {
         Some(actual) => (actual - recorded).abs() as f64 <= START_TIME_TOLERANCE_MS,
         None => true,
     }
+}
+
+fn owner_alive(owner: &LockOwner) -> bool {
+    identity_alive(owner.pid, &owner.started_at)
 }
 
 pub fn live_lock_owner(path: &Path) -> Option<LockOwner> {
@@ -1471,6 +1480,9 @@ pub fn acquire_lock(path: &Path, details: &LockDetails) -> LockResult {
 #[serde(rename_all = "camelCase")]
 pub struct ScoutScanClaim {
     pub pid: u32,
+    /// The owner's own process start time, never the moment the claim was
+    /// written: the kernel recycles a pid, so only the pair proves which
+    /// process holds the scan slot.
     pub started_at: String,
     pub harness_version: Option<String>,
     pub scan_id: Option<String>,
@@ -1507,7 +1519,7 @@ pub fn read_scan_claim(repo_dir: &Path) -> Option<ScoutScanClaim> {
 
 pub fn live_scan_claim(repo_dir: &Path) -> Option<ScoutScanClaim> {
     let claim = read_scan_claim(repo_dir)?;
-    if live_process(claim.pid) {
+    if identity_alive(claim.pid, &claim.started_at) {
         return Some(claim);
     }
     clear_scan_claim(repo_dir, claim.pid);
@@ -1559,7 +1571,7 @@ pub fn claim_scan(repo_dir: &Path, harness_version: Option<&str>, scan_id: Optio
     }
     let claim = ScoutScanClaim {
         pid: std::process::id(),
-        started_at: iso_from_millis(now_millis()),
+        started_at: own_started_at(),
         harness_version: harness_version.map(str::to_string),
         scan_id: scan_id.map(str::to_string),
     };
@@ -1590,7 +1602,8 @@ pub fn claim_scan(repo_dir: &Path, harness_version: Option<&str>, scan_id: Optio
                     continue;
                 };
                 let parsed = std::str::from_utf8(&judged).ok().and_then(parse_claim);
-                if parsed.is_some_and(|existing| live_process(existing.pid)) {
+                if parsed.is_some_and(|existing| identity_alive(existing.pid, &existing.started_at))
+                {
                     return false;
                 }
                 let _ = clear_scan_claim_if_unchanged(repo_dir, &judged);
@@ -5650,6 +5663,75 @@ mod tests {
             leftovers.is_empty(),
             "staged claims survive the call: {leftovers:?}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A scratch repository under the harness's ignored test tree.
+    fn scratch_repository(name: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(".test-tmp")
+            .join(format!("scout-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch repository");
+        root
+    }
+
+    fn write_claim(repo_dir: &Path, claim: &ScoutScanClaim) {
+        let path = scan_claim_path(repo_dir);
+        std::fs::create_dir_all(path.parent().expect("the claim directory"))
+            .expect("the claim directory");
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(claim).expect("claim json")),
+        )
+        .expect("a written claim");
+    }
+
+    #[test]
+    fn a_claim_whose_pid_was_recycled_is_reclaimed() {
+        let root = scratch_repository("scan-claim-recycled");
+        let own = parse_iso_millis(&own_started_at()).expect("the owner's start time");
+        let stale = iso_from_millis(own - START_TIME_TOLERANCE_MS as i64 - 60_000);
+        write_claim(
+            &root,
+            &ScoutScanClaim {
+                pid: std::process::id(),
+                started_at: stale.clone(),
+                harness_version: Some("0.0.0".to_string()),
+                scan_id: None,
+            },
+        );
+
+        assert!(
+            claim_scan(&root, Some("1.0.0"), None),
+            "a pid whose recorded identity is another process does not hold the slot"
+        );
+        let rewritten = read_scan_claim(&root).expect("the rewritten claim");
+        assert_eq!(rewritten.pid, std::process::id());
+        assert_eq!(rewritten.harness_version.as_deref(), Some("1.0.0"));
+        assert_ne!(rewritten.started_at, stale, "the claim records its owner");
+        assert!(identity_alive(rewritten.pid, &rewritten.started_at));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_claim_naming_the_live_owner_holds_the_slot() {
+        let root = scratch_repository("scan-claim-live");
+        let claim = ScoutScanClaim {
+            pid: std::process::id(),
+            started_at: own_started_at(),
+            harness_version: Some("0.0.0".to_string()),
+            scan_id: None,
+        };
+        write_claim(&root, &claim);
+
+        assert_eq!(live_scan_claim(&root), Some(claim.clone()));
+        assert!(
+            !claim_scan(&root, Some("1.0.0"), None),
+            "one live owner holds the scan slot"
+        );
+        assert_eq!(read_scan_claim(&root), Some(claim));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
