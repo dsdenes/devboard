@@ -537,28 +537,43 @@ fn record_tool_invocation(state_dir: &Path, repo_dir: &Path, name: &str) -> Resu
     if name.is_empty() {
         return Ok(());
     }
-    use rusqlite::Connection;
+    use rusqlite::{Connection, TransactionBehavior};
     let path = crate::mcp::tool_invocation_file(state_dir, repo_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| ())?;
     }
-    let database = Connection::open(&path).map_err(|_| ())?;
+    let mut database = Connection::open(&path).map_err(|_| ())?;
     database
         .busy_timeout(Duration::from_millis(5_000))
         .map_err(|_| ())?;
+    // Counts are telemetry: the read side already reports a damaged table as no
+    // counts. Without an fsync per increment a peer's write lock is held for a
+    // page write instead of for the disk, because a commit that outlives every
+    // peer's busy wait is a dropped count rather than a slower one.
     database
+        .execute_batch("PRAGMA synchronous = OFF")
+        .map_err(|_| ())?;
+    // Take the write lock before reading the schema. An implicit transaction
+    // reads first and then upgrades its shared lock, and SQLite answers that
+    // deadlock with an immediate `database is locked` its busy handler is never
+    // given a chance to retry, so a contended increment would be dropped.
+    let transaction = database
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| ())?;
+    transaction
         .execute(
             "CREATE TABLE IF NOT EXISTS tool_invocations (name TEXT PRIMARY KEY NOT NULL, count INTEGER NOT NULL)",
             [],
         )
         .map_err(|_| ())?;
-    database
+    transaction
         .execute(
             "INSERT INTO tool_invocations (name, count) VALUES (?1, 1) \
              ON CONFLICT(name) DO UPDATE SET count = count + 1",
             [name],
         )
         .map_err(|_| ())?;
+    transaction.commit().map_err(|_| ())?;
     Ok(())
 }
 

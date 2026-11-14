@@ -269,6 +269,55 @@ async fn the_stdio_server_answers_initialize_list_and_the_core_tools() {
     assert_eq!(counts["verification_run"], 1);
 }
 
+/// Four peer loops write one counter at the same time: every `tools/call`
+/// lands, so the shared table totals exactly the calls they sent. One lost
+/// increment fails this test instead of silently under-reporting the count the
+/// MCP tools panel renders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_peers_lose_no_tool_invocation() {
+    const PEERS: usize = 4;
+    const CALLS_PER_PEER: usize = 10;
+    let context = fixture("counter-race");
+    let mut peers = Vec::new();
+    for peer in 0..PEERS {
+        let context = context.clone();
+        peers.push(tokio::spawn(async move {
+            let mut input = String::new();
+            for call in 0..CALLS_PER_PEER {
+                input.push_str(
+                    &serde_json::to_string(&json!({
+                        "jsonrpc": "2.0",
+                        "id": call + 1,
+                        "method": "tools/call",
+                        "params": {"name": "devboard_status", "arguments": {}}
+                    }))
+                    .expect("a request"),
+                );
+                input.push('\n');
+            }
+            let mut output: Vec<u8> = Vec::new();
+            let mut diagnostics: Vec<u8> = Vec::new();
+            run_stdio(context, input.as_bytes(), &mut output, &mut diagnostics)
+                .await
+                .expect("the stdio loop");
+            let answered = String::from_utf8_lossy(&output)
+                .lines()
+                .filter(|line| !line.is_empty())
+                .count();
+            assert_eq!(answered, CALLS_PER_PEER, "peer {peer} answered every call");
+        }));
+    }
+    for peer in peers {
+        peer.await.expect("a peer loop");
+    }
+    let counts = devboard::mcp::tool_invocation_counts(&context.state_dir, &context.repo_dir);
+    assert_eq!(
+        counts["devboard_status"],
+        PEERS * CALLS_PER_PEER,
+        "every concurrent tools/call increments the shared counter: {counts}"
+    );
+}
+
 #[tokio::test]
 async fn the_stdio_server_refuses_bad_frames_and_tool_calls() {
     let context = fixture("refusals");
