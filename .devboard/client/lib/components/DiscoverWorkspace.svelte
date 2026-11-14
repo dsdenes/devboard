@@ -37,6 +37,9 @@
     examples: "240px",
   };
 
+  /** The suite stop's tooltip, the same on the Overview and on an agent page. */
+  const SUITE_STOP_TITLE = "Stop the Run all sequence";
+
   const activeSkill = $derived(tab?.kind === "skill" ? tab.resourceId : null);
   const skillText = $derived(activeSkill === null ? "" : discover.skillText(activeSkill));
   const skillTab = $derived(
@@ -80,6 +83,19 @@
   const agentCard = $derived(ownerAgent === null ? null : discover.agent(ownerAgent));
   const agentRunActive = $derived(
     ownerAgent !== null && discover.active && discover.activeAgent === ownerAgent,
+  );
+  /**
+   * The stop control an agent page renders. A Run all suite is one run, so
+   * while it runs the control names the suite's stop even on the running
+   * agent's own page; only a single agent's run says it stops that agent.
+   * Both send the one `stopDiscover`, so neither names a command the server
+   * does not serve.
+   */
+  const agentStopTitle = $derived(
+    discover.runningAll ? SUITE_STOP_TITLE : "Stop this discovery agent",
+  );
+  const agentStopTestId = $derived(
+    discover.runningAll ? "discover-stop" : "discover-agent-stop",
   );
   const barLabel = $derived(
     ownerAgent === null ? "Discover" : (discover.agent(ownerAgent)?.label ?? "Discovery agent"),
@@ -423,9 +439,9 @@
               label="Stop"
               evidence={() => discover.active}
               command={() => discover.stop()}
-              data-testid="discover-agent-stop"
-              data-command={`discover.agent.stop.${ownerAgent}`}
-              title="Stop this discovery agent"
+              data-testid={agentStopTestId}
+              data-command="discover.stop"
+              title={agentStopTitle}
             >
               Stop
             </CommandButton>
@@ -458,7 +474,7 @@
               command={() => discover.stop()}
               data-command="discover.stop"
               data-testid="discover-stop"
-              title="Stop this Discover run"
+              title={SUITE_STOP_TITLE}
             >
               Stop
             </CommandButton>

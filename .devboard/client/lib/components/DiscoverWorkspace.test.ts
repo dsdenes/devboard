@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import type { DiscoverAgentState, DiscoverStatePayload, Glossary } from "../types";
+import { REST_OPERATIONS } from "../rest-map";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -148,6 +149,30 @@ function controlCommand(): string {
   return element?.getAttribute("data-command") ?? "none";
 }
 
+function controlTitle(): string {
+  const element = bar().querySelector('[data-testid="agent-activity-control"] [data-command]');
+  return element?.getAttribute("title") ?? "none";
+}
+
+/** Activates the bar's control and returns exactly what it dispatched. */
+async function activateControl(): Promise<unknown[]> {
+  const previous = connection.send;
+  const sent: unknown[] = [];
+  connection.send = ((command: unknown) => {
+    sent.push(command);
+    return true;
+  }) as typeof connection.send;
+  try {
+    const control = bar().querySelector('[data-testid="agent-activity-control"] [data-command]');
+    if (control === null) throw new Error("the page renders no control");
+    await fireEvent.click(control);
+    await tick();
+    return sent;
+  } finally {
+    connection.send = previous;
+  }
+}
+
 test("the Overview page owns the seven-agent Run all control", async () => {
   await show(
     { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" },
@@ -251,7 +276,32 @@ test("a skill page stops only its own running agent", async () => {
     }),
   );
   expect(controlTestId()).toBe("discover-agent-stop");
-  expect(controlCommand()).toBe("discover.agent.stop.discover-contribution");
+  expect(controlCommand()).toBe("discover.stop");
+  expect(controlTitle()).toBe("Stop this discovery agent");
+  const sent = await activateControl();
+  expect(sent).toEqual([{ type: "stopDiscover" }]);
+});
+
+test("a Run all suite stops the whole sequence from the running agent's page", async () => {
+  await show(
+    {
+      id: "discover-contribution",
+      kind: "agent",
+      resourceId: "discover-contribution",
+      title: "Contribution Agent",
+    },
+    payload({
+      states: { "discover-contribution": "running" },
+      activeAgent: "discover-contribution",
+      runningAll: true,
+    }),
+  );
+  expect(controlTestId()).toBe("discover-stop");
+  expect(controlCommand()).toBe("discover.stop");
+  expect(controlTitle()).toBe("Stop the Run all sequence");
+  const sent = await activateControl();
+  expect(sent).toEqual([{ type: "stopDiscover" }]);
+  expect(Object.keys(REST_OPERATIONS)).toContain("stopDiscover");
 });
 
 test("the Contribution page starts the Contribution Agent only", async () => {
@@ -283,7 +333,10 @@ test("the Contribution page stops only its own running agent", async () => {
     }),
   );
   expect(controlTestId()).toBe("discover-agent-stop");
-  expect(controlCommand()).toBe("discover.agent.stop.discover-contribution");
+  expect(controlCommand()).toBe("discover.stop");
+  expect(controlTitle()).toBe("Stop this discovery agent");
+  const sent = await activateControl();
+  expect(sent).toEqual([{ type: "stopDiscover" }]);
 });
 
 test("another agent's live run never marks the Contribution page", async () => {
