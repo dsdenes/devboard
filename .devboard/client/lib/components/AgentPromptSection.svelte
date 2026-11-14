@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import { agentRegistry } from "../../../lib/agent-registry.ts";
   import { agents } from "../agents.svelte";
@@ -21,9 +22,14 @@
 
   // The agents snapshot carries no prompt document, so the section asks for
   // its own: once on mount, and again whenever `agentId` changes. The document
-  // is static, so no poll repeats it.
+  // is static, so no poll repeats it. A closed section retires its claim, so
+  // the one-shot read never outlives the surface that asked for it. Both calls
+  // are untracked: each reads and writes the store's requested list, and
+  // letting this effect depend on it would make the claim its own trigger.
   $effect(() => {
-    agents.readPrompt(agentId);
+    const id = agentId;
+    untrack(() => agents.readPrompt(id));
+    return () => untrack(() => agents.forgetPrompt(id));
   });
 </script>
 

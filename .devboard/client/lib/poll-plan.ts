@@ -20,6 +20,7 @@ import { flow } from "./flow.svelte";
 import { goalDrafts } from "./goal-drafts.svelte";
 import { issues } from "./issues.svelte";
 import { layout } from "./layout.svelte";
+import type { WorkspaceTab } from "./layout.svelte";
 import { ONE_SHOT_READS, cadenceFor, type PollScope } from "./cadence";
 import { REST_OPERATIONS, resourcePath } from "./rest-map";
 
@@ -161,23 +162,39 @@ function agentLive(id: string): boolean {
  * A document is not a cadence: the project path is read on an open, a draft's
  * text when its page opens, a run's history when its tab opens, and an agent's
  * prompt when its section opens. Each is still a query, enabled while the
- * surface shows it and reading nothing after it closes.
+ * surface shows it and reading nothing after it closes. A claim is therefore
+ * gated on the surface, never on the store field that remembers its selection
+ * or its opened section: both outlive the surface that set them, and a claim
+ * derived from either re-reads a document nobody shows on every reconnect.
  */
 export function oneShotClaims(): PollClaim[] {
   const claims: PollClaim[] = [{ command: { type: "getProject" }, scope: "background" }];
-  if (goalDrafts.draftPath !== null) {
+  const issuesTab = layout.mode === "issues" ? layout.activeWorkspaceTab : null;
+  if (goalDrafts.draftPath !== null && issuesTab?.kind === "drafts") {
     claims.push({
       command: { type: "getGoalDraft", path: goalDrafts.draftPath },
       scope: "background",
     });
   }
-  if (issues.selectedRun !== null) {
+  if (issues.selectedRun !== null && runShown(issuesTab, issues.selectedRun)) {
     claims.push({ command: { type: "getIssuesRun", runId: issues.selectedRun }, scope: "body" });
   }
+  // Every mode workspace stays mounted, so a prompt section in a hidden mode
+  // is open but not on screen: only the agent page the Devboard body renders
+  // claims its document.
+  const agentPage = layout.mode === "devboard" ? layout.activeWorkspaceTab?.kind : undefined;
   for (const id of agents.requestedPrompts) {
+    if (id !== agentPage) continue;
     claims.push({ command: { type: "getAgentPrompt", id }, scope: "background" });
   }
   return claims;
+}
+
+/** True while the Issues body on screen shows this run's history. */
+function runShown(tab: WorkspaceTab | null, runId: string): boolean {
+  if (tab === null) return false;
+  if (tab.kind === "runs") return true;
+  return tab.kind === "agent" && tab.resourceId === runId;
 }
 
 /** One query the mounted surfaces need, with its effective cadence. */

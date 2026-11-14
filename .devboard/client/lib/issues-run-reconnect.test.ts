@@ -8,6 +8,7 @@ const { default: QueryHarness } = await import("./components/QueryHarness.svelte
 const { connection } = await import("./connection.svelte");
 const { applyFrames } = await import("./frames");
 const { issues } = await import("./issues.svelte");
+const { layout } = await import("./layout.svelte");
 const { queryClient } = await import("./query-client");
 
 async function settle(): Promise<void> {
@@ -96,6 +97,11 @@ connection.onMessage((message) => issues.handleEvent(message as Record<string, u
 
 async function openPage(): Promise<string[]> {
   const reads = installFetch();
+  // The runs surface is the one that shows a selected run's history: the plan
+  // claims that read only while this tab is on screen.
+  layout.reset();
+  layout.setMode("issues");
+  layout.openTab("issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" });
   render(QueryHarness);
   connection.connect();
   await settle();
@@ -114,6 +120,7 @@ afterEach(() => {
   cleanup();
   queryClient.clear();
   connection.dispose();
+  layout.reset();
   issues.selectedRun = null;
   issues.run = null;
   issues.runError = null;

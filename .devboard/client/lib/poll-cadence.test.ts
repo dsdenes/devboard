@@ -9,6 +9,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // document.
 const { cleanup, render } = await import("@testing-library/svelte");
 const { default: QueryHarness } = await import("./components/QueryHarness.svelte");
+const { default: AgentPromptSection } = await import("./components/AgentPromptSection.svelte");
 const { connection } = await import("./connection.svelte");
 const { queryClient } = await import("./query-client");
 const { installVisibilityCadence } = await import("./query-client");
@@ -589,4 +590,110 @@ test("cadence of a fresh Issues connect reads only what is on screen", async () 
     "/providers",
     "/version",
   ]);
+});
+
+const ISSUES_RUNS: WorkspaceTab = { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" };
+
+const ISSUES_DRAFTS: WorkspaceTab = {
+  id: "drafts",
+  kind: "drafts",
+  resourceId: "drafts",
+  title: "Draft goals",
+};
+
+/** The ids the plan claims for one one-shot operation, in order. */
+function claimedIds(type: string, field: string): string[] {
+  return plannedQueries()
+    .filter((query) => query.command.type === type)
+    .map((query) => String(query.command[field]));
+}
+
+test("a prompt section a hidden mode holds claims nothing", async () => {
+  const page = await openPage("devboard", DEVBOARD_SCOUT);
+  render(AgentPromptSection, { props: { agentId: "scout" } });
+  await settle();
+  const promptPath = (id: string) => `/agents/${id}/prompt`;
+  expect(claimedIds("getAgentPrompt", "id")).toEqual(["scout"]);
+  expect(reads(page.paths, promptPath("scout"))).toBe(1);
+
+  // Every mode workspace stays mounted, so the section is still open behind
+  // the Goal mode; the plan claims nothing for a surface that is not on
+  // screen, and the section keeps its own claim on the store.
+  layout.setMode("goal");
+  await settle();
+  expect(agents.requestedPrompts).toContain("scout");
+  expect(claimedIds("getAgentPrompt", "id")).toEqual([]);
+  const hidden = reads(page.paths, promptPath("scout"));
+
+  // A reconnect revalidates every mounted query, and a visibility return does
+  // the same: neither reads a prompt no surface on screen shows.
+  connection.connect();
+  await settle();
+  expect(reads(page.paths, promptPath("scout"))).toBe(hidden);
+
+  hideDocument(true);
+  document.dispatchEvent(new DomEvent("visibilitychange") as unknown as Event);
+  await settle();
+  hideDocument(false);
+  document.dispatchEvent(new DomEvent("visibilitychange") as unknown as Event);
+  await settle();
+  expect(reads(page.paths, promptPath("scout"))).toBe(hidden);
+});
+
+test("a closed prompt section retires its claim and its document", async () => {
+  const page = await openPage("devboard", DEVBOARD_SCOUT);
+  const view = render(AgentPromptSection, { props: { agentId: "scout" } });
+  await settle();
+  expect(queryClient.getQueryData(["getAgentPrompt", "/agents/scout/prompt"])).toBeDefined();
+
+  // Switching the section to another agent closes the first one: the store
+  // forgets it and the cache drops the document it read.
+  await view.rerender({ agentId: "release-train" });
+  await settle();
+  expect(agents.requestedPrompts).toEqual(["release-train"]);
+  expect(queryClient.getQueryData(["getAgentPrompt", "/agents/scout/prompt"])).toBeUndefined();
+  // The agent page on screen is the scout page, so neither section claims:
+  // closing the first one issues no read of its own, and the second section's
+  // new claim is not on screen either.
+  expect(claimedIds("getAgentPrompt", "id")).toEqual([]);
+  expect(reads(page.paths, "/agents/scout/prompt")).toBe(1);
+  expect(reads(page.paths, "/agents/release-train/prompt")).toBe(0);
+
+  const closed = reads(page.paths, "/agents/scout/prompt");
+  connection.connect();
+  await settle();
+  expect(reads(page.paths, "/agents/scout/prompt")).toBe(closed);
+});
+
+test("an Issues run claims its history only while a surface shows it", async () => {
+  const page = await openPage("issues", ISSUES_RUNS);
+  issues.openRun("run-42");
+  await settle();
+  expect(claimedIds("getIssuesRun", "runId")).toEqual(["run-42"]);
+  expect(reads(page.paths, "/issues/runs/run-42")).toBe(1);
+
+  // Closing the run surface leaves the selection behind; no surface shows the
+  // run, so the plan derives no claim from it and nothing re-reads it.
+  layout.openTab("issues", ISSUES_OVERVIEW);
+  await settle();
+  expect(claimedIds("getIssuesRun", "runId")).toEqual([]);
+  await page.clock.advance(60_000);
+  expect(reads(page.paths, "/issues/runs/run-42")).toBe(1);
+});
+
+test("a stored draft claims its document only while the Draft goals tab is active", async () => {
+  const path = ".devboard/goal-proposals/002-example.md";
+  goalDrafts.draftPath = path;
+  const page = await openPage("issues", ISSUES_DRAFTS);
+  const draftReads = page.paths.filter((entry) => entry.startsWith("/goal-drafts/")).length;
+  expect(claimedIds("getGoalDraft", "path")).toEqual([path]);
+  expect(draftReads).toBe(1);
+
+  // The selection is restored from storage on reload, so a draft stays
+  // selected after its page closes: only the page on screen claims it.
+  layout.openTab("issues", ISSUES_OVERVIEW);
+  await settle();
+  expect(claimedIds("getGoalDraft", "path")).toEqual([]);
+  await page.clock.advance(60_000);
+  expect(page.paths.filter((entry) => entry.startsWith("/goal-drafts/")).length).toBe(1);
 });

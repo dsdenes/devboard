@@ -19,6 +19,7 @@ import {
 } from "./release-run";
 import { connection } from "./connection.svelte";
 import { queryClient } from "./query-client";
+import { queryKeyFor } from "./query-keys";
 import { notifications } from "./notifications.svelte";
 import { saveFeedback } from "./save-feedback.svelte";
 
@@ -218,6 +219,22 @@ export class AgentsStore {
     // The prompt is static, but opening the section again asks for its current
     // document: the query's cached copy is invalidated, not re-read by a store.
     void queryClient.invalidateQueries({ queryKey: ["getAgentPrompt", id] });
+  }
+
+  /**
+   * The prompt section closed: retire its one-shot claim. The plan derives the
+   * claim from `requestedPrompts`, so an id left here is a surface that is not
+   * on screen — after a reopen, a reconnect, or a visibility return it would
+   * re-read a document nobody shows and keep its copy for the session.
+   */
+  forgetPrompt(id: string): void {
+    if (this.requestedPrompts.includes(id)) {
+      this.requestedPrompts = this.requestedPrompts.filter((entry) => entry !== id);
+    }
+    // The prompt's cache key carries the resource path, not the bare id, so
+    // the entry is removed by the key the operation derives.
+    const key = queryKeyFor({ type: "getAgentPrompt", id });
+    if (key !== null) queryClient.removeQueries({ queryKey: key });
   }
 
   handleEvent(message: Record<string, unknown>): void {
