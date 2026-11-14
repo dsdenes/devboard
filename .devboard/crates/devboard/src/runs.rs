@@ -548,6 +548,10 @@ struct RunJournal {
     last_error: Option<String>,
     activity_cursor: DetachedRunJournalCursor,
     text_cursor: DetachedRunJournalCursor,
+    /// Entries each detached journal has already delivered, so a journal its
+    /// bound rewrote resumes where the retained window ends.
+    seen_activity: usize,
+    seen_text: usize,
     worker_activity: Vec<String>,
     /// When this run's state was last sampled. Every socket for the run
     /// shares the one sample, so the interval bounds the reads, never the
@@ -577,6 +581,8 @@ impl RunJournal {
             last_error: None,
             activity_cursor: DetachedRunJournalCursor::default(),
             text_cursor: DetachedRunJournalCursor::default(),
+            seen_activity: 0,
+            seen_text: 0,
             worker_activity: Vec::new(),
             last_sync: None,
             last_activity_sync: None,
@@ -719,7 +725,12 @@ impl RunJournal {
                 self.activity_stamp = Some(stamp);
                 let activity =
                     read_detached_run_activity_since(directory, &mut self.activity_cursor);
-                for entry in activity.entries {
+                // A journal its bound rewrote replays its retained window; the
+                // entries already delivered are subtracted, so only the ones
+                // appended since the last read are emitted.
+                let (entries, seen) = crate::detached_run::consume(activity, self.seen_activity);
+                self.seen_activity = seen;
+                for entry in entries {
                     let mut frame = Map::new();
                     frame.insert("type".to_string(), Value::String("activity".to_string()));
                     frame.insert("text".to_string(), Value::String(entry.text));
@@ -733,7 +744,9 @@ impl RunJournal {
             if self.text_stamp != Some(stamp) {
                 self.text_stamp = Some(stamp);
                 let text = read_detached_run_text_since(directory, &mut self.text_cursor);
-                for chunk in text.entries {
+                let (entries, seen) = crate::detached_run::consume(text, self.seen_text);
+                self.seen_text = seen;
+                for chunk in entries {
                     let mut frame = Map::new();
                     frame.insert("type".to_string(), Value::String("text".to_string()));
                     frame.insert("text".to_string(), Value::String(chunk));
@@ -1629,6 +1642,167 @@ mod tests {
         );
         assert_eq!(third.len(), 1, "{third:?}");
         assert_eq!(third[0]["text"], json!("two"));
+    }
+
+    /// The bound rewrites a journal, so its reader starts at byte zero again.
+    /// The chunks already delivered must not be pushed a second time.
+    #[test]
+    fn a_text_journal_compaction_delivers_only_the_appended_chunks() {
+        let directory = scratch("detached-text-compaction");
+        let run = RunSource {
+            id: "compaction-run".to_string(),
+            kind: "flow".to_string(),
+            label: "compaction-run".to_string(),
+            lifecycle: "running".to_string(),
+            live: true,
+            updated_at: None,
+            source: Source::Detached(directory.clone()),
+        };
+        // A thousand 1041-byte chunks sit just inside the journal's byte
+        // bound, so the next append rewrites the file and drops the oldest
+        // chunk: the fill compacts exactly once.
+        let chunk = "x".repeat(1041);
+        for index in 0..1_002 {
+            crate::detached_run::append_detached_run_text(&directory, &format!("{chunk} {index}"));
+        }
+        let mut probe = DetachedRunJournalCursor::default();
+        let filled = crate::detached_run::read_detached_run_text_since(&directory, &mut probe);
+        assert!(filled.dropped > 0, "the fill passed the journal's bound");
+        let hub = RunHub::new();
+        let now = Instant::now();
+        let (_, first) = hub.read_tick(&run, None, now, true);
+        let delivered: HashSet<String> = first
+            .iter()
+            .filter(|frame| frame["type"] == "text")
+            .filter_map(|frame| frame["text"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            delivered.len(),
+            1_000,
+            "the first fill is the retained window"
+        );
+        let consumed = first.last().and_then(|frame| frame["cursor"].as_u64());
+
+        let appended: Vec<String> = (0..3)
+            .map(|index| format!("{chunk} appended {index}"))
+            .collect();
+        for text in &appended {
+            crate::detached_run::append_detached_run_text(&directory, text);
+        }
+        let (_, second) = hub.read_tick(
+            &run,
+            consumed,
+            now + Duration::from_millis(RUN_ACTIVITY_MS),
+            false,
+        );
+        let replay: Vec<&str> = second
+            .iter()
+            .filter(|frame| frame["type"] == "text")
+            .filter_map(|frame| frame["text"].as_str())
+            .filter(|text| delivered.contains(*text))
+            .collect();
+        assert!(
+            replay.is_empty(),
+            "a compaction re-emitted {} delivered chunks: {:?}",
+            replay.len(),
+            &replay[..replay.len().min(3)]
+        );
+        let emitted: Vec<&str> = second
+            .iter()
+            .filter(|frame| frame["type"] == "text")
+            .filter_map(|frame| frame["text"].as_str())
+            .collect();
+        assert_eq!(
+            emitted,
+            appended.iter().map(String::as_str).collect::<Vec<_>>(),
+            "every chunk appended after the compaction is delivered once"
+        );
+    }
+
+    /// The activity journal is bounded the same way, so its compaction never
+    /// re-emits an entry a subscriber already holds.
+    #[test]
+    fn an_activity_journal_compaction_delivers_only_the_appended_entries() {
+        let directory = scratch("detached-activity-compaction");
+        let run = RunSource {
+            id: "compaction-run".to_string(),
+            kind: "flow".to_string(),
+            label: "compaction-run".to_string(),
+            lifecycle: "running".to_string(),
+            live: true,
+            updated_at: None,
+            source: Source::Detached(directory.clone()),
+        };
+        // The activity record's own JSON overhead leaves 1017-byte texts just
+        // inside the journal's bound, so the next append compacts once.
+        let text = "y".repeat(1017);
+        for index in 0..1_001 {
+            crate::detached_run::append_detached_run_activity(
+                &directory,
+                &crate::detached_run::DetachedRunActivity {
+                    text: format!("{text} {index}"),
+                    append: false,
+                },
+            );
+        }
+        let mut probe = DetachedRunJournalCursor::default();
+        let filled = crate::detached_run::read_detached_run_activity_since(&directory, &mut probe);
+        assert!(filled.dropped > 0, "the fill passed the journal's bound");
+        let hub = RunHub::new();
+        let now = Instant::now();
+        let (_, first) = hub.read_tick(&run, None, now, true);
+        let delivered: HashSet<String> = first
+            .iter()
+            .filter(|frame| frame["type"] == "activity")
+            .filter_map(|frame| frame["text"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            delivered.len(),
+            1_000,
+            "the first fill is the retained window"
+        );
+        let consumed = first.last().and_then(|frame| frame["cursor"].as_u64());
+
+        let appended: Vec<String> = (0..3)
+            .map(|index| format!("{text} appended {index}"))
+            .collect();
+        for entry in &appended {
+            crate::detached_run::append_detached_run_activity(
+                &directory,
+                &crate::detached_run::DetachedRunActivity {
+                    text: entry.clone(),
+                    append: false,
+                },
+            );
+        }
+        let (_, second) = hub.read_tick(
+            &run,
+            consumed,
+            now + Duration::from_millis(RUN_ACTIVITY_MS),
+            false,
+        );
+        let replay: Vec<&str> = second
+            .iter()
+            .filter(|frame| frame["type"] == "activity")
+            .filter_map(|frame| frame["text"].as_str())
+            .filter(|text| delivered.contains(*text))
+            .collect();
+        assert!(
+            replay.is_empty(),
+            "a compaction re-emitted {} delivered entries: {:?}",
+            replay.len(),
+            &replay[..replay.len().min(3)]
+        );
+        let emitted: Vec<&str> = second
+            .iter()
+            .filter(|frame| frame["type"] == "activity")
+            .filter_map(|frame| frame["text"].as_str())
+            .collect();
+        assert_eq!(
+            emitted,
+            appended.iter().map(String::as_str).collect::<Vec<_>>(),
+            "every entry appended after the compaction is delivered once"
+        );
     }
 
     #[test]

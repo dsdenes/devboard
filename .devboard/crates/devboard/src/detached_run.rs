@@ -2021,10 +2021,11 @@ fn turn_settled(state: &DetachedRunState, seq: u64) -> bool {
             .is_some_and(|status| status != DetachedTurnStatus::Running)
 }
 
-/// Drops the entries this peer already delivered. `seen` counts every entry
+/// Drops the entries this reader already delivered. `seen` counts every entry
 /// the run ever appended; the journal's header re-bases that count onto the
-/// file its bound rewrote.
-fn consume<T: Clone>(read: DetachedRunJournalRead<T>, seen: usize) -> (Vec<T>, usize) {
+/// file its bound rewrote, so a rewritten journal resumes where the retained
+/// window ends instead of replaying it.
+pub(crate) fn consume<T: Clone>(read: DetachedRunJournalRead<T>, seen: usize) -> (Vec<T>, usize) {
     if read.from_start {
         let base = seen
             .saturating_sub(read.dropped as usize)
