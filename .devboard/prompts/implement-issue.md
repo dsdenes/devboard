@@ -60,9 +60,8 @@ comment on, close, or reopen another issue.
   tool call reports, and then at most one probe, run alone: never a chained discovery line, never
   `git remote get-url origin`, and never a probe that merely confirms a value one of them already
   reported.
-- Worktree root: `<REPO_DIR>/.worktree/`. Cut the worktree from `origin/main` — after the run's
-  one fetch immediately before the cut when a fresh integration tip is needed, or from the tip
-  the checkout already holds when it is not (see *Fetch budget*):
+- Worktree root: `<REPO_DIR>/.worktree/`. Cut the worktree from `origin/main` as the checkout
+  already holds it — the cut fetches nothing (see *Fetch budget*):
   `git worktree add --track -b issue-<number> .worktree/issue-<number> origin/main`, and never
   refetch it afterward; `--track` makes the task branch's upstream the integration ref, so one
   `git status --short --branch` line reports its divergence. Create and work in exactly one
@@ -78,8 +77,8 @@ comment on, close, or reopen another issue.
   `ls -d .tmp || mkdir -p .tmp` guard, and no `> .tmp/<name>.log 2>&1` redirect.
 - The worktree cut is the whole worktree sync and never refetches after creation: `git worktree
   add --track -b issue-<number> .worktree/issue-<number> origin/main` places the task branch on
-  the integration ref, and one fetch immediately before the cut — the run's single fetch when it
-  runs there — is the only network call the start makes. No rebase runs before the first edit.
+  the integration ref the checkout already holds, and the cut makes no network call at all. No
+  rebase runs before the first edit.
   A rebase in this task belongs only to the landing integration or a rejected push below: the
   landing rebase is the unconditional `git rebase main` line of the canonical sequence in
   *Landing*, and the rejected-push rebase is entered from a rejected `git push`. Neither is
@@ -158,47 +157,47 @@ comment on, close, or reopen another issue.
 Repository state — the checked-out branch, its upstream, and its ahead/behind count — comes from
 the one `devboard_status` result and a bare `git status --short --branch`. `git status --short
 --branch` reads local state: it never needs a preceding fetch, and neither call needs the network.
-The run runs `git fetch origin` at most once per turn, and only immediately before a step that
-needs the remote tip: worktree creation, the final push, and the `git ls-remote` push proof. Those
-three steps read one fetched tip, so a fetch before the worktree cut serves the push and the proof
-that follow, and a run that fetched there skips the landing fetch and reuses the tip that fetch
-wrote. A fetch before a read, an edit, a build, a test, a typecheck, or a `verification_run` check
-is the defect this budget removes, and a fetch whose output is empty has given the run nothing to
-decide on, so it earns no repeat. A rejected push is a new landing attempt with its own single
-fetch, below.
+The run fetches at most once before its first push: one `git fetch origin --prune`, from the
+canonical checkout, immediately before the step that compares local work with the remote tip — the
+landing sequence's status read and fast-forward. Nothing else needs the remote tip: the worktree
+is cut from `origin/main` as the checkout already holds it, and a read, edit, build, test,
+typecheck, or `verification_run` check never needs fresher refs. A session that only reads tracked
+files therefore runs no fetch at all, and a fetch is never a session's first command. A fetch
+whose output is empty has given the run nothing to decide on, so it earns no repeat. When only the
+remote tip is needed, `git ls-remote origin refs/heads/main` answers it without touching local refs
+and without a fetch. A rejected push is a new landing attempt with its own single fetch, below.
 
-When the landing fetch runs, it is two shell calls from the canonical checkout, in this order: the
-fetch that reads the remote tip the push needs, then the status read that answers divergence and
-needs no fetch of its own:
+The landing fetch is two shell calls from the canonical checkout, in this order: the fetch that
+reads the remote tip the push needs, then the status read that answers divergence and needs no
+fetch of its own:
 
 ```sh
-git fetch origin
+git fetch origin --prune
 ```
 
 ```sh
 git status --short --branch
 ```
 
-- That pair is the only shape the fetch takes when it lands: one `git fetch origin`, alone,
-  immediately before the step that consumes the remote tip, and never as a step of its own beside
-  local state. A run that fetched before its worktree cut skips the landing fetch line and reads
-  the tip that fetch wrote. The only further fetch is the rejected-push attempt's own first half,
-  below.
+- That pair is one shape: one `git fetch origin --prune`, alone, immediately before the step that
+  consumes the remote tip, and never as a step of its own beside local state. The only further
+  fetch is the rejected-push attempt's own first half, below.
 - One fetch and one status read, as separate invocations. Never join them with `&&` or `;`: a
   failed fetch must stay attributable on its own, joining the two hides which half printed the
   output, and the status read needs no preceding fetch. Never open a task with `git fetch origin &&
   git status --short --branch`: the fetch belongs immediately before the step that consumes the
-  remote tip, not beside a local read. Use that pair, or `git fetch origin <canonical-branch>`
-  with the repository's own branch when it names another, followed by the same status read. Never
-  add `--prune`, `--quiet`, `--tags`, or `--all`, and never fetch another remote, unless a deleted
-  ref, a tag, or that other remote is itself the question.
-- A nonzero `git fetch origin` is terminal for the run: put one concrete line naming its cause as
-  the first stderr line, leave the worktree and its committed branch in place, and issue no second
-  fetch. The three observed causes are an SSH `Permission denied (publickey)`, a forge HTTP error
-  with the forge named — `Internal Server Error` included — and `incorrect old value provided`.
-  None of them is answered by a retry: each costs 20 to 43 seconds and reads the same answer
-  again, and no later fetch in the same run may re-ask it. `incorrect old value provided` prints
-  after the fetch already moved some refs, and the attempt still stops there, because a
+  remote tip, not beside a local read. Use that pair, or `git fetch origin --prune
+  <canonical-branch>` with the repository's own branch when it names another, followed by the same
+  status read. Never drop `--prune`: it drops the remote branches that no longer exist upstream in
+  that same call, so no second fetch exists for that. Never add `--quiet`, `--tags`, or `--all`,
+  and never fetch another remote, unless a tag or that other remote is itself the question.
+- A nonzero `git fetch origin --prune` is terminal for the run: put one concrete line naming its
+  cause as the first stderr line, leave the worktree and its committed branch in place, and issue no
+  second fetch. The three observed causes are an SSH `Permission denied (publickey)`, a forge HTTP
+  error with the forge named — `Internal Server Error` included — and `incorrect old value
+  provided`. None of them is answered by a retry: each costs 20 to 43 seconds and reads the same
+  answer again, and no later fetch in the same run may re-ask it. `incorrect old value provided`
+  prints after the fetch already moved some refs, and the attempt still stops there, because a
   half-applied remote ref is not a tip an integration may be built on.
 - A fetch reports nothing about divergence and is never chained to a `git rev-list` count. A
   fetch that printed only `Already up to date` never earns a retry to look for divergence; when
@@ -220,11 +219,11 @@ git status --short --branch
   absent, and the count re-derives a question the status line already answers; the status line,
   not a count, answers every divergence question here, so a recorded count is never repeated
   between steps. A variant glued without a separator —
-  `git fetch origin; git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3
-  issue-1010` — returns no count at all, and `git rev-parse --short=12 HEAD origin/main` exits 128
-  with `fatal: Needed a single revision` because `--short` accepts exactly one revision. Never
-  substitute `git rev-parse origin/main` or `git rev-parse --short=12 origin/main` for the markers
-  either, because a hash cannot tell ahead from behind.
+  `git rev-list --left-right --count HEAD...issue-1010 git log --oneline -3 issue-1010` — returns
+  no count at all, and `git rev-parse --short=12 HEAD origin/main` exits 128 with `fatal: Needed a
+  single revision` because `--short` accepts exactly one revision. Never substitute `git rev-parse
+  origin/main` or `git rev-parse --short=12 origin/main` for the markers either, because a hash
+  cannot tell ahead from behind.
 - The run's single fetch answers a tip the checkout does not hold yet, including
   `git rev-parse --verify --quiet <ref>` printing nothing for the ref itself: that tip is what the
   one fetch brings in, not a second fetch. A second fetch happens only when a push was
@@ -523,16 +522,16 @@ the commit is unrelated. When a ref looks missing, prove it absent with `git rev
 --quiet <ref>` first, then run the fetch budget's single fetch for that tip before concluding
 anything.
 
-Then land it with this one canonical sequence, which carries the landing attempt's only fetch
-unless the run already fetched before its worktree cut: then skip the `git fetch origin` line and
-reuse the tip that fetch wrote. The fetch and the status read are separate invocations in the
-canonical checkout on `main`, the status read needs no fetch of its own, the merge follows them
-there, the rebase runs in the task worktree, and the last merge runs in the canonical checkout
-again; no later line fetches:
+Then land it with this one canonical sequence, which carries the landing attempt's only fetch: the
+`git fetch origin --prune` line, run once here before the first push, and skipped only when this
+attempt follows a rejected push that already fetched its new tip below. The fetch and the status
+read are separate invocations in the canonical checkout on `main`, the status read needs no fetch
+of its own, the merge follows them there, the rebase runs in the task worktree, and the last merge
+runs in the canonical checkout again; no later line fetches:
 
 ```sh
 # canonical checkout, on main
-git fetch origin
+git fetch origin --prune
 git status --short --branch
 git merge --ff-only origin/main
 # task worktree
@@ -543,14 +542,13 @@ git merge-base --is-ancestor main HEAD
 git merge --ff-only <task-branch>
 ```
 
-The fetch is the sequence's only network call; when the run skipped it, the status read still runs
-and reports the tip the worktree-time fetch wrote. The status line decides whether the
-first merge may run: only a `[behind N]` marker means the canonical checkout lacks the fetched tip,
-so that merge fast-forwards `main` to it. An unmarked `## main...origin/main` line already proves
-`main` equals the fetched tip, so the merge is skipped there. An `[ahead N]` or `[ahead N, behind
-M]` marker means the canonical checkout itself carries unpublished commits, so that fast-forward is
-forbidden: rebase `main` onto `origin/main`, rerun the checks the rebase invalidates, and repeat
-the sequence from the status read.
+The fetch is the sequence's only network call, and it is the run's one fetch before the push. The
+status line decides whether the first merge may run: only a `[behind N]` marker means the canonical
+checkout lacks the fetched tip, so that merge fast-forwards `main` to it. An unmarked
+`## main...origin/main` line already proves `main` equals the fetched tip, so the merge is skipped
+there. An `[ahead N]` or `[ahead N, behind M]` marker means the canonical checkout itself carries
+unpublished commits, so that fast-forward is forbidden: rebase `main` onto `origin/main`, rerun the
+checks the rebase invalidates, and repeat the sequence from the status read.
 
 The rebase line is unconditional and runs in the task worktree: it rebases the task branch onto the
 canonical checkout's `main` — not `origin/main` — which is a no-op when `main` is already
