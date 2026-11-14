@@ -188,6 +188,12 @@ git status --short --branch
 - That pair is one shape: one `git fetch origin --prune`, alone, immediately before the step that
   consumes the remote tip, and never as a step of its own beside local state. The only further
   fetch is the rejected-push attempt's own first half, below.
+- The fetch has one spelling, `git fetch origin --prune`, and it runs from the canonical checkout's
+  own working directory — the `repositoryRoot` the run's one `devboard_status` call resolved — not
+  from a path spelled into the command: never a `cd <absolute path> &&` prefix, which bakes one
+  host's checkout path into an instruction that must work wherever the repository lives, and never
+  a plain `git fetch origin`, which prunes nothing, so a remote branch whose merged branch was
+  deleted stays in `origin/*` and a later run can still branch from it.
 - One fetch and one status read, as separate invocations. Never join them with `&&` or `;`: a
   failed fetch must stay attributable on its own, joining the two hides which half printed the
   output, and the status read needs no preceding fetch. Never open a task with `git fetch origin &&
