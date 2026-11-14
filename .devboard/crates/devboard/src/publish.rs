@@ -3079,9 +3079,24 @@ async fn settle_existing_tag(
         return Ok(None);
     };
     if !git.commit_names_or_contains(&bound, target).await {
-        if release_exists(api, tag).await?
-            || !is_release_commit_for(git, &bound, target, version).await
-        {
+        let published = release_exists(api, tag).await?;
+        let releasable = is_release_commit_for(git, &bound, target, version).await;
+        if published && releasable {
+            // The release behind this target shipped from a commit `main`
+            // never carried, and the gate that derived this run reads merged
+            // tags: without integrating that commit, every later tick would
+            // derive this same version and refuse. The merge is forward-only
+            // and changes no source the release already shipped.
+            integrate_released_commit(git, tag, &bound, &preflight.remote, log).await?;
+            bail!(
+                "{tag} is already released for the range before the pinned target {}; \
+                 integrated its release commit {} into main so the next tick re-gates there; \
+                 nothing was tagged or dispatched",
+                short_sha(target),
+                short_sha(&bound)
+            );
+        }
+        if published || !releasable {
             bail!(
                 "{tag} already names {}, which neither names nor contains the pinned target {}; \
                  refusing to report a release for another commit",
@@ -3111,10 +3126,79 @@ async fn settle_existing_tag(
     Ok(Some(bound))
 }
 
+/// Integrates a published release commit that no longer covers the pinned
+/// target into `main`, so the next tick's gate can move past that release.
+///
+/// A pinned release tags the target plus one bump commit and never advances the
+/// branch, so a gate that derives from merged tags repeats the released version
+/// forever. Integrating the released commit is the forward-only repair: it
+/// changes no source beyond the version bump the release already shipped,
+/// keeps every later commit on `main`, and lets the next tick re-gate at a
+/// `main` that carries the release. A merge that conflicts, or a refused push,
+/// leaves `main` exactly as it was and fails the run with its own line.
+async fn integrate_released_commit(
+    git: &Git<'_>,
+    tag: &str,
+    commit: &str,
+    remote: &str,
+    log: &Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<()> {
+    let before = git
+        .must(
+            &["rev-parse", "HEAD"],
+            "could not read HEAD before the integration",
+        )
+        .await?;
+    (log)(&format!(
+        "integrating the released commit {} for {tag} into main",
+        short_sha(commit)
+    ));
+    let merged = git
+        .run(&[
+            "-c",
+            "user.name=Devboard Release",
+            "-c",
+            "user.email=release@devboard.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "-m",
+            &format!("chore(release): integrate {tag}"),
+            commit,
+        ])
+        .await;
+    if merged.code != 0 {
+        let _ = git.run(&["merge", "--abort"]).await;
+        bail!(
+            "{tag} is already released, and its release commit {} cannot be integrated into \
+             main: {}",
+            short_sha(commit),
+            first_line(if merged.stderr.is_empty() {
+                merged.stdout.as_str()
+            } else {
+                merged.stderr.as_str()
+            })
+        );
+    }
+    let pushed = git
+        .run(&["push", remote, "refs/heads/main:refs/heads/main"])
+        .await;
+    if pushed.code != 0 {
+        let _ = git.run(&["reset", "--keep", before.trim()]).await;
+        bail!(
+            "could not push the integrated release commit for {tag} to {remote}: {}",
+            failure_detail(&pushed)
+        );
+    }
+    (log)(&format!("main carries the release commit for {tag}"));
+    Ok(())
+}
+
 /// Whether `commit` is a release commit of the pinned line: its subject is the
 /// `chore(release)` bump for this version and its parent is on the target's
-/// history. That is exactly the commit an earlier run of this line created and
-/// failed to release.
+/// history. That is exactly the commit an earlier run of this line created.
 async fn is_release_commit_for(git: &Git<'_>, commit: &str, target: &str, version: &str) -> bool {
     let subject = git.run(&["log", "-1", "--format=%s", commit]).await;
     if subject.code != 0 || subject.stdout.trim() != format!("chore(release): v{version}") {

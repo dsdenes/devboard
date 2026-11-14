@@ -3093,21 +3093,96 @@ async fn a_superseded_unpublished_tag_is_withdrawn_and_the_range_is_retagged() {
 }
 
 #[tokio::test]
-async fn a_superseded_tag_with_a_release_is_refused_and_kept() {
-    let live = live("stale-release-released", release_assets()).await;
-    git_output(&live.seed, &["checkout", "-q", "-b", "stale-release"]);
-    let stale_bump = commit_message(&live.seed, "chore(release): v1.1.0");
-    git_output(&live.seed, &["tag", "-a", "v1.1.0", "-m", "Devboard 1.1.0"]);
+async fn a_published_release_commit_off_main_is_integrated_and_the_run_refused() {
+    let live = live("released-off-main", release_assets()).await;
+    let first_target = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(first_target.clone());
+    let first = publish(args).await.expect("the first pinned release");
+    assert_eq!(first.version, "1.1.0");
+    let second_target = commit_file(
+        &live.seed,
+        "README.md",
+        "second\n",
+        "feat: after the release",
+    );
+    git_output(&live.seed, &["push", "-q", "origin", "main"]);
+
+    // The deployed gate derives from merged tags, so it still names v1.1.0 for
+    // this target even though that release shipped from a commit main never
+    // carried.
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(second_target.clone());
+    args.expected_version = Some("1.1.0".to_string());
+    args.expected_range = Some(format!("v1.0.0..{second_target}"));
+    let error = publish(args)
+        .await
+        .expect_err("the released range before the target refuses the run");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("integrated its release commit"),
+        "{message}"
+    );
+    // The forward merge keeps main's commit and the release commit.
+    let merged = git_output(&live.origin, &["rev-parse", "main"]);
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), merged);
+    let parents = git_output(&live.origin, &["rev-list", "--parents", "-n", "1", "main"]);
+    assert_eq!(parents.split_whitespace().count(), 3, "{parents}");
+    git_output(
+        &live.origin,
+        &["merge-base", "--is-ancestor", &second_target, "main"],
+    );
+    git_output(
+        &live.origin,
+        &["merge-base", "--is-ancestor", &first.commit, "main"],
+    );
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.2.0"])
+        .trim()
+        .is_empty());
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+
+    // With the release commit merged, the next gate derives past it.
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(merged.clone());
+    args.expected_version = Some("1.2.0".to_string());
+    args.expected_range = Some(format!("v1.1.0..{merged}"));
+    let next = publish(args)
+        .await
+        .expect("the next tick re-gates at a main that carries the release");
+    assert_eq!(next.version, "1.2.0");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.2.0^{commit}"]),
+        next.commit
+    );
+    let range = git_output(&live.origin, &["rev-list", &format!("{merged}..v1.2.0")]);
+    assert_eq!(range.lines().count(), 1, "{range}");
+}
+
+#[tokio::test]
+async fn a_published_tag_for_another_line_is_refused_and_kept() {
+    let live = live("published-unrelated", release_assets()).await;
+    git_output(&live.seed, &["checkout", "-q", "--orphan", "elsewhere"]);
+    let other = commit_file(
+        &live.seed,
+        "ELSEWHERE.md",
+        "work\n",
+        "fix: another line of work",
+    );
+    git_output(&live.seed, &["tag", "v1.1.0", "elsewhere"]);
     git_output(&live.seed, &["checkout", "-q", "main"]);
-    git_output(&live.seed, &["branch", "-q", "-D", "stale-release"]);
-    git_output(&live.seed, &["push", "-q", "origin", "refs/tags/v1.1.0"]);
     let target = commit_file(
         &live.seed,
         "README.md",
-        "after the stale tag\n",
-        "fix: after the stale tag",
+        "after the tag\n",
+        "fix: after the tag",
     );
-    git_output(&live.seed, &["push", "-q", "origin", "main"]);
+    git_output(
+        &live.seed,
+        &["push", "-q", "origin", "main", "refs/tags/v1.1.0"],
+    );
 
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_secs(5);
@@ -3116,13 +3191,13 @@ async fn a_superseded_tag_with_a_release_is_refused_and_kept() {
     args.expected_range = Some(format!("v1.0.0..{target}"));
     let error = publish(args)
         .await
-        .expect_err("a released tag off the target's range is refused");
+        .expect_err("a published tag off the target's line is refused");
     let message = format!("{error:#}");
     assert!(message.contains("neither names nor contains"), "{message}");
     assert_eq!(
         git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
-        stale_bump,
-        "a released tag is never deleted"
+        other,
+        "a published tag off the line is never deleted or moved"
     );
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }

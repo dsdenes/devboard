@@ -208,7 +208,11 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   leaves the range unreleased. The next due tick starts a new run without operator action and
   re-gates at then-current `main`. A tag that already covers the target without a complete
   release is completed rather than re-tagged; a target whose release already verifies is refused
-  with a concrete first error line. A failed run is never recorded as released.
+  with a concrete first error line. When the refused version is a published release of this line
+  from a commit `main` never carried, that release commit is integrated into `main` forward-only
+  before the refusal and the push is proven, so the next tick re-gates at a `main` that carries
+  the release instead of deriving the same version forever. A failed run is never recorded as
+  released.
 - **Stop.** Stop ends the peer before its publish finishes. The run settles as `stopped`, never as
   a failed release, and the page raises no error for it: the operator's stop is the cause, and a
   release absent at that moment is its consequence. The record the stopped run keeps is the retry
