@@ -52,6 +52,13 @@ pub const SCAN_FAILED_PREFIX: &str = "Scan failed: ";
 /// The status line a capacity block publishes: a family the limits capped is
 /// never mistaken for a repository with nothing to file.
 pub const CAPPED_PREFIX: &str = "Capped: ";
+/// The status line a resource-budget deferral publishes. A start the governor
+/// deferred is never a failed scan: no peer ran, nothing timed out, and the
+/// next tick retries the scan once a slot frees.
+pub const DEFERRED_PREFIX: &str = "Deferred: ";
+/// The surface every Auto Scout peer slot records as its starter, so a cap
+/// deferral names who holds the cap.
+pub const SCOUT_STARTER: &str = "Auto Scout";
 /// A scan's agent phase ends after this long without a session update, and its
 /// separately timed settle-and-file phase ends after this long in total.
 pub const SCAN_TIMEOUT_MS: i64 = 15 * 60_000;
@@ -565,6 +572,20 @@ impl ScoutState {
             .notice
             .as_deref()
             .is_some_and(|text| text.starts_with(CAPPED_PREFIX))
+        {
+            self.notice = None;
+            return true;
+        }
+        false
+    }
+
+    /// Drops a deferral line the moment a start is admitted, so a scan that is
+    /// running never keeps reading as deferred. The history keeps the line.
+    fn clear_deferred(&mut self) -> bool {
+        if self
+            .notice
+            .as_deref()
+            .is_some_and(|text| text.starts_with(DEFERRED_PREFIX))
         {
             self.notice = None;
             return true;
@@ -2734,6 +2755,9 @@ pub struct ScanAgentContext {
     pub env: HashMap<String, String>,
     pub prompt: String,
     pub directory: PathBuf,
+    /// The peer slot the worker admitted before the scan started. The
+    /// connection spawns under this slot instead of waiting for one.
+    pub permit: Option<Arc<crate::resources::Slot>>,
     pub activity: Arc<dyn Fn(AcpActivity) + Send + Sync>,
     pub update: Arc<dyn Fn() + Send + Sync>,
     pub stderr: Arc<dyn Fn(&str) + Send + Sync>,
@@ -2752,8 +2776,12 @@ pub fn default_scan_agent() -> ScanAgent {
         Box::pin(async move {
             let options =
                 AcpConnectionOptions::new(context.command.clone(), context.cwd.to_string_lossy())
-                    .with_starter("Auto Scout")
+                    .with_starter(SCOUT_STARTER)
                     .with_env(context.env.clone());
+            let options = AcpConnectionOptions {
+                permit: context.permit.clone(),
+                ..options
+            };
             let (connection, mut receiver) = AcpConnection::connect(options)
                 .await
                 .map_err(|error| error.message)?;
@@ -2912,6 +2940,9 @@ pub struct ScoutWorkerOptions {
     pub forge: Option<Arc<dyn ScoutForge>>,
     pub agent: Option<ScanAgent>,
     pub log: Option<LogFn>,
+    /// The governor the scan's peer slot is drawn from. A test injects one;
+    /// production uses the process-wide governor.
+    pub governor: Option<Arc<crate::resources::Governor>>,
 }
 
 impl ScoutWorkerOptions {
@@ -2931,6 +2962,7 @@ impl ScoutWorkerOptions {
             forge: None,
             agent: None,
             log: None,
+            governor: None,
         }
     }
 }
@@ -2950,6 +2982,7 @@ pub struct ScoutWorker {
     tick_ms: u64,
     cadence_override_ms: Option<u64>,
     injected_github: Option<Arc<dyn ScoutForge>>,
+    governor: Option<Arc<crate::resources::Governor>>,
     provider_environment: Arc<crate::providers::WorkerProviderEnvironment>,
     syncing_flag: Arc<AtomicBool>,
     runtime: Arc<Mutex<Runtime>>,
@@ -3015,6 +3048,7 @@ impl ScoutWorker {
             tick_ms: options.tick_ms.unwrap_or(TICK_MS).max(1),
             cadence_override_ms: options.cadence_ms,
             injected_github: options.forge,
+            governor: options.governor,
             provider_environment,
             syncing_flag: Arc::new(AtomicBool::new(false)),
             runtime: Arc::new(Mutex::new(runtime)),
@@ -3316,6 +3350,55 @@ impl ScoutWorker {
         }
         if runtime.state.next_attempt_at != until {
             runtime.state.next_attempt_at = until;
+            changed = true;
+        }
+        if changed {
+            self.publish_locked(&mut runtime);
+        }
+    }
+
+    /// The governor this worker draws its peer slot from: an injected one in a
+    /// test, the process-wide one in production.
+    fn governor(&self) -> Option<Arc<crate::resources::Governor>> {
+        self.governor
+            .clone()
+            .or_else(|| crate::resources::global().cloned())
+    }
+
+    /// Admits the scan's peer before any scan file exists. A deferred start
+    /// leaves the scan unstarted — no scan record, no error, no notification —
+    /// and the next tick retries it, as the budget contract requires. Waiting
+    /// instead would burn the scan's inactivity budget with no peer running and
+    /// report a timed-out scan that never started.
+    fn admit_scan(&self, now: i64) -> Result<Option<Arc<crate::resources::Slot>>, ()> {
+        let Some(governor) = self.governor() else {
+            return Ok(None);
+        };
+        let label = format!("{} ({})", self.agent_command, self.repo_dir.display());
+        match governor.try_acquire("peer", SCOUT_STARTER, &label) {
+            Ok(slot) => Ok(Some(Arc::new(slot))),
+            Err(reason) => {
+                governor.record_deferral("peer", &label, &reason);
+                self.record_scan_deferral(&reason, now);
+                Err(())
+            }
+        }
+    }
+
+    /// Records one deferred start: the status line names the budget that bound
+    /// and the state names when the next attempt is due. The scan itself never
+    /// began, so no failure and no error notification follows it.
+    fn record_scan_deferral(&self, reason: &crate::resources::DeferReason, now: i64) {
+        let next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
+        let text = format!("{DEFERRED_PREFIX}{}", reason.message());
+        let mut runtime = lock_unpoisoned(&self.runtime);
+        let mut changed = false;
+        if runtime.state.notice.as_deref() != Some(text.as_str()) {
+            runtime.state.note(text);
+            changed = true;
+        }
+        if runtime.state.next_attempt_at != next_attempt_at {
+            runtime.state.next_attempt_at = next_attempt_at;
             changed = true;
         }
         if changed {
@@ -3827,6 +3910,11 @@ impl ScoutWorker {
     }
 
     async fn begin_scan_inner(&self, now: i64, batch: i64) -> Result<(), String> {
+        // The peer slot is admitted before the scan exists: a deferred start is
+        // not a scan, so it writes no scan record and never reads as a failure.
+        let Ok(permit) = self.admit_scan(now) else {
+            return Ok(());
+        };
         let draft_goal_headings = read_draft_goal_headings(&self.repo_dir);
         let scan = create_scan_directory(&self.repo_dir, now)?;
         update_scan_claim(&self.repo_dir, &scan.scan_id);
@@ -3915,6 +4003,7 @@ impl ScoutWorker {
             environment: env,
             agent: Arc::clone(&self.agent),
             github,
+            permit,
             timeout_ms: self.timeout_ms,
             clock: Arc::clone(&self.clock),
             log: Arc::clone(&self.log),
@@ -3955,6 +4044,8 @@ impl ScoutWorker {
             runtime.state.lifecycle = ScoutLifecycle::Scanning.as_str().to_string();
             runtime.state.next_attempt_at = None;
             runtime.state.last_error = None;
+            // The admitted start resolves the deferral that named this scan.
+            runtime.state.clear_deferred();
             runtime.open_titles = runtime.state.open_titles.clone();
             runtime.active = Some(ActiveScan {
                 scan_id: scan.scan_id.clone(),
@@ -4407,6 +4498,8 @@ struct ScanTaskOptions {
     environment: HashMap<String, String>,
     agent: ScanAgent,
     github: Arc<dyn ScoutForge>,
+    /// The peer slot the worker admitted before this scan began.
+    permit: Option<Arc<crate::resources::Slot>>,
     timeout_ms: i64,
     clock: Clock,
     log: LogFn,
@@ -4520,7 +4613,7 @@ fn write_scan_record(
     let _ = write_scan_file(directory, &scan);
 }
 
-async fn run_scan_task(task: ScanTaskOptions) -> ScanCompletion {
+async fn run_scan_task(mut task: ScanTaskOptions) -> ScanCompletion {
     let now = (task.clock)();
     let activity_hook = {
         let shared = Arc::clone(&task.shared);
@@ -4608,6 +4701,7 @@ async fn run_scan_task(task: ScanTaskOptions) -> ScanCompletion {
         env: task.environment.clone(),
         prompt: task.prompt.clone(),
         directory: task.directory.clone(),
+        permit: task.permit.take(),
         activity: activity_hook,
         update: update_hook,
         stderr: stderr_hook,

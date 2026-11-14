@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use devboard::acp::AcpActivity;
 use devboard::forge::{ClientFuture, ClosingCommitClient, GitHubRelease};
+use devboard::resources::{Governor, GovernorOptions, MemoryReader};
 use devboard::workers::scout::{
     activity_path, control_directory, lock_path, read_scan_claim, read_scan_file, read_settings,
     read_state, request_path, scan_directory, scans_directory, settings_path, state_path,
@@ -555,6 +556,137 @@ async fn a_clean_scan_after_a_failed_one_clears_the_failure_notice() {
         recovered.last_error, None,
         "the successful scan leaves no error alert"
     );
+    worker.stop().await;
+}
+
+/// One memory reader a governor test owns: a fixed budget, a fixed free amount,
+/// and a fixed CPU count.
+struct FixtureMemory {
+    total_mb: u64,
+    available_mb: u64,
+    cpus: u32,
+}
+
+impl MemoryReader for FixtureMemory {
+    fn total_mb(&self) -> u64 {
+        self.total_mb
+    }
+
+    fn available_mb(&self) -> Option<u64> {
+        Some(self.available_mb)
+    }
+
+    fn cpu_count(&self) -> u32 {
+        self.cpus
+    }
+}
+
+fn governor_env(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+/// A start the resource governor deferred is not a scan: no scan record, no
+/// failure, no error notification, and the worker retries once a slot frees.
+/// Waiting for admission instead spent the scan's inactivity budget with no
+/// peer running and reported a timed-out scan that never started.
+#[tokio::test]
+async fn a_deferred_start_runs_no_scan_and_publishes_no_failure() {
+    let repo = scratch("admission-deferred");
+    let state_dir = repo.join(".devboard").join("state");
+    let now = 1_780_000_000_000i64;
+    let clock = Arc::new(AtomicI64::new(now));
+    let governor = Governor::new(
+        &state_dir,
+        GovernorOptions::in_memory(
+            Arc::new(FixtureMemory {
+                total_mb: 32_000,
+                available_mb: 30_000,
+                cpus: 8,
+            }),
+            governor_env(&[("DEVBOARD_MAX_AGENT_PEERS", "1")]),
+        ),
+    );
+    let held = governor
+        .try_acquire("peer", "Issues", "issue #1")
+        .expect("the only slot under the cap of one");
+    let runs = Arc::new(AtomicUsize::new(0));
+    let agent: devboard::workers::scout::ScanAgent = {
+        let runs = Arc::clone(&runs);
+        Arc::new(move |context: devboard::workers::scout::ScanAgentContext| {
+            let runs = Arc::clone(&runs);
+            Box::pin(async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                (context.started)();
+                Ok(())
+            })
+        })
+    };
+    let mut options = ScoutWorkerOptions::new(&repo, state_dir.clone());
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(FixtureForge::default()));
+    options.agent = Some(agent);
+    options.sync_ms = Some(1000);
+    options.cadence_ms = Some(1000);
+    options.tick_ms = Some(10);
+    options.timeout_ms = Some(10_000);
+    options.governor = Some(governor.clone());
+    options.now = Some(Arc::new({
+        let clock = Arc::clone(&clock);
+        move || clock.load(Ordering::SeqCst)
+    }));
+    let worker = ScoutWorker::new(options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+
+    worker.begin_scan().await;
+    worker.settle().await;
+    let deferred = worker.current_state();
+    assert!(
+        scan_ids(&repo).is_empty(),
+        "a deferred start creates no scan: {:?}",
+        scan_ids(&repo)
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "no peer was asked to start");
+    assert_eq!(deferred.scan, None, "no scan is in flight");
+    assert_eq!(
+        deferred.lifecycle, "idle",
+        "a deferred start leaves the worker idle, never failed"
+    );
+    assert_eq!(
+        deferred.last_error, None,
+        "a deferral never raises the error notification that files an issue"
+    );
+    assert!(
+        deferred
+            .notice
+            .as_deref()
+            .is_some_and(|line| line.starts_with("Deferred: ")),
+        "the status line names the deferral: {:?}",
+        deferred.notice
+    );
+    let expected_retry = devboard::workers::scout::iso_from_millis(now + 1000);
+    assert_eq!(
+        deferred.next_attempt_at.as_deref(),
+        Some(expected_retry.as_str()),
+        "the retry is due on the next cooldown tick"
+    );
+
+    drop(held);
+    clock.store(now + 2_000, Ordering::SeqCst);
+    worker.begin_scan().await;
+    worker.settle().await;
+    let retried = worker.current_state();
+    assert_eq!(
+        scan_ids(&repo).len(),
+        1,
+        "the retry starts the scan once a slot frees"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert_eq!(retried.lifecycle, "idle");
+    assert_eq!(retried.last_error, None);
     worker.stop().await;
 }
 
