@@ -2729,7 +2729,7 @@ rule id, its level, its chapter, the skill's directive verbatim, and both skill 
 chapter heading is the finding's category in the filed-issues table.
 
 A cycle audits the HTTP surface the dashboard server exposes: every route the server answers,
-the 80 `METHOD /path` operations in `contract/command-map.json`, `POST /reports` and
+the 82 `METHOD /path` operations in `contract/command-map.json`, `POST /reports` and
 `GET /reports/{id}`, `/ready` for
 `GET` and `HEAD` with a `405` and `Allow: GET, HEAD` for every other method,
 `POST /goal-proposals`, `GET /agent-runs/{id}/output`, and the static-file fallback, together with
@@ -4586,7 +4586,7 @@ The container reads `/repo/adrs` and listens on port `8080`. The repository moun
 
 The browser and the dashboard exchange every read, every action, and every workspace update over
 a resource-oriented HTTP API served at the root. `.devboard/openapi.yaml` is the authoritative
-OpenAPI 3.1 document; `contract/command-map.json` maps every one of the 80 retired command names
+OpenAPI 3.1 document; `contract/command-map.json` maps every one of the 82 retired command names
 to the `METHOD /path` that replaced it.
 
 - A GET answers its representation as `{"frames": [...]}`. The client's one scheduler reads each
