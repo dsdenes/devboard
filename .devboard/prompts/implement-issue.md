@@ -187,22 +187,25 @@ git status --short --branch
   consumes the remote tip, and never as a step of its own beside local state. The only further
   fetch is the rejected-push attempt's own first half, below.
 - The fetch has one spelling, `git fetch origin --prune`, and it runs from the canonical checkout's
-  own working directory — the `repositoryRoot` the run's one `devboard_status` call resolved.
-  Reach that directory by setting the shell call's own working directory, never by spelling a path
-  into the command: `cd <absolute path> && git fetch origin --prune` and its unpruned twin are the
-  defect this bullet removes, because the prefix bakes one host's checkout path into an
-  instruction that must work wherever the repository lives. A run whose shell starts in the task
-  worktree `.worktree/<name>` fetches nothing there: that worktree shares the canonical checkout's
+  own working directory — the `repositoryRoot` the run's one `devboard_status` call resolved, and
+  the directory the session's shell already starts in, because the peer is launched there. Issue
+  the fetch from there as that bare line, and set the shell call's own working directory instead of
+  spelling the path into the command when the call is made from the task worktree:
+  `cd <absolute path> && git fetch origin --prune` and its unpruned twin are the defect this bullet
+  removes, because the prefix bakes one host's checkout path into an instruction that must work
+  wherever the repository lives. A run whose shell starts in the task worktree
+  `.worktree/<name>` fetches nothing there: that worktree shares the canonical checkout's
   `refs/remotes/origin/*`, so a fetch inside it refreshes no ref this fetch would not, and it
   moves the fetch away from the landing read that consumes its tip. Branch preparation fetches
   nothing at all — the cut of *Inputs and paths* makes no network call — and a plain
   `git fetch origin` is not this fetch either, because it prunes nothing: a remote branch whose
   merged branch was deleted stays in `origin/*`, and a later run can still branch from it.
-- One fetch and one status read, as separate invocations. Never join them with `&&` or `;`: a
-  failed fetch must stay attributable on its own, joining the two hides which half printed the
-  output, and the status read needs no preceding fetch. Never open a task with `git fetch origin &&
-  git status --short --branch`: the fetch belongs immediately before the step that consumes the
-  remote tip, not beside a local read. Use that pair, or `git fetch origin --prune
+- One fetch and one status read, as separate invocations. Never join them with `&&` or `;`, and
+  never append a sentinel such as `&& echo FETCH_OK` to the fetch: a failed fetch must stay
+  attributable on its own, joining them hides which half printed the output, and the status read
+  needs no preceding fetch. Never open a task with `git fetch origin && git status --short
+  --branch`: the fetch belongs immediately before the step that consumes the remote tip, not
+  beside a local read. Use that pair, or `git fetch origin --prune
   <canonical-branch>` with the repository's own branch when it names another, followed by the same
   status read. Never drop `--prune`: it drops the remote branches that no longer exist upstream in
   that same call, so no second fetch exists for that. Never add `--quiet`, `--tags`, or `--all`,
