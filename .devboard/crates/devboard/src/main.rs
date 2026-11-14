@@ -1005,6 +1005,48 @@ fn cleanup_command(args: &[String]) -> anyhow::Result<()> {
     if let Some(skipped) = &report.builds.skipped {
         eprintln!("cleanup: builds skipped: {skipped}");
     }
+    for candidate in &report.scratch.candidates {
+        if dry_run {
+            println!(
+                "cleanup: would remove scratch {} ({})",
+                candidate.path.display(),
+                candidate.kind.as_str()
+            );
+        }
+    }
+    for candidate in &report.scratch.removed {
+        println!(
+            "cleanup: removed scratch {} ({})",
+            candidate.path.display(),
+            candidate.kind.as_str()
+        );
+    }
+    for error in &report.scratch.errors {
+        eprintln!("cleanup: scratch: {error}");
+    }
+    if let Some(skipped) = &report.scratch.skipped {
+        eprintln!("cleanup: scratch skipped: {skipped}");
+    }
+    for candidate in &report.scopes.candidates {
+        if dry_run {
+            println!(
+                "cleanup: would stop scope {} ({})",
+                candidate.unit, candidate.reason
+            );
+        }
+    }
+    for candidate in &report.scopes.stopped {
+        println!(
+            "cleanup: stopped scope {} ({})",
+            candidate.unit, candidate.reason
+        );
+    }
+    for error in &report.scopes.errors {
+        eprintln!("cleanup: scopes: {error}");
+    }
+    if let Some(skipped) = &report.scopes.skipped {
+        eprintln!("cleanup: scopes skipped: {skipped}");
+    }
     let roots = report.roots.len();
     let files: u64 = report.roots.iter().map(|entry| entry.files).sum();
     let bytes: u64 = report.roots.iter().map(|entry| entry.bytes).sum();

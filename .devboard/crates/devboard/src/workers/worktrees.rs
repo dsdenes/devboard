@@ -89,7 +89,7 @@ fn is_ancestor(root: &Path, branch: &str, of: &str) -> bool {
 }
 
 /// The directories registered with `git worktree list --porcelain`.
-fn registered_worktrees(root: &Path) -> Option<HashSet<PathBuf>> {
+pub(crate) fn registered_worktrees(root: &Path) -> Option<HashSet<PathBuf>> {
     let text = git_output(root, &["worktree", "list", "--porcelain"])?;
     let mut paths = HashSet::new();
     for line in text.lines() {

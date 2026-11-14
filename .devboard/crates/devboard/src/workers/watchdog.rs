@@ -1878,6 +1878,8 @@ pub struct CleanupReport {
     pub roots: Vec<CleanupRootReport>,
     pub worktrees: crate::workers::worktrees::WorktreeCleanupReport,
     pub builds: crate::workers::builds::BuildCleanupReport,
+    pub scratch: crate::workers::scopes::ScratchCleanupReport,
+    pub scopes: crate::workers::scopes::ScopeCleanupReport,
 }
 
 fn real_directory(path: &Path) -> Option<PathBuf> {
@@ -2772,6 +2774,14 @@ pub fn run_cleanup_with(
     );
     let worktrees =
         crate::workers::worktrees::run_worktree_cleanup(root, now_ms, dry_run, instances);
+    // The test scratch and the transient scopes are checked against one read
+    // of the process table, so a tree and a scope the same process holds are
+    // both kept.
+    let live = crate::workers::worktrees::live_working_directories();
+    let scratch =
+        crate::workers::scopes::run_scratch_cleanup(root, now_ms, dry_run, &|| live.clone());
+    let scopes =
+        crate::workers::scopes::run_scope_cleanup_on_host(root, now_ms, dry_run, instances);
     CleanupReport {
         now: iso_from_ms(now_ms),
         cutoff: iso_from_ms(now_ms - CLEANUP_RETENTION_MS),
@@ -2779,6 +2789,8 @@ pub fn run_cleanup_with(
         roots,
         worktrees,
         builds,
+        scratch,
+        scopes,
     }
 }
 
@@ -5346,6 +5358,8 @@ fn cleanup_json(report: &CleanupReport) -> Value {
         "roots": roots,
         "worktrees": worktree_cleanup_json(&report.worktrees),
         "builds": build_cleanup_json(&report.builds),
+        "scratch": scratch_cleanup_json(&report.scratch),
+        "scopes": scope_cleanup_json(&report.scopes),
     })
 }
 
@@ -5383,6 +5397,39 @@ fn build_cleanup_json(report: &crate::workers::builds::BuildCleanupReport) -> Va
         "bytesBefore": report.bytes_before,
         "bytesAfter": report.bytes_after,
         "capRemoved": report.cap_removed,
+        "errors": report.errors,
+        "skipped": report.skipped,
+    })
+}
+
+fn scratch_candidate_json(candidate: &crate::workers::scopes::ScratchCandidate) -> Value {
+    json!({
+        "path": candidate.path.to_string_lossy(),
+        "kind": candidate.kind.as_str(),
+    })
+}
+
+fn scratch_cleanup_json(report: &crate::workers::scopes::ScratchCleanupReport) -> Value {
+    json!({
+        "candidates": report.candidates.iter().map(scratch_candidate_json).collect::<Vec<Value>>(),
+        "removed": report.removed.iter().map(scratch_candidate_json).collect::<Vec<Value>>(),
+        "errors": report.errors,
+        "skipped": report.skipped,
+    })
+}
+
+fn scope_candidate_json(candidate: &crate::workers::scopes::ScopeCandidate) -> Value {
+    json!({
+        "unit": candidate.unit,
+        "reason": candidate.reason,
+        "pids": candidate.pids,
+    })
+}
+
+fn scope_cleanup_json(report: &crate::workers::scopes::ScopeCleanupReport) -> Value {
+    json!({
+        "candidates": report.candidates.iter().map(scope_candidate_json).collect::<Vec<Value>>(),
+        "stopped": report.stopped.iter().map(scope_candidate_json).collect::<Vec<Value>>(),
         "errors": report.errors,
         "skipped": report.skipped,
     })

@@ -1214,3 +1214,219 @@ fn a_dry_run_predicts_the_real_state_worktree_and_build_candidates() {
     assert!(new_artifact.exists());
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+// ---------------------------------------------------------------------------
+// Test scratch and transient scopes
+// ---------------------------------------------------------------------------
+
+use devboard::workers::scopes::{
+    evaluate_scope, run_scope_cleanup, run_scratch_cleanup, ScopeContext, ScopeFacts, ScopeProcess,
+};
+
+fn empty_context(root: &Path, now: i64) -> ScopeContext {
+    let mut registered = std::collections::HashSet::new();
+    registered.insert(root.to_path_buf());
+    ScopeContext {
+        root: root.to_path_buf(),
+        registered_worktrees: registered,
+        dashboard_pids: std::collections::HashSet::new(),
+        now_ms: now,
+    }
+}
+
+fn process(exe: &str, cwd: Option<PathBuf>, argv: &[&str]) -> ScopeProcess {
+    ScopeProcess {
+        pid: 4242,
+        executable: exe.to_string(),
+        cwd,
+        argv: argv.iter().map(|argument| argument.to_string()).collect(),
+        age_ms: Some(4 * DAY_MS),
+    }
+}
+
+fn active_scope(processes: Vec<ScopeProcess>) -> ScopeFacts {
+    ScopeFacts {
+        unit: "run-p4242-i1.scope".to_string(),
+        active: true,
+        failed: false,
+        processes,
+    }
+}
+
+#[test]
+fn a_stale_test_tree_leaves_and_a_tree_with_a_live_process_stays() {
+    let directory = root("scratch");
+    let scratch = directory.join(".devboard/.test-tmp");
+    let stale = scratch.join("stale-run");
+    let busy = scratch.join("busy-run");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::create_dir_all(&busy).unwrap();
+    let artifact = stale.join("artifact");
+    std::fs::write(&artifact, b"x").unwrap();
+    let now = epoch_ms();
+    set_mtime(&artifact, now - 2 * DAY_MS);
+    set_mtime(&stale, now - 2 * DAY_MS);
+    let live = vec![std::fs::canonicalize(&busy).unwrap()];
+    let live_dirs = || live.clone();
+
+    let dry = run_scratch_cleanup(&directory, now, true, &live_dirs);
+    assert!(
+        dry.candidates
+            .iter()
+            .any(|candidate| candidate.path == stale),
+        "a dry run names the stale tree: {:?}",
+        dry.candidates
+    );
+    assert!(
+        dry.candidates
+            .iter()
+            .all(|candidate| !candidate.path.starts_with(&busy)),
+        "a live process keeps its tree: {:?}",
+        dry.candidates
+    );
+    assert!(stale.exists(), "a dry run removes nothing");
+
+    let real = run_scratch_cleanup(&directory, now, false, &live_dirs);
+    assert!(
+        real.removed.iter().any(|candidate| candidate.path == stale),
+        "the real pass removes the dry run's candidate: {:?}",
+        real.removed
+    );
+    assert!(
+        !stale.exists(),
+        "an old tree with no live process is removed"
+    );
+    assert!(busy.exists(), "a live process keeps its tree");
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_scope_with_no_record_state_or_registered_worktree_is_stopped() {
+    let directory = root("scope-dead");
+    let now = epoch_ms();
+    let facts = active_scope(vec![process("devboard", None, &["devboard", "serve"])]);
+    let candidate = evaluate_scope(&facts, &empty_context(&directory, now))
+        .expect("a scope nothing owns is a candidate");
+    assert_eq!(candidate.unit, "run-p4242-i1.scope");
+    assert_eq!(candidate.pids, vec![4242]);
+
+    let mut failed = active_scope(vec![]);
+    failed.active = false;
+    failed.failed = true;
+    assert!(evaluate_scope(&failed, &empty_context(&directory, now)).is_some());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_scope_holding_a_build_or_agent_child_is_kept() {
+    let directory = root("scope-tools");
+    let now = epoch_ms();
+    for exe in ["cargo", "rustc", "ld", "clippy-driver", "omp"] {
+        let facts = active_scope(vec![process(exe, None, &[exe, "test"])]);
+        assert!(
+            evaluate_scope(&facts, &empty_context(&directory, now)).is_none(),
+            "a live {exe} keeps its scope"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_scope_serving_a_registered_worktree_or_a_live_record_is_kept() {
+    let directory = root("scope-live");
+    let now = epoch_ms();
+    let worktree = directory.join(".worktree/live");
+    std::fs::create_dir_all(worktree.join(".devboard")).unwrap();
+    let state = directory.join(".devboard/.tmp");
+    std::fs::create_dir_all(state.join("issues/workers/1.0.0")).unwrap();
+    let pid = std::process::id();
+    std::fs::write(
+        state.join("issues/workers/1.0.0/worker.json"),
+        format!("{{\"pid\":{pid},\"lifecycle\":\"running\"}}"),
+    )
+    .unwrap();
+
+    let mut context = empty_context(&directory, now);
+    context
+        .registered_worktrees
+        .insert(std::fs::canonicalize(&worktree).unwrap());
+    let facts = active_scope(vec![process(
+        "devboard",
+        Some(std::fs::canonicalize(worktree.join(".devboard")).unwrap()),
+        &["devboard", "serve"],
+    )]);
+    assert!(
+        evaluate_scope(&facts, &context).is_none(),
+        "a registered worktree keeps its scope"
+    );
+
+    let mut process = process(
+        "devboard",
+        None,
+        &[
+            "devboard",
+            "worker",
+            "issues",
+            "--repo",
+            directory.to_str().unwrap(),
+            "--state-dir",
+            state.to_str().unwrap(),
+        ],
+    );
+    process.pid = pid;
+    let facts = active_scope(vec![process]);
+    let mut context = empty_context(&directory, now);
+    context.dashboard_pids.insert(9999);
+    assert!(
+        evaluate_scope(&facts, &context).is_none(),
+        "a live worker record keeps its scope"
+    );
+    std::fs::write(
+        state.join("issues/workers/1.0.0/worker.json"),
+        "{\"pid\":4242,\"lifecycle\":\"stopped\"}",
+    )
+    .unwrap();
+    context.dashboard_pids.clear();
+    assert!(
+        evaluate_scope(&facts, &context).is_none(),
+        "a terminal record still keeps a scope whose state directory and worktree are live"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_scope_holding_a_process_in_fresh_scratch_is_kept() {
+    let directory = root("scope-fresh");
+    let now = epoch_ms();
+    let fresh = directory.join(".devboard/.test-tmp/fresh-run/repo");
+    std::fs::create_dir_all(&fresh).unwrap();
+    let facts = active_scope(vec![process(
+        "devboard",
+        Some(std::fs::canonicalize(&fresh).unwrap()),
+        &["devboard", "serve"],
+    )]);
+    assert!(
+        evaluate_scope(&facts, &empty_context(&directory, now)).is_none(),
+        "a running test keeps its scope"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_dry_run_names_the_dead_scope_and_a_real_pass_stops_it() {
+    let directory = root("scope-run");
+    let now = epoch_ms();
+    let facts = active_scope(vec![process("devboard", None, &["devboard", "serve"])]);
+    let dry = run_scope_cleanup(&directory, now, true, &[], &[facts.clone()], &|_| Ok(()));
+    assert_eq!(dry.candidates.len(), 1);
+    assert!(dry.stopped.is_empty());
+    let stopped = std::sync::Mutex::new(Vec::new());
+    let record = |unit: &str| {
+        stopped.lock().unwrap().push(unit.to_string());
+        Ok(())
+    };
+    let real = run_scope_cleanup(&directory, now, false, &[], &[facts], &record);
+    assert_eq!(real.stopped.len(), 1);
+    assert_eq!(stopped.lock().unwrap().as_slice(), ["run-p4242-i1.scope"]);
+    let _ = std::fs::remove_dir_all(&directory);
+}

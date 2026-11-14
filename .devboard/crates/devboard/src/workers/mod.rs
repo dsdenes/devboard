@@ -15,6 +15,7 @@ pub mod issues;
 pub mod mcp_optimizer;
 pub mod release_train;
 pub mod run_owner;
+pub mod scopes;
 pub mod scout;
 pub mod single_responsibility;
 pub mod startup;
