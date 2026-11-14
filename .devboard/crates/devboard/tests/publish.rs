@@ -664,6 +664,9 @@ struct GithubData {
     release_published: bool,
     /// The commit the release tag ref names after publish retags it.
     tag_commit: Option<String>,
+    /// When set, the runs list answers this commit instead of the checkout's
+    /// HEAD, so a test can model a run the forge no longer lists by sha.
+    run_head_sha: Option<String>,
     /// Whether the temporary build ref was deleted.
     build_ref_deleted: bool,
     /// Every asset uploaded to the GitHub release by name.
@@ -700,6 +703,7 @@ impl GithubStub {
             reads: 0,
             release_published: true,
             tag_commit: None,
+            run_head_sha: None,
             build_ref_deleted: false,
             uploaded: Vec::new(),
         }));
@@ -717,6 +721,11 @@ impl GithubStub {
 
     fn dispatch_count(&self) -> usize {
         self.state.lock().expect("github").dispatched
+    }
+
+    /// Stops the runs list from naming the published commit.
+    fn forget_run_for_commit(&self) {
+        self.state.lock().expect("github").run_head_sha = Some("e".repeat(40));
     }
 
     fn dispatch_attempts(&self) -> usize {
@@ -780,9 +789,16 @@ fn github_route(
         data.reads += 1;
         let settled = (data.dispatched > 0 && data.complete)
             || data.settle_after.is_some_and(|after| data.reads > after);
+        if settled && data.settled_conclusion == "success" {
+            // The successful workflow publishes the GitHub release the job
+            // built its assets for.
+            data.release_published = true;
+        }
         let head_named = data.settle_after.is_some();
         let runs = if settled || head_named {
-            let sha = git_output(repo_dir, &["rev-parse", "HEAD"]);
+            let head = git_output(repo_dir, &["rev-parse", "HEAD"]);
+            let listed = data.run_head_sha.clone();
+            let sha = listed.as_deref().unwrap_or(head.as_str());
             let sha = sha.trim();
             let id = 42 + data.dispatched.saturating_sub(1) as u64;
             if settled {
@@ -3625,4 +3641,49 @@ fn the_bundle_preflight_refuses_every_damaged_input() {
 fn bundle_sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[tokio::test]
+async fn two_verification_passes_of_one_tag_dispatch_one_workflow_run() {
+    let live = live("one-dispatch", release_assets()).await;
+    // A new tag has no GitHub release until its workflow succeeds.
+    live.github_stub.release_exists(false);
+    let instance = DashboardInstance {
+        pid: 4242,
+        port: 7300,
+        repo_dir: live.seed.clone(),
+        harness: live.seed.join(".devboard"),
+        state_dir: live.state_dir.clone(),
+    };
+    let first = publish(test_args(
+        &live.seed,
+        &live.gitea_server,
+        &live.github_server,
+        Some(instance.clone()),
+    ))
+    .await
+    .expect("the first pass ships the release");
+    assert!(first.published);
+    assert_eq!(first.tag, "v1.1.0");
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+
+    // The forge no longer lists the build run by commit, which is the case a
+    // second verification pass could mistake for unfinished work. The release
+    // already carries every asset, so the pass verifies instead of building.
+    live.github_stub.forget_run_for_commit();
+    let second = publish(test_args(
+        &live.seed,
+        &live.gitea_server,
+        &live.github_server,
+        Some(instance),
+    ))
+    .await
+    .expect("a verification pass verifies the existing release");
+    assert!(!second.published);
+    assert_eq!(second.tag, first.tag);
+    assert_eq!(
+        live.github_stub.dispatch_count(),
+        1,
+        "one tag owns one workflow run across every pass"
+    );
 }

@@ -2907,19 +2907,47 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         if !preflight.remotes.iter().any(|remote| remote == "github") {
             bail!("the GitHub remote is required to build the release artifacts");
         }
-        push_github_build_ref(&git, &args.environment, &commit, &tag, &log).await?;
-
-        let workflow_run =
-            dispatch_and_wait(&api, &clock, &sleeper, &args, &commit, &tag, &log).await?;
-        (log)(&format!(
-            "canonical build: {BUILD_WORKFLOW} run {workflow_run} built {tag} from the canonical \
-             Gitea commit {} at {}",
-            short_sha(&commit),
-            build_ref(&tag)
-        ));
-
-        let verified =
-            verify_github_assets(&api, &clock, &sleeper, &args, &tag, &version, &log).await?;
+        // A verification pass of an already-pushed tag reads the release the
+        // tag carries before it dispatches: an existing release whose assets
+        // verify is finished work, and a second dispatch would stack another
+        // build of the same tag. A tag whose assets do not verify dispatches,
+        // and the run list still prevents a second dispatch while that run is
+        // listed.
+        let preverified = if existing_at_head {
+            match verify_github_assets_once(&api, &tag, &version).await {
+                Ok(verified) => {
+                    (log)(&format!(
+                        "{tag} already carries verified release assets; no workflow run is dispatched"
+                    ));
+                    Some(verified)
+                }
+                Err(error) => {
+                    (log)(&format!(
+                        "the release assets for {tag} do not verify yet ({error:#}); building them"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let (workflow_run, verified) = match preverified {
+            Some(verified) => (0, verified),
+            None => {
+                push_github_build_ref(&git, &args.environment, &commit, &tag, &log).await?;
+                let workflow_run =
+                    dispatch_and_wait(&api, &clock, &sleeper, &args, &commit, &tag, &log).await?;
+                (log)(&format!(
+                    "canonical build: {BUILD_WORKFLOW} run {workflow_run} built {tag} from the \
+                     canonical Gitea commit {} at {}",
+                    short_sha(&commit),
+                    build_ref(&tag)
+                ));
+                let verified =
+                    verify_github_assets(&api, &clock, &sleeper, &args, &tag, &version, &log).await?;
+                (workflow_run, verified)
+            }
+        };
         progress.record(
             PublishProgressRecord::new(
                 "assets",
