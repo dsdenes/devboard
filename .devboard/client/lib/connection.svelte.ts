@@ -1,6 +1,5 @@
 import { notifications } from "./notifications.svelte";
-import { slowUiAction, type SlowUiActionOrigin, type SlowUiActionTicket } from "./slow-ui-action";
-import { isStaleBundleProblem, reloadOnceForStaleBundle } from "./stale-bundle";
+import { slowUiAction, type SlowUiActionOrigin } from "./slow-ui-action";
 import { REST_OPERATIONS } from "./rest-map";
 import { answeringPid, replacementAnswers, restartServer } from "./rest-transport";
 import { mutationFor } from "./command-mutations";
