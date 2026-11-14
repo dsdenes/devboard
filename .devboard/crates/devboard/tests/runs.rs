@@ -49,6 +49,10 @@ impl Scratch {
         ));
         std::fs::create_dir_all(path.join("state")).expect("a state directory");
         std::fs::create_dir_all(path.join("repo/adrs")).expect("a repository");
+        // The fixture is its own release source: an empty directory names no
+        // newer release, so no published version installs and replaces the
+        // dashboard in the middle of a turn.
+        std::fs::create_dir_all(path.join("releases")).expect("an empty release source");
         Self { path }
     }
 
@@ -180,6 +184,7 @@ fn spawn_server(scratch: &Scratch, command: &str) -> ServerProcess {
         .env("AGENT_COMMAND", command)
         .env("DEVBOARD_OWNER_EXECUTABLE", binary)
         .env("DEVBOARD_UPDATE_INTERVAL_MS", "3600000")
+        .env("DEVBOARD_RELEASE_URL", scratch.path.join("releases"))
         .env("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(output.try_clone().expect("a log handle")))
