@@ -4612,8 +4612,10 @@ impl FlowMode {
                         url: created.url,
                         state: "draft".to_string(),
                     };
-                    self.set_pr(session_id, pr.clone());
-                    self.broadcast(json!({"type": "flowPr", "pr": pr}));
+                    // The draft is published only after the push state names
+                    // this tip, so no client ever sees a draft whose commit
+                    // the remote branch does not carry.
+                    self.set_pr(session_id, pr);
                 }
                 Err(message) => {
                     self.apply_pr_failure(session_id, tip, &message, &message);
@@ -4720,6 +4722,44 @@ impl FlowMode {
         self.sync_pull_request(&session.id, &tip).await;
     }
 
+    /// The Flow worktree's committed tip, or `None` when git cannot read it.
+    async fn worktree_tip(&self, worktree: &str) -> Option<String> {
+        let result = self.git(Path::new(worktree), &["rev-parse", "HEAD"]).await;
+        let tip = result.stdout.trim().to_string();
+        (result.code == 0 && !tip.is_empty()).then_some(tip)
+    }
+
+    /// Refuses a forge transition the remote branch would not carry.
+    ///
+    /// The forge merges the branch as the remote holds it, so the worktree tip
+    /// must be the tip the last successful push published, with no failed push
+    /// outstanding. Otherwise the last checkpoint is silently absent from the
+    /// merged change while the session records it as merged.
+    async fn refuse_unpushed_tip(&self, action: &str, session: &Session) -> bool {
+        let (pushed_tip, pr_failed_tip) = {
+            let inner = self.lock();
+            inner
+                .session
+                .as_ref()
+                .filter(|current| current.id == session.id)
+                .map(|current| (current.pushed_tip.clone(), current.pr_failed_tip.clone()))
+                .unwrap_or_default()
+        };
+        let Some(tip) = self.worktree_tip(&session.worktree).await else {
+            self.error(
+                "Could not read the Flow worktree's HEAD commit, so the unpushed checkpoint is unknown.",
+            );
+            return true;
+        };
+        if pushed_tip.as_deref() == Some(tip.as_str()) && pr_failed_tip.is_none() {
+            return false;
+        }
+        self.error(&format!(
+            "The Flow worktree commit {tip} is not pushed; run retryFlowPr before {action}."
+        ));
+        true
+    }
+
     async fn mark_pr_ready(&self) {
         let session = self.lock().session.clone();
         let Some(session) = session else {
@@ -4740,6 +4780,12 @@ impl FlowMode {
         }
         if !self.is_clean(&session.worktree).await {
             self.error("Commit or discard the Flow worktree changes before marking the pull request ready.");
+            return;
+        }
+        if self
+            .refuse_unpushed_tip("marking the pull request ready", &session)
+            .await
+        {
             return;
         }
         let Some(target) = self.target().await else {
@@ -4814,6 +4860,12 @@ impl FlowMode {
         }
         if !self.is_clean(&session.worktree).await {
             self.error("Commit or discard the Flow worktree changes before merging.");
+            return;
+        }
+        if self
+            .refuse_unpushed_tip("merging the pull request", &session)
+            .await
+        {
             return;
         }
         let Some(target) = self.target().await else {

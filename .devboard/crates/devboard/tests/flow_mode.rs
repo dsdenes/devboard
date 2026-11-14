@@ -297,6 +297,45 @@ fn accepted_signatures(directory: &Path) -> Vec<String> {
         .collect()
 }
 
+/// The forge operations the stub recorded, in call order.
+fn forge_operations(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).expect("a forge call"))
+        .filter_map(|call| call["op"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Installs a pre-receive hook in the bare origin that refuses every push
+/// with `detail`, so the next checkpoint stays local.
+fn refuse_pushes(origin: &Path, detail: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let hook = origin.join("hooks/pre-receive");
+    std::fs::write(&hook, format!("#!/bin/sh\necho {detail} >&2\nexit 1\n"))
+        .expect("a pre-receive hook");
+    let mut permissions = std::fs::metadata(&hook)
+        .expect("the hook's metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&hook, permissions).expect("an executable hook");
+}
+
+/// The commit the remote branch names, or `None` when it does not exist.
+fn remote_tip(origin: &Path, branch: &str) -> Option<String> {
+    let output = StdCommand::new("git")
+        .arg("-C")
+        .arg(origin)
+        .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .output()
+        .expect("git runs");
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_goal_widgets_steering_and_conversation_round_trip() {
     let _env = ENV_LOCK.lock().await;
@@ -904,6 +943,187 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
     assert!(replay_types.contains(&"flowBlockers"));
     assert!(replay_types.contains(&"flowPr"));
     assert_eq!(session_frames(&reconnect.seen, "flowSnapshot").len(), 1);
+}
+
+/// A push the remote refused leaves the remote branch behind the worktree
+/// tip, and the forge merges the branch as the remote holds it. Mark-ready and
+/// merge therefore refuse an unpushed checkpoint, and the retry publishes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forge_transition_refuses_a_tip_the_push_never_reached() {
+    let _env = ENV_LOCK.lock().await;
+    let fixture = fixture("unpushed-tip");
+    let app = fixture.app.clone();
+    let mut client = Client::connect(&app).await;
+
+    send(&app, &client.conn, Command::CreateFlowGoal).await;
+    client
+        .wait_for("flowGoalStarted", |frame| {
+            frame["type"] == "flowGoalStarted"
+        })
+        .await;
+    let snapshot = client
+        .wait_for("a new session's snapshot", |frame| {
+            frame["type"] == "flowSnapshot" && frame["sessionId"].is_string()
+        })
+        .await;
+    let session_id = snapshot["sessionId"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+    let goal_question = client
+        .wait_for("the goal question", |frame| {
+            frame["type"] == "flowQuestion" && frame["target"] == "goal"
+        })
+        .await;
+    send(
+        &app,
+        &client.conn,
+        Command::FlowAnswer {
+            id: Some(goal_question["id"].clone()),
+            value: Some(json!("Alpha")),
+            target: Some(json!("goal")),
+        },
+    )
+    .await;
+    client
+        .wait_for("flowGoalStopped", |frame| {
+            frame["type"] == "flowGoalStopped"
+        })
+        .await;
+
+    send(&app, &client.conn, Command::StartFlowImplementation).await;
+    client
+        .wait_for("flowImplementationStarted", |frame| {
+            frame["type"] == "flowImplementationStarted"
+        })
+        .await;
+    client
+        .wait_for("flowStopped", |frame| frame["type"] == "flowStopped")
+        .await;
+    client
+        .wait_for("a draft pull request", |frame| {
+            frame["type"] == "flowPr" && frame["pr"]["state"] == "draft"
+        })
+        .await;
+
+    let directory = session_directory(&fixture, &session_id);
+    let session: Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.join("session.json")).expect("session.json"),
+    )
+    .expect("session JSON");
+    let worktree = PathBuf::from(session["worktree"].as_str().expect("a worktree"));
+    let origin = fixture._scratch.path().join("origin.git");
+    let hook = origin.join("hooks/pre-receive");
+    let branch = format!("flow/{session_id}");
+
+    // --- the remote refuses the next checkpoint's push
+    refuse_pushes(&origin, "ready-refused");
+    std::fs::write(worktree.join("src/unpushed.txt"), "one\n").expect("a checkpoint file");
+    git(&worktree, &["add", "-A"]);
+    git(
+        &worktree,
+        &["commit", "-m", "feat: the unpushed checkpoint"],
+    );
+    let unpushed = git(&worktree, &["rev-parse", "HEAD"]).trim().to_string();
+    client
+        .wait_for("the refused ready push", |frame| {
+            frame["type"] == "flowError"
+                && frame["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("ready-refused"))
+        })
+        .await;
+    assert_ne!(
+        remote_tip(&origin, &branch).as_deref(),
+        Some(unpushed.as_str())
+    );
+
+    send(&app, &client.conn, Command::MarkFlowPrReady).await;
+    let refused = client
+        .wait_for("the unpushed mark-ready refusal", |frame| {
+            frame["type"] == "flowError"
+                && frame["message"].as_str().is_some_and(|message| {
+                    message.contains(&unpushed) && message.contains("retryFlowPr")
+                })
+        })
+        .await;
+    assert!(refused["message"]
+        .as_str()
+        .expect("a refusal")
+        .contains("marking the pull request ready"));
+    assert!(!forge_operations(&fixture.forge_log).contains(&"markReady".to_string()));
+
+    // --- the retry publishes the tip, and the same command then proceeds
+    std::fs::remove_file(&hook).expect("the hook is removed");
+    send(&app, &client.conn, Command::RetryFlowPr).await;
+    assert_eq!(
+        remote_tip(&origin, &branch),
+        Some(unpushed.clone()),
+        "the retry pushed the worktree tip"
+    );
+    send(&app, &client.conn, Command::MarkFlowPrReady).await;
+    client
+        .wait_for("a live pull request", |frame| {
+            frame["type"] == "flowPr" && frame["pr"]["state"] == "live"
+        })
+        .await;
+    assert!(forge_operations(&fixture.forge_log).contains(&"markReady".to_string()));
+
+    // --- the same guard refuses a merge of the next unpushed checkpoint
+    refuse_pushes(&origin, "merge-refused");
+    std::fs::write(worktree.join("src/unpushed.txt"), "two\n").expect("a checkpoint file");
+    git(&worktree, &["add", "-A"]);
+    git(
+        &worktree,
+        &["commit", "-m", "feat: the second unpushed checkpoint"],
+    );
+    let second = git(&worktree, &["rev-parse", "HEAD"]).trim().to_string();
+    client
+        .wait_for("the refused merge push", |frame| {
+            frame["type"] == "flowError"
+                && frame["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("merge-refused"))
+        })
+        .await;
+    assert_eq!(
+        remote_tip(&origin, &branch),
+        Some(unpushed),
+        "the refused push left the remote branch behind"
+    );
+
+    send(&app, &client.conn, Command::MergeFlowPr).await;
+    let refused = client
+        .wait_for("the unpushed merge refusal", |frame| {
+            frame["type"] == "flowError"
+                && frame["message"].as_str().is_some_and(|message| {
+                    message.contains(&second) && message.contains("retryFlowPr")
+                })
+        })
+        .await;
+    assert!(refused["message"]
+        .as_str()
+        .expect("a refusal")
+        .contains("merging the pull request"));
+    assert!(
+        !forge_operations(&fixture.forge_log).contains(&"merge".to_string()),
+        "an unpushed tip never reaches the forge merge"
+    );
+
+    std::fs::remove_file(&hook).expect("the hook is removed");
+    send(&app, &client.conn, Command::RetryFlowPr).await;
+    assert_eq!(
+        remote_tip(&origin, &branch),
+        Some(second.clone()),
+        "the retry pushed the worktree tip"
+    );
+    send(&app, &client.conn, Command::MergeFlowPr).await;
+    client
+        .wait_for("a merged pull request", |frame| {
+            frame["type"] == "flowPr" && frame["pr"]["state"] == "merged"
+        })
+        .await;
+    assert!(forge_operations(&fixture.forge_log).contains(&"merge".to_string()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
