@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, test } from "bun:test";
 import type { AgentSnapshot } from "../../../lib/agent-registry.ts";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
@@ -107,4 +107,25 @@ test("an unrecognized action never claims health", () => {
 
 test("a Watchdog with no snapshot yet stays connecting", () => {
   expect(dotState()).toBe("connecting");
+});
+
+test("the age advances with the page clock without a new snapshot", async () => {
+  const at = Date.parse("2026-11-11T04:00:00.000Z");
+  jest.useFakeTimers();
+  jest.setSystemTime(at + 2 * 60_000);
+  try {
+    agents.snapshots = { watchdog: snapshot("filed") };
+    const trigger = render(WatchdogIndicator).getByTestId("status-watchdog");
+    const value = () =>
+      trigger.querySelector(".status-metric__value")?.textContent?.trim() ?? "";
+    await Promise.resolve();
+    expect(value()).toBe("filed · 2m ago");
+
+    // No frame reaches the store; only the indicator's own clock ticks on.
+    jest.advanceTimersByTime(60 * 60_000);
+    await Promise.resolve();
+    expect(value()).toBe("filed · 1h ago");
+  } finally {
+    jest.useRealTimers();
+  }
 });

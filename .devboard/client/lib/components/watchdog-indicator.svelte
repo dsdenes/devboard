@@ -1,10 +1,12 @@
 <script lang="ts">
   import { agents } from "../agents.svelte";
+  import { pollAge } from "../poll-status";
   import Button from "./ui/button.svelte";
 
   const MAX_ISSUES = 10;
 
   let open = $state(false);
+  let now = $state(Date.now());
 
   const snapshot = $derived(agents.snapshot("watchdog"));
   const cycle = $derived(
@@ -15,17 +17,17 @@
   );
   const issues = $derived(snapshot?.issues.slice(0, MAX_ISSUES) ?? []);
 
-  const age = $derived.by(() => {
-    const at = cycle?.at ?? null;
-    if (at === null) return "never";
-    const elapsed = Date.now() - Date.parse(at);
-    if (!Number.isFinite(elapsed)) return "unknown";
-    const minutes = Math.floor(Math.max(0, elapsed) / 60_000);
-    if (minutes < 1) return "just now";
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
+  // The status strip keeps the compact age the poll lines already render, so
+  // one compact relative-time rule serves both; `now` advances it between
+  // snapshots.
+  const age = $derived(cycle === null ? "never" : pollAge(cycle.at, now));
+
+  // A snapshot arrives only when the worker pushes one, so a stopped or paused
+  // Watchdog would otherwise freeze its newest cycle's age at the last push.
+  $effect(() => {
+    if (cycle === null) return;
+    const timer = setInterval(() => (now = Date.now()), 30_000);
+    return () => clearInterval(timer);
   });
 
   /** Cycle actions that leave nothing pending and nothing unsent. */
