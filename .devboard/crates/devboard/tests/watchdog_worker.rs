@@ -1191,6 +1191,43 @@ fn a_locked_skill_description_cache_is_not_a_finding() {
 }
 
 #[test]
+fn a_locked_skill_description_compression_is_not_a_finding() {
+    let root = production_root("skill-compression-locked");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let mut locked = event(
+        now,
+        1,
+        "Skill description compression failed: SQLiteError: database is locked",
+        "omp-log",
+        &instance,
+    );
+    locked.level = Some("warn".to_string());
+    let mut other = event(
+        now,
+        2,
+        "Skill description compression failed: SQLiteError: disk I/O error",
+        "omp-log",
+        &instance,
+    );
+    other.level = Some("warn".to_string());
+
+    let findings = analyze_evidence(&[locked, other], window, window);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings
+        .iter()
+        .all(|finding| finding.category == "omp-warn"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.quote.contains("disk I/O error")));
+}
+
+#[test]
 fn a_skipped_judgment_candidate_is_not_a_finding() {
     let root = production_root("judgment-candidate");
     let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
