@@ -2290,12 +2290,12 @@ struct OperatorClose {
 /// leaves working.
 ///
 /// Kept apart from the self-close records: those prove a run closed its own
-/// issue and feed its success verification, while this only says the close came
-/// from the row, so the worker's next read does not stop the runs it names.
+/// issue and feed its success verification, while this says the close came from
+/// the row. It is written whether or not a run is working the issue, because
+/// the record is also what keeps a closed issue out of the Open issues queue:
+/// the worker's next read can be one interval away, and the row is this
+/// dashboard's own write.
 pub fn record_operator_closed(state_dir: &Path, repo_dir: &Path, number: u64, run_ids: &[String]) {
-    if run_ids.is_empty() {
-        return;
-    }
     write_operator_close(state_dir, repo_dir, number, run_ids, &iso_now());
 }
 
@@ -2324,15 +2324,16 @@ fn operator_close(state_dir: &Path, repo_dir: &Path, number: u64) -> Option<Oper
     let parsed: Value = serde_json::from_str(&text).ok()?;
     let run_ids: Vec<String> = parsed
         .get("runIds")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter_map(Value::as_str)
-        .filter(|run_id| !run_id.is_empty())
-        .map(str::to_string)
-        .collect();
-    if run_ids.is_empty() {
-        return None;
-    }
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|run_id| !run_id.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
     Some(OperatorClose {
         run_ids,
         closed_at: parsed
@@ -2350,6 +2351,10 @@ fn operator_closed_run(state_dir: &Path, repo_dir: &Path, number: u64, run_id: &
 }
 
 /// Forgets one settled run's operator close, keeping the issue's other runs.
+///
+/// The record survives the last run: its closed marker is what keeps a closed
+/// issue out of the Open issues queue, and only a tracker read that began after
+/// the close and lists the issue open again retires it.
 fn clear_operator_closed_run(state_dir: &Path, repo_dir: &Path, number: u64, run_id: &str) {
     let Some(close) = operator_close(state_dir, repo_dir, number) else {
         return;
@@ -2359,14 +2364,29 @@ fn clear_operator_closed_run(state_dir: &Path, repo_dir: &Path, number: u64, run
     }
     let mut run_ids = close.run_ids;
     run_ids.retain(|recorded| recorded != run_id);
-    if run_ids.is_empty() {
-        let _ = std::fs::remove_file(
-            operator_closed_directory(state_dir, repo_dir).join(format!("{number}.json")),
-        );
-        return;
-    }
     let closed_at = close.closed_at.unwrap_or_else(iso_now);
     write_operator_close(state_dir, repo_dir, number, &run_ids, &closed_at);
+}
+
+/// Every issue an operator closed from its row that no later tracker read has
+/// listed open again. Each number here is closed as far as this dashboard
+/// knows, so no read still carrying it keeps a row in the Open issues list.
+fn operator_closed_numbers(state_dir: &Path, repo_dir: &Path) -> HashSet<u64> {
+    let Ok(entries) = std::fs::read_dir(operator_closed_directory(state_dir, repo_dir)) else {
+        return HashSet::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let number = name
+                .to_string_lossy()
+                .strip_suffix(".json")?
+                .parse::<u64>()
+                .ok()?;
+            operator_close(state_dir, repo_dir, number).map(|_| number)
+        })
+        .collect()
 }
 
 /// Forgets every operator close the tracker lists as open again.
@@ -3943,10 +3963,7 @@ impl IssuesBridge {
         );
         // A live worker's published queue is the interval's single read: the
         // bridge shows it instead of reading the same issues again.
-        let queue = match attached.then(|| newest.first()).flatten() {
-            Some(state) => state.queue.clone(),
-            None => self.queue_for(&live_states),
-        };
+        let queue = self.served_queue(attached.then(|| newest.first()).flatten(), &live_states);
         map.insert(
             "queue".into(),
             Value::Array(
@@ -4054,9 +4071,10 @@ impl IssuesBridge {
         }
     }
 
-    /// The rows this dashboard serves. The `processing` label marks a run in
-    /// progress only while a live claim owns that issue, so a label a stopped,
-    /// killed, or upgraded-away run left behind never keeps a row running.
+    /// The rows this dashboard serves from its own read. The `processing` label
+    /// marks a run in progress only while a live claim owns that issue, so a
+    /// label a stopped, killed, or upgraded-away run left behind never keeps a
+    /// row running.
     fn queue_for(&self, states: &[IssuesState]) -> Vec<QueuedIssue> {
         let owned = claimed_issue_numbers(&self.state_dir, &self.repo_dir);
         let mut rows = queue_rows(self.tracker.open_issues(), states);
@@ -4067,6 +4085,32 @@ impl IssuesBridge {
             }
         }
         rows
+    }
+
+    /// The rows the Open issues list serves: the attached worker's published
+    /// read, or the bridge's own rows when no worker is attached.
+    ///
+    /// A number an operator closed from its row is never one of them. That
+    /// close is this dashboard's own write, and the read behind the row can be
+    /// one interval older than it, so a row a read still carries is dropped
+    /// until a read that began after the close lists the issue open again.
+    fn served_queue(
+        &self,
+        published: Option<&IssuesState>,
+        states: &[IssuesState],
+    ) -> Vec<QueuedIssue> {
+        let queue = match published {
+            Some(state) => state.queue.clone(),
+            None => self.queue_for(states),
+        };
+        let closed = operator_closed_numbers(&self.state_dir, &self.repo_dir);
+        if closed.is_empty() {
+            return queue;
+        }
+        queue
+            .into_iter()
+            .filter(|row| !closed.contains(&row.number))
+            .collect()
     }
 
     fn active_run_ids(&self, snapshot: &Value) -> Vec<String> {
@@ -5054,7 +5098,17 @@ impl IssuesBridge {
             if let (Some(issues), Some(started_at)) = (&result.issues, &result.started_at) {
                 if let Some(started) = parse_iso(started_at) {
                     let open: HashSet<u64> = issues.iter().map(|issue| issue.number).collect();
-                    self.stop_closed_runs(&open, epoch_millis(started));
+                    let read_started_at = epoch_millis(started);
+                    self.stop_closed_runs(&open, read_started_at);
+                    // This read is the other half of the worker's: the record
+                    // an operator's row close left behind never outlives a read
+                    // that began after it and lists the issue open again.
+                    clear_reopened_operator_closes(
+                        &self.state_dir,
+                        &self.repo_dir,
+                        &open,
+                        read_started_at,
+                    );
                 }
             }
         }
@@ -8580,10 +8634,11 @@ mod tests {
             "no stopped notice: {:?}",
             worker.state.notice
         );
-        // The run settles through its own turn and verification, and that
-        // settlement forgets the operator's close.
+        // The run settles through its own turn and verification; that
+        // settlement forgets the run, and the closed marker stays.
         worker.record_succeeded(11).await;
         assert!(!operator_closed_run(&state, &repo, 11, &run_id));
+        assert!(operator_closed_numbers(&state, &repo).contains(&11));
     }
 
     #[tokio::test]
@@ -8623,6 +8678,36 @@ mod tests {
             )
             .await;
         assert!(!operator_closed_run(&state, &repo, 13, &run_id));
+    }
+
+    #[test]
+    fn an_operator_close_outlives_the_run_it_names() {
+        // The row's close is the dashboard's own write, so the issue stays out
+        // of the Open issues list whether or not a run worked it, and until a
+        // read that began after the close lists it open again.
+        let (repo, state) = unit_root("operator-close-marker");
+        record_operator_closed(&state, &repo, 14, &[]);
+        assert!(operator_closed_numbers(&state, &repo).contains(&14));
+        record_operator_closed(&state, &repo, 15, &["run-15".to_string()]);
+        assert!(operator_closed_run(&state, &repo, 15, "run-15"));
+        clear_operator_closed_run(&state, &repo, 15, "run-15");
+        assert!(!operator_closed_run(&state, &repo, 15, "run-15"));
+        assert!(
+            operator_closed_numbers(&state, &repo).contains(&15),
+            "the closed marker outlives the run"
+        );
+        // A read that began before the close answered from tracker state that
+        // still listed the issue open; that is no proof of a reopen.
+        clear_reopened_operator_closes(&state, &repo, &HashSet::from([14, 15]), i64::MIN);
+        assert!(operator_closed_numbers(&state, &repo).contains(&14));
+        // A read that began after the close does prove it.
+        clear_reopened_operator_closes(
+            &state,
+            &repo,
+            &HashSet::from([14, 15]),
+            epoch_millis(OffsetDateTime::now_utc()),
+        );
+        assert!(operator_closed_numbers(&state, &repo).is_empty());
     }
 
     #[tokio::test]

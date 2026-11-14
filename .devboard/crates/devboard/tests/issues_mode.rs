@@ -475,6 +475,130 @@ async fn a_fresh_read_clears_a_processing_label_no_live_claim_owns() {
     );
 }
 
+/// One row of a worker's published queue, as the worker writes it.
+fn queued_row(number: u64) -> Value {
+    json!({
+        "number": number,
+        "title": format!("Issue {number}"),
+        "url": format!("https://example.test/{number}"),
+        "createdAt": "2026-01-01T00:00:00.000Z",
+        "labels": [],
+        "handled": false,
+        "runId": null,
+        "agentRunId": null,
+    })
+}
+
+fn queued_numbers(queue: &Value) -> Vec<u64> {
+    queue
+        .as_array()
+        .expect("a queue")
+        .iter()
+        .filter_map(|row| row["number"].as_u64())
+        .collect()
+}
+
+/// The page is titled Open issues: an issue an operator closed from its row
+/// leaves the list at that close, not at the worker's next poll, so a closed
+/// issue never keeps a row there.
+#[tokio::test]
+async fn an_operator_closed_issue_leaves_the_attached_queue() {
+    let (repo, state) = scratch("operator-close-attached");
+    let owner = spawn_owner(&repo, &state);
+    let mut document = state_document(&repo, "running", json!([]));
+    document["worker"] = attached_worker(&owner.pid, &state);
+    document["queue"] = json!([queued_row(3), queued_row(9)]);
+    write_state(&repo, &state, &document);
+
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    ));
+
+    let attached = bridge.snapshot();
+    assert_eq!(queued_numbers(&attached["queue"]), vec![3, 9]);
+
+    bridge.close_issue(&json!(9)).await.expect("the close");
+
+    assert_eq!(
+        queued_numbers(&bridge.snapshot()["queue"]),
+        vec![3],
+        "the closed issue leaves the worker's published read"
+    );
+}
+
+/// The bridge's own read is older than the close it just made, so the row it
+/// still carries is dropped the same way.
+#[tokio::test]
+async fn an_operator_closed_issue_leaves_the_bridge_queue() {
+    let (repo, state) = scratch("operator-close-read");
+    write_state(&repo, &state, &state_document(&repo, "idle", json!([])));
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let tracker: TrackerRead = Arc::new(|_request: TrackerReadRequest| {
+        Box::pin(async {
+            PollResult::Issues {
+                issues: vec![
+                    Issue {
+                        number: 3,
+                        title: "First".into(),
+                        url: "https://example.test/3".into(),
+                        created_at: "2026-01-01T00:00:00.000Z".into(),
+                        labels: Vec::new(),
+                        body: None,
+                    },
+                    Issue {
+                        number: 9,
+                        title: "Second".into(),
+                        url: "https://example.test/9".into(),
+                        created_at: "2026-01-02T00:00:00.000Z".into(),
+                        labels: Vec::new(),
+                        body: None,
+                    },
+                ],
+                etag: Some("etag-1".into()),
+            }
+        })
+    });
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::clone(&sink),
+    );
+    settings.hooks.tracker_read = tracker;
+    let bridge = IssuesBridge::new(settings);
+
+    bridge.sync_now().await;
+    assert_eq!(
+        queued_numbers(&bridge.snapshot()["queue"]),
+        vec![3, 9],
+        "a read that began before the close lists both"
+    );
+
+    bridge.close_issue(&json!(9)).await.expect("the close");
+
+    assert_eq!(
+        queued_numbers(&bridge.snapshot()["queue"]),
+        vec![3],
+        "the close, not the next read, empties the row"
+    );
+}
+
 /// A tracker read that answers one open issue and counts its calls.
 fn counted_tracker() -> (TrackerRead, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
