@@ -431,13 +431,26 @@ the prerequisite in another agent's place.
   directory is already set: never a `cd` prefix, never a `| tail` or `| head`, and never a
   trailing `; echo "..._EXIT:$?"`, whose status belongs to the filter rather than the merge.
   Never `--no-ff`, never a forced merge, and never a merge that writes a merge commit. That
-  command's own exit status is the verdict — zero is the fast-forward, any nonzero exit is a
-  refusal — and the push block below proves the landing with `git status --short --branch` and
-  `git ls-remote origin refs/heads/main`. When it refuses with `fatal: Not possible to
-  fast-forward, aborting.` or `hint: Diverging branches can't be fast-forwarded`, do not repeat
-  it unchanged: rebase the task branch onto the integration tip inside its worktree, resolve
-  every conflict there, rerun the checks the rebase invalidates, and only then retry the same
+  command's own exit status, not a piped filter's, is the landing verdict — zero is the
+  fast-forward and any nonzero exit is a failure — and the push block below proves the landing
+  with `git status --short --branch` and `git ls-remote origin refs/heads/main`, the landing
+  step's two closing proofs; never add a piped filter, an echoed `MERGE_EXIT:$?`, or a separate
+  status probe beside them. When it fails with `fatal: Not possible to fast-forward, aborting.`
+  or `hint: Diverging branches can't be fast-forwarded`, do not repeat it unchanged: rebase the
+  task branch onto the integration tip inside its worktree, resolve every conflict there, rerun
+  the checks the rebase invalidates, and only then retry the same
   `git merge --ff-only <task-branch>`. Name the refusal and the retry in the final response.
+- When that merge exits nonzero with `fatal: update_ref failed for ref 'HEAD': cannot lock ref
+  'HEAD'`, a concurrent run advanced the integration checkout between this merge's ref read and
+  its ref write, so the landing is unsettled rather than failed. Give it exactly one recovery:
+  re-read `git rev-parse HEAD` in the canonical checkout, then rerun the same
+  `git merge --ff-only <task-branch>` once, bare and unpiped. It prints `Already up to date` when
+  the concurrent run already landed your branch and fast-forwards when it did not. A second lock
+  failure is the failure. Never answer another nonzero exit, or a second lock failure, with a
+  merge commit, `git reset`, a `git checkout` of another tip, or a deleted worktree, and never
+  report the landing done while the checkout still names the old tip: diagnose it with the
+  pre-push `git status --short --branch` read, and resolve a genuine divergence through the
+  rebase the refusal handling above requires.
 - Land through the one sequence below. Never create a pull request or merge request, never
   force-push, and never rewrite published history.
 - When a push is rejected, run the fetch budget's single fetch for the new tip as that attempt's
