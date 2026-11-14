@@ -6,12 +6,12 @@ Reproduce with: `bash .devboard/bench/run.sh --rust "target/debug/devboard" --ou
 
 | Measurement | Rust |
 | --- | --- |
-| p95 read latency (ms) | 0.15 |
-| p50 read latency (ms) | 0.12 |
-| idle RSS (KiB) | 44464 |
-| loaded RSS (KiB) | 44508 |
-| cold start to /ready (ms) | 190 |
-| full suite wall time | 253582 ms |
-| release path wall time | 85609 ms |
+| p95 read latency (ms) | 2.67 |
+| p50 read latency (ms) | 0.67 |
+| idle RSS (KiB) | 64068 |
+| loaded RSS (KiB) | 70908 |
+| cold start to /ready (ms) | 6193 |
+| full suite wall time | 421263 ms |
+| release path wall time | 901 ms |
 
 No threshold is a pass/fail condition; the report is the deliverable.

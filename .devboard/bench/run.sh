@@ -113,8 +113,8 @@ rss() {
 }
 
 ts_latency='{"p95Ms":0,"p50Ms":0}'
-rust_latency=$(cd "$harness" && "$rust" bench --port "$rust_port" --iterations "$iterations")
 rust_idle=$(rss "$rust_pid")
+rust_latency=$(cd "$harness" && "$rust" bench --port "$rust_port" --iterations "$iterations")
 rust_loaded=$(rss "$rust_pid")
 ts_idle=0
 ts_loaded=0
