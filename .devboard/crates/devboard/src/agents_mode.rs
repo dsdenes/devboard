@@ -2363,6 +2363,9 @@ struct AgentsMode {
     shared: Arc<Shared>,
     prompts: PromptController,
     adapters: Vec<Adapter>,
+    /// The cap the families start their peers through. A family's live peers
+    /// are its own slots here, which is narrower than its worker running.
+    governor: Arc<crate::resources::Governor>,
     signatures: Mutex<HashMap<&'static str, String>>,
     /// The last projected snapshot of each family. The poll replaces it when
     /// the family changes, and a connect replay, `getAgents`, a Start's answer,
@@ -2374,6 +2377,10 @@ struct AgentsMode {
     /// The 250 ms poll rebuilds and serializes a family only after this
     /// changes, so an idle dashboard does no projection work at all.
     poll_signatures: Mutex<HashMap<&'static str, u64>>,
+    /// The live peer count each family's last snapshot carried. A slot that
+    /// frees or a peer that starts changes the snapshot while the family's own
+    /// state stands still, so the poll owes a rebuild on this count alone.
+    poll_peers: Mutex<HashMap<&'static str, u32>>,
     /// Serializes snapshot publication, so a poll that read the state before a
     /// stop proof cannot store its older projection after the final one.
     publish_lock: Mutex<()>,
@@ -2408,13 +2415,20 @@ impl Adapter {
         }
     }
 
-    fn snapshot(&self) -> Value {
-        match self {
+    /// The family's projection with its live governed peers attached. `peers`
+    /// is how many cap slots the family's starter holds right now: a worker
+    /// between cadence ticks still reads `running` while it holds none.
+    fn snapshot(&self, peers: u32) -> Value {
+        let mut snapshot = match self {
             Adapter::Repo(family) => family.snapshot(),
             Adapter::Watchdog(family) => family.snapshot(),
             Adapter::Mcp(family) => family.snapshot(),
             Adapter::Release(family) => family.snapshot(),
+        };
+        if let Some(object) = snapshot.as_object_mut() {
+            object.insert("peers".to_string(), json!(peers));
         }
+        snapshot
     }
 
     /// The answer a Start command publishes: the polled projection with the
@@ -2820,9 +2834,11 @@ impl AgentsMode {
             },
             shared,
             adapters: ordered,
+            governor: Arc::clone(&app.resources),
             signatures: Mutex::new(HashMap::new()),
             cached: Mutex::new(HashMap::new()),
             poll_signatures: Mutex::new(HashMap::new()),
+            poll_peers: Mutex::new(HashMap::new()),
             publish_lock: Mutex::new(()),
             settle_until: Mutex::new(0),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
@@ -2921,19 +2937,29 @@ impl AgentsMode {
         for adapter in &self.adapters {
             adapter.schedule_forge(weak, has_clients, now);
         }
+        // One slot read answers every family: the cap's own grouping is the
+        // only source a running worker and the deferral line both report from.
+        let peers = self.governor.active_by_starter();
         for adapter in &self.adapters {
             adapter.poll_activity(&self.shared);
-            if self.poll_should_rebuild(adapter) {
-                self.publish_if_changed(adapter);
+            let held = peers.get(adapter.descriptor().label).copied().unwrap_or(0);
+            if self.poll_should_rebuild(adapter, held) {
+                self.publish_if_changed_with(adapter, held);
             }
         }
+    }
+
+    /// How many cap slots this family's starter holds right now.
+    fn peers_for(&self, adapter: &Adapter) -> u32 {
+        self.governor.active_for(adapter.descriptor().label)
     }
 
     /// Whether the poll owes this family a projection. A family whose state
     /// fingerprint is unchanged is neither rebuilt nor serialized, and a
     /// family with an in-flight start, stop, or timer read is always rebuilt
-    /// because its snapshot changes with time alone.
-    fn poll_should_rebuild(&self, adapter: &Adapter) -> bool {
+    /// because its snapshot changes with time alone. A peer that started or
+    /// ended changes the projection while the family's state stands still.
+    fn poll_should_rebuild(&self, adapter: &Adapter, peers: u32) -> bool {
         let signature = adapter.poll_signature();
         let changed = {
             let Ok(mut signatures) = self.poll_signatures.lock() else {
@@ -2941,6 +2967,12 @@ impl AgentsMode {
             };
             let previous = signatures.insert(adapter.id(), signature);
             previous != Some(signature)
+        };
+        let peers_changed = {
+            let Ok(mut counts) = self.poll_peers.lock() else {
+                return true;
+            };
+            counts.insert(adapter.id(), peers) != Some(peers)
         };
         // A projection that still reads `stopping` after the family has no
         // pending stop is stale: rebuild it once, even when the disk
@@ -2953,15 +2985,20 @@ impl AgentsMode {
             .map(|snapshot| snapshot.get("lifecycle").and_then(Value::as_str) == Some("stopping"))
             .unwrap_or(false)
             && !adapter.has_live_workers();
-        changed || stale_stop || adapter.rebuild_always()
+        changed || peers_changed || stale_stop || adapter.rebuild_always()
     }
 
     fn publish_if_changed(&self, adapter: &Adapter) {
+        let peers = self.peers_for(adapter);
+        self.publish_if_changed_with(adapter, peers);
+    }
+
+    fn publish_if_changed_with(&self, adapter: &Adapter, peers: u32) {
         let _publish = self
             .publish_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = adapter.snapshot();
+        let snapshot = adapter.snapshot(peers);
         self.store_projection(adapter, &snapshot);
         let text = crate::jsjson::stringify(&snapshot);
         let changed = {
@@ -3001,13 +3038,13 @@ impl AgentsMode {
                 return value.clone();
             }
         }
-        let snapshot = adapter.snapshot();
+        let snapshot = adapter.snapshot(self.peers_for(adapter));
         self.store_projection(adapter, &snapshot);
         snapshot
     }
 
     fn publish_agent(&self, adapter: &Adapter) {
-        let agent = adapter.snapshot();
+        let agent = adapter.snapshot(self.peers_for(adapter));
         self.store_projection(adapter, &agent);
         let text = crate::jsjson::stringify(&agent);
         if let Ok(mut signatures) = self.signatures.lock() {
@@ -3048,7 +3085,7 @@ impl AgentsMode {
         // Start's worker proves itself by publishing its lock, and the answer
         // must show it. The page-open read is `answer_refresh`, which never
         // walks the state tree.
-        let agent = adapter.snapshot();
+        let agent = adapter.snapshot(self.peers_for(adapter));
         self.store_projection(adapter, &agent);
         conn.send(json!({
             "type": "agentState",

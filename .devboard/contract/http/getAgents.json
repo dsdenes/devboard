@@ -50,7 +50,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "watchdog",
@@ -93,7 +94,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "design",
@@ -137,7 +139,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "dead-code",
@@ -181,7 +184,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "mcp-optimizer",
@@ -224,7 +228,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "api-standards",
@@ -268,7 +273,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "single-responsibility",
@@ -312,7 +318,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "consistent-naming",
@@ -356,7 +363,8 @@
             "lastScan": null,
             "error": null,
             "timer": null,
-            "workers": []
+            "workers": [],
+            "peers": 0
           },
           {
             "id": "release-train",
@@ -401,6 +409,7 @@
             "error": null,
             "timer": null,
             "workers": [],
+            "peers": 0,
             "run": null,
             "gate": null
           }

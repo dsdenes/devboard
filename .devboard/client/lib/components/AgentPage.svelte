@@ -85,6 +85,13 @@
     return earliest;
   }
 
+  /** A running family's cap occupancy: the deferral line's `<starter> <count>`. */
+  function peerCountLabel(peers: number): string {
+    if (peers === 0) return "no peer";
+    if (peers === 1) return "1 peer";
+    return `${peers} peers`;
+  }
+
   function cycleLine(cycle: AgentCycle): string {
     const parts = [cycle.at, cycle.action];
     const window = `${cycle.window.start ?? "—"} – ${cycle.window.end ?? "—"}`;
@@ -275,6 +282,21 @@
       testid="agent-header"
     >
       {#snippet meta()}
+        <!-- `running` is the worker process, not its work: a family between
+             cadence ticks holds no cap slot, and this count is the one the
+             Issues deferral line groups by starter. -->
+        {#if lifecycle === "running"}
+          <span
+            class="badge"
+            data-tone={snapshot !== null && snapshot.peers > 0 ? "accent" : undefined}
+            data-testid="agent-peers"
+            data-peers={snapshot?.peers ?? 0}
+            aria-label="Agent peers holding the cap"
+            title="Agent peers this family holds against the global cap right now"
+          >
+            {peerCountLabel(snapshot?.peers ?? 0)}
+          </span>
+        {/if}
         {#if snapshot !== null && snapshot.workers.length > 0}
           <span class="agent-workers" data-testid="agent-workers" aria-label="Live workers">
             {#each snapshot.workers as worker (worker.pid)}

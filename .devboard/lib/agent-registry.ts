@@ -188,6 +188,12 @@ export interface AgentSnapshot {
   timer: AgentTimerGate | null;
   /** Every live worker of this family, whatever version started it. */
   workers: AgentWorker[];
+  /**
+   * Cap slots this family's starter holds right now. A worker between cadence
+   * ticks still reads `running` while it holds none, so this is the count the
+   * deferral line names.
+   */
+  peers: number;
 }
 
 /** What an adapter publishes; the registry validates and normalizes it. */
@@ -216,6 +222,8 @@ export interface AgentSnapshotInput {
   error?: string | null;
   timer?: AgentTimerGate | null;
   workers?: AgentWorker[];
+  /** Optional so an adapter of an older server keeps projecting. */
+  peers?: number;
 }
 
 /** The prompt section's source: one harness prompt file, or a stated absence. */
@@ -676,6 +684,12 @@ export function projectAgentSnapshot(
       error: timer.error,
     };
   }
+  // A server of this version sends the count; the older frame projected 0,
+  // which is what a family holding no peer reads.
+  const peers = input.peers ?? 0;
+  if (typeof peers !== "number" || !Number.isInteger(peers) || peers < 0) {
+    throw new AgentRegistryError(`${descriptor.id}: peers must be a whole count`);
+  }
   return {
     id: descriptor.id,
     label: descriptor.label,
@@ -709,6 +723,7 @@ export function projectAgentSnapshot(
     error: nullableTimestamp(input.error),
     timer: projectedTimer,
     workers: normalizeWorkers(descriptor, input.workers),
+    peers,
   };
 }
 

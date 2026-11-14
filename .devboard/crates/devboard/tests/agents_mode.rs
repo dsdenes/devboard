@@ -2514,6 +2514,71 @@ async fn an_unchanged_snapshot_is_not_rebroadcast() {
     );
 }
 
+/// One governor slot file as a live peer of its starter would write it.
+fn write_slot(directory: &Path, id: &str, starter: &str) {
+    let pid = std::process::id();
+    write_json(
+        &directory.join(format!("{id}.json")),
+        json!({
+            "id": id,
+            "pid": pid,
+            "pidStart": devboard::resources::process_start_ticks(pid),
+            "kind": "peer",
+            "starter": starter,
+            "label": "omp acp",
+            "startedAt": "2026-11-14T00:00:00.000Z",
+        }),
+    );
+}
+
+#[tokio::test]
+async fn a_family_snapshot_carries_its_live_peer_count() {
+    // `lifecycle` is the worker process: a family between cadence ticks reads
+    // `running` while it holds no cap slot. The snapshot's `peers` is the
+    // count the deferral line groups by starter, so the page can state it.
+    let root = scratch("family-peers");
+    let app = app_at(&root);
+    let slots = root.join("state").join("resources").join("slots");
+    std::fs::create_dir_all(&slots).expect("a slots directory");
+    write_slot(&slots, "a", "Auto Scout");
+    write_slot(&slots, "b", "Auto Scout");
+    write_slot(&slots, "c", "MCP optimizer");
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    app.open(&conn).await;
+    let initial = frames(&mut inbox);
+    let listed = initial
+        .iter()
+        .rev()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .and_then(|frame| frame.get("agents"))
+        .and_then(Value::as_array)
+        .expect("the connect replay's agents frame");
+    let count = |id: &str| {
+        listed
+            .iter()
+            .find(|agent| agent.get("id").and_then(Value::as_str) == Some(id))
+            .map(|agent| agent["peers"].clone())
+            .expect("a listed family")
+    };
+    assert_eq!(count("scout"), json!(2), "{listed:?}");
+    assert_eq!(count("mcp-optimizer"), json!(1), "{listed:?}");
+    assert_eq!(count("dead-code"), json!(0), "{listed:?}");
+
+    // A peer ending changes the projection while the family's own state stands
+    // still: the poll owes the page this update, and only this family's.
+    std::fs::remove_file(slots.join("b.json")).expect("the ended slot");
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    devboard::agents_mode::poll_once(&app);
+    let after = frames(&mut inbox);
+    let scout = agent(&after, "scout").expect("the republished scout snapshot");
+    assert_eq!(scout["peers"], 1, "{scout:?}");
+    assert!(
+        agent(&after, "dead-code").is_none(),
+        "an unchanged family was rebroadcast: {after:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_get_agents_read_never_starves_the_poll() {
     let root = scratch("read-poll");

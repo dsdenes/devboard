@@ -994,6 +994,26 @@ impl Governor {
         self.live_slots().len() as u32
     }
 
+    /// The live slots grouped by the starter that created each one. The counts
+    /// sum to [`Governor::active_agents`], and a slot an older harness wrote
+    /// without a starter counts as `unknown`.
+    pub fn active_by_starter(&self) -> BTreeMap<String, u32> {
+        cap_groups(&self.live_slots())
+            .into_iter()
+            .map(|group| (group.starter, group.count))
+            .collect()
+    }
+
+    /// How many live slots one starter holds. A family between cadence ticks
+    /// holds none, which is narrower than its worker still running.
+    pub fn active_for(&self, starter: &str) -> u32 {
+        cap_groups(&self.live_slots())
+            .into_iter()
+            .find(|group| group.starter == starter)
+            .map(|group| group.count)
+            .unwrap_or(0)
+    }
+
     /// Records one deferral in `deferrals.jsonl` and the dashboard journal.
     /// The same label is recorded at most once per [`DEFERRAL_DEDUPE_MS`].
     pub fn record_deferral(&self, kind: &str, label: &str, reason: &DeferReason) {
@@ -1936,6 +1956,38 @@ Pages purgeable:                           250.\n";
         );
         assert!(!settings_path(&directory).exists());
         assert_eq!(governor.settings(), governor.defaults());
+    }
+
+    #[test]
+    fn the_live_peers_are_counted_per_starter() {
+        let directory = scratch("peers-per-starter");
+        let governor = test_governor(&directory);
+        assert!(governor.active_by_starter().is_empty());
+        let first = governor
+            .try_acquire("peer", "Auto Scout", "scan 1")
+            .expect("a slot");
+        let second = governor
+            .try_acquire("peer", "Auto Scout", "scan 2")
+            .expect("a second slot");
+        let third = governor
+            .try_acquire("peer", "MCP optimizer", "cycle 1")
+            .expect("a third slot");
+        assert_eq!(
+            governor.active_by_starter(),
+            BTreeMap::from([
+                ("Auto Scout".to_string(), 2),
+                ("MCP optimizer".to_string(), 1),
+            ])
+        );
+        assert_eq!(governor.active_for("Auto Scout"), 2);
+        assert_eq!(governor.active_for("MCP optimizer"), 1);
+        // A family between cadence ticks holds none while its worker runs.
+        assert_eq!(governor.active_for("Dead Code"), 0);
+        drop(first);
+        drop(second);
+        drop(third);
+        assert!(governor.active_by_starter().is_empty());
+        assert_eq!(governor.active_for("Auto Scout"), 0);
     }
 
     #[test]

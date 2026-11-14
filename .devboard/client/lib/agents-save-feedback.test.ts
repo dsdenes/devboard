@@ -102,6 +102,7 @@ function scout(minutes: number, maxPerHour: number | null, maxPending: number | 
     error: null,
     timer: null,
     workers: [],
+    peers: 0,
   };
 }
 

@@ -2628,8 +2628,12 @@ A Start answers its `starting` snapshot before the preflight. That answer restat
 the poll already published and replaces only the facts the command changed — an in-flight start,
 the run identity the spawn named, its notice, and its error — so `POST /agents/{id}/runs` never
 reads a family's state tree, and neither the preview frame nor the frame after the spawn pays for
-one. The 1000 ms poll fingerprints each family's durable state and serializes a snapshot only after
-the fingerprint changes; an idle dashboard rebroadcasts nothing. A `GET /agents` read is answered
+one. The 1000 ms poll fingerprints each family's durable state, reads the cap's live slots once
+for every family, and serializes a snapshot only after either changes; an idle dashboard
+rebroadcasts nothing. Every family snapshot carries `peers`, the live governed slots whose starter
+is the family's label. A family between cadence ticks reads lifecycle `running` while `peers` is
+zero, so the agent page states that count beside the state and a running worker holding no peer is
+visibly idle rather than looking like it holds the cap. A `GET /agents` read is answered
 from the same current snapshots and does not wait for a provider or a worker. Only the connect
 replay defers the poll, inside its one-second settle window; a read never does, because a running
 family's page polls that read every second and a deferred poll would freeze the snapshot the read
@@ -3933,9 +3937,10 @@ recorded with its reason under `<STATE_DIR>/resources/`, and the Overview states
 `issue #<n> deferred: <A> agent peer(s) already run at the cap of <C> (<starter> <count>, ...); the start is deferred`.
 `<C>` is the effective saved cap, `<A>` is the number of live governed slots, and each `<starter>`
 is the starter name recorded on the slots that starter created. Groups are ordered by count
-descending, then starter name ascending, and the counts sum to `<A>`. That line is the deferral in
-force, not a message: the worker recomputes it on every pass and drops it as soon as no start is
-deferred — a peer ends, the queue empties, or the worker pauses or stops — so the Overview never
+descending, then starter name ascending, and the counts sum to `<A>`. The same grouping answers
+each family's agent-page `peers` count, so the line and the page name one set of live peers.
+That line is the deferral in force, not a message: the worker recomputes it on every pass and
+drops it as soon as no start is deferred — a peer ends, the queue empties, or the worker pauses or stops — so the Overview never
 keeps claiming peers that no longer run. A deferral-shaped value an older harness left in
 `notice` is never rendered as a notice. Operator feedback keeps its own
 `data-testid="issues-notice"` line.

@@ -221,6 +221,35 @@ test("a frame without workers renders the page with no live worker row", () => {
   expect(agents.snapshot("release-train")?.workers).toEqual([]);
 });
 
+test("a running family states the peers it holds against the cap", () => {
+  const idle = present(releaseSnapshot({ lifecycle: "running", peers: 0 }));
+  const idlePeers = within(idle.container).getByTestId("agent-peers");
+  expect(idlePeers.textContent?.trim()).toBe("no peer");
+  expect(idlePeers.getAttribute("data-peers")).toBe("0");
+  expect(idlePeers.hasAttribute("data-tone")).toBe(false);
+
+  const busy = present(releaseSnapshot({ lifecycle: "running", peers: 1 }));
+  const one = within(busy.container).getByTestId("agent-peers");
+  expect(one.textContent?.trim()).toBe("1 peer");
+  expect(one.getAttribute("data-tone")).toBe("accent");
+
+  const many = present(releaseSnapshot({ lifecycle: "running", peers: 3 }));
+  const three = within(many.container).getByTestId("agent-peers");
+  expect(three.textContent?.trim()).toBe("3 peers");
+  expect(three.getAttribute("aria-label")).toBe("Agent peers holding the cap");
+});
+
+test("a stopped family renders no peer count", () => {
+  const view = present(releaseSnapshot({ lifecycle: "stopped", peers: 0 }));
+  expect(within(view.container).queryByTestId("agent-peers")).toBeNull();
+});
+
+test("a frame from a server without peers reads no peer", () => {
+  const view = present(releaseSnapshot({ lifecycle: "running" }));
+  expect(agents.snapshot("release-train")?.peers).toBe(0);
+  expect(within(view.container).getByTestId("agent-peers").textContent?.trim()).toBe("no peer");
+});
+
 test("the activity dot names the worker's own start while Last run keeps the cadence", () => {
   const workerStart = "2026-11-10T08:00:00.000Z";
   const lastScan = "2026-11-14T09:55:00.000Z";

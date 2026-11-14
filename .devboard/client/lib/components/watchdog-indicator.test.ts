@@ -62,6 +62,7 @@ function snapshot(action: string): AgentSnapshot {
     error: null,
     timer: null,
     workers: [],
+    peers: 0,
   };
 }
 
