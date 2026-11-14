@@ -68,6 +68,16 @@ pub const RELEASE_SUITE_BUDGET: Duration =
     Duration::from_secs(3_600 * release_suite::RELEASE_SUITE_MAX_ATTEMPTS as u64);
 /// The client bundle rebuild and embed allowance.
 pub const PUBLISH_BUNDLE_ALLOWANCE: Duration = Duration::from_secs(1_800);
+/// The embed step's share of that allowance: copying the built bundle where the
+/// binary reads it is the cheap half, so the client build keeps the rest.
+pub const PUBLISH_EMBED_ALLOWANCE: Duration = Duration::from_secs(300);
+/// The client build's own bound: the bundle allowance less the embed's share,
+/// so the two commands together never outrun the one allowance
+/// [`publish_budget`] counts. A client build inside a slice at its memory high
+/// mark has taken over six minutes, and a bound below the allowance would fail
+/// a rebuild the publish's own budget still allows.
+pub const PUBLISH_CLIENT_BUILD_TIMEOUT: Duration =
+    Duration::from_secs(PUBLISH_BUNDLE_ALLOWANCE.as_secs() - PUBLISH_EMBED_ALLOWANCE.as_secs());
 /// The release build workflow's allowance.
 pub const PUBLISH_BUILD_ALLOWANCE: Duration = Duration::from_secs(1_800);
 /// The workflow dispatch allowance.
@@ -2486,6 +2496,13 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         // A client bundle older than the checkout is rebuilt from the released
         // sources before anything is proven or tagged.
         if dist_is_stale(&args.harness_root)? {
+            // The rebuild is the longest silent step of a release on a loaded
+            // host, so the run records it as it starts: a bundle phase that
+            // lasts minutes is work in progress, not a peer that stopped.
+            progress.record(PublishProgressRecord::new(
+                "bundle",
+                "rebuilding the client bundle from the released sources",
+            ));
             rebuild_client(&args, runner.as_ref(), &log).await?;
             progress.record(PublishProgressRecord::new(
                 "bundle",
@@ -5196,7 +5213,14 @@ async fn rebuild_client(
         );
     }
     (log)("rebuilding the client bundle from the released sources");
-    run_bun(args, runner, &["run", "build"], "rebuild the client bundle").await?;
+    run_bun(
+        args,
+        runner,
+        &["run", "build"],
+        "rebuild the client bundle",
+        PUBLISH_CLIENT_BUILD_TIMEOUT,
+    )
+    .await?;
     // The binary embeds `crates/devboard/assets`, never `dist`: the embed step
     // is what puts this run's bundle where the release build reads it.
     (log)("embedding the rebuilt client the binary serves");
@@ -5205,6 +5229,7 @@ async fn rebuild_client(
         runner,
         &["scripts/embed-client.mjs"],
         "embed the rebuilt client",
+        PUBLISH_EMBED_ALLOWANCE,
     )
     .await?;
     Ok(())
@@ -5248,11 +5273,15 @@ fn bun_program(environment: &Environment) -> String {
 }
 
 /// Runs one Bun command in the harness root and refuses a nonzero exit.
+///
+/// `timeout` is the command's whole bound: the caller spends the bundle
+/// allowance across the commands, so the pair never outlives it.
 async fn run_bun(
     args: &PublishArgs,
     runner: &dyn CommandRunner,
     arguments: &[&str],
     what: &str,
+    timeout: Duration,
 ) -> Result<()> {
     let outcome = runner
         .run(CommandInvocation {
@@ -5263,7 +5292,7 @@ async fn run_bun(
                 .collect(),
             cwd: args.harness_root.clone(),
             env: args.environment.clone(),
-            timeout: Duration::from_secs(900),
+            timeout,
         })
         .await;
     if outcome.code != 0 {
@@ -6361,6 +6390,50 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
             runner.invocations.lock().expect("recorded").is_empty(),
             "no git command ran"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn the_client_rebuild_spends_the_bundle_allowance_on_its_two_commands() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../.test-tmp")
+            .join(format!("bundle-bounds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("package.json"), "{}\n").unwrap();
+
+        let mut args = PublishArgs::new(&root);
+        args.harness_root = root.clone();
+        let runner = IntegrationRecorder {
+            invocations: Mutex::new(Vec::new()),
+        };
+        let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_| {});
+        rebuild_client(&args, &runner, &log)
+            .await
+            .expect("the rebuild runs");
+
+        let invocations = runner.invocations.lock().expect("recorded").clone();
+        assert_eq!(invocations.len(), 2, "the build and its embed");
+        assert_eq!(invocations[0].args, ["run", "build"]);
+        assert_eq!(invocations[1].args, ["scripts/embed-client.mjs"]);
+        // A client build inside a slice at its memory high mark has outlasted a
+        // quarter of an hour, so its bound is the allowance itself.
+        assert_eq!(invocations[0].timeout, PUBLISH_CLIENT_BUILD_TIMEOUT);
+        assert!(
+            invocations[0].timeout > Duration::from_secs(900),
+            "the build keeps more than the old quarter hour: {:?}",
+            invocations[0].timeout
+        );
+        assert_eq!(invocations[1].timeout, PUBLISH_EMBED_ALLOWANCE);
+        let spent: Duration = invocations
+            .iter()
+            .map(|invocation| invocation.timeout)
+            .sum();
+        assert_eq!(
+            spent, PUBLISH_BUNDLE_ALLOWANCE,
+            "the pair never outlives the one allowance the publish budget counts"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
