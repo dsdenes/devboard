@@ -1153,16 +1153,18 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
     if let Ok(run_dir) = std::env::var(devboard::publish::RELEASE_RUN_DIR_VARIABLE) {
         let run_dir = PathBuf::from(run_dir);
         args.progress_path = Some(run_dir.join(devboard::publish::PUBLISH_PROGRESS_FILE));
-        if let Some((request_target, request_version)) = devboard::publish::run_request(&run_dir) {
+        if let Some(request) = devboard::publish::run_request(&run_dir) {
             if let Some(requested) = target.as_deref() {
-                if requested.trim() != request_target {
+                if requested.trim() != request.target {
                     anyhow::bail!(
-                        "--target {requested} differs from the run's request target {request_target}"
+                        "--target {requested} differs from the run's request target {}",
+                        request.target
                     );
                 }
             }
-            args.target = Some(request_target);
-            args.expected_version = Some(request_version);
+            args.target = Some(request.target);
+            args.expected_version = Some(request.version);
+            args.expected_range = Some(request.range);
         }
     }
     if args.target.is_none() {

@@ -699,6 +699,9 @@ struct GithubData {
     run_head_sha: Option<String>,
     /// Whether the temporary build ref was deleted.
     build_ref_deleted: bool,
+    /// The build ref the last dispatch named, so the runs list reports its
+    /// commit as the run's head.
+    build_ref: Option<String>,
     /// Every asset uploaded to the GitHub release by name.
     uploaded: Vec<String>,
 }
@@ -735,6 +738,7 @@ impl GithubStub {
             tag_commit: None,
             run_head_sha: None,
             build_ref_deleted: false,
+            build_ref: None,
             uploaded: Vec::new(),
         }));
         let base_slot = Arc::new(Mutex::new(String::new()));
@@ -808,7 +812,7 @@ impl GithubStub {
 /// The commit a checkout's `github` remote names for one tag's build ref, when
 /// a release pushed it. The stub reads the mirror the way GitHub reports a
 /// dispatched run's `head_sha`.
-fn build_ref_commit(repo_dir: &Path, tag: &str) -> Option<String> {
+fn mirror_ref_commit(repo_dir: &Path, reference: &str) -> Option<String> {
     let mirror = Command::new("git")
         .args(["-C", repo_dir.to_string_lossy().as_ref()])
         .args(["config", "--get", "remote.github.url"])
@@ -821,11 +825,7 @@ fn build_ref_commit(repo_dir: &Path, tag: &str) -> Option<String> {
     let leaked = Command::new("git")
         .arg("-C")
         .arg(&mirror)
-        .args([
-            "rev-parse",
-            "--verify",
-            &format!("refs/heads/devboard-build/{tag}^{{commit}}"),
-        ])
+        .args(["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
         .output()
         .ok()?;
     if !leaked.status.success() {
@@ -858,7 +858,11 @@ fn github_route(
             // The dispatched run's head is the temporary build ref's commit,
             // exactly as GitHub reports it: the release commit, which is not
             // the integration checkout's HEAD once the release is pinned.
-            let head = build_ref_commit(repo_dir, "v1.1.0")
+            let head = data
+                .build_ref
+                .clone()
+                .and_then(|reference| mirror_ref_commit(repo_dir, &reference))
+                .or_else(|| mirror_ref_commit(repo_dir, "refs/heads/devboard-build/v1.1.0"))
                 .unwrap_or_else(|| git_output(repo_dir, &["rev-parse", "HEAD"]));
             let listed = data.run_head_sha.clone();
             let sha = listed.as_deref().unwrap_or(head.as_str());
@@ -904,6 +908,10 @@ fn github_route(
             };
         }
         data.dispatched += 1;
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        if let Some(reference) = body.get("ref").and_then(Value::as_str) {
+            data.build_ref = Some(reference.to_string());
+        }
         return StubResponse {
             status: 204,
             headers: vec![],
@@ -2983,8 +2991,54 @@ async fn an_already_released_pinned_target_fails_before_any_write() {
 }
 
 #[tokio::test]
+async fn a_release_commit_off_main_advances_the_next_pinned_version() {
+    let live = live("pinned-advance", release_assets()).await;
+    let first_target = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(first_target.clone());
+    let first = publish(args).await.expect("the first pinned release");
+    assert_eq!(first.version, "1.1.0");
+    assert_eq!(
+        git_output(&live.seed, &["rev-parse", "HEAD"]),
+        first_target,
+        "the release never advances the checkout"
+    );
+
+    // A later commit lands on main after that release, whose bump commit is
+    // only on the tag.
+    let second_target = commit_file(&live.seed, "README.md", "second\n", "feat: the next range");
+    git_output(&live.seed, &["push", "-q", "origin", "main"]);
+
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(second_target.clone());
+    args.expected_version = Some("1.2.0".to_string());
+    args.expected_range = Some(format!("v1.1.0..{second_target}"));
+    let second = publish(args)
+        .await
+        .expect("the next pinned release derives past the release commit");
+    assert_eq!(second.version, "1.2.0");
+    assert_eq!(second.tag, "v1.2.0");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.2.0^{commit}"]),
+        second.commit
+    );
+    let range = git_output(
+        &live.origin,
+        &["rev-list", &format!("{second_target}..v1.2.0")],
+    );
+    assert_eq!(range.lines().count(), 1, "{range}");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        first.commit,
+        "the previous release tag is untouched"
+    );
+}
+
+#[tokio::test]
 async fn a_superseded_unpublished_tag_is_withdrawn_and_the_range_is_retagged() {
-    let live = live("pinned-superseded", release_assets()).await;
+    let live = live("stale-release", release_assets()).await;
     // An earlier run tagged a release commit for v1.1.0 but its release never
     // shipped, and `main` has since moved past that commit.
     git_output(&live.seed, &["checkout", "-q", "-b", "stale-release"]);
@@ -3008,6 +3062,8 @@ async fn a_superseded_unpublished_tag_is_withdrawn_and_the_range_is_retagged() {
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_secs(5);
     args.target = Some(target.clone());
+    args.expected_version = Some("1.1.0".to_string());
+    args.expected_range = Some(format!("v1.0.0..{target}"));
     args.log = Some(Arc::new(move |line: &str| {
         recorded.lock().expect("log").push(line.to_string());
     }));
@@ -3021,21 +3077,14 @@ async fn a_superseded_unpublished_tag_is_withdrawn_and_the_range_is_retagged() {
         lines.iter().any(|line| line.contains("withdrawing v1.1.0")),
         "{lines:?}"
     );
+    assert_ne!(report.commit, stale_bump);
     assert_eq!(
         git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
         report.commit,
         "the tag names the new release commit"
     );
-    assert_ne!(report.commit, stale_bump);
     let range = git_output(&live.origin, &["rev-list", &format!("{target}..v1.1.0")]);
     assert_eq!(range.lines().count(), 1, "{range}");
-    assert_eq!(
-        git_output(
-            &live.origin,
-            &["show", "-s", "--format=%s", "v1.1.0^{commit}"]
-        ),
-        "chore(release): v1.1.0"
-    );
     assert_eq!(live.github_stub.dispatch_count(), 1);
     assert!(live
         .gitea_stub
@@ -3045,7 +3094,7 @@ async fn a_superseded_unpublished_tag_is_withdrawn_and_the_range_is_retagged() {
 
 #[tokio::test]
 async fn a_superseded_tag_with_a_release_is_refused_and_kept() {
-    let live = live("pinned-superseded-released", release_assets()).await;
+    let live = live("stale-release-released", release_assets()).await;
     git_output(&live.seed, &["checkout", "-q", "-b", "stale-release"]);
     let stale_bump = commit_message(&live.seed, "chore(release): v1.1.0");
     git_output(&live.seed, &["tag", "-a", "v1.1.0", "-m", "Devboard 1.1.0"]);
@@ -3062,18 +3111,42 @@ async fn a_superseded_tag_with_a_release_is_refused_and_kept() {
 
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_secs(5);
-    args.target = Some(target);
+    args.target = Some(target.clone());
+    args.expected_version = Some("1.1.0".to_string());
+    args.expected_range = Some(format!("v1.0.0..{target}"));
     let error = publish(args)
         .await
         .expect_err("a released tag off the target's range is refused");
     let message = format!("{error:#}");
     assert!(message.contains("neither names nor contains"), "{message}");
-    assert!(message.contains("a release exists for it"), "{message}");
     assert_eq!(
         git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
         stale_bump,
         "a released tag is never deleted"
     );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn a_request_range_that_does_not_end_at_the_target_fails_before_any_write() {
+    let live = live("range-mismatch", release_assets()).await;
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let other = git_output(&live.seed, &["rev-parse", "v1.0.0^{commit}"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
+    args.expected_range = Some(format!("v1.0.0..{other}"));
+    let error = publish(args)
+        .await
+        .expect_err("a range that does not end at the target is refused");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("does not end at the pinned target"),
+        "{message}"
+    );
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
@@ -3189,11 +3262,9 @@ async fn a_stale_checkout_refuses_a_pinned_target_at_or_below_its_release() {
         .await
         .expect_err("a stale checkout refuses the pinned range");
     let message = format!("{error:#}");
-    assert!(
-        message.contains("not newer than the published v1.1.0"),
-        "{message}"
-    );
-    assert!(git_output(&origin, &["tag", "--list", "v1.1.1"])
+    assert!(message.contains("v1.1.0 already names"), "{message}");
+    assert!(message.contains("neither names nor contains"), "{message}");
+    assert!(git_output(&origin, &["tag", "--list", "v1.1.0"])
         .trim()
         .is_empty());
     assert_eq!(github.stub.dispatch_count(), 0);

@@ -174,6 +174,60 @@ fn workspace(label: &str) -> Workspace {
 /* ------------------------------------------------------------------------ */
 
 #[tokio::test]
+async fn a_release_commit_off_main_moves_the_gate_past_that_release() {
+    let fixture = fixture("gate-off-main", true);
+    // An earlier pinned release: its bump commit lives only on the tag.
+    git(&fixture.repo, &["checkout", "-q", "-b", "release"]);
+    git(
+        &fixture.repo,
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "chore(release): v1.1.0",
+        ],
+    );
+    git(
+        &fixture.repo,
+        &["tag", "-a", "v1.1.0", "-m", "Devboard 1.1.0"],
+    );
+    let release_commit = git(&fixture.repo, &["rev-parse", "HEAD"]);
+    git(&fixture.repo, &["checkout", "-q", "main"]);
+    git(&fixture.repo, &["branch", "-q", "-D", "release"]);
+    git(&fixture.repo, &["push", "-q", "origin", "--tags"]);
+    let target = commit(&fixture.repo, "feat: after that release");
+
+    let gate = check_release_train(
+        &fixture.repo,
+        ReleaseTrainGateOptions {
+            fetch: false,
+            ..ReleaseTrainGateOptions::default()
+        },
+    );
+    match gate {
+        ReleaseTrainGate::Unreleased {
+            target: gated,
+            previous,
+            range,
+            version,
+            release_commits,
+            ..
+        } => {
+            assert_eq!(gated, target);
+            let previous = previous.expect("the release tag anchors the range");
+            assert_eq!(previous.tag, "v1.1.0");
+            assert_eq!(range, format!("v1.1.0..{target}"));
+            assert_eq!(version, "1.2.0");
+            assert_eq!(release_commits.len(), 1);
+            assert_eq!(release_commits[0].sha, target);
+            assert_ne!(target, release_commit);
+        }
+        other => panic!("expected an unreleased range, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_tag_at_the_branch_tip_leaves_nothing_to_release() {
     let fixture = fixture("gate-released", true);
     let gate = check_release_train(&fixture.repo, ReleaseTrainGateOptions::default());

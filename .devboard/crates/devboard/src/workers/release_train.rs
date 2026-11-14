@@ -1654,25 +1654,51 @@ fn release_tag_regex() -> &'static regex::Regex {
 // Refusals carry the gate's full explanation so callers can surface it as-is;
 // boxing a cold failure path would only add indirection.
 #[allow(clippy::result_large_err)]
+/// Every release tag of the pinned line: its commit is merged into `target`,
+/// or the commit's parent is (one release commit past a tip of this line).
+///
+/// A pinned release commits its bump only on the tag and never advances
+/// `main`, so the newest release is not merged into the target. Anchoring the
+/// line on the release commit's parent keeps the next gate moving past that
+/// release, while a tag an operator made elsewhere satisfies neither test and
+/// never moves the range base.
 fn merged_tags(run: &GateGit, target: &str) -> Result<Vec<ReleaseTrainTag>, ReleaseTrainGate> {
-    let result = run(&["tag", "--merged", target, "--list", "v*"]);
-    if result.code != 0 {
+    let listed = run(&["tag", "--list", "v*"]);
+    if listed.code != 0 {
         return Err(gate_failure(
-            &format!("could not read the release tags merged into {target}"),
-            &result,
+            &format!("could not read the release tags for {target}"),
+            &listed,
         ));
     }
     let mut tags = Vec::new();
-    for line in result.stdout.split('\n') {
-        let line = line.trim();
-        if let Some(captures) = release_tag_regex().captures(line) {
-            let version = captures.get(1).map(|entry| entry.as_str()).unwrap_or("");
-            if !version.is_empty() {
-                tags.push(ReleaseTrainTag {
-                    tag: format!("v{version}"),
-                    version: version.to_string(),
-                });
-            }
+    for line in listed
+        .stdout
+        .split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Some(captures) = release_tag_regex().captures(line) else {
+            continue;
+        };
+        let version = captures.get(1).map(|entry| entry.as_str()).unwrap_or("");
+        if version.is_empty() {
+            continue;
+        }
+        let peeled = format!("refs/tags/{line}^{{commit}}");
+        let commit = run(&["rev-parse", &peeled]);
+        if commit.code != 0 {
+            continue;
+        }
+        let commit = commit.stdout.trim().to_string();
+        let merged = run(&["merge-base", "--is-ancestor", &commit, target]).code == 0;
+        let parent = run(&["rev-parse", &format!("{commit}^")]);
+        let parent_merged = parent.code == 0
+            && run(&["merge-base", "--is-ancestor", parent.stdout.trim(), target]).code == 0;
+        if merged || parent_merged {
+            tags.push(ReleaseTrainTag {
+                tag: line.to_string(),
+                version: version.to_string(),
+            });
         }
     }
     Ok(tags)
@@ -3123,6 +3149,7 @@ async fn run_release_and_verify(
     // the gate waits for the next tick instead of widening this release.
     publish_args.target = Some(input.request.target.clone());
     publish_args.expected_version = Some(input.request.version.clone());
+    publish_args.expected_range = Some(input.request.range.clone());
     publish_args.progress_path = Some(input.run_dir.join(crate::publish::PUBLISH_PROGRESS_FILE));
     publish_args.log = {
         let activity = input.activity.clone();

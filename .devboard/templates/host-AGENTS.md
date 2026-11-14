@@ -171,9 +171,11 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   Start control.
 - **Cadence.** The default is 10 minutes, and the field accepts 1 through 1440 minutes.
 - **Gate.** The worker fetches `origin/main` and its tags and compares that tip with the newest
-  `v<version>` tag reachable from it. Unreleased means at least one non-merge commit after that
-  tag; with no release tag, every non-merge commit is unreleased. Only merge commits release
-  nothing. An unreadable remote, tag, or commit read records a failure and starts no agent.
+  release tag of the line: a tag whose commit is merged into the tip, or whose commit's parent is
+  (a pinned release commits its bump only on the tag and never advances `main`). Unreleased means
+  at least one non-merge commit after that tag; with no release tag, every non-merge commit is
+  unreleased. Only merge commits release nothing. An unreadable remote, tag, or commit read
+  records a failure and starts no agent.
 - **Singleton.** At most one release agent run exists per repository. A second worker of the same
   harness version refuses to start while one is live; a cadence tick or Check now during an active
   run starts nothing. After a run ends, the next due tick may start one.
