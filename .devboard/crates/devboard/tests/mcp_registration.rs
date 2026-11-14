@@ -223,15 +223,53 @@ impl Drop for Fixture {
     }
 }
 
+/// A local release at the installed version, so doctor proves the manifest and
+/// artifact digest from the fixture instead of reading the public GitHub
+/// release over the network.
+fn local_release(fixture: &Fixture) -> PathBuf {
+    use sha2::{Digest, Sha256};
+
+    let release = fixture.mkdir("release");
+    let target = devboard::release::current_target().unwrap();
+    let bytes = b"the platform artifact";
+    let digest: String = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(release.join(format!("devboard-{target}.tar.xz")), bytes).unwrap();
+    fs::write(
+        release.join("devboard-manifest.json"),
+        serde_json::to_string(&serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "tag": format!("v{}", env!("CARGO_PKG_VERSION")),
+            "assets": [{
+                "target": target,
+                "url": format!("https://github.test/devboard-{target}.tar.xz"),
+                "sha256": digest,
+            }],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    release
+}
+
 /// The doctor environment a fixture proves itself against: only the tools a
-/// probe needs, so no inherited forge address or PATH `devboard` decides.
+/// probe needs and a local release directory, so no inherited forge address,
+/// no PATH `devboard`, and no network decides.
 fn clean_environment(fixture: &Fixture) -> HashMap<String, String> {
     let tools = fixture.mkdir("tools");
     fixture.stub("tools/omp", "omp");
-    HashMap::from([(
-        "PATH".to_string(),
-        format!("{}:/usr/bin:/bin", tools.display()),
-    )])
+    HashMap::from([
+        (
+            "PATH".to_string(),
+            format!("{}:/usr/bin:/bin", tools.display()),
+        ),
+        (
+            "DEVBOARD_RELEASE_URL".to_string(),
+            local_release(fixture).display().to_string(),
+        ),
+    ])
 }
 
 fn stub_stdout(output: &Output) -> String {
