@@ -1841,10 +1841,15 @@ fn record_flow_checkpoint(
     };
     let summary = non_empty(args.get("summary"), "summary")?;
     let files = match args.get("files") {
-        None => 0f64,
-        Some(value) => match value.as_f64() {
-            Some(number) if number.is_finite() && number.fract() == 0.0 && number >= 0.0 => number,
-            _ => return Err("files must be a non-negative integer.".to_string()),
+        None => 0u64,
+        Some(value) => match value.as_u64().or_else(|| {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite() && number.fract() == 0.0 && *number >= 0.0)
+                .map(|number| number as u64)
+        }) {
+            Some(number) => number,
+            None => return Err("files must be a non-negative integer.".to_string()),
         },
     };
     let verification = match args.get("verification") {

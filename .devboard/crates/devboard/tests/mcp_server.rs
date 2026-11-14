@@ -1463,3 +1463,65 @@ async fn one_answering_dashboard_reports_live_with_its_own_running_version() {
     assert_eq!(status["version"]["installed"], "9.9.9");
     assert_eq!(status["versionState"], "latest");
 }
+
+/// `flow_checkpoint_record` writes the file count as an integer, so every
+/// reader's `as_u64` extraction keeps it. A whole-valued float reaches the
+/// tool through the schema's integer rule and is stored as an integer too;
+/// a fractional or negative count is refused and appends nothing.
+#[tokio::test]
+async fn a_recorded_checkpoint_writes_its_file_count_as_an_integer() {
+    let context = fixture("checkpoint-files");
+    let session_directory = context.state_dir.join("flow").join("session-a");
+    std::fs::create_dir_all(&session_directory).expect("the flow session directory");
+    let requests = vec![
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "flow_checkpoint_record", "arguments": {
+            "sessionDir": "session-a",
+            "commit": "0123456789abcdef",
+            "summary": "one unit",
+            "files": 2,
+            "verification": "passed",
+        }}}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "flow_checkpoint_record", "arguments": {
+            "sessionDir": "session-a",
+            "commit": "fedcba9876543210",
+            "summary": "a whole-valued float",
+            "files": 2.0,
+        }}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "flow_checkpoint_record", "arguments": {
+            "sessionDir": "session-a",
+            "commit": "0123456789abcdef",
+            "summary": "a fractional count",
+            "files": 2.5,
+        }}}),
+        json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "flow_checkpoint_record", "arguments": {
+            "sessionDir": "session-a",
+            "commit": "0123456789abcdef",
+            "summary": "a negative count",
+            "files": -1,
+        }}}),
+    ];
+    let frames = drive(&context, &requests).await;
+    let recorded = tool_result(&frames, 1);
+    assert_eq!(recorded["id"], "checkpoint-0123456", "{recorded}");
+    let path = session_directory.join("checkpoints.jsonl");
+    let text = std::fs::read_to_string(&path).expect("the checkpoint log");
+    let lines: Vec<Value> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("a checkpoint line"))
+        .collect();
+    assert_eq!(lines.len(), 2, "the refusals append nothing");
+    for line in &lines {
+        assert_eq!(line["files"], json!(2), "{line}");
+        assert_eq!(line["files"].as_u64(), Some(2), "{line}");
+    }
+
+    for id in [3, 4] {
+        let refused = reply(&frames, id);
+        assert_eq!(refused["result"]["isError"], true, "id {id} is refused");
+        let text = refused["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text");
+        assert!(text.contains("files"), "id {id} names the field: {text}");
+    }
+}

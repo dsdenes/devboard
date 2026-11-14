@@ -1588,6 +1588,24 @@ fn bounded_tail(text: &str) -> String {
     text.chars().skip(count - OUTPUT_TAIL_MAX).collect()
 }
 
+/// The file count a stored checkpoint names. A record written as an integer
+/// reads directly; one written as a whole-valued float by an earlier recorder
+/// keeps its count instead of dropping to zero.
+fn checkpoint_files(value: Option<&Value>) -> u64 {
+    let Some(value) = value else {
+        return 0;
+    };
+    value
+        .as_u64()
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite() && *number >= 0.0)
+                .map(|number| number as u64)
+        })
+        .unwrap_or(0)
+}
+
 /// One stored checkpoint, with the defaults the reference applies to a record
 /// that names only its commit.
 fn checkpoint_from_value(entry: &Value) -> Option<FlowCheckpoint> {
@@ -1609,7 +1627,7 @@ fn checkpoint_from_value(entry: &Value) -> Option<FlowCheckpoint> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        files: entry.get("files").and_then(Value::as_u64).unwrap_or(0),
+        files: checkpoint_files(entry.get("files")),
         commit: commit.to_string(),
         verification: verification_status(entry.get("verification")),
     })
@@ -4448,7 +4466,7 @@ impl FlowMode {
                                 .and_then(Value::as_str)
                                 .map(str::to_string)
                                 .unwrap_or_else(|| subject.clone()),
-                            files: record.get("files").and_then(Value::as_u64).unwrap_or(0),
+                            files: checkpoint_files(record.get("files")),
                             commit: short.clone(),
                             verification: verification_status(record.get("verification")),
                         };
@@ -6369,6 +6387,22 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src b/new.md");
         assert_eq!(files[0].status, "renamed");
+    }
+
+    #[test]
+    fn a_checkpoint_records_its_file_count_as_a_whole_number() {
+        let record = json!({"commit": "0123456789abcdef", "files": 2});
+        let checkpoint = checkpoint_from_value(&record).expect("a checkpoint");
+        assert_eq!(checkpoint.files, 2);
+
+        // A line an earlier recorder wrote as a float keeps its count instead
+        // of falling back to zero.
+        let legacy: Value =
+            serde_json::from_str(r#"{"commit":"0123456789abcdef","files":2.0}"#).expect("a line");
+        let restored = checkpoint_from_value(&legacy).expect("a restored checkpoint");
+        assert_eq!(restored.files, 2);
+        assert_eq!(checkpoint_files(None), 0);
+        assert_eq!(checkpoint_files(Some(&json!("2"))), 0);
     }
 
     #[test]
