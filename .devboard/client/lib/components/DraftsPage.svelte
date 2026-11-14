@@ -12,6 +12,7 @@
   import ConfirmDialog from "./ConfirmDialog.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
+  import PageHeader from "./ui/page-header.svelte";
 
   /**
    * The Draft goals surface. It mounts only while the Draft goals tab is
@@ -72,15 +73,14 @@
 </script>
 
 <section class="issues-drafts-page" data-testid="issues-drafts" aria-label="Goal drafts">
-  <header class="issues-overview__header">
-    <div>
-      <h1 class="issues-overview__title">Draft goals</h1>
-      <p class="issues-overview__repo mono" title={issues.repoLabel}>
-        {issues.repoLabel} · {goalDrafts.draftStatus} ·
-        {draftsUnreadable ? "drafts unreadable" : `${goalDrafts.drafts.length} draft(s)`}
-      </p>
-    </div>
-  </header>
+  <PageHeader
+    flat
+    title="Draft goals"
+    subtitle={`${issues.repoLabel} · ${goalDrafts.draftStatus} · ${
+      draftsUnreadable ? "drafts unreadable" : `${goalDrafts.drafts.length} draft(s)`
+    }`}
+    testid="issues-drafts-header"
+  />
   <div class="issues-drafts__body" data-empty={hasDrafts || draftsUnreadable ? undefined : "true"}>
     <section class="panel">
       <div class="panel__header">

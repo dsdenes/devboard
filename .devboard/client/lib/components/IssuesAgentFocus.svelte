@@ -9,6 +9,7 @@
   import Button from "./ui/button.svelte";
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
+  import PageHeader from "./ui/page-header.svelte";
 
   interface Props {
     tab: WorkspaceTab;
@@ -70,24 +71,29 @@
     waiting={agent?.question != null}
   />
   <div class="issues-agent-focus__scroll">
-    <header class="issues-overview__header">
-      <div>
-        <p class="muted">Issues · agent</p>
-        <h1 class="issues-overview__title" title={tab.title}>{tab.title}</h1>
-        <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
+    <PageHeader
+      flat
+      eyebrow="Issues · agent"
+      title={tab.title}
+      subtitle={issues.repoLabel}
+      testid="issues-agent-focus-header"
+    >
+      {#snippet meta()}
         <p class="muted mono" data-testid="issues-agent-focus-version">
           worker {versionLabel(harnessVersion)}
         </p>
-      </div>
-      <Button
-        variant="outline"
-        data-testid="issues-agent-focus-close"
-        data-command="tab.close"
-        onclick={close}
-      >
-        Close
-      </Button>
-    </header>
+      {/snippet}
+      {#snippet actions()}
+        <Button
+          variant="outline"
+          data-testid="issues-agent-focus-close"
+          data-command="tab.close"
+          onclick={close}
+        >
+          Close
+        </Button>
+      {/snippet}
+    </PageHeader>
 
     {#if unavailable}
       <div class="panel" data-testid="issues-agent-focus-unavailable">

@@ -1645,49 +1645,7 @@ kbd {
   overflow: visible;
 }
 
-/* Shared by every Discover page. */
-.discover-page__header {
-  align-items: flex-start;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  justify-content: space-between;
-}
-
-.discover-page__heading {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.discover-page__title {
-  color: var(--foreground);
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* The overview names the project path, so a long identity truncates with a tooltip. */
-.discover-page__title--truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.discover-page__subtitle {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 1.45;
-  margin: 0;
-  max-width: 72ch;
-}
-
-/* The frame's optional meta line: mono-small, muted, one dense row. */
+/* Shared by every Discover page: the frame itself is the shared PageHeader. */
 .discover-page__meta {
   align-items: center;
   color: var(--muted-foreground);
@@ -1699,19 +1657,6 @@ kbd {
   gap: 4px 8px;
   line-height: 1.4;
   margin: 0;
-}
-
-.discover-page__actions {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 2px;
-}
-
-.discover-page__header--compact {
-  gap: 4px;
 }
 
 .discover-card {
@@ -2424,11 +2369,12 @@ a.code-chip--link:focus-visible {
 }
 
 /* One filter toolbar: a search field, a state switch, and a valued floor. */
-.discover-page__actions.discover-glossary-controls {
+.discover-glossary-controls {
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: 4px;
-  flex-basis: 100%;
+  display: flex;
+  flex: 1 1 100%;
   flex-wrap: wrap;
   gap: 8px;
   padding: 4px;
@@ -3027,45 +2973,6 @@ a.code-chip--link:focus-visible {
 .issues-overview {
   min-height: 0;
   overflow: hidden;
-}
-
-.issues-overview__header {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-/* Tracker text is unbounded: the identity column yields so the issue title
-   truncates on one line and the trailing badge and control stay inside. */
-.issues-overview__header > div {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.issues-overview__header > .badge,
-.issues-overview__header > button {
-  flex: 0 0 auto;
-}
-
-.issues-overview__title {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
-  margin: 2px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.issues-overview__repo {
-  font-size: 11.5px;
-  color: var(--muted-foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .issues-overview__body {

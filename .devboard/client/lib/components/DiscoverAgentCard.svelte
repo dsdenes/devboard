@@ -2,6 +2,7 @@
   import { discoverAgent } from "../../../lib/agent-registry.ts";
   import { discover } from "../discover.svelte";
   import CommandButton from "./CommandButton.svelte";
+  import PageHeader from "./ui/page-header.svelte";
 
   interface Props {
     agent: string;
@@ -27,11 +28,7 @@
     data-state={status}
     aria-label={descriptorLabel}
   >
-    <header class="discover-page__header discover-agent__header">
-      <div class="discover-page__heading">
-        <h1 class="discover-page__title">{descriptorLabel}</h1>
-      </div>
-    </header>
+    <PageHeader flat titleWrap title={descriptorLabel} testid="discover-agent-header" />
 
     {#if card?.error !== null && card?.error !== undefined}
       <p class="message" data-severity="error" data-testid="discover-agent-error" role="alert">

@@ -27,6 +27,7 @@
   import CommandButton from "./CommandButton.svelte";
   import CommandNotice from "./CommandNotice.svelte";
   import Input from "./ui/input.svelte";
+  import PageHeader from "./ui/page-header.svelte";
 
   const COMMAND_COLUMNS = [
     { id: "label", header: "Task", accessorKey: "label" },
@@ -667,35 +668,26 @@
 
   {@render remotePanel()}
 
-  <header class="discover-page__header">
-    <div class="discover-page__heading">
-      <h1
-        class="discover-page__title discover-page__title--truncate"
-        title={projectPath}
-      >
-        {projectName}
-      </h1>
-      {#if definitionText.length > 0}
-        <p
-          class="discover-page__subtitle"
-          data-testid="discover-definition"
-          data-field="definition"
-        >
-          {definitionText}
-        </p>
-      {/if}
+  <PageHeader
+    flat
+    title={projectName}
+    titleTooltip={projectPath || projectName}
+    subtitle={definitionText.length > 0 ? definitionText : undefined}
+    testid="discover-overview-header"
+  >
+    {#snippet meta()}
       {#if discover.hasArtifacts && freshness !== null}
         <p class="discover-page__meta" data-testid="discover-freshness">
           <span>{discoveredLabel(freshness.discoveredAt)}</span>
         </p>
       {/if}
-    </div>
-    <div class="discover-page__actions">
+    {/snippet}
+    {#snippet actions()}
       {#if discover.busy !== null}
         <span class="muted">{discover.busy}</span>
       {/if}
-    </div>
-  </header>
+    {/snippet}
+  </PageHeader>
 
   {@render questionPanel()}
 

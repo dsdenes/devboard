@@ -138,14 +138,12 @@
 
 {#if page === "overview"}
   <section class="issues-overview" data-testid="issues-overview" aria-label="Issues overview">
-    <header class="issues-overview__header">
-      <div>
-        <h1 class="issues-overview__title">Issue automation</h1>
-        <p class="issues-overview__repo mono" data-testid="issues-repo" title={issues.repoLabel}>
-          {issues.repoLabel}
-        </p>
-      </div>
-    </header>
+    <PageHeader
+      flat
+      title="Issue automation"
+      subtitle={issues.repoLabel}
+      testid="issues-overview-header"
+    />
 
     <div class="issues-overview__body">
       <div class="issues-overview__side" data-testid="issues-overview-side">
@@ -543,19 +541,17 @@
   <IssuesAgentFocus {tab} close={() => closeFocus(tab)} openRuns={openRuns} />
 {:else if page === "queue"}
   <section class="issues-queue-page" aria-label="Open issues">
-    <header class="issues-overview__header">
-      <div>
-        <h1 class="issues-overview__title">Open issues</h1>
-        <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
-      </div>
-      <span
-        class="badge"
-        data-tone={statusTone(queueState.working > 0 ? "running" : "pending")}
-        data-testid="issues-queue-summary"
-      >
-        {queueSummary(queueState)}
-      </span>
-    </header>
+    <PageHeader flat title="Open issues" subtitle={issues.repoLabel} testid="issues-queue-header">
+      {#snippet actions()}
+        <span
+          class="badge"
+          data-tone={statusTone(queueState.working > 0 ? "running" : "pending")}
+          data-testid="issues-queue-summary"
+        >
+          {queueSummary(queueState)}
+        </span>
+      {/snippet}
+    </PageHeader>
     <div class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Queue</h2>
@@ -610,12 +606,7 @@
   <DraftsPage />
 {:else}
   <section class="issues-runs-page" aria-label="Issues runs">
-    <header class="issues-overview__header">
-      <div>
-        <h1 class="issues-overview__title">Runs</h1>
-        <p class="issues-overview__repo mono" title={issues.repoLabel}>{issues.repoLabel}</p>
-      </div>
-    </header>
+    <PageHeader flat title="Runs" subtitle={issues.repoLabel} testid="issues-runs-header" />
     <div class="panel">
       <div class="panel__header">
         <h2 class="panel__title">Run history</h2>

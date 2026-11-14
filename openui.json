@@ -135,7 +135,7 @@
       }
     },
     "PageHeader": {
-      "description": "Page identity block shared by every workspace page: an optional overline eyebrow, one h1 title, an optional subtitle, an optional meta row, a right-aligned action group, and an optional footer band. layout=bar is the one-row operational variant; below a 300px identity floor the state/action cluster wraps under the identity so the page name never truncates. footer adds a full-width secondary band under a hairline for controls that configure the primary action. Actions must contain at most one filled primary. Source: .devboard/client/lib/components/ui/page-header.svelte.",
+      "description": "Page identity shared by every workspace page, the Issues pages, and the Discover pages: optional overline eyebrow, one h1 title, optional subtitle, optional meta row, right-aligned action group, optional footer band. Page-name rule: a data title truncates on one line with a tooltip; titleWrap wraps a fixed label. layout=bar is the one-row operational variant; below a 300px identity floor the state/action cluster wraps under the identity. wideActions gives the action group the row under the identity for a filter toolbar. footer adds a full-width secondary band under a hairline for controls that configure the primary action. At most one filled primary. Source: .devboard/client/lib/components/ui/page-header.svelte.",
       "example": "<PageHeader eyebrow=\"Plan\" title=\"Goal document\" layout=\"bar\">\n  {#snippet meta()}<span class=\"badge\">draft</span>{/snippet}\n  {#snippet actions()}<Button variant=\"default\">Save</Button>{/snippet}\n  {#snippet footer()}<Button variant=\"secondary\">Save cadence</Button>{/snippet}\n</PageHeader>",
       "props": {
         "eyebrow": {
@@ -144,8 +144,12 @@
         },
         "title": {
           "type": "string",
-          "description": "The page h1. 20px page-title type; truncates with a title tooltip and never wraps to a second line.",
+          "description": "The page h1. 20px page-title type. A title naming page data truncates on one line with a title tooltip; titleWrap wraps a fixed page label instead.",
           "required": true
+        },
+        "titleTooltip": {
+          "type": "string",
+          "description": "The full name the title tooltip carries; defaults to title. A page whose visible name abbreviates its data (a repository name over the project path) names the full value here."
         },
         "subtitle": {
           "type": "string",
@@ -175,6 +179,16 @@
         "flat": {
           "type": "boolean",
           "description": "Removes the surface fill, border, radius, and padding so a parent panel owns the frame.",
+          "default": false
+        },
+        "titleWrap": {
+          "type": "boolean",
+          "description": "Wraps an h1 that names a fixed page label instead of truncating it. The default truncates a title naming page data on one line and keeps its title tooltip; either way the full name stays reachable through the tooltip.",
+          "default": false
+        },
+        "wideActions": {
+          "type": "boolean",
+          "description": "Gives the action group the row under the identity, for a page whose actions are a filter toolbar rather than one or two controls.",
           "default": false
         },
         "testid": {

@@ -18,6 +18,7 @@
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
   import Input from "./ui/input.svelte";
+  import PageHeader from "./ui/page-header.svelte";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -62,6 +63,18 @@
   );
   const visibleTerms = $derived(
     discover.filteredContexts.reduce((total, context) => total + context.concepts.length, 0),
+  );
+  /** The glossary's identity line: the term count and the filter it reflects. */
+  const glossarySubtitle = $derived(
+    `${visibleTerms} of ${totalTerms} terms ${
+      discover.glossaryHasScores && discover.glossarySignificantOnly
+        ? `at or above a significance floor of ${discover.glossaryThreshold}`
+        : discover.glossaryHasScores
+          ? "with no significance floor applied"
+          : "with no significance scores published"
+    } across ${discover.contexts.length} ${
+      discover.contexts.length === 1 ? "bounded context" : "bounded contexts"
+    }.`,
   );
 
   /**
@@ -203,66 +216,53 @@
     data-tab="glossary"
     aria-label="Discover glossary"
   >
-    <header class="discover-page__header">
-      <div class="discover-page__heading">
-        <h1 class="discover-page__title">Glossary</h1>
-        <p class="discover-page__subtitle">
-          {visibleTerms} of {totalTerms} terms
-          {#if discover.glossaryHasScores && discover.glossarySignificantOnly}
-            at or above a significance floor of {discover.glossaryThreshold}
-          {:else if discover.glossaryHasScores}
-            with no significance floor applied
-          {:else}
-            with no significance scores published
-          {/if}
-          across {discover.contexts.length}
-          {discover.contexts.length === 1 ? "bounded context" : "bounded contexts"}.
-        </p>
-      </div>
-      <div class="discover-page__actions discover-glossary-controls">
-        <Input
-          id="discover-glossary-search"
-          class="discover-search"
-          type="search"
-          value={discover.glossarySearch}
-          oninput={(event) => discover.setGlossarySearch(event.currentTarget.value)}
-          placeholder="Search terms"
-          aria-label="Search glossary terms"
-          data-testid="discover-glossary-search"
-        />
-        <div class="discover-glossary-filters">
-          <label class="discover-toggle">
-            <input
-              type="checkbox"
-              checked={discover.glossarySignificantOnly}
-              disabled={!discover.glossaryHasScores}
-              aria-label="Significant only"
-              data-testid="discover-glossary-significant"
-              onchange={(event) => discover.setGlossarySignificantOnly(event.currentTarget.checked)}
-            />
-            <span class="discover-toggle__track" aria-hidden="true"></span>
-            <span class="discover-toggle__label">Significant only</span>
-          </label>
-          <span class="discover-glossary-divider" aria-hidden="true"></span>
-          <label class="discover-floor">
-            <span class="discover-floor__label">Floor</span>
-            <input
-              class="discover-floor__input"
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={discover.glossaryThreshold}
-              disabled={!discover.glossaryHasScores || !discover.glossarySignificantOnly}
-              aria-label="Significance floor a term needs to be listed"
-              data-testid="discover-glossary-threshold"
-              oninput={(event) => discover.setGlossaryThreshold(event.currentTarget.valueAsNumber)}
-            />
-            <output class="discover-floor__value">≥ {discover.glossaryThreshold}</output>
-          </label>
+    <PageHeader flat titleWrap wideActions title="Glossary" subtitle={glossarySubtitle}>
+      {#snippet actions()}
+        <div class="discover-glossary-controls">
+          <Input
+            id="discover-glossary-search"
+            class="discover-search"
+            type="search"
+            value={discover.glossarySearch}
+            oninput={(event) => discover.setGlossarySearch(event.currentTarget.value)}
+            placeholder="Search terms"
+            aria-label="Search glossary terms"
+            data-testid="discover-glossary-search"
+          />
+          <div class="discover-glossary-filters">
+            <label class="discover-toggle">
+              <input
+                type="checkbox"
+                checked={discover.glossarySignificantOnly}
+                disabled={!discover.glossaryHasScores}
+                aria-label="Significant only"
+                data-testid="discover-glossary-significant"
+                onchange={(event) => discover.setGlossarySignificantOnly(event.currentTarget.checked)}
+              />
+              <span class="discover-toggle__track" aria-hidden="true"></span>
+              <span class="discover-toggle__label">Significant only</span>
+            </label>
+            <span class="discover-glossary-divider" aria-hidden="true"></span>
+            <label class="discover-floor">
+              <span class="discover-floor__label">Floor</span>
+              <input
+                class="discover-floor__input"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value={discover.glossaryThreshold}
+                disabled={!discover.glossaryHasScores || !discover.glossarySignificantOnly}
+                aria-label="Significance floor a term needs to be listed"
+                data-testid="discover-glossary-threshold"
+                oninput={(event) => discover.setGlossaryThreshold(event.currentTarget.valueAsNumber)}
+              />
+              <output class="discover-floor__value">≥ {discover.glossaryThreshold}</output>
+            </label>
+          </div>
         </div>
-      </div>
-    </header>
+      {/snippet}
+    </PageHeader>
 
     {#if discover.contexts.length === 0}
       <section class="panel">
@@ -341,11 +341,7 @@
       data-tab={skillTab.id}
       aria-label={skillTab.label}
     >
-      <header class="discover-page__header discover-page__header--compact">
-        <div class="discover-page__heading">
-          <h1 class="discover-page__title">{skillTab.label}</h1>
-        </div>
-      </header>
+      <PageHeader flat titleWrap title={skillTab.label} testid="discover-skill-header" />
 
       <div class="discover-skill" data-testid="discover-skill" data-name={activeSkill}>
         <div class="panel discover-skill__panel">
@@ -388,16 +384,15 @@
     data-tab="warnings"
     aria-label="Discover warnings"
   >
-    <header class="discover-page__header">
-      <div class="discover-page__heading">
-        <h1 class="discover-page__title">Warnings</h1>
-        <p class="discover-page__subtitle">
-          {discover.displayedWarnings.length}
-          {discover.displayedWarnings.length === 1 ? "warning" : "warnings"} recorded while
-          validating the published artifacts.
-        </p>
-      </div>
-    </header>
+    <PageHeader
+      flat
+      titleWrap
+      title="Warnings"
+      subtitle={`${discover.displayedWarnings.length} ${
+        discover.displayedWarnings.length === 1 ? "warning" : "warnings"
+      } recorded while validating the published artifacts.`}
+      testid="discover-warnings-header"
+    />
 
     <section class="panel">
       <div class="panel__header">

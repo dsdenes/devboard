@@ -2,6 +2,7 @@
   import { relativeTime } from "../discover-format";
   import { discover } from "../discover.svelte";
   import type { ContributionFact } from "../types";
+  import PageHeader from "./ui/page-header.svelte";
 
   const contribution = $derived(discover.contribution);
   const sections = $derived(contribution?.sections ?? []);
@@ -64,21 +65,21 @@
   aria-label="Discover contribution"
 >
   <div data-testid="discover-contribution">
-  <header class="discover-page__header">
-    <div class="discover-page__heading">
-      <h1 class="discover-page__title">Contribution</h1>
-      <p class="discover-page__subtitle">
-        How to contribute to this repository and how its accepted pull requests are written.
-      </p>
-    </div>
-    {#if freshness !== null}
-      <div class="discover-page__actions">
+  <PageHeader
+    flat
+    titleWrap
+    title="Contribution"
+    subtitle="How to contribute to this repository and how its accepted pull requests are written."
+    testid="discover-contribution-header"
+  >
+    {#snippet actions()}
+      {#if freshness !== null}
         <span class="muted" data-testid="discover-freshness" title={freshness.discoveredAt}>
           {discoveredLabel}
         </span>
-      </div>
-    {/if}
-  </header>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
   {#if contribution === null}
     <section class="panel">

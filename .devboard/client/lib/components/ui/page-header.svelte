@@ -18,6 +18,24 @@
     /** Renders without the panel frame so a parent panel can own the border. */
     flat?: boolean;
     /**
+     * The one page-name rule, in two halves. A title naming page data — a
+     * project name, an issue title, a draft path — truncates on one line and
+     * keeps its `title` tooltip. A title naming a fixed page label wraps
+     * instead, so a long label is never cut. Default truncates.
+     */
+    titleWrap?: boolean;
+    /**
+     * The full name the tooltip carries. It defaults to `title`; a page whose
+     * visible name abbreviates its data — a repository name over the project
+     * path — names the full value here, so truncation never hides it.
+     */
+    titleTooltip?: string;
+    /**
+     * Gives the action group a full row under the identity, for a page whose
+     * actions are a filter toolbar rather than one or two controls.
+     */
+    wideActions?: boolean;
+    /**
      * `stacked` keeps the identity, meta, and actions on their own lines. `bar`
      * puts the title, subtitle, meta, and actions on one row for operational
      * pages whose status belongs beside the action it qualifies.
@@ -34,6 +52,9 @@
     actions,
     footer,
     flat = false,
+    titleWrap = false,
+    titleTooltip,
+    wideActions = false,
     layout = "stacked",
     testid,
   }: Props = $props();
@@ -43,6 +64,7 @@
   class="page-header"
   class:page-header--flat={flat}
   class:page-header--bar={layout === "bar"}
+  class:page-header--wide-actions={wideActions}
   data-testid={testid}
 >
   <div class="page-header__row">
@@ -51,7 +73,13 @@
         <p class="page-header__eyebrow">{eyebrow}</p>
       {/if}
       <div class="page-header__headline">
-        <h1 class="page-header__title" title={title}>{title}</h1>
+        <h1
+          class="page-header__title"
+          class:page-header__title--wrap={titleWrap}
+          title={titleTooltip ?? title}
+        >
+          {title}
+        </h1>
         {#if subtitle}
           <p class="page-header__subtitle">{subtitle}</p>
         {/if}
@@ -145,6 +173,16 @@
     white-space: nowrap;
   }
 
+  /* The wrap half of the page-name rule: a fixed page label wraps instead of
+     truncating, so a long label is never cut. The truncating default keeps the
+     ellipsis, the single line, and the title tooltip. */
+  .page-header__title--wrap {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
   .page-header__subtitle {
     color: var(--muted-foreground);
     font-size: 12px;
@@ -170,6 +208,12 @@
     justify-content: flex-end;
     max-width: 100%;
     min-width: 0;
+  }
+
+  /* An action group that is a filter toolbar takes the row under the identity
+     instead of competing with the title for the same line. */
+  .page-header--wide-actions .page-header__actions {
+    flex-basis: 100%;
   }
 
   /* The bar layout is one dense row: the title and repository on the left, then

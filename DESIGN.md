@@ -473,19 +473,28 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   at 12px, `muted-foreground` placeholder, `ring` focus ring. Disabled is 50% opacity.
 - **Panel** (`.panel` in `app.css`) — `surface` fill, 1px `border`, 4px radius, 30px header,
   8px body padding; the table container and the sidebar reuse the same surface and border rule.
-- **Page header** (`page-header.svelte`) — the first region of every workspace page: an optional
-  10px `overline` eyebrow, one 20px `page-title` `h1` (truncates with a tooltip, never wraps), an
-  optional 12px `body-small` subtitle, an optional meta row of badges and counts (4px rows, 12px
-  columns), and a right-aligned action group (6px gaps, one filled primary at most). It renders a
-  native `<header>`; `flat` drops the frame when a parent panel owns it. 10px 12px padding. The
-  `bar` layout is the operational variant: the eyebrow sits over one title/subtitle line and the
-  meta row moves into a right-aligned cluster beside the action group, so the state and the action
-  it qualifies share a 44px row with 8px 12px padding. A 300px identity floor is the page-name
-  guard: below it the meta/action cluster wraps under the identity instead of truncating the
-  title, and the subtitle ellipsizes. The stacked layout stays the default. An optional `footer`
-  snippet adds a full-width secondary band under a `border-subtle` hairline (6px 12px padding)
-  for controls that configure the primary action; it renders inside the header surface, its
-  groups wrap as units, and it never holds the filled primary.
+- **Page header** (`page-header.svelte`) — the first region of every workspace page, and the one
+  page identity: an optional 10px `overline` eyebrow, one 20px `page-title` `h1`, an optional 12px
+  `body-small` subtitle, an optional meta row of badges and counts (4px rows, 12px columns), and a
+  right-aligned action group (6px gaps, one filled primary at most). It renders a native
+  `<header>`; `flat` drops the frame when a parent panel owns it. 10px 12px padding. The
+  page-name rule is stated here once and has two halves: an `h1` naming page data (a project name,
+  an issue title) truncates on one line with `text-overflow: ellipsis` and a `title` tooltip,
+  while `titleWrap` makes an `h1` naming a fixed page label wrap instead of losing its end. The
+  tooltip always names the full value — `titleTooltip` when the visible name abbreviates its data,
+  the Overview's repository name over its project path — so the full name stays reachable either
+  way. The `bar` layout is the operational
+  variant: the eyebrow sits over one title/subtitle line and the meta row moves into a
+  right-aligned cluster beside the action group, so the state and the action it qualifies share a
+  44px row with 8px 12px padding. A 300px identity floor is the bar layout's page-name guard:
+  below it the meta/action cluster wraps under the identity instead of truncating the title, and
+  the subtitle ellipsizes. `wideActions` gives the action group the row under the identity, for a
+  page whose actions are a filter toolbar rather than one or two controls. The stacked layout
+  stays the default. An optional `footer` snippet adds a full-width secondary band under a
+  `border-subtle` hairline (6px 12px padding) for controls that configure the primary action; it
+  renders inside the header surface, its groups wrap as units, and it never holds the filled
+  primary. The Issues overview, Agents, Open issues, Runs, Draft goals, and agent-focus pages, and
+  every Discover page, render this component flat; none hand-builds its identity.
 - **Agent activity bar** (`.agent-activity-bar` in `AgentActivityBar.svelte`) — the one pinned bar
   every single-agent page shares: a `surface` card with a 1px `border` and 4px radius that never
   scrolls, because the page below it owns the scrolling region. Its 30px row expands the retained
@@ -604,8 +613,8 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `surface-raised` band under the panel header with `label` type, an 8px rhythm, and a
   right-aligned 6px action gap.
 - **Draft goals header** (`.issues-drafts-page .panel__header`) — the Draft goals page states
-  repository identity, workspace status, and draft count once, in the page header's `mono-small`
-  identity line (`<owner>/<repo> · idle · 0 draft(s)`); the Proposed goals panel header carries
+  repository identity, workspace status, and draft count once, in the shared page header's subtitle
+  (`<owner>/<repo> · idle · 0 draft(s)`); the Proposed goals panel header carries
   only its `panel-title` word and the creation action, with no second copy of the repository.
   `New goal` is that panel's single filled primary at `sm` size; while the creation band is open
   it drops to `secondary` so the band's `Create draft` owns the primary. The trigger keeps
@@ -778,11 +787,13 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   and the tint and dot never carry it alone. The document is read-only, so the band carries no
   Save or restore control. The chip ellipsizes with a full-path `title` while the state never
   shrinks or wraps.
-- **Discover page frame** (`.discover-page__header`) — optional `overline` eyebrow, one `h1`
-  `page-title`, a `body-small` subtitle, an optional `mono-small` meta row, and a right-aligned
-  action group. Drill-in pages put a ghost back control before the heading in DOM order. Page
-  sections are 24px apart; cards inside a column are 12px apart. The facts rail holds its grid
-  track between 320px and 420px, with 24px to the content column.
+- **Discover page frame** — every Discover page renders the shared **Page header** flat, so the
+  drill-in pages (Glossary, Contribution, Warnings, a skill, an agent) and the Overview share one
+  identity, one page-name rule, and one action group; no `.discover-page__*` header markup or
+  typography remains. The Overview's project name truncates because it names page data, and its
+  `mono-small` freshness line is the header's meta row. Page sections are 24px apart; cards inside
+  a column are 12px apart. The facts rail holds its grid track between 320px and 420px, with 24px
+  to the content column.
 - **Discover run control** (`.discover-run__stop`) — the active Discover run's one control,
   rendered in the trailing slot of the shared agent activity bar instead of a separate run
   header: a 24px quiet destructive word `Stop` at 11px, transparent fill, `border-subtle`
