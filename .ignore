@@ -1,0 +1,10 @@
+# Build trees and scratch state are generated, never source. Agent searches
+# and crawls read this root, so keep their walks out of the trees a build or a
+# test run rewrites.
+.worktree/
+target/
+.tmp/
+.devboard/.tmp/
+.devboard/.test-tmp/
+node_modules/
+dist/
