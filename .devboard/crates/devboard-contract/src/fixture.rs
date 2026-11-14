@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use devboard::config::Config;
 use devboard::http::Server;
@@ -112,6 +113,11 @@ fn seed_held_restore(state: &Path, repo: &Path) -> Result<(), String> {
     let hold = root.join(devboard::flow_mode::RESTORE_HOLD_FILE);
     std::fs::write(&hold, "").map_err(|error| format!("{}: {error}", hold.display()))
 }
+
+/// How long a dropped fixture waits for its dashboard to stop. A fixture that
+/// never stops is reported instead of joined, because a test suite with no
+/// per-test bound must never hang on a dashboard.
+const FIXTURE_STOP_BOUND: Duration = Duration::from_secs(120);
 
 /// One fixture dashboard over a copied repository, removed when it is dropped.
 ///
@@ -217,7 +223,14 @@ impl Fixture {
                 // every waiter is woken and the server ends before the root
                 // this fixture created goes away.
                 let _ = stop.await;
+                // `notify_waiters` wakes only the waiters registered at this
+                // instant. A fixture dropped right after it starts may not
+                // have been polled yet, so the server registers its graceful
+                // shutdown after this call and would wait forever. The permit
+                // `notify_one` leaves behind completes that first wait
+                // whenever it happens.
                 shared.shutdown.notify_waiters();
+                shared.shutdown.notify_one();
                 let _ = serving.await;
                 devboard::app::graceful_shutdown(&app).await;
             });
@@ -249,10 +262,26 @@ impl Drop for Fixture {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        if let Some(served) = self.served.take() {
-            let _ = served.join();
+        let Some(served) = self.served.take() else {
+            let _ = std::fs::remove_dir_all(&self.root);
+            return;
+        };
+        let deadline = Instant::now() + FIXTURE_STOP_BOUND;
+        while !served.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
-        let _ = std::fs::remove_dir_all(&self.root);
+        if served.is_finished() {
+            let _ = served.join();
+            let _ = std::fs::remove_dir_all(&self.root);
+            return;
+        }
+        // The root and the dashboard stay: a test that asserts they are gone
+        // fails on this line's message instead of hanging forever.
+        eprintln!(
+            "the fixture dashboard at {} did not stop within {} s",
+            self.base,
+            FIXTURE_STOP_BOUND.as_secs()
+        );
     }
 }
 
