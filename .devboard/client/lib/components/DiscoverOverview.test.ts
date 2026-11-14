@@ -336,6 +336,19 @@ test("a missing shared-kernels leaf drops only that card", () => {
   expect(chip(view.container, "PostgreSQL")).not.toBeNull();
 });
 
+test("two external boundaries render one plain chip each and count two systems", () => {
+  discover.state = state({});
+  architectureSection().externalBoundaries = leaf(["PostgreSQL", "Stripe"]);
+  const view = render(DiscoverOverview);
+  const boundaries = card(view.container, "external-boundaries");
+
+  expect(boundaries?.querySelectorAll(".code-chip")).toHaveLength(2);
+  expect(
+    boundaries?.querySelector(".panel__subtitle")?.textContent?.trim().replace(/\s+/g, " "),
+  ).toBe("2 systems");
+  expect(boundaries?.querySelectorAll('a[href^="vscode://"]')).toHaveLength(0);
+});
+
 function contextsValue(value: Array<Record<string, unknown>>): void {
   const payload = discover.state as DiscoverStatePayload;
   const architecture = payload.sheet?.architecture as {
@@ -365,6 +378,26 @@ test("a named context without a path still renders its row", () => {
   const row = view.container.querySelector("li.discover-context");
   expect(row?.getAttribute("data-context")).toBe("Orders");
   expect(row?.textContent).toContain("Owns records.");
+});
+
+test("a context's path renders no chip while its entry points do", () => {
+  discover.state = state({ "src/checkout": DIRECTORY, "src/checkout/flow.ts": FILE });
+  const view = render(DiscoverOverview);
+  const row = view.container.querySelector('li.discover-context[data-context="Checkout"]');
+  const texts = [...(row?.querySelectorAll(".code-chip") ?? [])].map(
+    (element) => element.textContent?.trim() ?? "",
+  );
+
+  expect(texts).toEqual(["src/checkout/flow.ts"]);
+  expect(anchor(view.container, "src/checkout/flow.ts")?.getAttribute("href")).toBe(FILE);
+  expect(anchor(view.container, "src/checkout")).toBeNull();
+});
+
+test("a dependency direction renders no row", () => {
+  discover.state = state({});
+  const view = render(DiscoverOverview);
+
+  expect(view.container.textContent).not.toContain("Checkout depends on Orders.");
 });
 
 function commandsValue(value: Record<string, unknown>): void {

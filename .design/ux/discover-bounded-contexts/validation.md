@@ -16,60 +16,76 @@ changed.
   on branch `bounded-contexts-widget` at base `547819c`. They are retained as history; they are not
   evidence for the cards as shipped, and every row in this file that described the earlier layout
   is superseded.
+- Checks: the DOM-level assertions below run in the client component suite; no browser runner
+  renders this page.
 
 ## Commands
 
-From `.worktree/issue-1140/.devboard`:
+From `.devboard`, the package root that declares both scripts:
 
-- `bun install --frozen-lockfile` → 206 packages installed.
-- `bun run build` → `dist/index.html` and assets, built in 6.18s on the rebased revision.
-- `bun run verify:interface` → exit 0:
-  `verify:interface: shell, modes, sidebar, pages, splits, palette, keyboard, theme, tables,
-  read-only documents, terminals, accessibility, notifications, status bar, issues mode, ask
-  transcript, persistence, sidebar run state, and boundary passed`
-- Wireframe: headless Chrome at 390 and 1440 CSS px reports `scrollWidth === clientWidth`
-  (390/390 and 1440/1440) with no element past the viewport edge.
+- `bun run build` → `vite build` writes `dist/index.html` and its assets, then
+  `scripts/embed-client.mjs` embeds that bundle into the server. It exercises none of the three
+  cards.
+- `bun run test:client` → `scripts/test-client.mjs` runs the client suite, including
+  `client/lib/components/DiscoverOverview.test.ts`, which is the runner for every assertion below.
 
-## Widget assertions the verifier covers
+## Assertions the component suite covers
 
-The Discover stage of `verify:interface` drives the stub sheet and asserts, among others:
+`client/lib/components/DiscoverOverview.test.ts` renders `DiscoverOverview.svelte` against the stub
+sheet in `happy-dom` and asserts, for the three cards:
 
-- at least one context row renders (`contextRows > 0`);
-- no context renders a repository path (`contextPathChips === 0`);
-- the architecture card renders no boundary fact row (`boundaryFacts === 0`);
-- `External boundaries` is a card of its own with one chip per system;
-- `Shared kernels` is a card of its own with one chip per kernel;
-- no Discover panel or table scrolls inside the page, and no card clips its own rows.
+- at least one context row renders, keyed by the context name and carrying its responsibility —
+  `a named context without a path still renders its row`;
+- a context whose only fact is a repository path renders no row and adds no `N contexts` count —
+  `a context record with only a path renders no row and no count`;
+- a context's `path` renders no chip and no VS Code link while its entry points render theirs —
+  `a context's path renders no chip while its entry points do`;
+- no dependency-direction row renders — `a dependency direction renders no row`;
+- `External boundaries` is a card of its own (`data-field="external-boundaries"`) rendering one
+  plain `code` chip per system, an `N system`/`N systems` count, and no VS Code link —
+  `two external boundaries render one plain chip each and count two systems`;
+- `Shared kernels` is a card of its own (`data-field="shared-kernels"`) rendering one chip per
+  kernel with an `N kernel`/`N kernels` count —
+  `one shared kernel links to VS Code and counts one kernel`,
+  `two shared kernels stay plain and count two kernels`;
+- a missing `sharedKernels` leaf drops that card only, leaving `External boundaries` rendering —
+  `a missing shared-kernels leaf drops only that card`;
+- the unknown and observed-empty states of the `Shared kernels` card render their own sentence in
+  place of chips — `an unknown shared-kernels leaf renders its reason instead of the empty line`,
+  `an observed empty shared-kernels leaf renders the empty line`.
 
-The chips' link handoff is asserted by the component suite, not the interface stage:
+The chips' link handoff is asserted by the same suite, not by a browser stage:
 `DiscoverOverview.test.ts` renders an entry-point file, an entry-point directory, and a manifest as
-anchors carrying the `vscode://file/` href, keeps a missing path, an absolute or escaping value, and
-every external-boundary chip a plain `code` element, and renders no path link while a remote target
-is shown.
+anchors carrying the `vscode://file/` href, keeps a missing path, a command, and every
+external-boundary chip a plain `code` element, keeps an absolute, parent-relative, and escaping
+entry point plain, and renders no path link while a remote target is shown.
 
 ## State coverage
 
 |State|Structure|Evidence|
 |---|---|---|
-|Observed|Context rows with name, optional responsibility, optional entry-point chips; each boundary card one chip per value plus a count subtitle|verifier: context-row and boundary-chip assertions|
-|No contexts|`No bounded context was detected.` in place of the list; the boundary cards are unaffected|markup branch in `DiscoverOverview.svelte`|
-|Unknown contexts|The contexts leaf's reason replaces the list|`unknownText` branch|
-|Empty boundaries|`External boundaries` shows `None detected.`; `Shared kernels` shows `No shared kernel was detected.`|markup branches|
-|Unknown boundaries|The affected card shows `unknown — <reason>` in place of chips|`unknownText` branch|
+|Observed|Context rows with name, optional responsibility, optional entry-point chips; each boundary card one chip per value plus a count subtitle|named-context row, context-path, external-boundary chip, and shared-kernel chip assertions in `DiscoverOverview.test.ts`|
+|No contexts|`No bounded context was detected.` in place of the list; the boundary cards are unaffected|markup branch in `DiscoverOverview.svelte`; not asserted|
+|Unknown contexts|The contexts leaf's reason replaces the list|`unknownText` branch; not asserted|
+|Empty boundaries|`External boundaries` shows `None detected.`; `Shared kernels` shows `No shared kernel was detected.`|markup branches; only the `Shared kernels` one is asserted|
+|Unknown boundaries|The affected card shows `unknown — <reason>` in place of chips|`unknownText` branch; only the `Shared kernels` one is asserted|
 |Partial row|A context with no responsibility and no entry points renders its name alone|markup conditionals|
-|Missing boundary leaf|That card is absent; the other cards render|leaf guards|
+|Missing boundary leaf|That card is absent; the other cards render|`a missing shared-kernels leaf drops only that card`|
 
 ## Findings during this pass
 
 1. The record and the shipped cards disagreed: the inventory kept the path and the direction as
    `Keep? yes`, the structure described one role-map card, and the A2UI and wireframe files carried
    a role-map region and a direction row. #230 and #1091 had already removed the path chip and the
-   direction row, and the verifier asserts their absence. The record now names those removals.
+   direction row; the component suite asserts both absences. The record now names those removals.
 2. The record described the boundary groups as role rows inside the context card; shipped, each
    group is its own rail card below `Stack`. Structure, component requirements, and the wireframe
    now show the three cards.
 3. A15 cited the dependency graph widget; #2ee5ffb6 dropped it. The inventory now records that
    nothing draws the observed edges.
+4. The record named a script, a browser stage, and a worktree that the harness no longer carries.
+   It now names the two `package.json` scripts that run and the component suite file that holds
+   each assertion, so every claim points at a runner a reader can start.
 
 ## Duplicate and redundancy check
 
@@ -79,11 +95,24 @@ is shown.
 
 ## Not run
 
-- A live-model Discover crawl: the change is documentation, and the shipped verifier drives the
-  deterministic stub sheet.
-- New browser screenshots of the three cards: the verifier's Discover assertions are the evidence
-  for this revision, and the earlier screenshots are marked superseded above.
-- Storybook and the validation server: no OpenUI primitive, story, DTCG token, or component changed.
+- No Discover panel or table scrolls inside the page, and no card clips its own rows: the harness
+  carries no browser layout check for this page. `.devboard/e2e/` holds only agents, forge, issues,
+  polling, report, soak, and transport specs beside its shared dashboard helpers, and no spec opens
+  Discover; the component suite renders in `happy-dom`, which computes no layout — so a clipped or
+  internally scrolling card passes every assertion above. The missing check is a Discover layout
+  stage in `.devboard/e2e/`.
+- The previous pass's viewport measurement (`scrollWidth === clientWidth` at 390 and 1440 CSS px,
+  by hand in headless Chrome): no `.devboard/package.json` script runs it, so it is history rather
+  than a command this record can repeat.
+- The empty and unknown states of the contexts card and of the `External boundaries` card:
+  `DiscoverOverview.svelte` renders them, and only the `Shared kernels` states are asserted. The
+  missing check is a component assertion per state in `DiscoverOverview.test.ts`.
+- A live-model Discover crawl: the change is documentation, and the stub sheet is the fixture the
+  component suite drives.
+- New browser screenshots of the three cards: no browser runner exists for this page, and the
+  earlier screenshots are marked superseded above.
+- Storybook and the validation server: no OpenUI primitive, story, DTCG token, or component
+  changed.
 
 ## Artifacts updated for consistency
 
