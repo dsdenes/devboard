@@ -1814,6 +1814,12 @@ async fn release_suite_gate_prevents_tagging_and_dispatch() {
     let message = format!("{error:#}");
     assert!(message.contains("release suite did not pass"), "{message}");
     assert!(message.contains("error[E0425]"), "{message}");
+    // The fixture's harness is the commit it would tag, so the failure names
+    // the compile error alone.
+    assert!(
+        !message.contains("uncommitted edits the tagged commit does not name"),
+        "{message}"
+    );
 
     // Nothing was bumped, committed, tagged, pushed, or dispatched.
     assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
@@ -1865,6 +1871,70 @@ async fn release_suite_gate_prevents_tagging_and_dispatch() {
         .trim()
         .is_empty());
     assert_eq!(live.github_stub.dispatch_count(), 0);
+}
+
+/// The gate compiles the shared integration checkout, so a concurrent run's
+/// partial edit can be sitting in the harness while the attempts build. That
+/// edit is not the commit the release tags, and a compile failure it causes
+/// must not read as a defect in the released commit.
+#[tokio::test]
+async fn a_suite_failure_in_a_tree_the_commit_does_not_carry_names_the_edits() {
+    let live = live("suite-diverged", release_assets()).await;
+    let manifest = live.seed.join(".devboard/Cargo.toml");
+    let mut text = fs::read_to_string(&manifest).expect("the manifest");
+    text.push_str("\n# a concurrent run's partial edit\n");
+    fs::write(&manifest, text).expect("an edit the commit does not carry");
+
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.release_suite = Some(Arc::new(StubSuiteGate {
+        code: 1,
+        structural: Some("the suite could not compile: error[E0308]: mismatched types".to_string()),
+    }));
+    let error = publish(args)
+        .await
+        .expect_err("a failing suite blocks the release");
+    let message = format!("{error:#}");
+    assert!(message.contains("error[E0308]"), "{message}");
+    assert!(
+        message.contains("uncommitted edits the tagged commit does not name"),
+        "{message}"
+    );
+    assert!(message.contains(".devboard/Cargo.toml"), "{message}");
+    assert!(git_output(&live.seed, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+}
+
+/// The documented recovery path keeps uncommitted work in the integration
+/// checkout and reruns the publish path, so a suite that passes still releases
+/// the commit; the run records that the tree it proved carried edits the tag
+/// does not name, and the commit's own CI run proves what ships.
+#[tokio::test]
+async fn a_passing_suite_releases_while_the_tree_carries_uncommitted_edits() {
+    let live = live("suite-diverged-pass", release_assets()).await;
+    let manifest = live.seed.join(".devboard/Cargo.toml");
+    let mut text = fs::read_to_string(&manifest).expect("the manifest");
+    text.push_str("\n# a concurrent run's partial edit\n");
+    fs::write(&manifest, text).expect("an edit the commit does not carry");
+
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = lines.clone();
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.log = Some(Arc::new(move |line: &str| {
+        recorded.lock().expect("log").push(line.to_string());
+    }));
+    let report = publish(args).await.expect("a passing suite releases");
+
+    assert!(report.published);
+    let lines = lines.lock().expect("log");
+    assert!(
+        lines.iter().any(|line| line
+            .contains("the harness carries uncommitted edits the tagged commit does not name")),
+        "{lines:?}"
+    );
 }
 
 struct Live {

@@ -2225,6 +2225,20 @@ async fn run_release_suite_gate(
         .release_suite
         .clone()
         .unwrap_or_else(|| Arc::new(release_suite::ProcessSuiteGate));
+    // The suite compiles the integration checkout's working tree, and that
+    // checkout is shared: a concurrent run's partial edit, or a change
+    // preserved across a landing, can sit in the harness while the gate
+    // builds. Such an edit is not the commit this release tags, so the gate
+    // names it: a structural failure it causes must not read as a defect in
+    // the released commit, and a pass it causes must not read as proof of one.
+    // The gate still runs, because the documented recovery path keeps
+    // uncommitted work in the checkout, and the tagged commit's own CI run is
+    // what proves the release.
+    let mut pending = pending_harness_edits(args, runner.as_ref()).await?;
+    if let Some(line) = divergence_line(&pending) {
+        (log)(&format!("release suite: {line}"));
+        progress.record(PublishProgressRecord::new("suite", line));
+    }
     (log)("release suite: the workspace suite runs before the tag");
     progress.record(PublishProgressRecord::new(
         "suite",
@@ -2270,7 +2284,7 @@ async fn run_release_suite_gate(
                 dir: suite_dir,
                 forge_dir: Some(args.repo_dir.clone()),
                 environment: suite_environment,
-                runner: Some(runner),
+                runner: Some(runner.clone()),
                 transport: None,
                 log: Some(suite_log),
                 max_attempts: release_suite::RELEASE_SUITE_MAX_ATTEMPTS,
@@ -2282,6 +2296,13 @@ async fn run_release_suite_gate(
         heartbeat.abort();
         outcome?
     };
+    // A file that changed while the attempts ran is the same divergence: the
+    // tree the gate compiled is still not the commit this release tags.
+    for entry in pending_harness_edits(args, runner.as_ref()).await? {
+        if !pending.contains(&entry) {
+            pending.push(entry);
+        }
+    }
     if report.code != 0 {
         let reason = report
             .error_line
@@ -2293,7 +2314,17 @@ async fn run_release_suite_gate(
                     report.attempts
                 )
             });
-        bail!("the release suite did not pass; nothing was tagged or dispatched: {reason}");
+        match divergence_line(&pending) {
+            Some(line) => bail!(
+                "the release suite did not pass; nothing was tagged or dispatched: {reason}; {line}"
+            ),
+            None => {
+                bail!("the release suite did not pass; nothing was tagged or dispatched: {reason}")
+            }
+        }
+    }
+    if let Some(line) = divergence_line(&pending) {
+        (log)(&format!("release suite: passed; {line}"));
     }
     Ok(())
 }
@@ -5328,6 +5359,54 @@ async fn verify_embedded_client_committed(
         embedded.display(),
         pending.lines().next().unwrap_or_default().trim()
     )
+}
+
+/// The uncommitted tracked changes in the harness the release suite compiles.
+///
+/// The gate builds the integration checkout's working tree, and that checkout
+/// is shared: a concurrent run's partial edit, or a change preserved across a
+/// landing, sits in those files while the attempts run. Untracked files are
+/// left out because nothing compiles one unless a tracked file names it, and
+/// that tracked file is itself the modification.
+async fn pending_harness_edits(
+    args: &PublishArgs,
+    runner: &dyn CommandRunner,
+) -> Result<Vec<String>> {
+    let git = Git::new(runner, &args.harness_root, &args.environment);
+    let pending = git
+        .must(
+            &["status", "--porcelain", "--untracked-files=no", "--", "."],
+            "could not read uncommitted changes in the harness",
+        )
+        .await?;
+    Ok(pending
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// The line that names the harness's uncommitted edits, or `None` when the tree
+/// is the commit.
+///
+/// The list is bounded so one failure line stays short enough for the
+/// notification text that carries it.
+fn divergence_line(pending: &[String]) -> Option<String> {
+    const NAMED: usize = 4;
+    if pending.is_empty() {
+        return None;
+    }
+    let named: Vec<&str> = pending.iter().take(NAMED).map(String::as_str).collect();
+    let rest = match pending.len() - named.len() {
+        0 => String::new(),
+        1 => " and 1 more".to_string(),
+        count => format!(" and {count} more"),
+    };
+    Some(format!(
+        "the harness carries uncommitted edits the tagged commit does not name: {}{rest}",
+        named.join(", ")
+    ))
 }
 
 /// The newest modification time below `directory`.

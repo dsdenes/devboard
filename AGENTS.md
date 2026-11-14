@@ -216,8 +216,11 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   test because the kernel refused to start a freshly built binary, or because the target directory
   left while the build ran, is retried whole and reported only once the attempt budget is spent. A
   suite that cannot compile, or that yields no per-test result, exits nonzero, files nothing, and
-  prints the first concrete error line. A run that quarantined every test, so that no test is left
-  to execute, exits nonzero with `every test was quarantined; nothing ran` and files each
+  prints the first concrete error line. Because the suite compiles the integration checkout's
+  working tree — shared with every landing and every agent — a run also names the harness's
+  uncommitted edits the tagged commit does not name, so a failure they caused is never read as a
+  verdict on the commit alone. A run that quarantined every test, so that no test is left to
+  execute, exits nonzero with `every test was quarantined; nothing ran` and files each
   quarantine report, because no test proved the commit.
 - **No other releaser.** `.github/workflows/release.yml` runs only on
   `workflow_dispatch`. The implementing agent closes its issue after the push proof and never
