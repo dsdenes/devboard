@@ -437,6 +437,7 @@
                 ? "Starting…"
                 : "Re-running…"}
               evidence={() => discover.agent(ownerAgent)?.state}
+              scope={() => ownerAgent}
               command={() => discover.startAgent(ownerAgent)}
               data-command={`discover.agent.start.${ownerAgent}`}
               data-testid="discover-agent-start"

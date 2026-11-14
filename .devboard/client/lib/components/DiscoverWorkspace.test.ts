@@ -14,11 +14,12 @@ afterAll(() => {
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the stores load after registration.
-const { cleanup, render, waitFor } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render, waitFor } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: DiscoverWorkspace } = await import("./DiscoverWorkspace.svelte");
 const { layout } = await import("../layout.svelte");
 const { discover } = await import("../discover.svelte");
+const { connection } = await import("../connection.svelte");
 const { DISCOVER_AGENTS } = await import("../../../lib/agent-registry.ts");
 
 function agentStates(states: Record<string, string> = {}): DiscoverAgentState[] {
@@ -348,6 +349,47 @@ test("an agent card keeps its own start control", async () => {
   expect(bar().getAttribute("aria-label")).toBe("Data Sheet activity");
   expect(controlTestId()).toBe("discover-agent-start");
   expect(controlCommand()).toBe("discover.agent.start.sheet");
+});
+
+test("a start latch armed on one agent never follows the operator to another agent", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  try {
+    discover.handleEvent({ type: "discoverState", state: payload() });
+    const view = render(DiscoverWorkspace, {
+      props: {
+        tab: { id: "sheet", kind: "agent", resourceId: "sheet", title: "Data Sheet" },
+      },
+    });
+    await tick();
+    const start = document.querySelector('[data-testid="discover-agent-start"]');
+    expect(start?.hasAttribute("disabled")).toBe(false);
+    await fireEvent.click(start!);
+    await tick();
+    expect(start?.getAttribute("aria-busy")).toBe("true");
+    expect(bar().querySelector('[data-testid="discover-agent-start"]')?.textContent?.trim()).toBe(
+      "Starting…",
+    );
+
+    // Both agents report idle, so the evidence read alone would keep the latch:
+    // the page's subject is what tells this control it no longer owns it.
+    await view.rerender({
+      tab: {
+        id: "discover-contribution",
+        kind: "agent",
+        resourceId: "discover-contribution",
+        title: "Contribution Agent",
+      },
+    });
+    await tick();
+    const next = bar().querySelector('[data-testid="discover-agent-start"]');
+    expect(next?.getAttribute("data-command")).toBe("discover.agent.start.discover-contribution");
+    expect(next?.hasAttribute("aria-busy")).toBe(false);
+    expect(next?.textContent?.trim()).toBe("Start");
+    expect(next?.hasAttribute("disabled")).toBe(false);
+  } finally {
+    connection.state = previous;
+  }
 });
 
 const PUBLISHED_GLOSSARY: Glossary = {
