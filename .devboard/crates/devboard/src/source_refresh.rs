@@ -396,7 +396,7 @@ async fn replace(app: &Arc<App>, state_dir: &Path, request: &SourceRefreshReques
         Ok(()) => {
             let _ = write_applied_source_refresh(state_dir, request);
             app.prepare_replacement();
-            app.shared.shutdown.notify_waiters();
+            app.shared.shutdown.signal();
             std::process::exit(0);
         }
         Err(error) => {

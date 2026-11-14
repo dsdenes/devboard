@@ -132,7 +132,7 @@ async fn restart(instance: &Instance) -> Instance {
     tokio::spawn(async move {
         let _ = devboard::http::serve_on(listener, served).await;
     });
-    instance.server.app.shared.shutdown.notify_waiters();
+    instance.server.app.shared.shutdown.signal();
     tokio::time::sleep(Duration::from_millis(50)).await;
     Instance {
         base: format!("http://127.0.0.1:{port}"),

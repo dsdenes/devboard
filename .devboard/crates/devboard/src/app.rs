@@ -109,6 +109,44 @@ pub trait ModeGate: Send + Sync {
     }
 }
 
+/// The stop signal one dashboard raises, observed by every waiter.
+///
+/// A waiter that starts after the signal still completes: the stopped fact is
+/// kept beside the notification, so no task's shutdown depends on registering
+/// before the call. A bare `Notify` wakes only the waiters registered at that
+/// instant, so a late registration would wait forever.
+pub struct ShutdownSignal {
+    stopped: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for ShutdownSignal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShutdownSignal {
+    pub fn new() -> Self {
+        Self {
+            stopped: tokio::sync::watch::Sender::new(false),
+        }
+    }
+
+    /// Signals the stop to every waiter, present or future.
+    pub fn signal(&self) {
+        self.stopped.send_replace(true);
+    }
+
+    /// Completes when the dashboard stops, at once when it already has.
+    pub async fn wait(&self) {
+        let mut stopped = self.stopped.subscribe();
+        if *stopped.borrow_and_update() {
+            return;
+        }
+        let _ = stopped.changed().await;
+    }
+}
+
 /// The state every flow shares.
 pub struct Shared {
     pub config: Config,
@@ -122,7 +160,7 @@ pub struct Shared {
     /// is recorded once and one after a success is recorded again.
     persist_failure: Mutex<Option<String>>,
     /// Signalled when this process is about to be replaced.
-    pub shutdown: tokio::sync::Notify,
+    pub shutdown: ShutdownSignal,
     /// The live-work gates each mode registers.
     gates: Mutex<Vec<(String, Arc<dyn ModeGate>)>>,
     /// Hooks that follow every app-level broadcast, like the TypeScript
@@ -460,7 +498,7 @@ impl App {
             sections: Mutex::new(Vec::new()),
             last_saved: Mutex::new(None),
             persist_failure: Mutex::new(None),
-            shutdown: tokio::sync::Notify::new(),
+            shutdown: ShutdownSignal::new(),
             gates: Mutex::new(Vec::new()),
             broadcast_hooks: Mutex::new(Vec::new()),
             persist_lock: Mutex::new(()),
@@ -1125,7 +1163,7 @@ impl App {
             .await
             {
                 Ok(()) => {
-                    app.shared.shutdown.notify_waiters();
+                    app.shared.shutdown.signal();
                     std::process::exit(0);
                 }
                 Err(error) => {
@@ -1308,7 +1346,7 @@ impl App {
                 .join(format!("ready-{}.json", std::process::id()));
             match crate::relaunch::relaunch_confirmed(&settings, &ready_file, 15_000, None).await {
                 Ok(()) => {
-                    app.shared.shutdown.notify_waiters();
+                    app.shared.shutdown.signal();
                     std::process::exit(0);
                 }
                 Err(error) => app.replacement_failed(&error),
@@ -1726,4 +1764,43 @@ pub async fn graceful_shutdown(app: &Arc<App>) {
     crate::detached_run::terminate_recorded_children(&children, 5_000).await;
     crate::supervision::terminate_harness_descendants(std::process::id(), 5_000).await;
     app.shared.flush_state();
+}
+
+#[cfg(test)]
+mod shutdown_signal_tests {
+    use super::ShutdownSignal;
+    use std::time::Duration;
+
+    /// A waiter that starts after the signal completes at once. The server's
+    /// graceful-shutdown waiter registers whenever its task is first polled,
+    /// so a fixture dropped before that poll would keep the dashboard alive
+    /// forever if the stop were only a notification.
+    #[tokio::test]
+    async fn a_shutdown_signal_reaches_a_waiter_that_starts_after_it() {
+        let signal = ShutdownSignal::new();
+        signal.signal();
+        tokio::time::timeout(Duration::from_secs(5), signal.wait())
+            .await
+            .expect("a waiter that starts after the signal completes");
+    }
+
+    /// One stop completes every waiter: a registered one, one that starts
+    /// after it, and one that starts after the first has already returned.
+    #[tokio::test]
+    async fn one_stop_completes_every_waiter() {
+        let signal = std::sync::Arc::new(ShutdownSignal::new());
+        let registered = {
+            let signal = std::sync::Arc::clone(&signal);
+            tokio::spawn(async move { signal.wait().await })
+        };
+        tokio::task::yield_now().await;
+        signal.signal();
+        tokio::time::timeout(Duration::from_secs(5), registered)
+            .await
+            .expect("the registered waiter completes")
+            .expect("the registered waiter does not panic");
+        tokio::time::timeout(Duration::from_secs(5), signal.wait())
+            .await
+            .expect("a waiter that starts after the stop completes");
+    }
 }

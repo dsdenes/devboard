@@ -8366,7 +8366,7 @@ pub fn init(app: &Arc<App>) {
         let shared = Arc::clone(&app.shared);
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                shared.shutdown.notified().await;
+                shared.shutdown.wait().await;
                 drop(shared);
                 if let Some(app) = weak.upgrade() {
                     shutdown(&app);

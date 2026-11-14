@@ -452,7 +452,7 @@ pub async fn serve_on(
     let router = axum::Router::new().fallback(handle).with_state(server);
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
-            shared.shutdown.notified().await;
+            shared.shutdown.wait().await;
         })
         .await;
     crate::discover_mode::shutdown(&app);

@@ -1417,7 +1417,7 @@ async fn a_graceful_shutdown_removes_the_active_staging() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    app.shared.shutdown.notify_waiters();
+    app.shared.shutdown.signal();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while staging.exists() {
         assert!(

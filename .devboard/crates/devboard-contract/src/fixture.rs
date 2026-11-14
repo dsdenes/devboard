@@ -219,18 +219,12 @@ impl Fixture {
                 let serving =
                     tokio::spawn(async move { devboard::http::serve_on(listener, server).await });
                 let _ = started.send(Ok(port));
-                // The dashboard's own tasks wait on the same notification, so
-                // every waiter is woken and the server ends before the root
-                // this fixture created goes away.
+                // The dashboard's own tasks wait on the same signal, so every
+                // waiter wakes — whichever of them registered first, and even
+                // one this runtime has not polled yet — and the server ends
+                // before the root this fixture created goes away.
                 let _ = stop.await;
-                // `notify_waiters` wakes only the waiters registered at this
-                // instant. A fixture dropped right after it starts may not
-                // have been polled yet, so the server registers its graceful
-                // shutdown after this call and would wait forever. The permit
-                // `notify_one` leaves behind completes that first wait
-                // whenever it happens.
-                shared.shutdown.notify_waiters();
-                shared.shutdown.notify_one();
+                shared.shutdown.signal();
                 let _ = serving.await;
                 devboard::app::graceful_shutdown(&app).await;
             });
