@@ -42,6 +42,47 @@ describe("draft proposal", () => {
     expect(draftProposal("# Draft\n\n## Captured UI context\n\nNo page context was captured.\n")).toBe("");
   });
 
+  test("drops a section that opens with the visible-text evidence heading", () => {
+    expect(
+      draftProposal(
+        "# Proposed goal: x\n\nReport.\n\n## Captured UI context\n\n### Visible text\n\nHello.\n",
+      ),
+    ).toBe("Report.");
+  });
+
+  test("drops a section that opens with the DOM-excerpt evidence heading", () => {
+    expect(
+      draftProposal(
+        "# Proposed goal: x\n\nReport.\n\n## Captured UI context\n\n### DOM excerpt\n\n```html\n<main></main>\n```\n",
+      ),
+    ).toBe("Report.");
+  });
+
+  test("keeps a report that quotes an evidence-heading section", () => {
+    const quoted = `# Proposed goal: keep my quote
+
+My pasted evidence follows.
+
+## Captured UI context
+
+### Visible text
+
+Quoted once.
+
+## Captured UI context
+
+### Visible text
+
+The writer's own capture.
+`;
+    expect(draftProposal(quoted)).toBe(
+      "My pasted evidence follows.\n\n" +
+        "## Captured UI context\n\n" +
+        "### Visible text\n\n" +
+        "Quoted once.",
+    );
+  });
+
   test("returns nothing for an empty draft", () => {
     expect(draftProposal("")).toBe("");
   });

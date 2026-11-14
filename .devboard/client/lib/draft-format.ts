@@ -3,16 +3,28 @@ const CONTEXT_MARKER = "## Captured UI context";
 /** What a captured-context section opens with when the capture held no page facts. */
 const NO_CAPTURED_CONTEXT = "No page context was captured.";
 
-/** The first line `capturedContext` writes under the marker for each page fact. */
-const CAPTURED_FACTS = ["- Route:", "- URL:", "- Selected element:", "- Viewport:", "- Captured at:"];
+/**
+ * Every line the writer's captured-context section can open with: the page
+ * facts, and the evidence headings both writers emit when no page fact was
+ * captured.
+ */
+const CAPTURED_OPENINGS = [
+  "- Route:",
+  "- URL:",
+  "- Selected element:",
+  "- Viewport:",
+  "- Captured at:",
+  "### Visible text",
+  "### DOM excerpt",
+];
 
-/** True when the section body below `from` opens with a captured fact line. */
+/** True when the section body below `from` opens with a recognized opening. */
 function opensCapturedSection(lines: readonly string[], from: number): boolean {
   for (let index = from; index < lines.length; index++) {
     const line = lines[index]!.trim();
     if (line.length === 0) continue;
     if (line === NO_CAPTURED_CONTEXT) return true;
-    return CAPTURED_FACTS.some((fact) => line.startsWith(fact));
+    return CAPTURED_OPENINGS.some((opening) => line.startsWith(opening));
   }
   return false;
 }
@@ -22,7 +34,8 @@ function opensCapturedSection(lines: readonly string[], from: number): boolean {
  * The operator's report is written verbatim above that section, so a report
  * that quotes the marker line carries candidates of its own. The writer's
  * section is the last marker at the start of a line, outside a fenced code
- * block, whose body opens with a captured fact or the no-context sentence.
+ * block, whose body opens with a page fact, an evidence heading, or the
+ * no-context sentence.
  */
 function contextSectionStart(text: string): number {
   const lines = text.split("\n");
