@@ -1392,12 +1392,53 @@ mod tests {
 
     #[test]
     fn the_table_lists_every_served_operation_and_no_socket() {
-        assert_eq!(ROUTES.len(), 82);
         for route in ROUTES {
             assert!(route.path.starts_with('/'));
             assert!(!route.path.starts_with("/api"));
             assert!(!route.path.ends_with('/'));
             assert!(!route.path.contains("/ws"));
+        }
+    }
+
+    #[test]
+    fn the_table_matches_the_command_map_in_both_directions() {
+        let map: Value = serde_json::from_str(include_str!("../../../contract/command-map.json"))
+            .expect("the command map is JSON");
+        let commands = map["commands"].as_object().expect("a commands object");
+        let unmapped: Vec<&str> = ROUTES
+            .iter()
+            .map(|route| route.command)
+            .filter(|command| !commands.contains_key(*command))
+            .collect();
+        let unserved: Vec<&str> = commands
+            .keys()
+            .map(String::as_str)
+            .filter(|command| !ROUTES.iter().any(|route| route.command == *command))
+            .collect();
+        assert!(
+            unmapped.is_empty() && unserved.is_empty(),
+            "unmapped routes {unmapped:?}; unserved map entries {unserved:?}"
+        );
+        assert_eq!(
+            commands.len(),
+            ROUTES.len(),
+            "one map entry per route and one route per entry"
+        );
+        for route in ROUTES {
+            let entry = &commands[route.command];
+            assert_eq!(
+                entry["method"],
+                route.method.as_str(),
+                "{} method",
+                route.command
+            );
+            assert_eq!(entry["path"], route.path, "{} path", route.command);
+            assert_eq!(entry["status"], route.status, "{} status", route.command);
+            assert_eq!(
+                entry["creation"], route.creation,
+                "{} creation",
+                route.command
+            );
         }
     }
 

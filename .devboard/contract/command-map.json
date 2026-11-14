@@ -444,6 +444,12 @@
       "status": 201,
       "creation": true
     },
+    "getInquiry": {
+      "method": "GET",
+      "path": "/inquiries/conversations/{conversation_id}",
+      "status": 200,
+      "creation": false
+    },
     "closeAsk": {
       "method": "DELETE",
       "path": "/inquiries/conversations/{conversation_id}",
@@ -455,6 +461,12 @@
       "path": "/providers",
       "status": 200,
       "creation": false
+    },
+    "createProvider": {
+      "method": "POST",
+      "path": "/providers",
+      "status": 201,
+      "creation": true
     },
     "saveProvider": {
       "method": "PUT",

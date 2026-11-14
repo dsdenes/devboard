@@ -22,89 +22,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-const RETIRED_COMMANDS: [&str; 80] = [
-    "listRecords",
-    "getGoal",
-    "getProject",
-    "getVersion",
-    "getMcpTools",
-    "getInstalledSkills",
-    "getComplexity",
-    "getResources",
-    "setResources",
-    "setInstalledSkillEnabled",
-    "getIssues",
-    "getIssuesRun",
-    "startIssues",
-    "pauseIssues",
-    "resumeIssues",
-    "stopIssues",
-    "checkIssues",
-    "answerIssues",
-    "closeIssue",
-    "getGoalDrafts",
-    "getGoalDraft",
-    "startGoalDraft",
-    "stopGoalDraft",
-    "deleteGoalDraft",
-    "answerGoalDraft",
-    "getAgents",
-    "getAgent",
-    "refreshAgent",
-    "startAgent",
-    "stopAgent",
-    "setAgentSettings",
-    "disableAgentTimer",
-    "getAgentPrompt",
-    "restartServer",
-    "startRun",
-    "startLifecycle",
-    "stopLifecycle",
-    "pauseLifecycle",
-    "resumeLifecycle",
-    "reviseGoal",
-    "createGoal",
-    "prepareSkills",
-    "getSkills",
-    "deleteSkill",
-    "resetImplementation",
-    "createFlowGoal",
-    "cancelFlowGoal",
-    "startFlowImplementation",
-    "stopFlowImplementation",
-    "retryFlowPr",
-    "markFlowPrReady",
-    "mergeFlowPr",
-    "sendFlowSteering",
-    "acceptFlowWidget",
-    "refuseFlowWidget",
-    "openFlowWidget",
-    "closeFlowWidget",
-    "sendFlowConversation",
-    "sendFlowConclusion",
-    "dismissFlowBlocker",
-    "flowAnswer",
-    "answer",
-    "discoverProject",
-    "discoverAgent",
-    "discoverRemote",
-    "switchDiscoverRemote",
-    "removeDiscoverRemote",
-    "clearDiscoverRemote",
-    "stopDiscover",
-    "answerDiscover",
-    "getDiscover",
-    "confirmGlossaryTerm",
-    "rejectGlossaryTerm",
-    "ask",
-    "closeAsk",
-    "getProviders",
-    "saveProvider",
-    "deleteProvider",
-    "setProviderEnabled",
-    "refreshProviders",
-];
-
 struct Instance {
     base: String,
     port: u16,
@@ -922,13 +839,6 @@ async fn every_retired_command_has_an_http_operation() {
     let text = std::fs::read_to_string(&path).expect("the command map");
     let value: Value = serde_json::from_str(&text).expect("JSON");
     let map = value["commands"].as_object().expect("commands");
-    let names: BTreeSet<&str> = map.keys().map(String::as_str).collect();
-    let expected: BTreeSet<&str> = RETIRED_COMMANDS.iter().copied().collect();
-    assert_eq!(
-        names, expected,
-        "the map names exactly the retired commands"
-    );
-    assert_eq!(map.len(), 80);
     let routes: BTreeMap<&str, (&str, &str)> = devboard::rest::ROUTES
         .iter()
         .map(|route| (route.command, (route.method.as_str(), route.path)))
