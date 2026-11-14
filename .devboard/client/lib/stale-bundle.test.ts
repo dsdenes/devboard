@@ -33,9 +33,16 @@ test("only the server's refusal of an unknown command counts", () => {
 test("the first refusal in a tab reloads and records the attempt", () => {
   const { storage, values } = session();
   let reloads = 0;
+  let markerAtReload: string | null | undefined;
 
-  expect(reloadOnceForStaleBundle(storage, () => reloads += 1)).toBe(true);
+  expect(
+    reloadOnceForStaleBundle(storage, () => {
+      reloads += 1;
+      markerAtReload = values.get(STALE_BUNDLE_RELOAD_KEY) ?? null;
+    }),
+  ).toBe(true);
   expect(reloads).toBe(1);
+  expect(markerAtReload).toBe("1");
   expect(values.get(STALE_BUNDLE_RELOAD_KEY)).toBe("1");
 });
 
@@ -60,5 +67,21 @@ test("a browser without a usable tab session never reloads", () => {
     },
   };
   expect(reloadOnceForStaleBundle(throwing, () => reloads += 1)).toBe(false);
+  expect(reloads).toBe(0);
+});
+
+test("a tab session that refuses the write reports the refusal instead of reloading", () => {
+  const writes: Array<[string, string]> = [];
+  const readOkWriteRefused = {
+    getItem: () => null,
+    setItem: (key: string, value: string) => {
+      writes.push([key, value]);
+      throw new Error("denied");
+    },
+  };
+  let reloads = 0;
+
+  expect(reloadOnceForStaleBundle(readOkWriteRefused, () => reloads += 1)).toBe(false);
+  expect(writes).toEqual([[STALE_BUNDLE_RELOAD_KEY, "1"]]);
   expect(reloads).toBe(0);
 });
