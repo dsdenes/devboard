@@ -37,8 +37,8 @@ apart even though both name the same URLs.
 ## Journey mapping
 
 - J1: `region_toolbar` is the switch; `region_list` confirms which row became active.
-- J2: `region_add` owns the input, the label, and the submit; the input's label is now visible,
-  not only its `aria-label`.
+- J2: `region_add` owns the input, the label, and the submit; the visible label is the input's
+  only name.
 - J3: every row owns its `Remove`; the word sits before the row's trailing padding, and the
   active row's own `Remove` is the way to remove the target it names.
 - J4: `region_footer` isolates the return-to-host action from the add form.

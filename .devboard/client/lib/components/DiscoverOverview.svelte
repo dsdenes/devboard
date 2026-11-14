@@ -541,7 +541,7 @@
 >
   {#snippet remotePanel()}
     {#if discover.remoteAvailable}
-      <section class="panel discover-remote" data-testid="discover-remote" aria-label="Discover remote target">
+      <section class="panel discover-remote" data-testid="discover-remote" aria-label="Manual testing target">
         <div class="panel__header">
           <h2 class="panel__title">Manual testing target</h2>
           <SourceOnlyBadge />
@@ -557,7 +557,6 @@
                 id="discover-remote-select"
                 class="discover-remote__select"
                 data-testid="discover-remote-select"
-                aria-label="Retained remote project"
                 bind:this={remoteSelect}
                 disabled={discover.remoteChangeDisabled}
                 title={discover.remoteChangeTitle}
@@ -613,7 +612,6 @@
               <Input
                 id="discover-remote-url"
                 type="url"
-                aria-label="GitHub repository URL"
                 placeholder="https://github.com/owner/repo"
                 autocomplete="off"
                 spellcheck="false"

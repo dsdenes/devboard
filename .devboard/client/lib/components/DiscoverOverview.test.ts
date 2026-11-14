@@ -428,6 +428,39 @@ function remoteState(): DiscoverStatePayload {
   return payload;
 }
 
+// An aria-label outranks an associated <label>, so the name a browser computes
+// is the aria-label when one is present and the label text otherwise.
+function labelText(container: Element, id: string): string {
+  return container.querySelector(`label[for="${id}"]`)?.textContent?.trim() ?? "";
+}
+
+function exposedName(container: Element, control: Element | null): string {
+  if (control === null) return "";
+  const explicit = control.getAttribute("aria-label");
+  if (explicit !== null) return explicit.trim();
+  return labelText(container, control.id);
+}
+
+test("the remote panel and its controls expose only their visible names", () => {
+  discover.state = remoteState();
+  const view = render(DiscoverOverview);
+
+  const input = view.container.querySelector('[data-testid="discover-remote-url"]');
+  expect(labelText(view.container, "discover-remote-url")).toBe("Discover another repository");
+  expect(exposedName(view.container, input)).toBe("Discover another repository");
+  expect(exposedName(view.container, input)).toBe(labelText(view.container, "discover-remote-url"));
+
+  const select = view.container.querySelector('[data-testid="discover-remote-select"]');
+  expect(exposedName(view.container, select)).toBe("Retained project");
+  expect(exposedName(view.container, select)).toBe(labelText(view.container, "discover-remote-select"));
+
+  const panel = view.container.querySelector('[data-testid="discover-remote"]');
+  expect(exposedName(view.container, panel)).toBe("Manual testing target");
+  expect(exposedName(view.container, panel)).toBe(
+    panel?.querySelector("h2")?.textContent?.trim() ?? "",
+  );
+});
+
 test("Run all disables the remote strip's switch, remove, and clear", () => {
   const previous = connection.state;
   connection.state = "open";
