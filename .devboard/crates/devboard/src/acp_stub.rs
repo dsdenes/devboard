@@ -497,7 +497,9 @@ impl Stub {
             self.log(&format!("request {}", text.as_deref().unwrap_or("")));
         }
 
-        if self.arguments.contains("prepare-skills") && first_line == "/prepare-skills" {
+        if self.arguments.contains("prepare-skills")
+            && first_line.split_whitespace().next() == Some("/prepare-skills")
+        {
             return self.run_prepare_skills();
         }
 

@@ -1,14 +1,6 @@
 //! The goal document: one Markdown file the operator and a peer revise.
 
-use std::path::{Path, PathBuf};
-
-/// The goal document's name at the repository root.
-const GOAL_FILE_NAME: &str = "GOAL.md";
-
-/// The repository's own goal document.
-pub fn default_goal_path(repo_dir: &Path) -> PathBuf {
-    repo_dir.join(GOAL_FILE_NAME)
-}
+use std::path::Path;
 
 /// Reads the goal document.
 ///
@@ -29,6 +21,10 @@ pub async fn write_goal(path: &Path, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// The goal document's name at the repository root.
+    const GOAL_FILE_NAME: &str = "GOAL.md";
 
     fn scratch(label: &str) -> PathBuf {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

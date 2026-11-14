@@ -84,13 +84,18 @@ fn config_at(scratch: &Scratch, command: String) -> Config {
 }
 
 async fn app_with(scratch: &Scratch, command: String) -> Arc<App> {
+    app_with_goal(scratch, command, scratch.path().join("GOAL.md")).await
+}
+
+async fn app_with_goal(scratch: &Scratch, command: String, goal_file: PathBuf) -> Arc<App> {
     std::fs::create_dir_all(scratch.path().join("adrs")).expect("adrs exist");
     // The provider usage endpoints never leave the machine: an unreachable
     // local port reports unknown usage, which keeps a subscription eligible
     // and makes the test independent of the network.
     std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
     std::env::set_var("DEVBOARD_OPENROUTER_USAGE_BASE_URL", "http://127.0.0.1:1");
-    let config = config_at(scratch, command);
+    let mut config = config_at(scratch, command);
+    config.goal_file = goal_file;
     let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
     let app = App::new(config, journal);
     app.providers
@@ -473,7 +478,10 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         .is_file());
     assert_eq!(
         log_lines(&scratch, "prompt "),
-        vec!["/prepare-skills".to_string()]
+        vec![format!(
+            "/prepare-skills {}",
+            scratch.path().join("GOAL.md").display()
+        )]
     );
 
     app.command(&conn, Command::GetSkills).await;
@@ -547,6 +555,115 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         2_000,
     )
     .await;
+}
+
+/// With a non-default `GOAL_FILE`, preparation reads the path it names and the
+/// peer is told that same path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_reads_the_configured_goal_file() {
+    let scratch = Scratch::new("skills-configured-goal");
+    let goal = scratch.path().join("docs").join("GOAL.md");
+    std::fs::create_dir_all(goal.parent().expect("the goal directory"))
+        .expect("the goal directory exists");
+    std::fs::write(&goal, "# Fixture goal\n").expect("the goal");
+    assert!(!scratch.path().join("GOAL.md").exists());
+    let command = stub_command(&scratch, &["--prepare-skills"]);
+    let app = app_with_goal(&scratch, command, goal.clone()).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::PrepareSkills).await;
+
+    frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "skillsPreparationStarted",
+        5_000,
+    )
+    .await;
+    let stopped = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "skillsPreparationStopped",
+        10_000,
+    )
+    .await;
+    assert_eq!(stopped["completed"], true);
+    assert_eq!(
+        log_lines(&scratch, "prompt "),
+        vec![format!("/prepare-skills {}", goal.display())]
+    );
+    assert_eq!(log_lines(&scratch, "prepared"), vec!["".to_string()]);
+}
+
+/// A configured goal path with no document refuses the preparation and starts
+/// no peer, even when `<repo>/GOAL.md` holds a goal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preparation_refuses_when_the_configured_goal_is_absent() {
+    let scratch = Scratch::new("skills-absent-goal");
+    std::fs::write(scratch.path().join("GOAL.md"), "# Repo goal\n").expect("the repository goal");
+    let goal = scratch.path().join("docs").join("GOAL.md");
+    let command = stub_command(&scratch, &["--prepare-skills"]);
+    let app = app_with_goal(&scratch, command, goal).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::PrepareSkills).await;
+
+    let error = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5_000).await;
+    assert_eq!(
+        error["message"],
+        "The goal is not set. Save a non-empty goal before preparing skills."
+    );
+    assert!(log_lines(&scratch, "spawn ").is_empty(), "no peer started");
+}
+
+/// A non-default `GOAL_FILE` receives the created goal, and `GetGoal` reads it
+/// back from that same document.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn creation_writes_and_reads_the_configured_goal_file() {
+    let scratch = Scratch::new("creation-configured-goal");
+    let goal = scratch.path().join("docs").join("GOAL.md");
+    std::fs::create_dir_all(goal.parent().expect("the goal directory"))
+        .expect("the goal directory exists");
+    let command = stub_command(
+        &scratch,
+        &["--create-goal", &format!("--goal={}", goal.display())],
+    );
+    let app = app_with_goal(&scratch, command, goal.clone()).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::CreateGoal).await;
+
+    frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "goalCreationStarted",
+        5_000,
+    )
+    .await;
+    let question = frame_matching(&mut inbox, |frame| frame["type"] == "question", 5_000).await;
+    app.command(
+        &conn,
+        Command::Answer {
+            id: Some(question["id"].clone()),
+            value: Some(json!("Alpha")),
+            lane: None,
+        },
+    )
+    .await;
+
+    let stopped = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "goalCreationStopped",
+        10_000,
+    )
+    .await;
+    assert_eq!(stopped["completed"], true);
+    assert_eq!(
+        std::fs::read_to_string(&goal).expect("the goal exists"),
+        "# Created goal\n\nThe agent wrote this."
+    );
+    assert!(!scratch.path().join("GOAL.md").exists());
+
+    app.command(&conn, Command::GetGoal).await;
+    let state = frame_matching(&mut inbox, |frame| frame["type"] == "goal", 5_000).await;
+    assert_eq!(state["text"], "# Created goal\n\nThe agent wrote this.");
 }
 
 /// Goal creation preempts runs, never the long-lived Issues worker.

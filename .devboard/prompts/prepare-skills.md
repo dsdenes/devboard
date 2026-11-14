@@ -1,5 +1,5 @@
 ---
-description: Prepare project-agnostic Agent Skills grounded in relevant public standards, general best practices, software-architecture patterns, and testing patterns selected from GOAL.md.
+description: Prepare project-agnostic Agent Skills grounded in relevant public standards, general best practices, software-architecture patterns, and testing patterns selected from the goal document.
 ---
 
 ## Manifesto
@@ -11,9 +11,11 @@ observable result is the installed skills matching the goal with no contradictio
 
 - `<host>` is the host project: `git rev-parse --show-toplevel`; when that fails, the working
   directory. `.devboard/` and `.worktree/` are the harness, not the host; never write into them.
-- `<host>/GOAL.md` is the only project-specific input. Read it once and use it only to select which
-  public standards and pattern families are relevant to the work it describes. Never copy, quote,
-  paraphrase, summarize, or allude to its implementation details in a skill.
+- The goal file is the absolute path this turn's instructions name. It is the only
+  project-specific input, so never fall back to `<host>/GOAL.md` or any other path. Read it once
+  and use it only to select which public standards and pattern families are relevant to the work
+  it describes. Never copy, quote, paraphrase, summarize, or allude to its implementation details
+  in a skill.
 - Every skill is project-agnostic: it states policy that another project could adopt unchanged.
   Implementation decisions stay with the implementation agent, never with a skill.
 - Do not survey, list, or read host source code, `adrs/`, configuration, package manifests, build
@@ -22,7 +24,7 @@ observable result is the installed skills matching the goal with no contradictio
 - Deliverable: skills under `<host>/.omp/skills/<name>/SKILL.md`, each with a directory name that
   matches its frontmatter `name`. Create nothing outside that skill root except the directories and
   `SKILL.md` files themselves.
-- NEVER write, rewrite, or delete `<host>/GOAL.md`, anything under `<host>/adrs/`, or any other
+- NEVER write, rewrite, or delete the goal file, anything under `<host>/adrs/`, or any other
   host file.
 - Replace only the skills this feature owns. At the start, delete every skill directory whose
   `SKILL.md` frontmatter has `metadata.devboard-managed: "true"` and does not carry
@@ -35,8 +37,8 @@ observable result is the installed skills matching the goal with no contradictio
 
 ## Phase 1 — Goal and research
 
-1. Read `<host>/GOAL.md`. If it is absent, empty, or whitespace-only, `halt: GOAL.md is not set`
-   and nothing else.
+1. Read the goal file this turn's instructions name. If it is absent, empty, or whitespace-only,
+   `halt: GOAL.md is not set` and nothing else.
 2. Treat the goal as a selection signal only: decide which standards and pattern families it makes
    relevant. Never turn a statement from it into a skill directive.
 3. Research current public practice on the web before writing anything. Search separately in each
@@ -137,8 +139,8 @@ project-specific policy is not measured against project-agnostic preparation.
 
 ## Halting
 
-`halt: <reason>` on its own line and nothing else. Reasons: `GOAL.md` is absent, empty, or
-whitespace-only; web research is unavailable; the skill root cannot be written; a contradiction with
-an unmanaged skill cannot be resolved without editing that skill.
+`halt: <reason>` on its own line and nothing else. Reasons: the named goal file is absent, empty,
+or whitespace-only; web research is unavailable; the skill root cannot be written; a contradiction
+with an unmanaged skill cannot be resolved without editing that skill.
 
 NEVER halt for effort, question count, model latency, or the number of research queries.

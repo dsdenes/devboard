@@ -1084,8 +1084,9 @@ Foreground work that was live at death resumes with its original input. A manual
 continues from its persisted record, re-spawning that record only while it is still pending
 and otherwise advancing to the next pending record; goal creation re-spawns `/goal-outcome`; a
 revision re-spawns the same prompt including its original guidance; skills preparation re-spawns
-`/prepare-skills` after restoring the same pre-run snapshot, so a resumed preparation that ends in
-failure restores the exact bytes captured before the original run. An interrupted discovery agent
+the `/prepare-skills` prompt naming `GOAL_FILE` after restoring the same pre-run snapshot, so a
+resumed preparation that ends in failure restores the exact bytes captured before the original
+run. An interrupted discovery agent
 re-spawns its own command against the same host, or re-clones the stored remote project first, with
 its recorded activity kept as a prefix; the remaining agents of an interrupted Run all stay idle
 until the operator starts that command again. Restored activity is kept and new lines append. A pending lane or foreground question is replayed to every connecting client
@@ -2368,7 +2369,7 @@ version that tag just published.
 |`DEVBOARD_ALLOWED_HOSTS`|unset|Comma-separated extra hostnames the dashboard serves in a Host header. A wildcard bind (`0.0.0.0` or `::`) serves only loopback aliases unless names are listed; a reverse proxy's public name belongs here.|
 |`ADRS_DIR`|`/repo/adrs`|Directory holding the ADR files.|
 |`REPO_DIR`|parent of `ADRS_DIR`|Agent working directory and default goal location. The derived default follows the ADR directory a serve flag leaves in force, so `--adrs-dir <repo>/adrs` without `REPO_DIR` or `--repo-dir` serves `<repo>`; a supplied `REPO_DIR` or `--repo-dir` stays authoritative.|
-|`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load and replaced on save. Derived from the repository directory in force after the serve flags when unset.|
+|`GOAL_FILE`|`<REPO_DIR>/GOAL.md`|Goal document read on load, written by goal creation, and replaced on save. Preparation reads this path and names it in the `/prepare-skills` it starts. Derived from the repository directory in force after the serve flags when unset.|
 |`STATIC_DIR`|unset|Client directory to serve; unset serves the client embedded in the binary.|
 |`AGENT_COMMAND`|`omp acp`|ACP peer command, split on whitespace. `devboard acp-stub` is a deterministic substitute for tests and local verification.|
 |`STATE_DIR`|`<REPO_DIR>/.devboard/.tmp`|State and journal directory, the host prefix in both the launcher and the MCP server and never the replaceable package tree. An in-repo path survives a reset and is excluded from its commit; the repository root is refused.|

@@ -28,8 +28,6 @@ use crate::state::{ACTIVITY_MAX_BYTES, ACTIVITY_MAX_ENTRIES, ACTIVITY_TRIMMED_MA
 
 /// The prompt a creation peer receives.
 const GOAL_CREATION_PROMPT: &str = "/goal-outcome";
-/// The prompt a skills preparation peer receives.
-const SKILLS_PROMPT: &str = "/prepare-skills";
 /// The longest skill name OMP accepts.
 const SKILL_NAME_MAX: usize = 64;
 /// The longest skill description accepted.
@@ -693,8 +691,7 @@ impl GoalAuthoring {
             inner.creation_request += 1;
             inner.creation_request
         };
-        let path = creation_goal_path(app);
-        if let Err(error) = tokio::fs::read_to_string(&path).await {
+        if let Err(error) = tokio::fs::read_to_string(&app.config().goal_file).await {
             if error.kind() != std::io::ErrorKind::NotFound {
                 if lock(&self.inner).creation_request == request {
                     target.send(error_event(format!("Could not read the goal: {error}")));
@@ -1009,7 +1006,7 @@ impl OwnerRef {
 
 impl GoalAuthoring {
     async fn spawn_creation(self: Arc<Self>, app: Arc<App>, owner: Arc<Owner>) {
-        let before = match read_goal_snapshot(&creation_goal_path(&app)).await {
+        let before = match read_goal_snapshot(&app.config().goal_file).await {
             Ok(before) => before,
             Err(error) => {
                 if self.is_current_creation(&owner) {
@@ -1089,7 +1086,7 @@ impl GoalAuthoring {
                 .broadcast(json!({"type": "goalCreationStopped", "completed": false}));
             return;
         }
-        let text = match tokio::fs::read_to_string(creation_goal_path(app)).await {
+        let text = match tokio::fs::read_to_string(&app.config().goal_file).await {
             Ok(text) => text,
             Err(error) => {
                 app.shared.broadcast(error_event(format!(
@@ -1261,17 +1258,9 @@ impl GoalAuthoring {
             return;
         }
         *lock(&preparation.owner.agent) = Some(Arc::clone(&connection));
+        let prompt = skills_prompt(&app.config().goal_file);
         let which = OwnerRef::Preparation(Arc::clone(&preparation));
-        let outcome = drive(
-            &app,
-            &self,
-            &which,
-            events,
-            &connection,
-            SKILLS_PROMPT,
-            "skills",
-        )
-        .await;
+        let outcome = drive(&app, &self, &which, events, &connection, &prompt, "skills").await;
         if !self.is_current_preparation(&preparation) {
             return;
         }
@@ -2897,6 +2886,10 @@ fn activity_within_bounds(store: &[String]) -> bool {
 // Small helpers
 // ---------------------------------------------------------------------------
 
+fn skills_prompt(goal_file: &Path) -> String {
+    format!("/prepare-skills {}", goal_file.display())
+}
+
 fn revision_prompt(goal_file: &Path, request: Option<&str>) -> String {
     let goal = goal_file.to_string_lossy();
     let guidance = request.map(str::trim).unwrap_or("");
@@ -2926,10 +2919,6 @@ async fn read_goal_snapshot(path: &Path) -> std::io::Result<Option<String>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-fn creation_goal_path(app: &Arc<App>) -> PathBuf {
-    crate::goal::default_goal_path(&app.config().repo_dir)
 }
 
 fn skills_directory(app: &Arc<App>) -> PathBuf {
