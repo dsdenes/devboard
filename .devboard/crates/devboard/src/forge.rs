@@ -119,8 +119,6 @@ pub struct ForgeRemote {
 pub const GITEA_URL_KEYS: [&str; 2] = ["DEVBOARD_GITEA_URL", "GITEA_URL"];
 /// The Gitea token keys, in resolution order.
 pub const GITEA_TOKEN_KEYS: [&str; 2] = ["GITEA_TOKEN", "DEVBOARD_GITEA_TOKEN"];
-/// The synthetic token used by a public forge with no configured credential.
-pub const PUBLIC_FORGE_TOKEN: &str = "";
 
 pub fn configured_gitea_url(environment: &Environment) -> Option<String> {
     for key in GITEA_URL_KEYS {
@@ -470,27 +468,6 @@ pub fn origin_remote_url(root: &Path) -> Option<String> {
     (remote.code == 0 && !remote.stdout.is_empty()).then_some(remote.stdout)
 }
 
-/// Whether the remote URL names github.com.
-pub fn is_github_remote(url: &str) -> bool {
-    static SCP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_.-]+@([^:/]+):").expect("the scp form"));
-    let trimmed = url.trim();
-    if let Some(captures) = SCP.captures(trimmed) {
-        return captures
-            .get(1)
-            .map(|host| host.as_str().eq_ignore_ascii_case("github.com"))
-            .unwrap_or(false);
-    }
-    Url::parse(trimmed)
-        .ok()
-        .and_then(|parsed| {
-            parsed
-                .host_str()
-                .map(|host| host.eq_ignore_ascii_case("github.com"))
-        })
-        .unwrap_or(false)
-}
-
 fn lexical_absolute(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -683,14 +660,6 @@ impl CachedRepository {
         }
         self.value.clone()
     }
-}
-
-/// Whether a value is a repository path: `owner/name`, or a GitLab namespace.
-pub fn is_repository_name(value: &str) -> bool {
-    static REGEX: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$").expect("the repository form")
-    });
-    REGEX.is_match(value)
 }
 
 /// The harness directory a canonical checkout carries.
@@ -965,8 +934,6 @@ pub fn commit_candidates_from_comments(comments: &[String], limit: usize) -> Vec
 pub const GITEA_REQUEST_TIMEOUT_MS: u64 = 30_000;
 pub const GITEA_PAGE_SIZE: usize = 50;
 pub const GITEA_MAX_PAGES: usize = 100;
-/// The most issues one paged Gitea issue read returns.
-pub const GITEA_ISSUE_READ_MAX: usize = GITEA_MAX_PAGES * GITEA_PAGE_SIZE;
 
 /// One Gitea target: origin, `owner/name` project, and an optional token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2693,17 +2660,6 @@ pub const GITHUB_TOKEN_KEYS: [&str; 4] = [
     "GITHUB_ENTERPRISE_TOKEN",
 ];
 pub const GITLAB_TOKEN_KEYS: [&str; 3] = ["GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"];
-pub const TOKEN_KEYS: [&str; 9] = [
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "GH_ENTERPRISE_TOKEN",
-    "GITHUB_ENTERPRISE_TOKEN",
-    "GITLAB_TOKEN",
-    "GITLAB_ACCESS_TOKEN",
-    "OAUTH_TOKEN",
-    "GITEA_TOKEN",
-    "DEVBOARD_GITEA_TOKEN",
-];
 
 const CLI_ENV: [(&str, &str); 4] = [
     ("GH_PROMPT_DISABLED", "1"),
@@ -4063,29 +4019,6 @@ pub fn auth_environment(
     Ok(cli_environment(&environment))
 }
 
-/// Applies the selection to this process so every child sees the same identity.
-pub fn apply_auth_to_process(auth: &ResolvedAuth) -> Result<(), ForgeAuthError> {
-    let environment = auth_environment(auth, &process_environment())?;
-    for key in TOKEN_KEYS
-        .iter()
-        .copied()
-        .chain(["GH_HOST", "GITLAB_HOST", "DEVBOARD_GITEA_URL"])
-    {
-        std::env::remove_var(key);
-    }
-    for key in TOKEN_KEYS
-        .iter()
-        .copied()
-        .chain(["GH_HOST", "GITLAB_HOST", "DEVBOARD_GITEA_URL"])
-        .chain(CLI_ENV.iter().map(|(key, _)| *key))
-    {
-        if let Some(value) = environment.get(key) {
-            std::env::set_var(key, value);
-        }
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // GitHub release reads and release resolution
 
@@ -4411,13 +4344,6 @@ pub fn closing_commit_from_timeline(events: &[TimelineEvent]) -> Option<String> 
         }
     }
     None
-}
-
-/// Parses a JSON array `gh` printed, refusing a shape it does not know.
-pub fn parse_json_array(text: &str) -> Option<Vec<Value>> {
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|value| value.as_array().cloned())
 }
 
 /// Parses one JSON object per line, as `gh api --jq` emits it.
