@@ -645,6 +645,74 @@ fn worker(
 }
 
 #[tokio::test]
+async fn a_pinned_run_hands_its_gate_target_to_publish() {
+    let workspace = workspace("pinned-target");
+    let clock = FakeClock::new(start_ms());
+    let target = "e".repeat(40);
+    type Pinned = (Option<String>, Option<String>);
+    let seen: Arc<Mutex<Vec<Pinned>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut options = ReleaseTrainWorkerOptions::new(&workspace.repo_dir, &workspace.state_dir);
+    options.harness_version = Some("test-version".to_string());
+    options.manual = true;
+    options.tick_ms = Some(20);
+    options.now = Some(clock.function());
+    options.gate = Some(gate_ok(unreleased(&target, "1.0.1")));
+    options.publish = Some({
+        let seen = seen.clone();
+        let commit = target.clone();
+        Arc::new(move |args: PublishArgs| -> PublishFuture {
+            seen.lock()
+                .expect("the publish arguments")
+                .push((args.target.clone(), args.expected_version.clone()));
+            let commit = commit.clone();
+            Box::pin(async move {
+                Ok(PublishReport {
+                    version: "1.0.1".to_string(),
+                    tag: "v1.0.1".to_string(),
+                    commit,
+                    published: true,
+                    workflow_run: Some(42),
+                    github_assets: Vec::new(),
+                    manifest: String::new(),
+                    source_refresh: SourceRefreshReport {
+                        request: SourceRefreshRequest {
+                            schema: 1,
+                            commit: String::new(),
+                            version: String::new(),
+                            dist_digest: String::new(),
+                            requested_at: String::new(),
+                        },
+                        written: Vec::new(),
+                        applied: Vec::new(),
+                        failed: Vec::new(),
+                        skipped: Vec::new(),
+                    },
+                    dashboards: Vec::new(),
+                })
+            })
+        })
+    });
+    options.verify = Some(verify_ok());
+    options.log = Some(Arc::new(|_line: &str| {}));
+    let worker = ReleaseTrainWorker::new(options);
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+
+    assert_eq!(
+        seen.lock().expect("the publish arguments").clone(),
+        vec![(Some(target.clone()), Some("1.0.1".to_string()))],
+        "the run's gate target and derived version pin the release"
+    );
+    let state = worker.current_state();
+    let release = state.release.expect("the released state");
+    assert_eq!(
+        release.sha, target,
+        "the run records the target it released"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
 async fn one_worker_per_version_refuses_a_second_start() {
     let workspace = workspace("singleton");
     let clock = FakeClock::new(start_ms());
@@ -2659,10 +2727,8 @@ fn the_outer_bound_derives_from_publish_budget() {
     let allowances = devboard::publish::RELEASE_SUITE_BUDGET
         + devboard::publish::DEFAULT_WAIT_TIMEOUT
         + devboard::publish::PUBLISH_BUILD_ALLOWANCE
-        + devboard::publish::PUBLISH_BUNDLE_ALLOWANCE
         + devboard::publish::PUBLISH_WORKFLOW_ALLOWANCE
         + devboard::publish::PUBLISH_VERIFY_ALLOWANCE
-        + devboard::publish::PUBLISH_RACE_ALLOWANCE
         + devboard::publish::PUBLISH_LOCK_ALLOWANCE;
     assert_eq!(devboard::publish::publish_budget(), allowances);
     assert!(

@@ -183,19 +183,30 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   and `devboard-manifest.json`, one Gitea release for the same tag carrying the manifest and
   checksums, and one tag naming the released commit. The GitHub release tag names an empty-tree
   commit and GitHub's `main` never reaches the released commit.
-- **CI gate.** `devboard publish` pushes the branch first, reads the target commit's
-  `devboard-ci.yml` run on Gitea, and pushes the tag only after that run concludes `success`. A
-  settled failure restarts that same run once through the forge, because the commit is already on
-  the branch and no later push produces a second run; the restarted attempt gets the same bound. A
+- **Pinned target.** The gate's target commit pins the whole run. `devboard publish --target
+  <sha>` releases exactly the range ending at that commit, and the run records that commit as its
+  released sha. It fetches canonical `main` and its tags once, checks out the target in its own
+  detached worktree, derives the version from the target's range once, and compares it with the
+  `version` in the run's `request.json`. A target or version the request does not name, a target
+  the checkout cannot read or that is not reachable from `main`, and a target that is already
+  released all fail before any tag push, workflow dispatch, or release write, with a concrete
+  first error line and no tag left behind. Commits that land on `main` after the gate are not part
+  of that release and wait for the next tick, which re-gates at then-current `main`. A pinned run
+  never integrates a landing into its release, never re-fetches, and never derives a second time.
+- **CI gate.** `devboard publish` reads the pinned target's `devboard-ci.yml` run on Gitea, and
+  pushes the tag only after that run concludes `success`. The target is already on `main`, and the
+  release adds no branch commit: it publishes the tag that names the release commit. A settled
+  failure restarts that same run once through the forge, because the commit is already on the
+  branch and no later push produces a second run; the restarted attempt gets the same bound. A
   refused restart, a restart that settles without success, or a run still absent after the bounded
   wait leaves the range unreleased, records the run id, its conclusion, and the job and step that
   failed, and retries on the next tick.
 - **Retry.** A failing workflow conclusion, a missing GitHub release artifact, a missing Gitea
   manifest, or a rejected derived version records the failure with its detail, ships nothing, and
-  leaves the range unreleased. The next due tick starts a new run without operator action. When
-  `main` has moved past the failed version's tag, that retry releases the range at the current tip
-  and verifies the release publish actually proved, so a superseded version is never re-reported
-  as a failure after a successful release. A failed run is never recorded as released.
+  leaves the range unreleased. The next due tick starts a new run without operator action and
+  re-gates at then-current `main`. A tag that already covers the target without a complete
+  release is completed rather than re-tagged; a target whose release already verifies is refused
+  with a concrete first error line. A failed run is never recorded as released.
 - **Stop.** Stop ends the peer before its publish finishes. The run settles as `stopped`, never as
   a failed release, and the page raises no error for it: the operator's stop is the cause, and a
   release absent at that moment is its consequence. The record the stopped run keeps is the retry
@@ -203,31 +214,34 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
   records it once it ships. A peer that reported its publish failed, a publish error, or a bound
   that closed the peer keeps its failure, because the stop did not produce it.
 - **Agent.** `.devboard/prompts/release-train.md` instructs one run to release the collected range
-  through `devboard publish` from the integration checkout, which fetches canonical `main` itself,
-  verify the GitHub assets and the Gitea manifest, and report the version and release URL.
-  `devboard publish` dispatches
+  through `devboard publish --target <sha>`, taking the target and version from the run's
+  `request.json` and never re-fetching or re-deriving `main`, verify the GitHub assets and the
+  Gitea manifest, and report the version and release URL. `devboard publish` dispatches
   `.github/workflows/release.yml` for the released tag when that tag has no usable run, then
   performs the existing verification; it never requires a push.
 - **Agent.** The worker starts exactly one `omp acp` peer with `/release-train <run-dir>`; the run
   state names that peer, and Stop ends it. `.devboard/prompts/release-train.md` is the instruction
   the peer receives. The peer releases through `devboard publish` and verifies the GitHub assets
   and the Gitea manifest; it never edits a tracked file.
-- **Release suite and quarantine.** `devboard publish` runs `devboard release-suite` before it
-  tags or dispatches, and refuses both when the suite exits nonzero. The suite runs the workspace
-  tests, retries at most nine times, and quarantines a test that fails three consecutive attempts:
-  the rest of the run skips it, and the report names the file and the exact test. Quarantining
-  never rewrites a tracked file, so `git status --porcelain` stays empty and the tree stays
-  byte-identical. One deduplicated issue per skipped test records the file, the exact test name,
-  and the failed attempt output; a filing failure never blocks the release. An attempt that ran no
+- **Release suite and classification.** `devboard publish` runs `devboard release-suite` before it
+  tags or dispatches, and refuses both when the suite exits nonzero. The suite runs the pinned
+  commit's tree, whose `HEAD` is the target, in the publish worktree: an uncommitted edit or a
+  later landing in the integration checkout cannot change the gate's result. It runs the workspace
+  suite once and retries each failing test alone. A test that fails the whole-suite attempt and
+  passes its isolated retry is flaky: it is skipped for the rest of that run, files one
+  deduplicated issue naming its file, exact name, released commit, workflow run, and whole-suite
+  failure output, and does not block the release; the run starts no second whole-suite attempt. A
+  test that fails its isolated retry is deterministic: it files one issue and blocks the release,
+  and no tag is created, pushed, or dispatched. The skip is run-only: nothing is read back from
+  the forge to decide what runs, so a test with an open flaky issue executes on the next run. A
+  later finding for the same test appends one comment to the open issue and creates no second
+  issue; a filing failure logs one line and never changes the suite's verdict. No tracked test
+  file is rewritten, deleted, renamed, ignored, commented out, or given a changed assertion, so
+  `git status --porcelain` stays empty and the tree stays byte-identical. An attempt that ran no
   test because the kernel refused to start a freshly built binary, or because the target directory
   left while the build ran, is retried whole and reported only once the attempt budget is spent. A
   suite that cannot compile, or that yields no per-test result, exits nonzero, files nothing, and
-  prints the first concrete error line. Because the suite compiles the integration checkout's
-  working tree — shared with every landing and every agent — a run also names the harness's
-  uncommitted edits the tagged commit does not name, so a failure they caused is never read as a
-  verdict on the commit alone. A run that quarantined every test, so that no test is left to
-  execute, exits nonzero with `every test was quarantined; nothing ran` and files each
-  quarantine report, because no test proved the commit.
+  prints the first concrete error line.
 - **No other releaser.** `.github/workflows/release.yml` runs only on
   `workflow_dispatch`. The implementing agent closes its issue after the push proof and never
   publishes. The Design System pushes its documentation commit and reports without waiting for a

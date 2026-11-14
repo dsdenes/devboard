@@ -1118,11 +1118,12 @@ fn doctor_command(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `devboard publish [--wait-timeout <seconds>] [--repo <dir>]`.
+/// `devboard publish [--target <sha>] [--wait-timeout <seconds>] [--repo <dir>]`.
 async fn publish_command(args: &[String]) -> anyhow::Result<()> {
     let mut repo_dir = std::env::current_dir()?;
     let mut harness_root: Option<PathBuf> = None;
     let mut wait_seconds: u64 = 1800;
+    let mut target: Option<String> = None;
     let mut index = usize::from(args.first().map(String::as_str) == Some("publish"));
     while index < args.len() {
         let value = args.get(index + 1).cloned();
@@ -1131,11 +1132,12 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
             "--harness" => {
                 harness_root = Some(PathBuf::from(value.context("--harness needs a path")?))
             }
+            "--target" => target = Some(value.context("--target needs a commit")?),
             "--wait-timeout" => {
                 wait_seconds = value.context("--wait-timeout needs seconds")?.parse()?
             }
             "--help" | "-h" => {
-                println!("usage: devboard publish [--wait-timeout <seconds>] [--repo <dir>] [--harness <dir>]");
+                println!("usage: devboard publish [--target <sha>] [--wait-timeout <seconds>] [--repo <dir>] [--harness <dir>]");
                 return Ok(());
             }
             other => anyhow::bail!("unknown publish option {other}"),
@@ -1145,10 +1147,26 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
     let mut args = devboard::publish::PublishArgs::new(repo_dir.clone());
     // The release agent's shell is handed its run directory; only this
     // top-level command writes that run's progress record, never a test or a
-    // nested publish that inherits the same environment.
+    // nested publish that inherits the same environment. The run's own
+    // `request.json` names the target and version its gate derived, so this
+    // command pins the release to them even when `--target` is absent.
     if let Ok(run_dir) = std::env::var(devboard::publish::RELEASE_RUN_DIR_VARIABLE) {
-        args.progress_path =
-            Some(PathBuf::from(run_dir).join(devboard::publish::PUBLISH_PROGRESS_FILE));
+        let run_dir = PathBuf::from(run_dir);
+        args.progress_path = Some(run_dir.join(devboard::publish::PUBLISH_PROGRESS_FILE));
+        if let Some((request_target, request_version)) = devboard::publish::run_request(&run_dir) {
+            if let Some(requested) = target.as_deref() {
+                if requested.trim() != request_target {
+                    anyhow::bail!(
+                        "--target {requested} differs from the run's request target {request_target}"
+                    );
+                }
+            }
+            args.target = Some(request_target);
+            args.expected_version = Some(request_version);
+        }
+    }
+    if args.target.is_none() {
+        args.target = target;
     }
     if let Some(harness) = harness_root {
         args.harness_root = harness;
@@ -1208,8 +1226,9 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
 
 /// `devboard release-suite [--dir <workspace>] [--repo <dir>]`.
 ///
-/// Runs the workspace suite with retries and a quarantine, files one issue per
-/// skipped test, and exits with the suite's verdict.
+/// Runs the workspace suite once, retries each failing test alone, classifies
+/// it flaky or deterministic, files one issue per finding, and exits with the
+/// suite's verdict.
 async fn release_suite_command(args: &[String]) -> anyhow::Result<()> {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

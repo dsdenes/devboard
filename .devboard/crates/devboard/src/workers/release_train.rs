@@ -3118,6 +3118,11 @@ async fn run_release_and_verify(
     let mut publish_args = crate::publish::PublishArgs::new(input.repo_dir.clone());
     publish_args.environment = environment.clone();
     publish_args.wait_timeout = crate::publish::DEFAULT_WAIT_TIMEOUT;
+    // The gate's target and the version it derived ride the run's request.
+    // Publish releases exactly that range: a landing that moves `main` after
+    // the gate waits for the next tick instead of widening this release.
+    publish_args.target = Some(input.request.target.clone());
+    publish_args.expected_version = Some(input.request.version.clone());
     publish_args.progress_path = Some(input.run_dir.join(crate::publish::PUBLISH_PROGRESS_FILE));
     publish_args.log = {
         let activity = input.activity.clone();

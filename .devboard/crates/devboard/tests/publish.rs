@@ -18,14 +18,13 @@ use axum::extract::State;
 use devboard::jsjson;
 use devboard::publish::{
     acquire_release_lock, commit_level, deliver_source_refresh, dist_digest, next_release_version,
-    parse_subject, publish, subject_rule, verify_release_bundle, Clock, CommandInvocation,
-    CommandOutcome, CommandRunner, CommitRecord, DashboardInstance, ProcessRunner, PublishArgs,
-    ReleaseLevel, ReleaseLockOptions, Sleeper, SourceRefreshOptions, EMPTY_TREE_SHA,
-    RELEASE_INSTALLERS, RELEASE_TARGETS,
+    parse_subject, publish, subject_rule, Clock, CommandInvocation, CommandOutcome, CommandRunner,
+    CommitRecord, DashboardInstance, ProcessRunner, PublishArgs, ReleaseLevel, ReleaseLockOptions,
+    Sleeper, SourceRefreshOptions, RELEASE_INSTALLERS, RELEASE_TARGETS,
 };
 use devboard::release_suite::{
     attempt_line, BoxFuture, ReleaseSuiteGate, ReleaseSuiteOptions, ReleaseSuiteReport,
-    EVERY_TEST_QUARANTINED, RELEASE_SUITE_MAX_ATTEMPTS,
+    RELEASE_SUITE_MAX_ATTEMPTS,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -365,7 +364,15 @@ fn gitea_route(
         if data.rerun_count > 0 {
             data.reads_since_rerun += 1;
         }
-        let head = git_output(repo_dir, &["rev-parse", "HEAD"]);
+        // Gitea lists one run per pushed commit. Answering the newest few
+        // models that, so a run for the pinned target is still listed after a
+        // landing moves the checkout.
+        let heads: Vec<String> = git_output(repo_dir, &["rev-list", "--max-count=8", "--all"])
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect();
         // A restart answers the same commit with its own run, so the gate
         // follows a run id the settled failure did not name.
         let restarted = data.rerun_count > 0;
@@ -396,13 +403,13 @@ fn gitea_route(
                 "conclusion": "success",
             })]
         } else {
-            vec![
+            let mut runs = vec![
                 // A foreign workflow and a foreign commit prove the gate
                 // filters by both.
                 json!({
                     "id": 901,
                     "path": "another-workflow.yml@refs/heads/main",
-                    "head_sha": head,
+                    "head_sha": heads.first().cloned().unwrap_or_default(),
                     "status": "completed",
                     "conclusion": "failure",
                 }),
@@ -413,14 +420,17 @@ fn gitea_route(
                     "status": "completed",
                     "conclusion": "failure",
                 }),
-                json!({
+            ];
+            for sha in &heads {
+                runs.push(json!({
                     "id": id,
                     "path": "devboard-ci.yml@refs/heads/main",
-                    "head_sha": head,
+                    "head_sha": sha,
                     "status": status,
                     "conclusion": conclusion,
-                }),
-            ]
+                }));
+            }
+            runs
         };
         return json_response(json!({"workflow_runs": runs}));
     }
@@ -775,6 +785,35 @@ impl GithubStub {
     }
 }
 
+/// The commit a checkout's `github` remote names for one tag's build ref, when
+/// a release pushed it. The stub reads the mirror the way GitHub reports a
+/// dispatched run's `head_sha`.
+fn build_ref_commit(repo_dir: &Path, tag: &str) -> Option<String> {
+    let mirror = Command::new("git")
+        .args(["-C", repo_dir.to_string_lossy().as_ref()])
+        .args(["config", "--get", "remote.github.url"])
+        .output()
+        .ok()?;
+    if !mirror.status.success() {
+        return None;
+    }
+    let mirror = String::from_utf8_lossy(&mirror.stdout).trim().to_string();
+    let leaked = Command::new("git")
+        .arg("-C")
+        .arg(&mirror)
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/devboard-build/{tag}^{{commit}}"),
+        ])
+        .output()
+        .ok()?;
+    if !leaked.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&leaked.stdout).trim().to_string())
+}
+
 fn github_route(
     state: &Arc<Mutex<GithubData>>,
     base: &Arc<Mutex<String>>,
@@ -796,7 +835,11 @@ fn github_route(
         }
         let head_named = data.settle_after.is_some();
         let runs = if settled || head_named {
-            let head = git_output(repo_dir, &["rev-parse", "HEAD"]);
+            // The dispatched run's head is the temporary build ref's commit,
+            // exactly as GitHub reports it: the release commit, which is not
+            // the integration checkout's HEAD once the release is pinned.
+            let head = build_ref_commit(repo_dir, "v1.1.0")
+                .unwrap_or_else(|| git_output(repo_dir, &["rev-parse", "HEAD"]));
             let listed = data.run_head_sha.clone();
             let sha = listed.as_deref().unwrap_or(head.as_str());
             let sha = sha.trim();
@@ -1181,6 +1224,31 @@ impl Sleeper for LandingPusher {
     }
 }
 
+/// A gate that records the workspace directory it received and that
+/// directory's `HEAD`, so a test can prove the pinned commit's tree is what
+/// runs.
+struct SuiteTreeGate {
+    seen: Arc<Mutex<Option<(PathBuf, String)>>>,
+}
+
+impl ReleaseSuiteGate for SuiteTreeGate {
+    fn run<'a>(
+        &'a self,
+        options: ReleaseSuiteOptions,
+    ) -> BoxFuture<'a, anyhow::Result<ReleaseSuiteReport>> {
+        let head = git_output(&options.dir, &["rev-parse", "HEAD"]);
+        *self.seen.lock().expect("the gate's tree") = Some((options.dir.clone(), head));
+        let report = ReleaseSuiteReport {
+            code: 0,
+            attempts: 1,
+            findings: Vec::new(),
+            structural: None,
+            error_line: None,
+        };
+        Box::pin(async move { Ok(report) })
+    }
+}
+
 /// The gate every publish test uses: no real suite runs, and the verdict is
 /// the one the test asked for. It asserts the gate receives the harness
 /// workspace.
@@ -1202,7 +1270,7 @@ impl ReleaseSuiteGate for StubSuiteGate {
         let report = ReleaseSuiteReport {
             code: self.code,
             attempts: if self.code == 0 { 1 } else { 9 },
-            quarantined: Vec::new(),
+            findings: Vec::new(),
             structural: self.structural.clone(),
             error_line: self.structural.clone(),
         };
@@ -1211,13 +1279,11 @@ impl ReleaseSuiteGate for StubSuiteGate {
 }
 
 /// A suite gate a landing races: `origin/main` moves while the suite runs,
-/// after the attempt derived and tested its range.
+/// proving a pinned release never follows it.
 struct RacingSuiteGate {
     /// The checkout whose commit the gate pushes to `origin/main`.
     landing: PathBuf,
     runs: AtomicUsize,
-    /// Commits a fresh landing before every push, so the race never settles.
-    every_run: bool,
 }
 
 impl ReleaseSuiteGate for RacingSuiteGate {
@@ -1231,21 +1297,19 @@ impl ReleaseSuiteGate for RacingSuiteGate {
             options.dir.display()
         );
         let run = self.runs.fetch_add(1, Ordering::SeqCst);
-        if self.every_run {
+        if run == 0 {
             commit_file(
                 &self.landing,
                 "LANDING.md",
-                &format!("landing {}\n", run + 1),
-                &format!("fix: a landing during suite run {}", run + 1),
+                "landing\n",
+                "fix: a landing during the suite",
             );
-        }
-        if run == 0 || self.every_run {
             git_output(&self.landing, &["push", "-q", "origin", "main"]);
         }
         let report = ReleaseSuiteReport {
             code: 0,
             attempts: 1,
-            quarantined: Vec::new(),
+            findings: Vec::new(),
             structural: None,
             error_line: None,
         };
@@ -1292,7 +1356,7 @@ impl ReleaseSuiteGate for MovingCheckoutGate {
         let report = ReleaseSuiteReport {
             code: 0,
             attempts: 1,
-            quarantined: Vec::new(),
+            findings: Vec::new(),
             structural: None,
             error_line: None,
         };
@@ -1532,18 +1596,22 @@ async fn a_diverged_main_is_refused_without_a_wait() {
 #[tokio::test]
 async fn an_in_flight_landing_that_pushes_lets_the_release_run() {
     let live = live("landing", release_assets()).await;
-    commit_file(&live.seed, "README.md", "landing\n", "feat: the landing");
+    let landing = commit_file(&live.seed, "README.md", "landing\n", "feat: the landing");
     let clock = FakeClock::new(0);
     let sleeper = LandingPusher::new(clock.clone(), live.seed.clone());
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.clock = Some(clock);
     args.sleeper = Some(sleeper.clone());
+    args.target = Some(landing.clone());
     let report = publish(args).await.expect("the landing push settles");
 
     assert!(report.published, "the release ships once main is pushed");
     assert_eq!(report.version, "1.1.0");
+    // The release is pinned to the landing commit the fetch settled on; the
+    // checkout itself is never advanced to the release commit.
+    assert_eq!(git_output(&live.origin, &["rev-parse", "main"]), landing);
     assert_eq!(
-        git_output(&live.origin, &["rev-parse", "main"]),
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
         report.commit
     );
     assert!(sleeper.sleeps.load(Ordering::SeqCst) >= 1);
@@ -1563,204 +1631,6 @@ fn landing_checkout(live: &Live) -> PathBuf {
         ],
     );
     landing
-}
-
-#[tokio::test]
-async fn a_landing_that_pushes_during_the_suite_is_integrated_and_released() {
-    let live = live("landing-during-suite", release_assets()).await;
-    let landing = landing_checkout(&live);
-    commit_file(
-        &landing,
-        "LANDING.md",
-        "landing\n",
-        "fix: a landing during the suite",
-    );
-    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
-    let gate = Arc::new(RacingSuiteGate {
-        landing: landing.clone(),
-        runs: AtomicUsize::new(0),
-        every_run: false,
-    });
-    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
-    args.release_suite = Some(gate.clone());
-    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let recorded = lines.clone();
-    args.log = Some(Arc::new(move |line: &str| {
-        recorded.lock().expect("log").push(line.to_string());
-    }));
-
-    let report = publish(args)
-        .await
-        .expect("the landing is integrated and the release ships");
-
-    assert_eq!(
-        gate.runs.load(Ordering::SeqCst),
-        2,
-        "the suite runs again at the integrated tip"
-    );
-    assert!(report.published);
-    assert_eq!(report.tag, "v1.1.0");
-    assert_eq!(
-        git_output(&live.origin, &["rev-parse", "main"]),
-        report.commit
-    );
-    assert_eq!(
-        git_output(&live.seed, &["rev-parse", "HEAD"]),
-        report.commit
-    );
-    // The released commit contains the landing, and the bump follows it.
-    git_output(
-        &live.origin,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            &landing_commit,
-            &report.commit,
-        ],
-    );
-    assert_eq!(
-        git_output(&live.origin, &["show", "-s", "--format=%s", &report.commit]),
-        "chore(release): v1.1.0"
-    );
-    // The tag was withdrawn from the failed attempt and recreated at the
-    // integrated tip; the GitHub tag names the empty release commit and the
-    // build ref is gone.
-    assert_eq!(
-        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
-        report.commit
-    );
-    assert_eq!(live.github_stub.tag_commit(), Some("e".repeat(40)));
-    assert!(live.github_stub.build_ref_deleted());
-    let commit_request = live
-        .github_server
-        .find("POST", "/repos/dsdenes/devboard/git/commits")
-        .expect("the empty release commit");
-    assert!(
-        String::from_utf8_lossy(&commit_request.body).contains(EMPTY_TREE_SHA),
-        "the release commit names git's empty tree"
-    );
-    assert!(
-        live.github_server
-            .find("PATCH", "/repos/dsdenes/devboard/releases/7")
-            .is_some(),
-        "the release is published again after the tag move"
-    );
-    assert_eq!(live.github_stub.dispatch_count(), 1);
-    assert!(
-        live.gitea_stub
-            .release_bytes("v1.1.0", "devboard-manifest.json")
-            .is_some(),
-        "the release continues past the integrated landing"
-    );
-    let lines = lines.lock().expect("log").clone();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("integrating the landing at")),
-        "{lines:?}"
-    );
-}
-
-#[tokio::test]
-async fn a_landing_that_never_settles_leaves_no_tag_behind() {
-    let live = live("landing-churn", release_assets()).await;
-    let landing = landing_checkout(&live);
-    let gate = Arc::new(RacingSuiteGate {
-        landing: landing.clone(),
-        runs: AtomicUsize::new(0),
-        every_run: true,
-    });
-    let clock = FakeClock::new(0);
-    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
-    args.release_suite = Some(gate.clone());
-    args.clock = Some(clock.clone());
-    // Each retry pause spends 46 minutes of the integration window, so the
-    // second one exhausts it without waiting in real time.
-    args.sleeper = Some(Arc::new(FakeSleeper {
-        clock,
-        step: 46 * 60_000,
-    }));
-
-    let error = publish(args)
-        .await
-        .expect_err("a main that never settles stops the release");
-    let message = format!("{error:#}");
-    assert!(message.contains("could not push main"), "{message}");
-    assert!(message.contains("kept moving for 92 minutes"), "{message}");
-    assert!(message.contains("across 3 attempts"), "{message}");
-    assert_eq!(gate.runs.load(Ordering::SeqCst), 3);
-    // No tag survives the failed attempts on either remote or in the checkout,
-    // and the checkout is back at the tip the landings published.
-    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
-    for remote in [&live.origin, &live.github] {
-        let tags = git_output(remote, &["tag", "--list", "v1.1.0"]);
-        assert!(tags.trim().is_empty(), "{remote:?}: {tags}");
-    }
-    let local_tags = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
-    assert!(local_tags.trim().is_empty(), "{local_tags}");
-    assert_eq!(
-        git_output(&live.origin, &["rev-parse", "main"]),
-        landing_commit
-    );
-    assert_eq!(
-        git_output(&live.seed, &["rev-parse", "HEAD"]),
-        landing_commit
-    );
-    assert_eq!(live.github_stub.dispatch_count(), 0);
-    assert!(live
-        .gitea_stub
-        .release_bytes("v1.1.0", "devboard-manifest.json")
-        .is_none());
-}
-
-#[tokio::test]
-async fn a_landing_burst_beyond_three_attempts_still_releases() {
-    let live = live("landing-burst", release_assets()).await;
-    let landing = landing_checkout(&live);
-    // Four landings move the checkout under four attempts, one more than the
-    // attempt count an earlier bound gave up after.
-    let gate = Arc::new(MovingCheckoutGate {
-        landing: landing.clone(),
-        checkout: live.seed.clone(),
-        runs: AtomicUsize::new(0),
-        moves: 4,
-    });
-    let clock = FakeClock::new(0);
-    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
-    args.release_suite = Some(gate.clone());
-    args.clock = Some(clock.clone());
-    args.sleeper = Some(Arc::new(FakeSleeper { clock, step: 1_000 }));
-
-    let report = publish(args)
-        .await
-        .expect("a landing burst that ends releases the range");
-
-    assert_eq!(
-        gate.runs.load(Ordering::SeqCst),
-        5,
-        "every landing invalidates the proof and the fifth attempt settles"
-    );
-    assert!(report.published);
-    assert_eq!(report.tag, "v1.1.0");
-    assert_eq!(
-        git_output(&live.origin, &["rev-parse", "main"]),
-        report.commit
-    );
-    assert_eq!(
-        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
-        report.commit
-    );
-    // The released range carries the last landing of the burst.
-    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
-    git_output(
-        &live.origin,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            &landing_commit,
-            &report.commit,
-        ],
-    );
 }
 
 #[tokio::test]
@@ -1929,20 +1799,23 @@ async fn release_suite_gate_prevents_tagging_and_dispatch() {
     let manifest = fs::read_to_string(live.seed.join(".devboard/Cargo.toml")).expect("manifest");
     assert!(manifest.contains("version = \"0.0.0\""), "{manifest}");
 
-    // An all-quarantined suite reports the same refusal: no test proved the
-    // commit, so nothing may be tagged or dispatched.
+    // A suite whose tests are deterministic failures reports the same
+    // refusal: no test proved the commit, so nothing may be tagged or
+    // dispatched.
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_secs(5);
     args.release_suite = Some(Arc::new(StubSuiteGate {
         code: 1,
-        structural: Some(EVERY_TEST_QUARANTINED.to_string()),
+        structural: Some(
+            "the suite reported 1 deterministic failure(s) after 1 attempt(s)".to_string(),
+        ),
     }));
     let error = publish(args)
         .await
-        .expect_err("an all-quarantined suite blocks the release");
+        .expect_err("a deterministic suite blocks the release");
     let message = format!("{error:#}");
     assert!(message.contains("release suite did not pass"), "{message}");
-    assert!(message.contains(EVERY_TEST_QUARANTINED), "{message}");
+    assert!(message.contains("1 deterministic failure(s)"), "{message}");
     assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
     assert!(git_output(&live.seed, &["tag", "--list", "v1.1.0"])
         .trim()
@@ -1950,67 +1823,30 @@ async fn release_suite_gate_prevents_tagging_and_dispatch() {
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
-/// The gate compiles the shared integration checkout, so a concurrent run's
-/// partial edit can be sitting in the harness while the attempts build. That
-/// edit is not the commit the release tags, and a compile failure it causes
-/// must not read as a defect in the released commit.
-#[tokio::test]
-async fn a_suite_failure_in_a_tree_the_commit_does_not_carry_names_the_edits() {
-    let live = live("suite-diverged", release_assets()).await;
-    let manifest = live.seed.join(".devboard/Cargo.toml");
-    let mut text = fs::read_to_string(&manifest).expect("the manifest");
-    text.push_str("\n# a concurrent run's partial edit\n");
-    fs::write(&manifest, text).expect("an edit the commit does not carry");
-
-    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
-    args.wait_timeout = Duration::from_secs(5);
-    args.release_suite = Some(Arc::new(StubSuiteGate {
-        code: 1,
-        structural: Some("the suite could not compile: error[E0308]: mismatched types".to_string()),
-    }));
-    let error = publish(args)
-        .await
-        .expect_err("a failing suite blocks the release");
-    let message = format!("{error:#}");
-    assert!(message.contains("error[E0308]"), "{message}");
-    assert!(
-        message.contains("uncommitted edits the tagged commit does not name"),
-        "{message}"
-    );
-    assert!(message.contains(".devboard/Cargo.toml"), "{message}");
-    assert!(git_output(&live.seed, &["tag", "--list", "v1.1.0"])
-        .trim()
-        .is_empty());
-    assert_eq!(live.github_stub.dispatch_count(), 0);
-}
-
 /// The documented recovery path keeps uncommitted work in the integration
-/// checkout and reruns the publish path, so a suite that passes still releases
-/// the commit; the run records that the tree it proved carried edits the tag
-/// does not name, and the commit's own CI run proves what ships.
+/// checkout. A pinned release never compiles or tags that checkout, so the
+/// edit neither blocks nor contaminates the release.
 #[tokio::test]
 async fn a_passing_suite_releases_while_the_tree_carries_uncommitted_edits() {
     let live = live("suite-diverged-pass", release_assets()).await;
     let manifest = live.seed.join(".devboard/Cargo.toml");
     let mut text = fs::read_to_string(&manifest).expect("the manifest");
     text.push_str("\n# a concurrent run's partial edit\n");
-    fs::write(&manifest, text).expect("an edit the commit does not carry");
+    fs::write(&manifest, text.clone()).expect("an edit the commit does not carry");
 
-    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let recorded = lines.clone();
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_secs(5);
-    args.log = Some(Arc::new(move |line: &str| {
-        recorded.lock().expect("log").push(line.to_string());
-    }));
     let report = publish(args).await.expect("a passing suite releases");
 
     assert!(report.published);
-    let lines = lines.lock().expect("log");
-    assert!(
-        lines.iter().any(|line| line
-            .contains("the harness carries uncommitted edits the tagged commit does not name")),
-        "{lines:?}"
+    assert_eq!(
+        fs::read_to_string(&manifest).expect("the manifest"),
+        text,
+        "the release never wrote the shared checkout"
+    );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit
     );
 }
 
@@ -2087,19 +1923,31 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
     assert_eq!(report.tag, tag);
     assert!(report.published);
     assert_eq!(report.workflow_run, Some(42));
-    let commit = git_output(&live.seed, &["rev-parse", "HEAD"]);
-    assert_eq!(report.commit, commit);
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
     assert_eq!(
-        git_output(&live.seed, &["rev-parse", &format!("{tag}^{{commit}}")]).trim(),
-        commit
+        git_output(&live.origin, &["rev-parse", &format!("{tag}^{{commit}}")]).trim(),
+        report.commit
     );
     assert_eq!(
-        git_output(&live.seed, &["show", "-s", "--format=%s", "HEAD"]),
+        git_output(&live.origin, &["rev-list", &format!("{target}..{tag}")])
+            .lines()
+            .count(),
+        1,
+        "the release adds one commit after the pinned target"
+    );
+    assert_eq!(
+        git_output(
+            &live.origin,
+            &["show", "-s", "--format=%s", &format!("{tag}^{{commit}}")]
+        ),
         "chore(release): v1.1.0"
     );
+    // The pinned release commits the bump in its own worktree, never in the
+    // shared checkout.
     let manifest = fs::read_to_string(live.seed.join(".devboard/Cargo.toml")).expect("manifest");
-    assert!(manifest.contains("version = \"1.1.0\""), "{manifest}");
-    assert_eq!(git_output(&live.origin, &["rev-parse", "main"]), commit);
+    assert!(manifest.contains("version = \"0.0.0\""), "{manifest}");
+    assert_eq!(git_output(&live.origin, &["rev-parse", "main"]), target);
+    let commit = report.commit.clone();
     // GitHub's main is never advanced to the released commit, and the release
     // tag names an empty-tree commit; only the temporary build ref carried the
     // canonical source, and publish deleted it.
@@ -2198,8 +2046,9 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
         "no staging file survives the atomic write"
     );
 
-    // A rerun on the same commit completes and verifies the existing release
-    // without bumping, tagging, dispatching again, or uploading again.
+    // A rerun on the same pinned target is refused: the release already
+    // carries the tag, the assets, and the Gitea manifest. Nothing is bumped,
+    // tagged, dispatched, or uploaded again.
     fs::write(
         live.state_dir.join("source-refresh/applied.json"),
         format!(
@@ -2221,21 +2070,22 @@ async fn a_release_publishes_the_manifest_and_the_source_refresh() {
         Some(second_instance),
     );
     second_args.wait_timeout = Duration::from_secs(5);
-    let second = publish(second_args).await.expect("a rerun");
-    assert!(!second.published);
-    assert_eq!(second.version, version);
-    assert_eq!(second.tag, tag);
-    assert_eq!(second.commit, commit);
+    second_args.target = Some(target.clone());
+    let error = publish(second_args)
+        .await
+        .expect_err("a released target is refused");
+    assert!(
+        format!("{error:#}").contains("already released"),
+        "{error:#}"
+    );
     assert_eq!(live.github_stub.dispatch_count(), 1);
-    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), commit);
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), target);
     assert_eq!(
         live.gitea_stub
             .release_bytes(tag, "devboard-manifest.json")
             .expect("the unchanged manifest"),
         report.manifest.as_bytes()
     );
-    assert!(second.source_refresh.written.is_empty());
-    assert_eq!(second.source_refresh.applied.len(), 1);
 }
 
 type LogLines = Arc<Mutex<Vec<String>>>;
@@ -2259,7 +2109,7 @@ impl ReleaseSuiteGate for LoggingSuiteGate {
             Ok(ReleaseSuiteReport {
                 code: 0,
                 attempts: 2,
-                quarantined: Vec::new(),
+                findings: Vec::new(),
                 structural: None,
                 error_line: None,
             })
@@ -2289,7 +2139,7 @@ impl ReleaseSuiteGate for RunDirWatchingGate {
         let report = ReleaseSuiteReport {
             code: 0,
             attempts: 1,
-            quarantined: Vec::new(),
+            findings: Vec::new(),
             structural: None,
             error_line: None,
         };
@@ -2356,8 +2206,8 @@ async fn publish_records_every_phase_into_the_run_directory() {
     assert_eq!(
         phases,
         [
-            "start", "fetch", "bundle", "version", "suite", "suite", "suite", "ci", "ci", "tag",
-            "assets", "manifest",
+            "start", "fetch", "version", "suite", "suite", "suite", "ci", "ci", "tag", "assets",
+            "manifest",
         ],
         "publish records every phase in the order it performs them: {records:?}"
     );
@@ -2489,8 +2339,8 @@ async fn ci_gate_refuses_every_non_success_conclusion() {
         );
         assert_eq!(
             git_output(&live.origin, &["log", "-1", "--format=%s"]),
-            "chore(release): v1.1.0",
-            "{conclusion}: the branch keeps the commit for the next tick"
+            "feat: the next release",
+            "{conclusion}: the pinned release never advances main"
         );
         assert_eq!(live.github_stub.dispatch_count(), 0);
     }
@@ -2724,7 +2574,10 @@ impl CommandRunner for PushAnswerRunner {
                     "the fixture push lands: {}",
                     outcome.stderr
                 );
-                let commit = git_output(&self.origin, &["rev-parse", "main"]);
+                let commit = git_output(
+                    &self.origin,
+                    &["rev-parse", &format!("refs/tags/{tag}^{{commit}}")],
+                );
                 self.stub.accepted(&tag, &commit);
             }
             self.answered.fetch_add(1, Ordering::SeqCst);
@@ -2765,16 +2618,19 @@ async fn a_push_the_forge_already_accepted_does_not_fail_the_release() {
     let report = publish(args)
         .await
         .expect("the refs the forge carries decide the push, not its exit status");
-    let commit = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
     assert!(report.published);
     assert_eq!(report.tag, "v1.1.0");
-    assert_eq!(report.commit, commit);
-    assert_eq!(runner.answered.load(Ordering::SeqCst), 1);
-    assert_eq!(git_output(&live.origin, &["rev-parse", "main"]), commit);
     assert_eq!(
         git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
-        commit
+        report.commit
     );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        target,
+        "the pinned release never advances main"
+    );
+    assert_eq!(runner.answered.load(Ordering::SeqCst), 1);
     assert_eq!(live.github_stub.dispatch_count(), 1);
     assert!(
         live.gitea_stub
@@ -2814,174 +2670,296 @@ async fn a_refused_push_names_the_refusal_not_the_progress_line() {
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
-/// A record-and-delegate runner: `bun run build` writes a bundle carrying
-/// `asset`, the embed step copies it where the binary reads it, and every other
-/// command reaches the real process runner.
-struct RebuildRunner {
-    asset: &'static str,
-    builds: AtomicUsize,
-    embeds: AtomicUsize,
-}
+#[tokio::test]
+async fn the_pinned_suite_runs_the_target_tree_while_the_checkout_is_dirty() {
+    let live = live("pinned-tree", release_assets()).await;
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    // An uncommitted edit in the shared integration checkout is not the pinned
+    // commit, so it must not reach the gate.
+    fs::write(
+        live.seed.join(".devboard/Cargo.toml"),
+        "[workspace]\nmembers = [\"not-the-commit\"]\n",
+    )
+    .expect("an uncommitted edit the commit does not carry");
 
-impl CommandRunner for RebuildRunner {
-    fn run<'a>(
-        &'a self,
-        invocation: CommandInvocation,
-    ) -> Pin<Box<dyn Future<Output = CommandOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            // `bun` is started through the resolved path, so the seam matches
-            // the program's file name rather than the bare command.
-            let program = std::path::Path::new(&invocation.program)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            if program == "bun" {
-                let arguments: Vec<&str> = invocation.args.iter().map(String::as_str).collect();
-                return match arguments.as_slice() {
-                    ["run", "build"] => {
-                        self.builds.fetch_add(1, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(10));
-                        fs::create_dir_all(invocation.cwd.join("dist/assets")).expect("the bundle");
-                        fs::write(
-                            invocation.cwd.join("dist/index.html"),
-                            "<!doctype html><script src=\"/assets/app.js\"></script>\n",
-                        )
-                        .expect("an index");
-                        fs::write(invocation.cwd.join("dist/assets/app.js"), self.asset)
-                            .expect("an asset");
-                        CommandOutcome {
-                            code: 0,
-                            stdout: String::new(),
-                            stderr: String::new(),
-                        }
-                    }
-                    ["scripts/embed-client.mjs"] => {
-                        self.embeds.fetch_add(1, Ordering::SeqCst);
-                        let embedded = invocation.cwd.join("crates/devboard/assets");
-                        fs::create_dir_all(embedded.join("assets")).expect("the embed");
-                        fs::copy(
-                            invocation.cwd.join("dist/index.html"),
-                            embedded.join("index.html"),
-                        )
-                        .expect("an embedded index");
-                        fs::copy(
-                            invocation.cwd.join("dist/assets/app.js"),
-                            embedded.join("assets/app.js"),
-                        )
-                        .expect("an embedded asset");
-                        CommandOutcome {
-                            code: 0,
-                            stdout: String::new(),
-                            stderr: String::new(),
-                        }
-                    }
-                    other => panic!("unexpected bun invocation {other:?}"),
-                };
-            }
-            ProcessRunner.run(invocation).await
-        })
-    }
+    let seen = Arc::new(Mutex::new(None));
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
+    args.release_suite = Some(Arc::new(SuiteTreeGate { seen: seen.clone() }));
+    let report = publish(args).await.expect("the pinned tree is what runs");
+
+    assert!(report.published);
+    let seen = seen.lock().expect("the gate's tree").clone();
+    let (dir, head) = seen.expect("the gate ran");
+    assert!(
+        dir.ends_with(".devboard")
+            && dir.starts_with(
+                live.seed
+                    .join(devboard::publish::RELEASE_WORKTREE_DIRECTORY)
+            ),
+        "the gate ran in a release worktree, not the shared checkout: {}",
+        dir.display()
+    );
+    assert_eq!(head, target, "the gate's HEAD is the pinned target");
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
+        report.commit
+    );
+    let range = git_output(&live.origin, &["rev-list", &format!("{target}..v1.1.0")]);
+    assert_eq!(
+        range.lines().count(),
+        1,
+        "the tag carries the pinned target and one release commit: {range}"
+    );
+    assert_eq!(
+        git_output(
+            &live.origin,
+            &["show", "-s", "--format=%s", "v1.1.0^{commit}"]
+        ),
+        "chore(release): v1.1.0"
+    );
+    // The uncommitted edit is untouched: no release ever wrote the checkout.
+    assert!(fs::read_to_string(live.seed.join(".devboard/Cargo.toml"))
+        .expect("the manifest")
+        .contains("not-the-commit"));
 }
 
 #[tokio::test]
-async fn a_checkout_whose_sources_moved_rebuilds_and_embeds_before_proving_it() {
-    let live = live("stale-bundle", release_assets()).await;
-    // A source newer than the committed bundle, exactly what a refreshed
-    // integration checkout leaves behind.
-    std::thread::sleep(Duration::from_millis(10));
-    let source = live.seed.join(".devboard/client/Row.svelte");
-    fs::create_dir_all(source.parent().expect("a parent")).expect("the client tree");
-    fs::write(&source, "<p></p>\n").expect("a newer source");
-
-    // The rebuild reproduces the committed client byte for byte, so the embed
-    // step leaves `crates/devboard/assets` unchanged and the release proceeds.
-    let runner = Arc::new(RebuildRunner {
-        asset: "console.log(\"devboard\");\n",
-        builds: AtomicUsize::new(0),
-        embeds: AtomicUsize::new(0),
+async fn a_landing_that_moves_the_checkout_during_the_suite_is_not_integrated() {
+    let live = live("pinned-landing", release_assets()).await;
+    let target = git_output(&live.origin, &["rev-parse", "main"]);
+    let landing = landing_checkout(&live);
+    let gate = Arc::new(MovingCheckoutGate {
+        landing: landing.clone(),
+        checkout: live.seed.clone(),
+        runs: AtomicUsize::new(0),
+        moves: 1,
     });
+    let progress = live
+        .state_dir
+        .join(devboard::publish::PUBLISH_PROGRESS_FILE);
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
-    args.runner = Some(runner.clone());
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
+    args.release_suite = Some(gate.clone());
+    args.progress_path = Some(progress.clone());
     let report = publish(args)
         .await
-        .expect("the stale bundle is rebuilt before it is proven");
+        .expect("the pinned release ships while the checkout moves");
 
-    assert_eq!(report.version, "1.1.0");
-    assert_eq!(runner.builds.load(Ordering::SeqCst), 1);
-    assert_eq!(runner.embeds.load(Ordering::SeqCst), 1);
+    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
+    assert_ne!(landing_commit, target);
+    assert_eq!(gate.runs.load(Ordering::SeqCst), 1, "one frozen attempt");
+    assert!(report.published);
+    assert_eq!(report.tag, "v1.1.0");
+    // The landing moved `main`, and the release did not follow it.
     assert_eq!(
-        fs::read_to_string(live.seed.join(".devboard/dist/assets/app.js"))
-            .expect("the rebuilt asset"),
-        "console.log(\"devboard\");\n"
+        git_output(&live.origin, &["rev-parse", "main"]),
+        landing_commit
     );
-    let pending = git_output(
-        &live.seed,
-        &[
-            "status",
-            "--porcelain",
-            "--",
-            ".devboard/crates/devboard/assets",
-        ],
+    let range = git_output(&live.origin, &["rev-list", &format!("{target}..v1.1.0")]);
+    assert_eq!(
+        range.lines().count(),
+        1,
+        "only the release commit follows the pinned target: {range}"
     );
-    assert!(pending.is_empty(), "{pending}");
-    assert_eq!(live.github_stub.dispatch_count(), 1);
+    assert!(
+        !range.contains(&landing_commit),
+        "the landing is absent from the tag's range: {range}"
+    );
+    assert_eq!(
+        git_output(
+            &live.origin,
+            &["merge-base", "--is-ancestor", &target, "v1.1.0^{commit}"]
+        ),
+        ""
+    );
+    // The run recorded one fetch and one derivation for the target, and never
+    // entered a moving-target retry.
+    let records = devboard::publish::read_publish_progress(&progress);
+    let count = |phase: &str| {
+        records
+            .iter()
+            .filter(|record| record.phase == phase)
+            .count()
+    };
+    assert_eq!(count("fetch"), 1, "{records:?}");
+    assert_eq!(count("version"), 1, "{records:?}");
+    assert!(
+        !records
+            .iter()
+            .any(|record| record.detail.contains("integrating the landing")),
+        "{records:?}"
+    );
+    assert!(records
+        .iter()
+        .any(|record| record.phase == "fetch" && record.detail.contains(&target[..7])));
 }
 
 #[tokio::test]
-async fn a_rebuild_the_commit_does_not_carry_fails_before_the_tag() {
-    let live = live("stale-rebuild", release_assets()).await;
-    std::thread::sleep(Duration::from_millis(10));
-    let source = live.seed.join(".devboard/client/Row.svelte");
-    fs::create_dir_all(source.parent().expect("a parent")).expect("the client tree");
-    fs::write(&source, "<p></p>\n").expect("a newer source");
-    let head = git_output(&live.seed, &["rev-parse", "HEAD"]);
-
-    // The rebuilt bundle no longer matches the copy the commit carries: the
-    // embed step writes the working tree, and a tag would still ship the
-    // previous bundle.
-    let runner = Arc::new(RebuildRunner {
-        asset: "console.log(\"built\");\n",
-        builds: AtomicUsize::new(0),
-        embeds: AtomicUsize::new(0),
+async fn a_landing_that_pushes_during_the_suite_is_not_integrated() {
+    let live = live("pinned-landing-push", release_assets()).await;
+    let target = git_output(&live.origin, &["rev-parse", "main"]);
+    let landing = landing_checkout(&live);
+    let gate = Arc::new(RacingSuiteGate {
+        landing: landing.clone(),
+        runs: AtomicUsize::new(0),
     });
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
-    args.runner = Some(runner.clone());
     args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
+    args.release_suite = Some(gate.clone());
+    let report = publish(args)
+        .await
+        .expect("the pinned release ships while a landing pushes");
+
+    let landing_commit = git_output(&landing, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        gate.runs.load(Ordering::SeqCst),
+        1,
+        "the suite runs once, for the pinned target"
+    );
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        landing_commit,
+        "the landing is what main carries"
+    );
+    let range = git_output(&live.origin, &["rev-list", &format!("{target}..v1.1.0")]);
+    assert_eq!(
+        range.lines().collect::<Vec<_>>(),
+        [report.commit.as_str()],
+        "the tag carries the target and one release commit: {range}"
+    );
+    assert!(
+        !range.contains(&landing_commit),
+        "the landing is absent from the tag's range"
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+    assert!(live
+        .gitea_stub
+        .release_bytes("v1.1.0", "devboard-manifest.json")
+        .is_some());
+}
+
+#[tokio::test]
+async fn a_pinned_target_the_run_version_does_not_name_fails_before_any_write() {
+    let live = live("pinned-version", release_assets()).await;
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let origin_head = git_output(&live.origin, &["rev-parse", "main"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target);
+    args.expected_version = Some("9.9.9".to_string());
     let error = publish(args)
         .await
-        .expect_err("a rebuild the commit does not carry fails the release");
+        .expect_err("a version the request does not name refuses the release");
     let message = format!("{error:#}");
-    assert!(message.contains("crates/devboard/assets"), "{message}");
-    assert!(message.contains("not committed"), "{message}");
-    assert_eq!(runner.embeds.load(Ordering::SeqCst), 1);
+    assert!(message.contains("derives v1.1.0"), "{message}");
+    assert!(message.contains("request names v9.9.9"), "{message}");
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        origin_head
+    );
+    assert_eq!(live.github_stub.dispatch_count(), 0);
+    assert!(live
+        .gitea_server
+        .find("POST", "/api/v1/repos/dsdenes/devboard/releases")
+        .is_none());
+}
 
-    // Nothing was bumped, tagged, pushed, or dispatched.
-    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), head);
-    let local = git_output(&live.seed, &["tag", "--list", "v1.1.0"]);
-    assert!(local.trim().is_empty(), "{local}");
+#[tokio::test]
+async fn a_malformed_or_missing_pinned_target_fails_before_any_write() {
+    let live = live("pinned-target-shape", release_assets()).await;
+    let origin_head = git_output(&live.origin, &["rev-parse", "main"]);
+    for (target, expected) in [
+        ("not-a-commit".to_string(), "not a full 40-character"),
+        (String::new(), "pinned target is empty"),
+        ("c".repeat(40), "not a commit this checkout can read"),
+    ] {
+        let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+        args.wait_timeout = Duration::from_secs(5);
+        args.target = Some(target.clone());
+        let error = publish(args)
+            .await
+            .expect_err("an unusable pinned target refuses the release");
+        let message = format!("{error:#}");
+        assert!(message.contains(expected), "{target}: {message}");
+    }
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
+    assert_eq!(
+        git_output(&live.origin, &["rev-parse", "main"]),
+        origin_head
+    );
     assert_eq!(live.github_stub.dispatch_count(), 0);
 }
 
 #[tokio::test]
-async fn a_client_edit_that_was_never_embedded_fails_before_the_tag() {
-    let live = live("stale-embed", release_assets()).await;
-    // The bundle is fresh, but the copy the binary embeds still serves the
-    // client from before the edit.
-    std::thread::sleep(Duration::from_millis(10));
-    let asset = live
-        .seed
-        .join(".devboard/crates/devboard/assets/assets/app.js");
-    fs::write(&asset, "console.log(\"never embedded\");\n").expect("a stale embed");
+async fn a_pinned_target_outside_main_fails_before_any_write() {
+    let live = live("pinned-target-unreachable", release_assets()).await;
+    let side = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    git_output(&live.seed, &["checkout", "-q", "-b", "side"]);
+    let orphan = commit_file(&live.seed, "SIDE.md", "side\n", "feat: a side commit");
+    git_output(&live.seed, &["checkout", "-q", "main"]);
+    assert_ne!(orphan, side);
+
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.wait_timeout = Duration::from_secs(5);
-
+    args.target = Some(orphan.clone());
     let error = publish(args)
         .await
-        .expect_err("a stale embedded client fails the release");
+        .expect_err("a target outside main refuses the release");
     let message = format!("{error:#}");
-    assert!(message.contains("crates/devboard/assets"), "{message}");
-    assert!(message.contains("differs from dist"), "{message}");
+    assert!(
+        message.contains("not reachable from origin/main"),
+        "{message}"
+    );
+    assert!(git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+        .trim()
+        .is_empty());
     assert_eq!(live.github_stub.dispatch_count(), 0);
+}
+
+#[tokio::test]
+async fn an_already_released_pinned_target_fails_before_any_write() {
+    let live = live("pinned-released", release_assets()).await;
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
+    let first = publish(args).await.expect("the first release ships");
+    assert!(first.published);
+    assert_eq!(live.github_stub.dispatch_count(), 1);
+
+    let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
+    args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target);
+    let error = publish(args)
+        .await
+        .expect_err("a released target is refused");
+    let message = format!("{error:#}");
+    assert!(message.contains("already released"), "{message}");
+    assert!(message.contains("v1.1.0"), "{message}");
+    assert_eq!(
+        live.github_stub.dispatch_count(),
+        1,
+        "an already-released target dispatches nothing"
+    );
+    assert_eq!(
+        live.gitea_server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST"
+                && request.path == "/api/v1/repos/dsdenes/devboard/releases")
+            .count(),
+        1,
+        "no second Gitea release is written"
+    );
 }
 
 #[tokio::test]
@@ -3054,7 +3032,10 @@ async fn a_read_only_gitea_credential_fails_before_the_tag_is_pushed() {
 }
 
 #[tokio::test]
-async fn a_stale_checkout_rederives_from_the_forge_release() {
+/// A checkout that never fetched the published tag cannot derive the pinned
+/// target's range. The forge's newest release is the floor, so the run is
+/// refused before anything is written instead of deriving a released range.
+async fn a_stale_checkout_refuses_a_pinned_target_at_or_below_its_release() {
     let scratch = Scratch::new("rederive");
     let (origin, github) = origin_repository(&scratch.root);
     let seed = scratch.root.join("seed");
@@ -3072,9 +3053,9 @@ async fn a_stale_checkout_rederives_from_the_forge_release() {
         "feat: the release the checkout cannot see",
     );
     git_output(&seed, &["push", "-q", "origin", "main"]);
-    commit_file(&seed, "README.md", "after\n", "fix: after that release");
+    let target = commit_file(&seed, "README.md", "after\n", "fix: after that release");
     git_output(&seed, &["push", "-q", "origin", "main"]);
-    // The checkout never fetched v1.1.0; only the forge names it.
+    // `origin` never carried v1.1.0; only the forge names it.
 
     let mut refs = BTreeMap::new();
     refs.insert("v1.0.0".to_string(), first);
@@ -3088,9 +3069,19 @@ async fn a_stale_checkout_rederives_from_the_forge_release() {
     let github = GithubStub::start(seed.clone(), release_assets(), Vec::new(), true).await;
     let mut args = test_args(&seed, &gitea.server, &github.server, None);
     args.wait_timeout = Duration::from_secs(5);
-    let report = publish(args).await.expect("a rederived release");
-    assert_eq!(report.version, "1.1.1");
-    assert!(report.published);
+    args.target = Some(target);
+    let error = publish(args)
+        .await
+        .expect_err("a stale checkout refuses the pinned range");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("not newer than the published v1.1.0"),
+        "{message}"
+    );
+    assert!(git_output(&origin, &["tag", "--list", "v1.1.1"])
+        .trim()
+        .is_empty());
+    assert_eq!(github.stub.dispatch_count(), 0);
 }
 
 #[tokio::test]
@@ -3300,21 +3291,30 @@ async fn a_failed_workflow_withdraws_the_tag_it_created() {
 }
 
 #[tokio::test]
-async fn a_withdrawn_release_reuses_the_committed_version_bump() {
+async fn a_withdrawn_release_is_retried_against_the_same_pinned_target() {
     let live = live("withdraw-retry", release_assets()).await;
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
     live.github_stub.settle_with("cancelled", json!({}));
     live.github_stub.release_exists(false);
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.instances = Some(Vec::new());
     args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
     publish(args).await.expect_err("the first attempt fails");
-    let bumped = git_output(&live.seed, &["rev-parse", "HEAD"]);
+    assert!(
+        git_output(&live.origin, &["tag", "--list", "v1.1.0"])
+            .trim()
+            .is_empty(),
+        "the failed attempt withdraws its tag"
+    );
+    assert_eq!(git_output(&live.seed, &["rev-parse", "HEAD"]), target);
 
     live.github_stub.settle_with("success", json!({}));
     live.github_stub.release_exists(true);
     let mut args = test_args(&live.seed, &live.gitea_server, &live.github_server, None);
     args.instances = Some(Vec::new());
     args.wait_timeout = Duration::from_secs(5);
+    args.target = Some(target.clone());
     let report = publish(args)
         .await
         .expect("the retry releases the withdrawn version");
@@ -3324,24 +3324,21 @@ async fn a_withdrawn_release_reuses_the_committed_version_bump() {
     assert!(report.published);
     assert_eq!(
         git_output(&live.seed, &["rev-parse", "HEAD"]),
-        bumped,
-        "the retry commits no second version bump"
-    );
-    let log = git_output(&live.seed, &["log", "--format=%s"]);
-    assert_eq!(
-        log.lines()
-            .filter(|line| *line == "chore(release): v1.1.0")
-            .count(),
-        1,
-        "{log}"
-    );
-    assert_eq!(
-        git_output(&live.seed, &["rev-parse", "v1.1.0^{commit}"]),
-        bumped
+        target,
+        "neither attempt advances the integration checkout"
     );
     assert_eq!(
         git_output(&live.origin, &["rev-parse", "v1.1.0^{commit}"]),
-        bumped
+        report.commit
+    );
+    let range = git_output(&live.origin, &["rev-list", &format!("{target}..v1.1.0")]);
+    assert_eq!(range.lines().count(), 1, "{range}");
+    assert_eq!(
+        git_output(
+            &live.origin,
+            &["show", "-s", "--format=%s", "v1.1.0^{commit}"]
+        ),
+        "chore(release): v1.1.0"
     );
 }
 
@@ -3574,140 +3571,12 @@ fn two_live_dashboards_render_one_inventory_row_each() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-fn bundle_root(label: &str) -> std::path::PathBuf {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(".test-tmp")
-        .join(format!("publish-bundle-{label}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("client")).unwrap();
-    std::fs::write(root.join("client/App.svelte"), "<script></script>\n").unwrap();
-    std::fs::create_dir_all(root.join("dist/assets")).unwrap();
-    std::fs::write(
-        root.join("dist/index.html"),
-        "<!doctype html><script src=\"/assets/app.js\"></script>\n",
-    )
-    .unwrap();
-    std::fs::write(root.join("dist/assets/app.js"), "console.log(1);\n").unwrap();
-    std::fs::create_dir_all(root.join("crates/devboard/assets/assets")).unwrap();
-    std::fs::write(
-        root.join("crates/devboard/assets/index.html"),
-        "<!doctype html><script src=\"/assets/app.js\"></script>\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("crates/devboard/assets/assets/app.js"),
-        "console.log(1);\n",
-    )
-    .unwrap();
-    root
-}
-
-#[test]
-fn the_bundle_preflight_refuses_every_damaged_input() {
-    let root = bundle_root("refusals");
-    verify_release_bundle(&root).expect("a fresh bundle passes");
-
-    // A source newer than the bundle.
-    std::thread::sleep(Duration::from_millis(10));
-    std::fs::write(root.join("client/Row.svelte"), "<p></p>\n").unwrap();
-    let error = verify_release_bundle(&root).expect_err("a stale bundle is refused");
-    assert!(
-        error.to_string().contains("older than its sources"),
-        "{error}"
-    );
-    std::fs::remove_file(root.join("client/Row.svelte")).unwrap();
-
-    // An index reference with no file behind it.
-    std::fs::write(
-        root.join("dist/index.html"),
-        "<!doctype html><script src=\"/assets/missing.js\"></script>\n",
-    )
-    .unwrap();
-    let error = verify_release_bundle(&root).expect_err("a missing asset is refused");
-    assert!(error.to_string().contains("/assets/missing.js"), "{error}");
-    std::fs::write(
-        root.join("dist/index.html"),
-        "<!doctype html><script src=\"/assets/app.js\"></script>\n",
-    )
-    .unwrap();
-
-    // An embedded copy that no longer matches the built bundle.
-    std::fs::write(
-        root.join("crates/devboard/assets/assets/app.js"),
-        "console.log(2);\n",
-    )
-    .unwrap();
-    let error = verify_release_bundle(&root).expect_err("a stale embed is refused");
-    assert!(
-        error.to_string().contains("crates/devboard/assets"),
-        "{error}"
-    );
-    std::fs::write(
-        root.join("crates/devboard/assets/assets/app.js"),
-        "console.log(1);\n",
-    )
-    .unwrap();
-
-    // A staged manifest with no checksum, then a wrong one.
-    let manifest = serde_json::json!({
-        "version": "1.2.3",
-        "tag": "v1.2.3",
-        "assets": [],
-    });
-    let bytes = serde_json::to_vec(&manifest).unwrap();
-    std::fs::write(root.join("devboard-manifest.json"), &bytes).unwrap();
-    let error = verify_release_bundle(&root).expect_err("a missing checksum is refused");
-    assert!(
-        error.to_string().contains("devboard-manifest.json.sha256"),
-        "{error}"
-    );
-    std::fs::write(
-        root.join("devboard-manifest.json.sha256"),
-        "0000000000000000000000000000000000000000000000000000000000000000  devboard-manifest.json\n",
-    )
-    .unwrap();
-    let error = verify_release_bundle(&root).expect_err("a wrong checksum is refused");
-    assert!(error.to_string().contains("does not match"), "{error}");
-    let digest = bundle_sha256_hex(&bytes);
-    std::fs::write(
-        root.join("devboard-manifest.json.sha256"),
-        format!("{digest}  devboard-manifest.json\n"),
-    )
-    .unwrap();
-
-    // A manifest whose version and tag disagree.
-    let mismatched = serde_json::json!({
-        "version": "1.2.3",
-        "tag": "v9.9.9",
-        "assets": [],
-    });
-    let bytes = serde_json::to_vec(&mismatched).unwrap();
-    std::fs::write(root.join("devboard-manifest.json"), &bytes).unwrap();
-    let digest = bundle_sha256_hex(&bytes);
-    std::fs::write(
-        root.join("devboard-manifest.json.sha256"),
-        format!("{digest}  devboard-manifest.json\n"),
-    )
-    .unwrap();
-    let error = verify_release_bundle(&root).expect_err("a version/tag mismatch is refused");
-    assert!(
-        error.to_string().contains("differs from its tag"),
-        "{error}"
-    );
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-fn bundle_sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 #[tokio::test]
-async fn two_verification_passes_of_one_tag_dispatch_one_workflow_run() {
+async fn a_second_publish_of_a_released_target_dispatches_nothing() {
     let live = live("one-dispatch", release_assets()).await;
     // A new tag has no GitHub release until its workflow succeeds.
     live.github_stub.release_exists(false);
+    let target = git_output(&live.seed, &["rev-parse", "HEAD"]);
     let instance = DashboardInstance {
         pid: 4242,
         port: 7300,
@@ -3715,32 +3584,37 @@ async fn two_verification_passes_of_one_tag_dispatch_one_workflow_run() {
         harness: live.seed.join(".devboard"),
         state_dir: live.state_dir.clone(),
     };
-    let first = publish(test_args(
+    let mut args = test_args(
         &live.seed,
         &live.gitea_server,
         &live.github_server,
         Some(instance.clone()),
-    ))
-    .await
-    .expect("the first pass ships the release");
+    );
+    args.target = Some(target.clone());
+    let first = publish(args)
+        .await
+        .expect("the first pass ships the release");
     assert!(first.published);
     assert_eq!(first.tag, "v1.1.0");
     assert_eq!(live.github_stub.dispatch_count(), 1);
 
-    // The forge no longer lists the build run by commit, which is the case a
-    // second verification pass could mistake for unfinished work. The release
-    // already carries every asset, so the pass verifies instead of building.
+    // Every asset exists and the Gitea release is written, so a second pass
+    // is a released target: refused before any second dispatch or write.
     live.github_stub.forget_run_for_commit();
-    let second = publish(test_args(
+    let mut args = test_args(
         &live.seed,
         &live.gitea_server,
         &live.github_server,
         Some(instance),
-    ))
-    .await
-    .expect("a verification pass verifies the existing release");
-    assert!(!second.published);
-    assert_eq!(second.tag, first.tag);
+    );
+    args.target = Some(target);
+    let error = publish(args)
+        .await
+        .expect_err("a released target is refused");
+    assert!(
+        format!("{error:#}").contains("already released"),
+        "{error:#}"
+    );
     assert_eq!(
         live.github_stub.dispatch_count(),
         1,

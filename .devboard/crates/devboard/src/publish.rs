@@ -1,8 +1,11 @@
-//! The one release path: derive a version from Conventional Commits, bump the
-//! workspace version, tag and push the released commit, dispatch the cargo-dist
-//! workflow on GitHub, prove the platform archives and installers, publish the
-//! Gitea release manifest and checksums, and write one source-refresh request
-//! into every live source dashboard's state directory.
+//! The one release path: pin the gate's target commit, run the suite in that
+//! commit's own worktree, derive the version from the target's range, bump and
+//! tag it there, prove the target's `devboard-ci.yml` run, push the tag,
+//! dispatch the cargo-dist workflow on GitHub, prove the platform archives and
+//! installers, publish the Gitea release manifest and checksums, and write one
+//! source-refresh request into every live source dashboard's state directory.
+//! Commits that land on `main` after the gate wait for the next run: this path
+//! never re-fetches, never re-derives, and never advances the branch.
 //!
 //! Every external effect is injectable. Git commands run through
 //! [`CommandRunner`], HTTP requests through [`HttpTransport`], and every wait
@@ -15,6 +18,7 @@ use std::future::Future;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -61,23 +65,12 @@ pub const RELEASE_RUN_DIR_VARIABLE: &str = "DEVBOARD_RELEASE_RUN_DIR";
 pub const PUBLISH_PROGRESS_FILE: &str = "publish-progress.jsonl";
 /// How many progress records a reader retains, newest last.
 pub const PUBLISH_PROGRESS_LIMIT: usize = 200;
-/// One release-suite attempt's bound.
+/// The release-suite attempt's bound.
 pub const RELEASE_SUITE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3_600);
-/// The whole release-suite budget: every attempt may use its own bound.
+/// The whole release-suite budget: the one whole-suite attempt plus an
+/// isolated retry for every test it failed may each use their own bound.
 pub const RELEASE_SUITE_BUDGET: Duration =
-    Duration::from_secs(3_600 * release_suite::RELEASE_SUITE_MAX_ATTEMPTS as u64);
-/// The client bundle rebuild and embed allowance.
-pub const PUBLISH_BUNDLE_ALLOWANCE: Duration = Duration::from_secs(1_800);
-/// The embed step's share of that allowance: copying the built bundle where the
-/// binary reads it is the cheap half, so the client build keeps the rest.
-pub const PUBLISH_EMBED_ALLOWANCE: Duration = Duration::from_secs(300);
-/// The client build's own bound: the bundle allowance less the embed's share,
-/// so the two commands together never outrun the one allowance
-/// [`publish_budget`] counts. A client build inside a slice at its memory high
-/// mark has taken over six minutes, and a bound below the allowance would fail
-/// a rebuild the publish's own budget still allows.
-pub const PUBLISH_CLIENT_BUILD_TIMEOUT: Duration =
-    Duration::from_secs(PUBLISH_BUNDLE_ALLOWANCE.as_secs() - PUBLISH_EMBED_ALLOWANCE.as_secs());
+    Duration::from_secs(3_600 * (release_suite::RELEASE_SUITE_MAX_ATTEMPTS as u64 + 1));
 /// The release build workflow's allowance.
 pub const PUBLISH_BUILD_ALLOWANCE: Duration = Duration::from_secs(1_800);
 /// The workflow dispatch allowance.
@@ -89,25 +82,24 @@ pub const PUBLISH_VERIFY_ALLOWANCE: Duration = Duration::from_secs(1_800);
 /// last an hour, so this heartbeat keeps the run's progress record growing and
 /// the Release Train's silence bound out for as long as publish works.
 pub const PUBLISH_SUITE_HEARTBEAT: Duration = Duration::from_secs(300);
-/// The window in which a moving `main` may make publish integrate and derive
-/// again.
-pub const PUBLISH_RACE_ALLOWANCE: Duration = RACE_INTEGRATION_BUDGET;
 /// The wait for the shared release lock.
 pub const PUBLISH_LOCK_ALLOWANCE: Duration = Duration::from_millis(RELEASE_LOCK_WAIT_MS as u64);
+/// The directory, under the checkout root, a pinned release is cut in.
+pub const RELEASE_WORKTREE_DIRECTORY: &str = ".worktree";
+/// The prefix of the detached worktree one pinned release owns.
+pub const RELEASE_WORKTREE_PREFIX: &str = "release";
 
 /// The whole budget one publish may legitimately spend: the suite's whole
-/// budget plus the CI wait, the build, bundle, workflow, and verification
-/// allowances, the retry window a moving `main` may use, and the shared-lock
-/// wait. The Release Train derives a run's outer bound from this, so no
-/// constant there can settle a run publish is still allowed to work in.
+/// budget plus the CI wait, the build, workflow, and verification allowances,
+/// and the shared-lock wait. The Release Train derives a run's outer bound from
+/// this, so no constant there can settle a run publish is still allowed to work
+/// in.
 pub fn publish_budget() -> Duration {
     RELEASE_SUITE_BUDGET
         + DEFAULT_WAIT_TIMEOUT
         + PUBLISH_BUILD_ALLOWANCE
-        + PUBLISH_BUNDLE_ALLOWANCE
         + PUBLISH_WORKFLOW_ALLOWANCE
         + PUBLISH_VERIFY_ALLOWANCE
-        + PUBLISH_RACE_ALLOWANCE
         + PUBLISH_LOCK_ALLOWANCE
 }
 /// How often one idempotent Gitea read is attempted while the forge answers a
@@ -910,9 +902,15 @@ pub struct PublishArgs {
     pub sleeper: Option<Arc<dyn Sleeper>>,
     /// Every dashboard to consider; discovered from `/proc` when absent.
     pub instances: Option<Vec<DashboardInstance>>,
-    /// The workspace whose release suite must pass before tagging; `None`
-    /// skips the gate.
-    pub release_suite_dir: Option<PathBuf>,
+    /// The commit this release is pinned to. The Release Train hands its gate
+    /// target here, so the release covers exactly the range ending at that
+    /// commit: later commits on `main` wait for the next run. `None` pins the
+    /// tip this run fetched, which is still one fixed commit, never a target
+    /// that moves while the release works.
+    pub target: Option<String>,
+    /// The version the run's `request.json` derived for the pinned range. A
+    /// derivation that disagrees fails before anything is tagged or dispatched.
+    pub expected_version: Option<String>,
     /// The release-suite gate; the production gate when absent.
     pub release_suite: Option<Arc<dyn release_suite::ReleaseSuiteGate>>,
     /// Receives each progress line; stderr when absent.
@@ -927,7 +925,6 @@ impl PublishArgs {
     pub fn new(repo_dir: impl Into<PathBuf>) -> Self {
         let repo_dir = repo_dir.into();
         let harness_root = repo_dir.join(".devboard");
-        let release_suite_dir = Some(harness_root.clone());
         Self {
             repo_dir,
             harness_root,
@@ -940,7 +937,8 @@ impl PublishArgs {
             clock: None,
             sleeper: None,
             instances: None,
-            release_suite_dir,
+            target: None,
+            expected_version: None,
             release_suite: None,
             log: None,
             // The progress record belongs to the one publish a release run
@@ -949,6 +947,26 @@ impl PublishArgs {
             progress_path: None,
         }
     }
+}
+
+/// The `target` and `version` a Release Train run's `request.json` names.
+///
+/// The run directory is the worker's, so publish reads it rather than trusting
+/// a command line alone: a `--target` the request does not name, or a
+/// derivation the request's version does not match, fails before anything is
+/// tagged, dispatched, or written.
+pub fn run_request(run_dir: &Path) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(run_dir.join("request.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let field = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    Some((field("target")?, field("version")?))
 }
 
 /// What one release did.
@@ -2262,36 +2280,29 @@ struct VerifiedAssets {
 /// Runs the release suite and refuses a publish the suite does not pass. The
 /// gate runs before the version bump, the tag, the push, and the workflow
 /// dispatch, so a failing suite can never ship a release.
+///
+/// `suite_dir` is the pinned commit's harness workspace, a detached worktree
+/// at the target: its `HEAD` is the commit being released and nothing in the
+/// shared integration checkout — an uncommitted edit, a later landing, a
+/// checkout by another run — can change what the gate compiles.
 async fn run_release_suite_gate(
     args: &PublishArgs,
     log: &Arc<dyn Fn(&str) + Send + Sync>,
     progress: &PublishProgress,
     runner: Arc<dyn CommandRunner>,
     suite_dir: PathBuf,
+    target: &str,
 ) -> Result<()> {
     let gate: Arc<dyn release_suite::ReleaseSuiteGate> = args
         .release_suite
         .clone()
         .unwrap_or_else(|| Arc::new(release_suite::ProcessSuiteGate));
-    // The suite compiles the integration checkout's working tree, and that
-    // checkout is shared: a concurrent run's partial edit, or a change
-    // preserved across a landing, can sit in the harness while the gate
-    // builds. Such an edit is not the commit this release tags, so the gate
-    // names it: a structural failure it causes must not read as a defect in
-    // the released commit, and a pass it causes must not read as proof of one.
-    // The gate still runs, because the documented recovery path keeps
-    // uncommitted work in the checkout, and the tagged commit's own CI run is
-    // what proves the release.
-    let mut pending = pending_harness_edits(args, runner.as_ref()).await?;
-    if let Some(line) = divergence_line(&pending) {
-        (log)(&format!("release suite: {line}"));
-        progress.record(PublishProgressRecord::new("suite", line));
-    }
-    (log)("release suite: the workspace suite runs before the tag");
-    progress.record(PublishProgressRecord::new(
-        "suite",
-        "the workspace suite runs before the tag",
-    ));
+    let opening = format!(
+        "the workspace suite runs before the tag in the pinned tree at {}",
+        short_sha(target)
+    );
+    (log)(&format!("release suite: {opening}"));
+    progress.record(PublishProgressRecord::new("suite", opening));
     // The suite reports each whole attempt on the log. That line is the
     // attempt's progress record: its number and its passed and failed counts.
     let suite_log: Arc<dyn Fn(&str) + Send + Sync> = {
@@ -2342,7 +2353,6 @@ async fn run_release_suite_gate(
                 transport: None,
                 log: Some(suite_log),
                 max_attempts: release_suite::RELEASE_SUITE_MAX_ATTEMPTS,
-                consecutive_failures: release_suite::RELEASE_SUITE_CONSECUTIVE_FAILURES,
                 file_issues: true,
                 attempt_timeout: RELEASE_SUITE_ATTEMPT_TIMEOUT,
             })
@@ -2350,35 +2360,25 @@ async fn run_release_suite_gate(
         heartbeat.abort();
         outcome?
     };
-    // A file that changed while the attempts ran is the same divergence: the
-    // tree the gate compiled is still not the commit this release tags.
-    for entry in pending_harness_edits(args, runner.as_ref()).await? {
-        if !pending.contains(&entry) {
-            pending.push(entry);
-        }
-    }
     if report.code != 0 {
         let reason = report
             .error_line
             .clone()
             .or_else(|| report.structural.clone())
             .unwrap_or_else(|| {
+                let deterministic = report
+                    .findings
+                    .iter()
+                    .filter(|finding| {
+                        finding.classification == release_suite::Classification::Deterministic
+                    })
+                    .count();
                 format!(
-                    "the suite still failed after {} attempt(s)",
+                    "the suite reported {deterministic} deterministic failure(s) after {} attempt(s)",
                     report.attempts
                 )
             });
-        match divergence_line(&pending) {
-            Some(line) => bail!(
-                "the release suite did not pass; nothing was tagged or dispatched: {reason}; {line}"
-            ),
-            None => {
-                bail!("the release suite did not pass; nothing was tagged or dispatched: {reason}")
-            }
-        }
-    }
-    if let Some(line) = divergence_line(&pending) {
-        (log)(&format!("release suite: passed; {line}"));
+        bail!("the release suite did not pass; nothing was tagged or dispatched: {reason}");
     }
     Ok(())
 }
@@ -2416,7 +2416,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         format!("publishing from {}", args.repo_dir.display()),
     ));
 
-    let mut preflight = preflight(&args, runner.as_ref()).await?;
+    let preflight = preflight(&args, runner.as_ref()).await?;
 
     let mut lock: Option<ReleaseLock> = None;
     if let Some(path) = release_lock_path(&args.environment) {
@@ -2465,283 +2465,245 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     // the pushes go to the same remote.
     let mut git_environment = args.environment.clone();
 
-    // One attempt refreshes the checkout, proves the bundle, derives the
-    // version, tests it, and pushes it. A landing that publishes into `main`
-    // between the derivation and the push settles a range this attempt derived
-    // and tested at the older tip, so a refused push integrates that landing
-    // and derives again instead of failing a release nothing is wrong with.
-    // The window those retries share starts here, before the first fetch.
-    let race_started = clock.now_millis();
-    let mut attempt: u32 = 0;
-    let (version, tag, commit, existing_at_head) = loop {
-        attempt += 1;
-        preflight.published = refresh_main(
-            &args,
-            runner.as_ref(),
-            &preflight.remote,
-            &mut git_environment,
-            &log,
-            &sleeper,
-        )
-        .await?;
-        progress.record(PublishProgressRecord::new(
-            "fetch",
-            format!(
-                "fetched {}/main at {} (attempt {attempt})",
-                preflight.remote,
-                short_sha(&preflight.published)
-            ),
-        ));
-        let git = Git::new(runner.as_ref(), &args.repo_dir, &git_environment);
-        // A client bundle older than the checkout is rebuilt from the released
-        // sources before anything is proven or tagged.
-        if dist_is_stale(&args.harness_root)? {
-            // The rebuild is the longest silent step of a release on a loaded
-            // host, so the run records it as it starts: a bundle phase that
-            // lasts minutes is work in progress, not a peer that stopped.
-            progress.record(PublishProgressRecord::new(
-                "bundle",
-                "rebuilding the client bundle from the released sources",
-            ));
-            rebuild_client(&args, runner.as_ref(), &log).await?;
-            progress.record(PublishProgressRecord::new(
-                "bundle",
-                "rebuilt and embedded the client bundle",
-            ));
-        } else {
-            progress.record(PublishProgressRecord::new(
-                "bundle",
-                "the client bundle was current",
-            ));
+    // One fetch pins the whole run. The gate selected a target commit, and
+    // this release covers exactly the range ending there: a landing that moves
+    // `main` before or during the suite waits for the next gate instead of
+    // widening this release, and nothing here derives a second time.
+    let fetched = refresh_main(
+        &args,
+        runner.as_ref(),
+        &preflight.remote,
+        &mut git_environment,
+        &log,
+        &sleeper,
+    )
+    .await?;
+    let git = Git::new(runner.as_ref(), &args.repo_dir, &git_environment);
+    let target = resolve_target(&args, &git, &preflight.remote, &fetched).await?;
+    progress.record(PublishProgressRecord::new(
+        "fetch",
+        format!(
+            "fetched {}/main at {}; releasing the pinned target {}",
+            preflight.remote,
+            short_sha(&fetched),
+            short_sha(&target)
+        ),
+    ));
+
+    let derivation = derive_release_version(&git, &target).await?;
+    let version = derivation.version.clone();
+    if !valid_version(&version) {
+        bail!("computed an invalid version: {version}");
+    }
+    let tag = format!("v{version}");
+    progress.record(PublishProgressRecord::new(
+        "version",
+        format!(
+            "derived {tag} for {} pinned at {}",
+            derivation.range,
+            short_sha(&target)
+        ),
+    ));
+    // The run's own request named the version its gate derived. A derivation
+    // that disagrees is a refusal before anything is tagged, dispatched, or
+    // written: the operator would otherwise read a release of a range the run
+    // never asked for.
+    if let Some(expected) = args.expected_version.as_deref() {
+        let expected = expected.trim().trim_start_matches('v');
+        if expected != version {
+            bail!(
+                "the pinned target {} derives {tag}, but the run's request names v{expected}; \
+                 nothing was tagged or dispatched",
+                short_sha(&target)
+            );
         }
-        // The bundle, the staged manifest, and the tag are proven before
-        // anything is tagged, pushed, or written, and only after the checkout
-        // is current and its stale bundle rebuilt: proving first would refuse a
-        // checkout whose sources moved ahead of a bundle this very run is about
-        // to rebuild.
-        verify_release_bundle(&args.harness_root)?;
-        // The tag names the released commit, not this working tree, so the copy
-        // the release ships must already be committed there.
-        verify_embedded_client_committed(&args, runner.as_ref()).await?;
-
-        let published_head = preflight.published.clone();
-
-        // Refresh the release tags before deriving. A failed refresh is not fatal
-        // by itself: it is reported only when the newest release stays unreachable.
-        let refreshed = git
-            .run(&["fetch", "--quiet", "--tags", "--force", &preflight.remote])
-            .await;
-        let refresh_problem = (refreshed.code != 0).then(|| {
-            format!(
-                "could not refresh the release tags: {}",
-                first_line(if refreshed.stderr.is_empty() {
-                    refreshed.stdout.as_str()
-                } else {
-                    refreshed.stderr.as_str()
-                })
-            )
-        });
-
-        let newest = highest_version(
+    }
+    // A tag for the derived version may already exist. If it covers the
+    // pinned target its release either shipped (refused here, before any
+    // write) or failed its tail (completed by this run, never re-derived or
+    // re-tagged).
+    let bound = tag_bound(&api, &git, &tag).await?;
+    let covers = match bound.as_deref() {
+        Some(bound) => git.commit_names_or_contains(bound, &target).await,
+        None => false,
+    };
+    let existing = if covers {
+        if release_is_complete(&api, &tag, &version).await? {
+            bail!(
+                "{tag} is already released for {}; nothing to publish, the next tick re-gates \
+                 at the current main",
+                short_sha(&target)
+            );
+        }
+        (log)(&format!(
+            "{tag} already covers {}; completing that release",
+            short_sha(&target)
+        ));
+        bound.clone()
+    } else {
+        None
+    };
+    if existing.is_none() {
+        // The forge's newest release is the floor of this derivation, so a
+        // version at or below it names a range that is already released.
+        if let Some(newest) = highest_version(
             api.gitea_published_versions()
                 .await?
                 .iter()
                 .map(String::as_str),
-        );
-
-        let mut derivation = derive_release_version(&git, &published_head).await?;
-        if let Some(newest) = newest.as_deref() {
-            let order = compare_versions(&derivation.version, newest)
-                .ok_or_else(|| anyhow!("cannot order {} against {newest}", derivation.version))?;
+        ) {
+            let order = compare_versions(&version, &newest)
+                .ok_or_else(|| anyhow!("cannot order {version} against {newest}"))?;
             if order <= 0 {
-                derivation = rederive_from_published(
-                    &git,
-                    &api,
-                    &published_head,
-                    newest,
-                    refresh_problem.as_deref(),
-                )
-                .await?;
-            }
-        }
-
-        let version = derivation.version.clone();
-        if !valid_version(&version) {
-            bail!("computed an invalid version: {version}");
-        }
-        let tag = format!("v{version}");
-        progress.record(PublishProgressRecord::new(
-            "version",
-            format!("derived {tag} for {}", derivation.range),
-        ));
-
-        // A tag already naming this commit means the tag push and the release step
-        // of a previous run happened (or an external release named it). A rerun
-        // still verifies and completes the GitHub and Gitea halves; it never bumps
-        // the version, commits, or tags again.
-        let existing_at_head =
-            git.tag_commit(&tag).await.as_deref() == Some(published_head.as_str());
-        if derivation.level.is_none() && !existing_at_head {
-            (log)(&format!(
-                "nothing to release; {tag} already covers {}",
-                short_sha(&published_head)
-            ));
-            return Ok(not_published(&version, &tag, &published_head));
-        }
-
-        let commit = if existing_at_head {
-            (log)(&format!(
-                "{tag} already names {}; verifying the existing release",
-                short_sha(&published_head)
-            ));
-            // The Gitea manifest is written only after the tag push and the GitHub
-            // assets, so a credential that cannot write must fail before the
-            // mirror push and the dispatch.
-            api.gitea_verify_write_credential().await?;
-            // Nothing is pushed or dispatched before the suite passes.
-            if let Some(suite_dir) = args.release_suite_dir.clone() {
-                run_release_suite_gate(&args, &log, &progress, runner.clone(), suite_dir).await?;
-            }
-            published_head.clone()
-        } else {
-            // The tag must name this commit or contain it. A tag made for an
-            // unrelated commit is a refusal before anything is committed or pushed.
-            if let Some(bound) = git.tag_commit(&tag).await {
-                if bound == published_head {
-                    (log)(&format!(
-                        "nothing to release; {tag} already names {}",
-                        short_sha(&published_head)
-                    ));
-                    return Ok(not_published(&version, &tag, &published_head));
-                }
-                if git.is_ancestor(&published_head, &bound).await {
-                    (log)(&format!(
-                        "nothing to release; {tag} already contains {}",
-                        short_sha(&published_head)
-                    ));
-                    return Ok(not_published(&version, &tag, &published_head));
-                }
-                if git.is_ancestor(&bound, &published_head).await {
-                    (log)(&format!(
-                        "nothing to release; {tag} already covers {}",
-                        short_sha(&published_head)
-                    ));
-                    return Ok(not_published(&version, &tag, &published_head));
-                }
                 bail!(
-                "{tag} already names {}, which neither names nor contains {}; refusing to report a release for another commit",
-                short_sha(&bound),
-                short_sha(&published_head)
-            );
-            }
-            if let Some(forge_commit) = api.gitea_tag_commit(&tag).await? {
-                if git
-                    .commit_names_or_contains(&forge_commit, &published_head)
-                    .await
-                {
-                    (log)(&format!(
-                        "nothing to release; {tag} already names or contains {}",
-                        short_sha(&published_head)
-                    ));
-                    return Ok(not_published(&version, &tag, &published_head));
-                }
-                bail!(
-                "{tag} already names {}, which neither names nor contains {}; refusing to report a release for another commit",
-                short_sha(&forge_commit),
-                short_sha(&published_head)
-            );
-            }
-
-            let violations = commit_violations(&derivation.commits);
-            if !violations.is_empty() {
-                for violation in &violations {
-                    (log)(&format!(
-                        "commit-gate: {} {}\n  {}",
-                        violation.sha, violation.subject, violation.rule
-                    ));
-                }
-                bail!(
-                    "the commits in {} are not Conventional Commits",
-                    derivation.range
+                    "the pinned target {} derives {tag}, which is not newer than the published \
+                     v{newest}; nothing was tagged or dispatched",
+                    short_sha(&target)
                 );
             }
+        }
+        if derivation.level.is_none() {
+            bail!(
+                "nothing to release: the pinned target {} is covered by {}; the next tick \
+                 re-gates at the current main",
+                short_sha(&target),
+                derivation
+                    .previous
+                    .as_ref()
+                    .map(|tag| tag.tag.as_str())
+                    .unwrap_or("no release tag")
+            );
+        }
+        // A tag naming another commit is a refusal before anything is written.
+        if let Some(bound) = bound {
+            bail!(
+                "{tag} already names {}, which neither names nor contains the pinned target \
+                 {}; refusing to report a release for another commit",
+                short_sha(&bound),
+                short_sha(&target)
+            );
+        }
+    }
 
-            (log)(&format!("{tag} at {}", short_sha(&published_head)));
-
-            // The Gitea manifest is written only after the tag push and the GitHub
-            // assets, so a credential that cannot write must fail before the first
-            // irreversible step.
-            api.gitea_verify_write_credential().await?;
-
-            // Nothing is bumped, tagged, pushed, or dispatched before the suite
-            // passes.
-            if let Some(suite_dir) = args.release_suite_dir.clone() {
-                run_release_suite_gate(&args, &log, &progress, runner.clone(), suite_dir).await?;
-            }
-            if let Some(head) = head_moved_after_proof(&git, &published_head).await? {
-                if race_spent(race_started, &clock) {
-                    bail!(
-                        "the checkout kept moving for {} minutes across {attempt} attempts; \
-                         nothing was tagged or pushed to {}/main",
-                        race_minutes(race_started, &clock),
-                        preflight.remote
-                    );
-                }
+    if existing.is_none() {
+        let violations = commit_violations(&derivation.commits);
+        if !violations.is_empty() {
+            for violation in &violations {
                 (log)(&format!(
-                    "integrating the landing at {} and deriving again (attempt {})",
-                    short_sha(&head),
-                    attempt + 1
+                    "commit-gate: {} {}\n  {}",
+                    violation.sha, violation.subject, violation.rule
                 ));
-                sleeper.sleep(RACE_INTEGRATION_PAUSE).await;
-                continue;
             }
+            bail!(
+                "the commits in {} are not Conventional Commits",
+                derivation.range
+            );
+        }
+        (log)(&format!("{tag} at {}", short_sha(&target)));
+    }
 
-            let manifest_path = args.harness_root.join("Cargo.toml");
-            // An earlier attempt of this same version committed the bump and then
-            // withdrew its tag when the release did not ship, so main already
-            // carries the version: the retry tags the head it derived instead of
-            // committing an unchanged manifest.
-            if workspace_version(&manifest_path).as_deref() == Some(version.as_str()) {
-                (log)(&format!(
-                    "{tag} reuses the version bump already committed on main"
-                ));
-            } else {
-                bump_workspace_version(&manifest_path, &version)?;
-                refresh_lockfile(git.runner, &args.environment, &args.harness_root).await?;
-                let manifest = relative_git_path(&args.repo_dir, &manifest_path);
-                let lock_path = args.harness_root.join("Cargo.lock");
-                let lock = relative_git_path(&args.repo_dir, &lock_path);
-                let commit_message = format!("chore(release): v{version}");
-                let mut commit_args: Vec<&str> = vec![
-                    "-c",
-                    "user.name=Devboard Release",
-                    "-c",
-                    "user.email=release@devboard.invalid",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "commit",
-                    "--only",
-                    "-m",
-                    &commit_message,
-                    "--",
-                    &manifest,
-                ];
-                if lock_path.exists() {
-                    commit_args.push(&lock);
-                }
-                let committed = git.run(&commit_args).await;
-                if committed.code != 0 {
-                    bail!(
-                        "could not commit the version bump: {}",
-                        first_line(if committed.stderr.is_empty() {
-                            committed.stdout.as_str()
-                        } else {
-                            committed.stderr.as_str()
-                        })
-                    );
-                }
+    // The Gitea manifest is written only after the tag push and the GitHub
+    // assets, so a credential that cannot write must fail before the first
+    // irreversible step.
+    api.gitea_verify_write_credential().await?;
+
+    // Everything after this point runs in a detached worktree at the pinned
+    // commit: the suite, the version bump, the tag. The shared integration
+    // checkout is never the tree this release proves or tags, so an
+    // uncommitted edit, a later landing, or another run's checkout there
+    // cannot change the gate's result.
+    let worktree =
+        ReleaseWorktree::create(runner.as_ref(), &args.repo_dir, &git_environment, &target).await?;
+    let release = PublishArgs {
+        repo_dir: worktree.path.clone(),
+        harness_root: worktree.path.join(".devboard"),
+        ..args.clone()
+    };
+    let release_git = Git::new(runner.as_ref(), &release.repo_dir, &git_environment);
+    let pending = release_git
+        .must(
+            &["status", "--porcelain", "--untracked-files=no"],
+            "could not read the pinned tree's working state",
+        )
+        .await?;
+    if !pending.trim().is_empty() {
+        bail!(
+            "the release worktree at {} is not the pinned commit {}: {}",
+            worktree.path.display(),
+            short_sha(&target),
+            pending.lines().next().unwrap_or_default().trim()
+        );
+    }
+    (log)(&format!(
+        "the release is pinned to {} in {}",
+        short_sha(&target),
+        worktree.path.display()
+    ));
+
+    // Nothing is bumped, tagged, pushed, or dispatched before the suite
+    // passes.
+    run_release_suite_gate(
+        &release,
+        &log,
+        &progress,
+        runner.clone(),
+        release.harness_root.clone(),
+        &target,
+    )
+    .await?;
+    let created_tag = existing.is_none();
+    let commit = match existing {
+        Some(bound) => {
+            // The tag is already pushed, so its CI run is the proof that ran
+            // when the tag was created.
+            (log)(&format!(
+                "{tag} already covers {}; verifying the existing release",
+                short_sha(&target)
+            ));
+            bound
+        }
+        None => {
+            let manifest_path = release.harness_root.join("Cargo.toml");
+            bump_workspace_version(&manifest_path, &version)?;
+            refresh_lockfile(
+                release_git.runner,
+                &release.environment,
+                &release.harness_root,
+            )
+            .await?;
+            let manifest = relative_git_path(&release.repo_dir, &manifest_path);
+            let lock_path = release.harness_root.join("Cargo.lock");
+            let lock = relative_git_path(&release.repo_dir, &lock_path);
+            let commit_message = format!("chore(release): v{version}");
+            let mut commit_args: Vec<&str> = vec![
+                "-c",
+                "user.name=Devboard Release",
+                "-c",
+                "user.email=release@devboard.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--only",
+                "-m",
+                &commit_message,
+                "--",
+                &manifest,
+            ];
+            if lock_path.exists() {
+                commit_args.push(&lock);
             }
-            let tag_created = git
+            let committed = release_git.run(&commit_args).await;
+            if committed.code != 0 {
+                bail!(
+                    "could not commit the version bump: {}",
+                    first_line(if committed.stderr.is_empty() {
+                        committed.stdout.as_str()
+                    } else {
+                        committed.stderr.as_str()
+                    })
+                );
+            }
+            let tagged = release_git
                 .run(&[
                     "-c",
                     "user.name=Devboard Release",
@@ -2754,152 +2716,86 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
                     &format!("Devboard {version}"),
                 ])
                 .await;
-            if tag_created.code != 0 {
+            if tagged.code != 0 {
                 bail!(
                     "could not create {tag}: {}",
-                    first_line(if tag_created.stderr.is_empty() {
-                        tag_created.stdout.as_str()
+                    first_line(if tagged.stderr.is_empty() {
+                        tagged.stdout.as_str()
                     } else {
-                        tag_created.stderr.as_str()
+                        tagged.stderr.as_str()
                     })
                 );
             }
-            git.must(&["rev-parse", "HEAD"], "could not read HEAD after the bump")
-                .await?
-        };
-
-        // The branch lands first so the canonical forge can prove the exact
-        // commit in CI; the tag is pushed only after that run concludes
-        // success. A single push of both refs made the tag visible before
-        // anything proved the commit it names.
-        (log)(&format!("pushing main to {}", preflight.remote));
-        let pushed = git
-            .run(&["push", &preflight.remote, "refs/heads/main:refs/heads/main"])
-            .await;
-        if pushed.code != 0 {
-            // A forge can accept the push and then lose its answer, so a
-            // nonzero exit is not evidence that nothing landed: the remote's
-            // main decides, and a push it already carries never fails a
-            // release that shipped.
-            match landed_main_tip(&git, &preflight.remote, &published_head).await? {
-                Some(tip) if tip == commit => (log)(&format!(
-                    "{} carries {}; the push exited nonzero after the ref moved",
-                    preflight.remote,
-                    short_sha(&commit)
-                )),
-                Some(tip) => {
-                    // The range this attempt derived and tested is not the
-                    // range `main` now carries, so the attempt's tag is
-                    // withdrawn and its version bump dropped before anything
-                    // derives again: a tag whose release never appeared must
-                    // not advance the next derivation past a version that has
-                    // no artifacts, and a local-only bump commit would block
-                    // every later attempt. A tag an earlier run created is
-                    // left to the shipped-release rule instead.
-                    if existing_at_head {
-                        withdraw_unreleased_tag(&api, &git, &preflight, &tag, &log).await;
-                    } else {
-                        withdraw_refused_tag(&git, &preflight, &tag, &commit, &log).await?;
-                    }
-                    git.must(
-                        &["reset", "--keep", tip.as_str()],
-                        "could not integrate the landing",
-                    )
-                    .await?;
-                    if race_spent(race_started, &clock) {
-                        bail!(
-                            "could not push main to {}: {}; {}/main kept moving for {} minutes \
-                             across {attempt} attempts",
-                            preflight.remote,
-                            failure_detail(&pushed),
-                            preflight.remote,
-                            race_minutes(race_started, &clock)
-                        );
-                    }
-                    (log)(&format!(
-                        "integrating the landing at {} and deriving again (attempt {})",
-                        short_sha(&tip),
-                        attempt + 1
-                    ));
-                    sleeper.sleep(RACE_INTEGRATION_PAUSE).await;
-                    continue;
-                }
-                None => bail!(
-                    "could not push main to {}: {}",
-                    preflight.remote,
-                    failure_detail(&pushed)
-                ),
-            }
-        }
-        // The tag waits for the canonical CI run of the commit it names. A
-        // failing run leaves the range unreleased: the branch keeps the commit,
-        // the tag is dropped locally, and the next tick derives it again.
-        if !existing_at_head {
+            let commit = release_git
+                .must(&["rev-parse", "HEAD"], "could not read HEAD after the bump")
+                .await?;
+            // The pinned commit's own `devboard-ci.yml` run proves the exact
+            // tree this tag names; the tag is pushed only after it succeeds. A
+            // failing run drops the local tag and leaves the range unreleased
+            // for the next tick, which re-gates at then-current `main`.
             if let Err(error) =
-                wait_for_ci_success(&api, &clock, &sleeper, &args, &commit, &log, &progress).await
+                wait_for_ci_success(&api, &clock, &sleeper, &args, &target, &log, &progress).await
             {
-                let _ = git.run(&["tag", "-d", &tag]).await;
+                let _ = release_git.run(&["tag", "-d", &tag]).await;
                 return Err(error);
             }
-        } else {
-            (log)(&format!(
-                "{tag} is already pushed; its CI gate ran when the tag was created"
-            ));
+            commit
         }
-        (log)(&format!("pushing {tag} to {}", preflight.remote));
-        let tag_pushed = git
-            .run(&[
-                "push",
-                &preflight.remote,
-                &format!("refs/tags/{tag}:refs/tags/{tag}"),
-            ])
-            .await;
-        if tag_pushed.code != 0 {
-            // A forge can accept the tag and lose the push's answer. The ref
-            // the remote actually carries decides, exactly as it does for the
-            // branch.
-            let landed = remote_tag_commit(&git, &preflight.remote, &tag)
-                .await?
-                .as_deref()
-                == Some(commit.as_str());
-            if landed {
-                (log)(&format!(
-                    "{} carries {tag}; the push exited nonzero after the refs moved",
-                    preflight.remote
-                ));
-            } else {
-                if !existing_at_head {
-                    // The branch already carries the commit, but the release
-                    // tag did not land. Dropping it locally lets the next tick
-                    // retag the same range instead of deriving past it.
-                    let _ = git.run(&["tag", "-d", &tag]).await;
-                }
-                bail!(
-                    "could not push {tag} to {}: {}",
-                    preflight.remote,
-                    failure_detail(&tag_pushed)
-                );
-            }
-        }
-        progress.record(PublishProgressRecord::new(
-            "tag",
-            format!(
-                "pushed {tag} to {} at {}",
-                preflight.remote,
-                short_sha(&commit)
-            ),
-        ));
-        break (version, tag, commit, existing_at_head);
     };
-    // The release tail runs in the transport the attempt settled on: a build
-    // ref and a withdrawn tag go to the same remotes the fetch reached.
-    let git = Git::new(runner.as_ref(), &args.repo_dir, &git_environment);
+    // The pinned commit is already on `main` — the gate fetched it there — so
+    // this release never advances the branch; it publishes the tag that names
+    // the release commit. A landing that moved `main` past the target while
+    // the suite ran is simply not part of this release.
+    (log)(&format!("pushing {tag} to {}", preflight.remote));
+    let tag_pushed = release_git
+        .run(&[
+            "push",
+            &preflight.remote,
+            &format!("refs/tags/{tag}:refs/tags/{tag}"),
+        ])
+        .await;
+    if tag_pushed.code != 0 {
+        // A forge can accept the tag and lose the push's answer. The ref the
+        // remote actually carries decides.
+        let landed = remote_tag_commit(&release_git, &preflight.remote, &tag)
+            .await?
+            .as_deref()
+            == Some(commit.as_str());
+        if landed {
+            (log)(&format!(
+                "{} carries {tag}; the push exited nonzero after the refs moved",
+                preflight.remote
+            ));
+        } else {
+            if created_tag {
+                // The tag did not land. Dropping it locally lets the next tick
+                // retag the same range instead of deriving past it.
+                let _ = release_git.run(&["tag", "-d", &tag]).await;
+            }
+            bail!(
+                "could not push {tag} to {}: {}",
+                preflight.remote,
+                failure_detail(&tag_pushed)
+            );
+        }
+    }
+    progress.record(PublishProgressRecord::new(
+        "tag",
+        format!(
+            "pushed {tag} to {} at {}",
+            preflight.remote,
+            short_sha(&commit)
+        ),
+    ));
+    let existing_at_head = !created_tag;
+    // The release tail pushes the build ref from the pinned tree: a build ref
+    // and a withdrawn tag go to the same remotes the fetch reached.
+    let git = Git::new(runner.as_ref(), &release.repo_dir, &git_environment);
 
     // A release that fails before its GitHub release exists must not leave its
     // tag behind: the gate derives the next version from the newest release
     // tag, so a tag whose release never shipped would move the range past a
     // version that has no artifacts at all.
-    let created_tag = !existing_at_head;
     let shipped = async {
         // The canonical source reaches the GitHub-hosted builders through a
         // temporary build ref only: no lasting GitHub ref may reach it, and
@@ -3061,33 +2957,169 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
     })
 }
 
-fn empty_refresh_report() -> SourceRefreshReport {
-    SourceRefreshReport {
-        request: SourceRefreshRequest {
-            schema: SOURCE_REFRESH_SCHEMA,
-            commit: String::new(),
-            version: String::new(),
-            dist_digest: String::new(),
-            requested_at: String::new(),
-        },
-        written: Vec::new(),
-        applied: Vec::new(),
-        failed: Vec::new(),
-        skipped: Vec::new(),
+// ---------------------------------------------------------------------------
+// The pinned target and its worktree
+
+/// The commit this release is pinned to.
+///
+/// The Release Train hands its gate target here. When it names none, the tip
+/// this run fetched is the target: still one fixed commit, never a target that
+/// moves while the release works.
+async fn resolve_target(
+    args: &PublishArgs,
+    git: &Git<'_>,
+    remote: &str,
+    fetched: &str,
+) -> Result<String> {
+    let Some(requested) = args.target.as_deref() else {
+        return Ok(fetched.trim().to_string());
+    };
+    let requested = requested.trim();
+    if requested.is_empty() {
+        bail!("the pinned target is empty; name the gate's commit as --target <sha>");
+    }
+    let well_formed =
+        requested.len() == 40 && requested.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !well_formed {
+        bail!("the pinned target {requested} is not a full 40-character commit id");
+    }
+    let resolved = git
+        .run(&["rev-parse", "--verify", &format!("{requested}^{{commit}}")])
+        .await;
+    if resolved.code != 0 {
+        bail!(
+            "the pinned target {requested} is not a commit this checkout can read: {}",
+            first_line(if resolved.stderr.is_empty() {
+                resolved.stdout.as_str()
+            } else {
+                resolved.stderr.as_str()
+            })
+        );
+    }
+    let commit = resolved.stdout.trim().to_string();
+    if !git.is_ancestor(&commit, fetched).await {
+        bail!(
+            "the pinned target {} is not reachable from {remote}/main at {}; the next tick \
+             re-gates at the current main",
+            short_sha(&commit),
+            short_sha(fetched)
+        );
+    }
+    Ok(commit)
+}
+
+/// The commit a tag for the derived version already names, on the checkout or
+/// on the forge.
+///
+/// `Some` means a previous run created the tag: the caller decides whether it
+/// covers the pinned target (a release to complete) or names another commit (a
+/// refusal).
+async fn tag_bound(api: &Api, git: &Git<'_>, tag: &str) -> Result<Option<String>> {
+    let local = git.tag_commit(tag).await;
+    let forge = api.gitea_tag_commit(tag).await?;
+    match (local, forge) {
+        (Some(local), Some(forge)) if local != forge => bail!(
+            "{tag} names {} in this checkout but {} on the forge; refusing to guess which \
+             commit the release covers",
+            short_sha(&local),
+            short_sha(&forge)
+        ),
+        (Some(local), _) => Ok(Some(local)),
+        (None, Some(forge)) => Ok(Some(forge)),
+        (None, None) => Ok(None),
     }
 }
 
-fn not_published(version: &str, tag: &str, commit: &str) -> PublishReport {
-    PublishReport {
-        version: version.to_string(),
-        tag: tag.to_string(),
-        commit: commit.to_string(),
-        published: false,
-        workflow_run: None,
-        github_assets: Vec::new(),
-        manifest: String::new(),
-        source_refresh: empty_refresh_report(),
-        dashboards: Vec::new(),
+/// Whether both halves of a release already exist: verified GitHub assets and
+/// a Gitea release for the tag.
+async fn release_is_complete(api: &Api, tag: &str, version: &str) -> Result<bool> {
+    if verify_github_assets_once(api, tag, version).await.is_err() {
+        return Ok(false);
+    }
+    Ok(api.gitea_release_by_tag(tag).await?.is_some())
+}
+
+/// The detached worktree one pinned release is cut in: the suite, the version
+/// bump, and the tag all run there, so the shared integration checkout is
+/// never the tree a release proves.
+///
+/// The worktree lives under the checkout's `.worktree/` and is removed when
+/// the publish returns, on every path. Its tag names a commit in the shared
+/// object database, so the release survives the removal.
+struct ReleaseWorktree {
+    path: PathBuf,
+    repo_dir: PathBuf,
+    environment: Environment,
+}
+
+impl ReleaseWorktree {
+    async fn create(
+        runner: &dyn CommandRunner,
+        repo_dir: &Path,
+        environment: &Environment,
+        target: &str,
+    ) -> Result<Self> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let repo_dir = std::path::absolute(repo_dir).unwrap_or_else(|_| repo_dir.to_path_buf());
+        let path = repo_dir.join(RELEASE_WORKTREE_DIRECTORY).join(format!(
+            "{RELEASE_WORKTREE_PREFIX}-{}-{}-{}",
+            short_sha(target),
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::SeqCst)
+        ));
+        let worktree = Self {
+            path: path.clone(),
+            repo_dir: repo_dir.clone(),
+            environment: environment.clone(),
+        };
+        // A run that died without cleaning up owns the same name; the release
+        // lock guarantees no live run does.
+        if path.exists() {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+        let git = Git::new(runner, &repo_dir, environment);
+        let _ = git.run(&["worktree", "prune"]).await;
+        let added = git
+            .run(&[
+                "worktree",
+                "add",
+                "--force",
+                "--detach",
+                path.to_string_lossy().as_ref(),
+                target,
+            ])
+            .await;
+        if added.code != 0 {
+            bail!(
+                "could not check out the pinned target {} at {}: {}",
+                short_sha(target),
+                path.display(),
+                failure_detail(&added)
+            );
+        }
+        Ok(worktree)
+    }
+}
+
+impl Drop for ReleaseWorktree {
+    fn drop(&mut self) {
+        let repo_dir = self.repo_dir.to_string_lossy().into_owned();
+        let path = self.path.to_string_lossy().into_owned();
+        let run = |args: &[&str]| {
+            let _ = std::process::Command::new("git")
+                .args(args)
+                .envs(&self.environment)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        };
+        run(&["-C", &repo_dir, "worktree", "remove", "--force", &path]);
+        if self.path.exists() {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+        run(&["-C", &repo_dir, "worktree", "prune", ""]);
     }
 }
 
@@ -3101,7 +3133,6 @@ fn short_sha(sha: &str) -> String {
 struct Preflight {
     remote: String,
     remotes: Vec<String>,
-    published: String,
 }
 
 async fn preflight(args: &PublishArgs, runner: &dyn CommandRunner) -> Result<Preflight> {
@@ -3150,11 +3181,7 @@ async fn preflight(args: &PublishArgs, runner: &dyn CommandRunner) -> Result<Pre
     } else {
         bail!("could not determine the canonical remote (origin, or the only remote)");
     };
-    Ok(Preflight {
-        remote,
-        remotes,
-        published: String::new(),
-    })
+    Ok(Preflight { remote, remotes })
 }
 
 /// How many times publish reads the remote `main` before it refuses a checkout
@@ -3174,24 +3201,6 @@ const MAIN_SETTLE_ATTEMPTS: u32 = 12;
 /// earlier refused ninety seconds before that landing pushed it, and the range
 /// it left behind waited for a later tick.
 const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(30);
-
-/// How long one publish keeps integrating landings that move the checkout
-/// underneath it before it leaves the range to the next tick.
-///
-/// A landing that publishes while the release suite runs, or between the
-/// derivation and the push, settles a range the attempt derived and tested at
-/// the older tip, so the run integrates the landing and derives again rather
-/// than failing a release nothing is wrong with. The bound is time, not a
-/// count of attempts: the suite takes longer than the gap between landings
-/// whenever the integration checkout is busy, so a handful of attempts is
-/// spent inside one landing burst — the observed failure integrated three
-/// landings in twelve minutes and gave up with a quiet window a few minutes
-/// away. This budget rides out a burst and still leaves the run's own bound
-/// room for the last suite, the CI gate, and the asset propagation.
-pub const RACE_INTEGRATION_BUDGET: Duration = Duration::from_secs(90 * 60);
-/// The pause before an attempt derives again, so a landing's in-flight push
-/// settles before the next suite starts.
-const RACE_INTEGRATION_PAUSE: Duration = Duration::from_secs(5);
 
 /// The newest local commits the remote `main` does not carry, as
 /// `<short sha> <subject>` entries, so a refusal names what has to be pushed.
@@ -3231,7 +3240,9 @@ async fn refresh_main(
 ) -> Result<String> {
     (log)(&format!("fetching {remote}/main"));
     let refspec = format!("+refs/heads/main:refs/remotes/{remote}/main");
-    let fetch = ["fetch", "--prune", remote, refspec.as_str()];
+    // The release tags ride this one fetch: the pinned target's derivation
+    // reads the newest tag reachable from it, and this run derives once.
+    let fetch = ["fetch", "--prune", "--tags", remote, refspec.as_str()];
     // No fallback once the run has adopted one: the environment it is handed
     // already reaches the remote through the configured address.
     let fallback = (environment == &args.environment)
@@ -3408,47 +3419,6 @@ async fn derive_release_version(git: &Git<'_>, head: &str) -> Result<ReleaseDeri
     })
 }
 
-async fn rederive_from_published(
-    git: &Git<'_>,
-    api: &Api,
-    head: &str,
-    newest: &str,
-    refresh_problem: Option<&str>,
-) -> Result<ReleaseDerivation> {
-    let tag = format!("v{newest}");
-    let local = git.tag_commit(&tag).await;
-    let commit = match local {
-        Some(commit) => Some(commit),
-        None => api.gitea_tag_commit(&tag).await.unwrap_or(None),
-    };
-    let Some(commit) = commit else {
-        bail!(
-            "the newest published release {tag} is not in this checkout and its commit could not be read; {}",
-            refresh_problem.unwrap_or("fetch the release tags and run the release again")
-        );
-    };
-    let range = format!("{commit}..{head}");
-    let commits = match git.read_commits(&range).await {
-        Ok(commits) => commits,
-        Err(_) => bail!(
-            "the newest published release {tag} names {}, which this checkout cannot read; {}",
-            short_sha(&commit),
-            refresh_problem.unwrap_or("fetch the release tags and run the release again")
-        ),
-    };
-    let level = release_level(&commits);
-    Ok(ReleaseDerivation {
-        version: next_release_version(Some(newest), level),
-        previous: Some(ReleaseTag {
-            tag,
-            version: newest.to_string(),
-        }),
-        level,
-        range,
-        commits,
-    })
-}
-
 /// One commit whose subject breaks the Conventional Commit grammar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitViolation {
@@ -3506,29 +3476,6 @@ async fn refresh_lockfile(
 }
 
 /// The version `[workspace.package]` declares, when the manifest carries one.
-fn workspace_version(path: &Path) -> Option<String> {
-    let source = std::fs::read_to_string(path).ok()?;
-    let line_pattern =
-        Regex::new(r#"^(\s*version\s*=\s*")([^"]*)(".*)$"#).expect("the workspace version line");
-    let mut in_section = false;
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[workspace.package]" {
-            in_section = true;
-            continue;
-        }
-        if in_section && trimmed.starts_with('[') {
-            return None;
-        }
-        if in_section {
-            if let Some(captures) = line_pattern.captures(line) {
-                return captures.get(2).map(|value| value.as_str().to_string());
-            }
-        }
-    }
-    None
-}
-
 fn bump_workspace_version(path: &Path, version: &str) -> Result<()> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
@@ -3642,50 +3589,6 @@ async fn delete_tag(
     }
 }
 
-/// Reads the remote `main` after a refused push and returns its tip when a
-/// landing published past the base this attempt pushed from.
-///
-/// `None` means the remote `main` the attempt pushed from is unchanged, so the
-/// refusal is not a landing and the release fails with the push's own detail.
-async fn landed_main_tip(git: &Git<'_>, remote: &str, base: &str) -> Result<Option<String>> {
-    let fetched = git
-        .run(&[
-            "fetch",
-            "--prune",
-            remote,
-            &format!("+refs/heads/main:refs/remotes/{remote}/main"),
-        ])
-        .await;
-    if fetched.code != 0 {
-        bail!(
-            "could not fetch {remote}/main after the refused push: {}",
-            first_line(if fetched.stderr.is_empty() {
-                fetched.stdout.as_str()
-            } else {
-                fetched.stderr.as_str()
-            })
-        );
-    }
-    let tip = git
-        .must(
-            &["rev-parse", &format!("{remote}/main")],
-            &format!("could not read {remote}/main"),
-        )
-        .await?;
-    let tip = tip.trim().to_string();
-    if tip == base || git.is_ancestor(&tip, base).await {
-        return Ok(None);
-    }
-    if !git.is_ancestor(base, &tip).await {
-        bail!(
-            "{remote}/main moved to {} and no longer contains {}; integrate the checkout and rerun",
-            short_sha(&tip),
-            short_sha(base)
-        );
-    }
-    Ok(Some(tip))
-}
-
 /// Reads the commit a remote's tag names, peeled from the tag object.
 ///
 /// `None` means the remote does not carry the tag at all. The remotes answer
@@ -3716,41 +3619,6 @@ async fn remote_tag_commit(git: &Git<'_>, remote: &str, tag: &str) -> Result<Opt
     // An annotated tag peels to the commit its release names; a lightweight tag
     // is already that commit.
     Ok(commit.or(object))
-}
-
-/// Withdraws the tag a refused attempt pushed before the next attempt derives.
-///
-/// The tag was created by this attempt, so no release can name it: the dispatch
-/// runs only after the push that was refused. It is deleted from every remote
-/// that carries it and from the checkout, because the next attempt's tag
-/// refresh would otherwise resurrect it and the next derivation would skip the
-/// range it covers. A remote carrying the tag at another commit belongs to
-/// another release: it is never removed, and the release fails instead.
-async fn withdraw_refused_tag(
-    git: &Git<'_>,
-    preflight: &Preflight,
-    tag: &str,
-    commit: &str,
-    log: &Arc<dyn Fn(&str) + Send + Sync>,
-) -> Result<()> {
-    for remote in &preflight.remotes {
-        let Some(named) = remote_tag_commit(git, remote, tag).await? else {
-            continue;
-        };
-        if named != commit {
-            bail!(
-                "{} carries {tag} at {}, not this attempt's {}; refusing to release it",
-                remote,
-                short_sha(&named),
-                short_sha(commit)
-            );
-        }
-    }
-    delete_tag(git, preflight, tag, log).await;
-    (log)(&format!(
-        "withdrew {tag}: the push that would have shipped it was refused"
-    ));
-    Ok(())
 }
 
 fn relative_git_path(repo_dir: &Path, path: &Path) -> String {
@@ -4640,7 +4508,10 @@ async fn push_github_build_ref(
             &helper,
             "push",
             "github",
-            &format!("{commit}:{reference}"),
+            // The build ref is temporary and owned by this release: a retry
+            // creates a new release commit, and the ref it replaced must move
+            // to it.
+            &format!("+{commit}:{reference}"),
         ])
         .await;
     if pushed.code != 0 {
@@ -5214,439 +5085,6 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// True when `dist` exists but is older than the newest source file.
-fn dist_is_stale(harness_root: &Path) -> Result<bool> {
-    // `dist` is build output, so it can be older than the sources it must be
-    // built from: a fast-forward writes the committed client now and leaves a
-    // bundle from an earlier run behind. That alone decides a rebuild.
-    let dist = harness_root.join("dist");
-    if !dist.is_dir() {
-        return Ok(true);
-    }
-    let newest_source = newest_source_mtime(harness_root)?;
-    if newest_source > newest_mtime(&dist) {
-        return Ok(true);
-    }
-    // The committed embedded copy is what the release ships; a source edited
-    // after that copy was embedded is rebuilt too. A `dist` that already
-    // matches the sources is never rebuilt to paper over an edited embed — the
-    // bundle proof refuses that instead, so the edit must be committed.
-    let embedded = embedded_client_root(harness_root);
-    Ok(embedded.is_dir() && newest_source > newest_mtime(&embedded))
-}
-
-/// The head a landing moved the checkout to, when it no longer names the
-/// commit this attempt proved.
-///
-/// The integration checkout is shared, so an agent's landing can fast-forward
-/// it while the suite runs; tagging the new head would then ship sources this
-/// attempt never proved. The caller derives again from the landed tip instead.
-async fn head_moved_after_proof(git: &Git<'_>, proven: &str) -> Result<Option<String>> {
-    let head = git
-        .must(
-            &["rev-parse", "HEAD"],
-            "could not read HEAD after the release suite",
-        )
-        .await?;
-    Ok((head != proven).then_some(head))
-}
-
-/// Whether the publish has spent its window for integrating landings.
-fn race_spent(started: i64, clock: &Arc<dyn Clock>) -> bool {
-    clock.now_millis() - started >= RACE_INTEGRATION_BUDGET.as_millis() as i64
-}
-
-/// How long that window has been running, in whole minutes.
-fn race_minutes(started: i64, clock: &Arc<dyn Clock>) -> u64 {
-    (clock.now_millis() - started).max(0) as u64 / 60_000
-}
-
-/// Rebuilds the client bundle from the released sources and embeds the result
-/// where the binary reads it.
-///
-/// `dist` is build output, but `crates/devboard/assets` is the copy the binary
-/// embeds at compile time and the release workflow builds from the tagged
-/// commit. A rebuild that changes it therefore leaves the tree dirty, and the
-/// bundle proof refuses a tag the working tree does not carry.
-async fn rebuild_client(
-    args: &PublishArgs,
-    runner: &dyn CommandRunner,
-    log: &Arc<dyn Fn(&str) + Send + Sync>,
-) -> Result<()> {
-    let package = args.harness_root.join("package.json");
-    if !package.is_file() {
-        bail!(
-            "dist is older than its sources and {} carries no client build",
-            args.harness_root.display()
-        );
-    }
-    (log)("rebuilding the client bundle from the released sources");
-    run_bun(
-        args,
-        runner,
-        &["run", "build"],
-        "rebuild the client bundle",
-        PUBLISH_CLIENT_BUILD_TIMEOUT,
-    )
-    .await?;
-    // The binary embeds `crates/devboard/assets`, never `dist`: the embed step
-    // is what puts this run's bundle where the release build reads it.
-    (log)("embedding the rebuilt client the binary serves");
-    run_bun(
-        args,
-        runner,
-        &["scripts/embed-client.mjs"],
-        "embed the rebuilt client",
-        PUBLISH_EMBED_ALLOWANCE,
-    )
-    .await?;
-    Ok(())
-}
-
-/// The `bun` executable this publish can start.
-///
-/// A dashboard launched by the desktop icon carries a login PATH that may not
-/// include a version-manager install of Bun. Resolve it through the given PATH
-/// first, then the common per-user locations, so a client rebuild does not fail
-/// with a bare "No such file or directory".
-fn bun_program(environment: &Environment) -> String {
-    fn on_path(path: &str) -> Option<String> {
-        for directory in path.split(':').filter(|directory| !directory.is_empty()) {
-            let candidate = Path::new(directory).join("bun");
-            if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
-            }
-        }
-        None
-    }
-    if let Some(path) = environment.get("PATH") {
-        if let Some(found) = on_path(path) {
-            return found;
-        }
-    }
-    let mut candidates = Vec::new();
-    if let Some(home) = environment.get("HOME") {
-        candidates.push(format!("{home}/.bun/bin/bun"));
-        candidates.push(format!("{home}/.cargo/bin/bun"));
-        if let Ok(entries) = std::fs::read_dir(format!("{home}/.nvm/versions/node")) {
-            for entry in entries.flatten() {
-                candidates.push(entry.path().join("bin").join("bun").display().to_string());
-            }
-        }
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| Path::new(candidate).is_file())
-        .unwrap_or_else(|| "bun".to_string())
-}
-
-/// Runs one Bun command in the harness root and refuses a nonzero exit.
-///
-/// `timeout` is the command's whole bound: the caller spends the bundle
-/// allowance across the commands, so the pair never outlives it.
-async fn run_bun(
-    args: &PublishArgs,
-    runner: &dyn CommandRunner,
-    arguments: &[&str],
-    what: &str,
-    timeout: Duration,
-) -> Result<()> {
-    let outcome = runner
-        .run(CommandInvocation {
-            program: bun_program(&args.environment),
-            args: arguments
-                .iter()
-                .map(|argument| (*argument).to_string())
-                .collect(),
-            cwd: args.harness_root.clone(),
-            env: args.environment.clone(),
-            timeout,
-        })
-        .await;
-    if outcome.code != 0 {
-        bail!(
-            "could not {what}: {}",
-            first_line(if outcome.stderr.is_empty() {
-                outcome.stdout.as_str()
-            } else {
-                outcome.stderr.as_str()
-            })
-        );
-    }
-    Ok(())
-}
-
-/// Proves the release bundle before the publish tags, dispatches, or writes a
-/// release. The publish calls this after it refreshes the checkout and rebuilds
-/// a stale bundle, so the proof reads the current sources.
-///
-/// The client bundle must be newer than its sources, the copy at
-/// `crates/devboard/assets` the binary embeds must match it byte for byte,
-/// every `/assets/...` reference in `dist/index.html` must exist, and a staged
-/// manifest must carry a matching `devboard-manifest.json.sha256` whose version
-/// matches its tag.
-pub fn verify_release_bundle(harness_root: &Path) -> Result<()> {
-    let dist = harness_root.join("dist");
-    if !dist.is_dir() {
-        bail!(
-            "the release bundle is missing: {} does not exist",
-            dist.display()
-        );
-    }
-    let newest_source = newest_source_mtime(harness_root)?;
-    let newest_dist = newest_mtime(&dist);
-    if newest_source > newest_dist {
-        bail!(
-            "dist is older than its sources: {} was built before the newest source file; rebuild the client before publishing",
-            dist.display()
-        );
-    }
-    verify_index_assets(&dist)?;
-    verify_embedded_client(harness_root, &dist)?;
-
-    let manifest = harness_root.join(MANIFEST_ASSET_NAME);
-    let checksum = harness_root.join(MANIFEST_CHECKSUM_ASSET);
-    if manifest.is_file() || checksum.is_file() {
-        let bytes = std::fs::read(&manifest).map_err(|error| {
-            anyhow!(
-                "the staged {} could not be read: {error}",
-                manifest.display()
-            )
-        })?;
-        let text = std::fs::read_to_string(&checksum).map_err(|error| {
-            anyhow!("the staged manifest has no matching {MANIFEST_CHECKSUM_ASSET}: {error}")
-        })?;
-        let expected = parse_checksum(&text)
-            .ok_or_else(|| anyhow!("{} names no SHA-256 digest", checksum.display()))?;
-        if expected != sha256_hex(&bytes) {
-            bail!("{MANIFEST_CHECKSUM_ASSET} does not match the staged manifest's SHA-256");
-        }
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|error| anyhow!("the staged manifest is not valid JSON: {error}"))?;
-        let version = value
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        let tag = value
-            .get("tag")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        if version.is_empty() || tag != format!("v{version}") {
-            bail!("the staged manifest version {version} differs from its tag {tag}");
-        }
-    }
-    Ok(())
-}
-
-/// The committed copy of the built client the binary embeds at compile time.
-///
-/// `scripts/embed-client.mjs` refreshes it from `dist`, so it is build output
-/// rather than source: the freshness walk skips it and the bundle proof
-/// compares it with the bundle the release serves.
-fn embedded_client_root(harness_root: &Path) -> PathBuf {
-    harness_root.join("crates/devboard/assets")
-}
-
-/// Refuses a release whose embedded client differs from the built bundle in
-/// one path, one file, or one byte.
-fn verify_embedded_client(harness_root: &Path, dist: &Path) -> Result<()> {
-    let embedded = embedded_client_root(harness_root);
-    if !embedded.is_dir() {
-        bail!(
-            "the embedded client is missing: {} does not exist; run `bun scripts/embed-client.mjs` before publishing",
-            embedded.display()
-        );
-    }
-    if dist_digest(dist)? != dist_digest(&embedded)? {
-        bail!(
-            "the embedded client differs from dist: {} is stale; run `bun scripts/embed-client.mjs` and commit the result before publishing",
-            embedded.display()
-        );
-    }
-    Ok(())
-}
-
-/// Refuses a release whose embedded client is not in the commit it tags.
-///
-/// The tag names a commit, and the release workflow builds that commit without
-/// running the embed step, so a rebuild this run performed lives only in the
-/// working tree: a pending change under `crates/devboard/assets` means the
-/// release would carry the previous bundle while this checkout already serves
-/// the new one.
-async fn verify_embedded_client_committed(
-    args: &PublishArgs,
-    runner: &dyn CommandRunner,
-) -> Result<()> {
-    let embedded = embedded_client_root(&args.harness_root);
-    let git = Git::new(runner, &args.harness_root, &args.environment);
-    let pending = git
-        .must(
-            &[
-                "status",
-                "--porcelain",
-                "--untracked-files=all",
-                "--",
-                "crates/devboard/assets",
-            ],
-            "could not read uncommitted changes under crates/devboard/assets",
-        )
-        .await?;
-    let pending = pending.trim();
-    if pending.is_empty() {
-        return Ok(());
-    }
-    bail!(
-        "the embedded client is not committed: {} differs from the commit the release would tag ({}), so the release would ship the previous bundle; run `bun scripts/embed-client.mjs`, commit the result, and rerun",
-        embedded.display(),
-        pending.lines().next().unwrap_or_default().trim()
-    )
-}
-
-/// The uncommitted tracked changes in the harness the release suite compiles.
-///
-/// The gate builds the integration checkout's working tree, and that checkout
-/// is shared: a concurrent run's partial edit, or a change preserved across a
-/// landing, sits in those files while the attempts run. Untracked files are
-/// left out because nothing compiles one unless a tracked file names it, and
-/// that tracked file is itself the modification.
-async fn pending_harness_edits(
-    args: &PublishArgs,
-    runner: &dyn CommandRunner,
-) -> Result<Vec<String>> {
-    let git = Git::new(runner, &args.harness_root, &args.environment);
-    let pending = git
-        .must(
-            &["status", "--porcelain", "--untracked-files=no", "--", "."],
-            "could not read uncommitted changes in the harness",
-        )
-        .await?;
-    Ok(pending
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
-}
-
-/// The line that names the harness's uncommitted edits, or `None` when the tree
-/// is the commit.
-///
-/// The list is bounded so one failure line stays short enough for the
-/// notification text that carries it.
-fn divergence_line(pending: &[String]) -> Option<String> {
-    const NAMED: usize = 4;
-    if pending.is_empty() {
-        return None;
-    }
-    let named: Vec<&str> = pending.iter().take(NAMED).map(String::as_str).collect();
-    let rest = match pending.len() - named.len() {
-        0 => String::new(),
-        1 => " and 1 more".to_string(),
-        count => format!(" and {count} more"),
-    };
-    Some(format!(
-        "the harness carries uncommitted edits the tagged commit does not name: {}{rest}",
-        named.join(", ")
-    ))
-}
-
-/// The newest modification time below `directory`.
-fn newest_mtime(directory: &Path) -> std::time::SystemTime {
-    let mut newest = std::time::SystemTime::UNIX_EPOCH;
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return newest;
-    };
-    for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else {
-            continue;
-        };
-        let path = entry.path();
-        if kind.is_dir() {
-            newest = newest.max(newest_mtime(&path));
-            continue;
-        }
-        if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
-            newest = newest.max(modified);
-        }
-    }
-    newest
-}
-
-/// The newest source file below the harness, ignoring build output and state.
-fn newest_source_mtime(harness_root: &Path) -> Result<std::time::SystemTime> {
-    let embedded = embedded_client_root(harness_root);
-    fn visit(directory: &Path, embedded: &Path, newest: &mut std::time::SystemTime) -> Result<()> {
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            return Ok(());
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path == embedded {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if matches!(
-                name.as_str(),
-                "dist"
-                    | "target"
-                    | ".git"
-                    | "node_modules"
-                    | ".tmp"
-                    | ".test-tmp"
-                    | ".worktree"
-                    | "Cargo.toml"
-                    | "Cargo.lock"
-                    | "package.json"
-                    | "bun.lock"
-                    | "devboard-manifest.json"
-                    | "devboard-manifest.json.sha256"
-            ) {
-                continue;
-            }
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                visit(&path, embedded, newest)?;
-                continue;
-            }
-            if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
-                *newest = (*newest).max(modified);
-            }
-        }
-        Ok(())
-    }
-    let mut newest = std::time::SystemTime::UNIX_EPOCH;
-    visit(harness_root, &embedded, &mut newest)?;
-    Ok(newest)
-}
-
-/// Every `/assets/...` reference `dist/index.html` names must exist.
-fn verify_index_assets(dist: &Path) -> Result<()> {
-    static ASSET: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(?:src|href)="(/assets/[^"?#]+)""#).expect("an asset reference")
-    });
-    let index = dist.join("index.html");
-    let text = std::fs::read_to_string(&index)
-        .map_err(|error| anyhow!("{} could not be read: {error}", index.display()))?;
-    for capture in ASSET.captures_iter(&text) {
-        let Some(reference) = capture.get(1) else {
-            continue;
-        };
-        let relative = reference.as_str().trim_start_matches('/');
-        if !dist.join(relative).is_file() {
-            bail!(
-                "{} references the missing asset {}",
-                index.display(),
-                reference.as_str()
-            );
-        }
-    }
-    Ok(())
-}
-
-const MANIFEST_ASSET_NAME: &str = "devboard-manifest.json";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6052,52 +5490,6 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
     }
 
     #[test]
-    fn a_dist_older_than_its_sources_is_rebuilt_even_beside_a_newer_embed() {
-        use std::time::{Duration, SystemTime};
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.tmp")
-            .join(format!("publish-stale-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let embedded = root.join("crates/devboard/assets");
-        let dist = root.join("dist");
-        let client = root.join("client");
-        std::fs::create_dir_all(&embedded).expect("an embedded copy");
-        std::fs::create_dir_all(&dist).expect("a built bundle");
-        std::fs::create_dir_all(&client).expect("a client tree");
-        std::fs::write(embedded.join("index.html"), "current").expect("the embedded index");
-        std::fs::write(dist.join("index.html"), "older").expect("the older bundle");
-        std::fs::write(client.join("Row.svelte"), "<p></p>\n").expect("a client source");
-        let age = |path: &Path, seconds: i64| {
-            let handle = std::fs::File::options()
-                .write(true)
-                .open(path)
-                .expect("an open file");
-            let now = SystemTime::now();
-            let time = if seconds < 0 {
-                now - Duration::from_secs(seconds.unsigned_abs())
-            } else {
-                now + Duration::from_secs(seconds as u64)
-            };
-            handle
-                .set_times(std::fs::FileTimes::new().set_modified(time))
-                .expect("a file time");
-        };
-        age(&client.join("Row.svelte"), -30);
-        age(&embedded.join("index.html"), 0);
-        age(&dist.join("index.html"), -60);
-        assert!(
-            dist_is_stale(&root).expect("a verdict"),
-            "a dist older than its sources is rebuilt even when the embed is newer"
-        );
-        age(&dist.join("index.html"), 0);
-        assert!(
-            !dist_is_stale(&root).expect("a verdict"),
-            "a dist newer than its sources is current"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn a_bound_listener_is_found_through_the_proc_socket_tables() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
         let port = listener.local_addr().expect("an address").port();
@@ -6432,7 +5824,7 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
         assert!(push
             .args
             .iter()
-            .any(|arg| arg == "abc1234:refs/heads/devboard-build/v1.2.3"));
+            .any(|arg| arg == "+abc1234:refs/heads/devboard-build/v1.2.3"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -6457,75 +5849,6 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
         assert!(
             runner.invocations.lock().expect("recorded").is_empty(),
             "no git command ran"
-        );
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn the_client_rebuild_spends_the_bundle_allowance_on_its_two_commands() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.test-tmp")
-            .join(format!("bundle-bounds-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("package.json"), "{}\n").unwrap();
-
-        let mut args = PublishArgs::new(&root);
-        args.harness_root = root.clone();
-        let runner = IntegrationRecorder {
-            invocations: Mutex::new(Vec::new()),
-        };
-        let log: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_| {});
-        rebuild_client(&args, &runner, &log)
-            .await
-            .expect("the rebuild runs");
-
-        let invocations = runner.invocations.lock().expect("recorded").clone();
-        assert_eq!(invocations.len(), 2, "the build and its embed");
-        assert_eq!(invocations[0].args, ["run", "build"]);
-        assert_eq!(invocations[1].args, ["scripts/embed-client.mjs"]);
-        // A client build inside a slice at its memory high mark has outlasted a
-        // quarter of an hour, so its bound is the allowance itself.
-        assert_eq!(invocations[0].timeout, PUBLISH_CLIENT_BUILD_TIMEOUT);
-        assert!(
-            invocations[0].timeout > Duration::from_secs(900),
-            "the build keeps more than the old quarter hour: {:?}",
-            invocations[0].timeout
-        );
-        assert_eq!(invocations[1].timeout, PUBLISH_EMBED_ALLOWANCE);
-        let spent: Duration = invocations
-            .iter()
-            .map(|invocation| invocation.timeout)
-            .sum();
-        assert_eq!(
-            spent, PUBLISH_BUNDLE_ALLOWANCE,
-            "the pair never outlives the one allowance the publish budget counts"
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn bun_resolves_through_the_path_or_a_user_install() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.test-tmp")
-            .join(format!("bun-probe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("path")).unwrap();
-        std::fs::create_dir_all(root.join("home/.bun/bin")).unwrap();
-        std::fs::write(root.join("path/bun"), b"#!/bin/sh\n").unwrap();
-        std::fs::write(root.join("home/.bun/bin/bun"), b"#!/bin/sh\n").unwrap();
-        let mut environment = Environment::new();
-        environment.insert("PATH".to_string(), root.join("path").display().to_string());
-        assert_eq!(
-            bun_program(&environment),
-            root.join("path/bun").display().to_string()
-        );
-        environment.remove("PATH");
-        environment.insert("HOME".to_string(), root.join("home").display().to_string());
-        assert_eq!(
-            bun_program(&environment),
-            root.join("home/.bun/bin/bun").display().to_string()
         );
         let _ = std::fs::remove_dir_all(&root);
     }

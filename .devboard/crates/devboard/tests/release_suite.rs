@@ -1,10 +1,10 @@
 //! The release suite CLI against real fixture workspaces.
 //!
 //! Each fixture is a tiny crate with its own git repository under
-//! `.test-tmp/`. The CLI runs `cargo test --workspace` there, retries the
-//! suite, quarantines a persistent failure, and files one issue per skipped
-//! test in a stub Gitea instance. Every run leaves `git status --porcelain`
-//! empty and the fixture sources byte-identical.
+//! `.test-tmp/`. The CLI runs `cargo test --workspace` there once, retries each
+//! failing test alone, classifies it flaky or deterministic, and files one
+//! issue per finding in a stub Gitea instance. Every run leaves
+//! `git status --porcelain` empty and the fixture sources byte-identical.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -418,25 +418,11 @@ pub fn broken() -> i32 {
 "
 }
 
-/// One test, and it always fails: three consecutive attempts quarantine every
-/// name the suite has, so the run proves nothing.
-fn every_test_fails_source() -> &'static str {
-    "\
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn only_test_fails() {
-        assert_eq!(1 + 1, 3, \"the fixture fails every test\");
-    }
-}
-"
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn release_suite_quarantines_a_persistent_failure_and_files_once() {
+async fn release_suite_blocks_a_deterministic_failure_and_files_one_issue() {
     let fixture = Fixture::new("always-failing", persistent_failure_source());
     let forge = StubForge::start().await;
     fixture.origin(&forge.base);
@@ -445,28 +431,30 @@ async fn release_suite_quarantines_a_persistent_failure_and_files_once() {
     let environment = forge_environment(&forge, None);
 
     let (code, report) = cli(fixture.root(), environment.clone()).await;
-    assert_eq!(code, 0, "{report}");
+    assert_ne!(
+        code, 0,
+        "a deterministic failure blocks the release: {report}"
+    );
     assert!(
         report.contains("attempt 1/9: 1 fail, 1 pass, 0 skip"),
         "{report}"
     );
     assert!(
-        report.contains("quarantined: src/lib.rs :: tests::always_fails"),
+        report.contains("deterministic: src/lib.rs :: tests::always_fails"),
         "{report}"
     );
     assert!(
-        report.contains("attempt 4/9: 0 fail, 1 pass, 0 skip"),
+        report.contains("release suite: 1 attempt(s), 0 flaky, 1 deterministic, 1 fail"),
         "{report}"
     );
     assert!(
-        report.contains("release suite: 4 attempt(s), 1 quarantined, 0 fail"),
+        report.contains("filed issue #1: deterministic(test): tests::always_fails"),
         "{report}"
     );
     assert!(
-        report.contains("skipped: src/lib.rs :: tests::always_fails"),
-        "{report}"
+        !report.contains("skipped for the rest of this run"),
+        "a deterministic test is never skipped: {report}"
     );
-    assert!(report.contains("filed issue #1"), "{report}");
     assert_eq!(fixture.status(), "");
     assert_eq!(fixture.source(), source);
 
@@ -476,7 +464,7 @@ async fn release_suite_quarantines_a_persistent_failure_and_files_once() {
     assert!(
         issue
             .title
-            .contains("quarantine(test): tests::always_fails"),
+            .contains("deterministic(test): tests::always_fails"),
         "{}",
         issue.title
     );
@@ -496,10 +484,28 @@ async fn release_suite_quarantines_a_persistent_failure_and_files_once() {
         "{}",
         issue.body
     );
-    assert_eq!(issue.body.matches("### attempt").count(), 3);
+    assert_eq!(
+        issue.body.matches("### whole-suite attempt").count(),
+        1,
+        "{}",
+        issue.body
+    );
+    assert_eq!(
+        issue.body.matches("### isolated retry").count(),
+        1,
+        "{}",
+        issue.body
+    );
+    assert!(
+        issue.body.contains("failed its isolated retry"),
+        "{}",
+        issue.body
+    );
 
+    // A later finding for the same test appends exactly one comment and never
+    // creates a second issue.
     let (second_code, second_report) = cli(fixture.root(), environment).await;
-    assert_eq!(second_code, 0, "{second_report}");
+    assert_ne!(second_code, 0, "{second_report}");
     assert!(
         second_report.contains("commented on issue #1"),
         "{second_report}"
@@ -518,7 +524,7 @@ async fn release_suite_quarantines_a_persistent_failure_and_files_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn release_suite_retries_a_transient_failure_without_quarantine() {
+async fn release_suite_classifies_a_flaky_failure_and_files_one_issue() {
     let fixture = Fixture::new("once-failing", transient_failure_source());
     let forge = StubForge::start().await;
     fixture.origin(&forge.base);
@@ -529,26 +535,78 @@ async fn release_suite_retries_a_transient_failure_without_quarantine() {
     let _ = fs::remove_file(&marker);
     let environment = forge_environment(&forge, Some(&marker));
 
-    let (code, report) = cli(fixture.root(), environment).await;
-    let _ = fs::remove_file(&marker);
-    assert_eq!(code, 0, "{report}");
+    let (code, report) = cli(fixture.root(), environment.clone()).await;
+    assert_eq!(
+        code, 0,
+        "a flaky failure does not block the release: {report}"
+    );
     assert!(
         report.contains("attempt 1/9: 1 fail, 0 pass, 0 skip"),
         "{report}"
     );
     assert!(
-        report.contains("release suite: 2 attempt(s), 0 quarantined, 0 fail"),
+        report.contains("flaky: src/lib.rs :: tests::fails_once_then_passes"),
         "{report}"
     );
-    assert!(!report.contains("quarantined:"), "{report}");
+    assert!(
+        report.contains("skipped for the rest of this run: tests::fails_once_then_passes"),
+        "{report}"
+    );
+    assert!(
+        report.contains("release suite: 1 attempt(s), 1 flaky, 0 deterministic, 0 fail"),
+        "{report}"
+    );
+    assert!(
+        report.contains("filed issue #1: flaky(test): tests::fails_once_then_passes"),
+        "{report}"
+    );
     assert_eq!(fixture.status(), "");
     assert_eq!(fixture.source(), source);
-    assert!(forge.issues().is_empty(), "{:?}", forge.issues());
+
+    let issues = forge.issues();
+    assert_eq!(issues.len(), 1, "{issues:?}");
     assert!(
-        !forge.requests().iter().any(|(method, _)| method == "POST"),
-        "{:?}",
-        forge.requests()
+        issues[0]
+            .title
+            .contains("flaky(test): tests::fails_once_then_passes"),
+        "{}",
+        issues[0].title
     );
+    assert!(
+        issues[0].body.contains("passed its isolated retry"),
+        "{}",
+        issues[0].body
+    );
+    assert!(
+        issues[0]
+            .body
+            .contains("the fixture fails its first attempt"),
+        "{}",
+        issues[0].body
+    );
+
+    // The skip is run-only: a second run on a fresh failure executes the test
+    // again instead of reading the open issue as a skip list.
+    let _ = fs::remove_file(&marker);
+    let (second_code, second_report) = cli(fixture.root(), environment).await;
+    let _ = fs::remove_file(&marker);
+    assert_eq!(second_code, 0, "{second_report}");
+    assert!(
+        second_report.contains("attempt 1/9: 1 fail, 0 pass, 0 skip"),
+        "the test executes again despite its open flaky issue: {second_report}"
+    );
+    assert!(
+        second_report.contains("flaky: src/lib.rs :: tests::fails_once_then_passes"),
+        "{second_report}"
+    );
+    assert!(
+        second_report.contains("commented on issue #1"),
+        "{second_report}"
+    );
+    assert!(!second_report.contains("filed issue #2"), "{second_report}");
+    assert_eq!(forge.issues().len(), 1);
+    assert_eq!(fixture.status(), "");
+    assert_eq!(fixture.source(), source);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -575,59 +633,6 @@ async fn release_suite_fails_structurally_on_a_compile_error() {
         !forge.requests().iter().any(|(method, _)| method == "POST"),
         "{:?}",
         forge.requests()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn release_suite_fails_when_every_test_is_quarantined() {
-    let fixture = Fixture::new("every-test-fails", every_test_fails_source());
-    let forge = StubForge::start().await;
-    fixture.origin(&forge.base);
-    let source = fixture.source();
-    let environment = forge_environment(&forge, None);
-
-    let (code, report) = cli(fixture.root(), environment).await;
-    assert_ne!(code, 0, "{report}");
-    assert!(
-        report.contains("quarantined: src/lib.rs :: tests::only_test_fails"),
-        "{report}"
-    );
-    assert!(
-        report.contains("release suite: every test was quarantined; nothing left to run"),
-        "{report}"
-    );
-    assert!(
-        report.contains("every test was quarantined; nothing ran"),
-        "{report}"
-    );
-    assert!(report.contains("structural failure"), "{report}");
-    assert!(
-        report.contains("attempt 4/9: 0 fail, 0 pass, 1 skip"),
-        "{report}"
-    );
-    assert!(
-        report.contains("release suite: structural failure after 4 attempt(s)"),
-        "{report}"
-    );
-    assert_eq!(fixture.status(), "");
-    assert_eq!(fixture.source(), source);
-
-    // The quarantined test's issue is still filed: it is the only record of
-    // what the failed run saw.
-    let issues = forge.issues();
-    assert_eq!(issues.len(), 1, "{issues:?}");
-    assert!(
-        issues[0]
-            .title
-            .contains("quarantine(test): tests::only_test_fails"),
-        "{}",
-        issues[0].title
-    );
-    assert_eq!(issues[0].body.matches("### attempt").count(), 3);
-    assert!(
-        issues[0].body.contains("the fixture fails every test"),
-        "{}",
-        issues[0].body
     );
 }
 
