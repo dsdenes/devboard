@@ -958,13 +958,6 @@ pub fn commit_candidates_from_comments(comments: &[String], limit: usize) -> Vec
     candidates
 }
 
-/// The newest comment that carries a SHA yields its last SHA; else `None`.
-pub fn closing_commit_from_comments(comments: &[String]) -> Option<String> {
-    commit_candidates_from_comments(comments, 1)
-        .into_iter()
-        .next()
-}
-
 // ---------------------------------------------------------------------------
 // Gitea REST client
 
@@ -1810,13 +1803,6 @@ pub fn closing_commits_from_gitea_timeline(timeline: &[Value]) -> Vec<String> {
     candidates
 }
 
-/// The newest timeline candidate, or `None`.
-pub fn closing_commit_from_gitea_timeline(timeline: &[Value]) -> Option<String> {
-    closing_commits_from_gitea_timeline(timeline)
-        .into_iter()
-        .next()
-}
-
 fn paged_entry_key(entry: &Value) -> String {
     if let Some(id) = entry.get("id") {
         if let Some(number) = id.as_i64() {
@@ -1893,19 +1879,6 @@ pub async fn gitea_closing_commits(
         &bodies,
         COMMIT_CANDIDATE_LIMIT,
     ))
-}
-
-/// The newest candidate, or `None`.
-pub async fn gitea_closing_commit(
-    target: &GiteaTarget,
-    number: i64,
-    transport: &Transport,
-    options: &GiteaCallOptions,
-) -> Result<Option<String>, GiteaError> {
-    Ok(gitea_closing_commits(target, number, transport, options)
-        .await?
-        .into_iter()
-        .next())
 }
 
 /// The trailing issue number of an issue URL, or `None`.
