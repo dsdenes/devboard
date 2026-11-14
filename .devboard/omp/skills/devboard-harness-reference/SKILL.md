@@ -2269,17 +2269,18 @@ at a time.
 
 The Release Train's release agent fetches canonical `main` and runs `cargo run -p devboard --
 publish` from the integration checkout. That path refuses a worktree, a branch other than `main`,
-or a checkout ahead of or diverged from its canonical remote, after it re-reads `origin/main` for
-up to a minute so an integration landing's in-flight push settles; fetches and fast-forwards
-`main` without discarding uncommitted work; rebuilds the client and refreshes the embedded asset
-copy; derives the version from the commits after the newest reachable `v<version>` tag; proves the
-configured Gitea credential may create the release, so a revoked or read-only token fails before
-the version bump, the tag push, and the dispatch instead of leaving a released tag with no
-manifest; bumps the workspace version, commits it, and pushes the commit and tag to Gitea; a push
-that exits nonzero is verified from the refs the forge carries — the released tag's commit and
-`main`, read through the API rather than the git transport whose answer was lost — so a forge that
-accepted both refs and then failed to answer the push never fails a release that landed, while a
-push the forge does not carry fails with the refusal git printed rather than the remote's first
+or a checkout ahead of or diverged from its canonical remote: an ahead checkout is re-read for
+about five and a half minutes so a landing's in-flight push settles, and a divergence — each side
+carrying a commit the other lacks — is refused at once, because no wait integrates it. It fetches
+and fast-forwards `main` without discarding uncommitted work; rebuilds the client and refreshes the
+embedded asset copy; derives the version from the commits after the newest reachable `v<version>`
+tag; proves the configured Gitea credential may create the release, so a revoked or read-only token
+fails before the version bump, the tag push, and the dispatch instead of leaving a released tag
+with no manifest; bumps the workspace version, commits it, and pushes the commit and tag to Gitea;
+a push that exits nonzero is verified from the refs the forge carries — the released tag's commit
+and `main`, read through the API rather than the git transport whose answer was lost — so a forge
+that accepted both refs and then failed to answer the push never fails a release that landed, while
+a push the forge does not carry fails with the refusal git printed rather than the remote's first
 progress line; dispatches `.github/workflows/release.yml` for that tag when it has no usable run and
 waits for the run;
 verifies every platform archive and installer on the GitHub release and the checksums on the Gitea

@@ -3158,7 +3158,7 @@ async fn preflight(args: &PublishArgs, runner: &dyn CommandRunner) -> Result<Pre
 }
 
 /// How many times publish reads the remote `main` before it refuses a checkout
-/// that is ahead of or diverged from it.
+/// that is ahead of it.
 ///
 /// An integration landing merges into the canonical checkout's `main` and then
 /// pushes it, so a release that starts in that window sees a local tip the
@@ -3166,8 +3166,14 @@ async fn preflight(args: &PublishArgs, runner: &dyn CommandRunner) -> Result<Pre
 /// for it instead of failing a release nothing is wrong with.
 const MAIN_SETTLE_ATTEMPTS: u32 = 12;
 
-/// The pause between those reads.
-const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(5);
+/// The pause between those reads. Twelve reads pause eleven times, so a
+/// landing's push has about five and a half minutes to settle.
+///
+/// The window is sized for the push, not for the merge: a release that spent a
+/// one-minute window on the commit a landing had merged twenty-six minutes
+/// earlier refused ninety seconds before that landing pushed it, and the range
+/// it left behind waited for a later tick.
+const MAIN_SETTLE_DELAY: Duration = Duration::from_secs(30);
 
 /// How long one publish keeps integrating landings that move the checkout
 /// underneath it before it leaves the range to the next tick.
@@ -3186,6 +3192,26 @@ pub const RACE_INTEGRATION_BUDGET: Duration = Duration::from_secs(90 * 60);
 /// The pause before an attempt derives again, so a landing's in-flight push
 /// settles before the next suite starts.
 const RACE_INTEGRATION_PAUSE: Duration = Duration::from_secs(5);
+
+/// The newest local commits the remote `main` does not carry, as
+/// `<short sha> <subject>` entries, so a refusal names what has to be pushed.
+/// `None` when the read yields nothing, and the refusal then keeps its own
+/// text rather than reporting an empty list.
+async fn unpublished_commits(git: &Git<'_>, range: &str) -> Option<String> {
+    let read = git
+        .run(&["log", "--max-count=3", "--format=%h %s", range])
+        .await;
+    if read.code != 0 {
+        return None;
+    }
+    let entries: Vec<&str> = read
+        .stdout
+        .split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    (!entries.is_empty()).then(|| entries.join("; "))
+}
 
 /// Fetches the canonical `main` and fast-forwards without discarding work.
 ///
@@ -3257,10 +3283,24 @@ async fn refresh_main(
             break;
         }
         if !git.is_ancestor(&head, &tip).await {
+            // The remote tip is not contained in the local head. A landing that
+            // merged into `main` and has not pushed yet leaves exactly this
+            // state, and that push settles it; two sides that each carry a
+            // commit the other lacks settle nothing, so they are refused at
+            // once with the integration they need.
+            if !git.is_ancestor(&tip, &head).await {
+                bail!(
+                    "local main has diverged from {remote}/main: each carries commits the other lacks; integrate {remote}/main into main, push it, and rerun"
+                );
+            }
             remaining -= 1;
             if remaining == 0 {
+                let named = unpublished_commits(&git, &format!("{tip}..{head}"))
+                    .await
+                    .map(|commits| format!(" ({commits})"))
+                    .unwrap_or_default();
                 bail!(
-                    "local main is ahead of or diverged from {remote}/main; integrate and push the worktree first"
+                    "local main carries commits {remote}/main does not have{named}; push main from the integration checkout and rerun"
                 );
             }
             if !waited {

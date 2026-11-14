@@ -1447,7 +1447,7 @@ async fn a_branch_other_than_main_is_refused() {
 }
 
 #[tokio::test]
-async fn an_ahead_or_diverged_main_is_refused() {
+async fn an_ahead_main_waits_out_the_settle_window_then_names_what_to_push() {
     let scratch = Scratch::new("ahead");
     let (origin, github) = origin_repository(&scratch.root);
     let app = application_base(&scratch, &origin, &github);
@@ -1457,15 +1457,75 @@ async fn an_ahead_or_diverged_main_is_refused() {
     let gitea = StubServer::start(|_| not_found()).await;
     let gh = StubServer::start(|_| not_found()).await;
     let mut args = test_args(&app, &gitea, &gh, None);
-    // The settle window is real time in production; a fake sleeper keeps this
-    // refusal immediate.
+    // The settle window is real time in production; a fake sleeper drives it
+    // without waiting, and its clock measures the window this refusal spent.
     let clock = FakeClock::new(0);
     args.clock = Some(clock.clone());
-    args.sleeper = Some(Arc::new(FakeSleeper { clock, step: 5_000 }));
+    args.sleeper = Some(Arc::new(FakeSleeper {
+        clock: clock.clone(),
+        step: 30_000,
+    }));
     let error = publish(args).await.expect_err("an ahead main is refused");
+    let message = format!("{error:#}");
     assert!(
-        format!("{error:#}").contains("ahead of or diverged"),
-        "{error:#}"
+        message.contains("local main carries commits origin/main does not have"),
+        "{message}"
+    );
+    assert!(message.contains("feat: local only"), "{message}");
+    assert!(
+        message.contains("push main from the integration checkout"),
+        "{message}"
+    );
+    assert!(
+        clock.now_millis() >= 5 * 60_000,
+        "the settle window waited only {} ms",
+        clock.now_millis()
+    );
+}
+
+#[tokio::test]
+async fn a_diverged_main_is_refused_without_a_wait() {
+    let scratch = Scratch::new("diverged");
+    let (origin, github) = origin_repository(&scratch.root);
+    let app = application_base(&scratch, &origin, &github);
+    commit_file(&app, "tracked.txt", "one\n", "feat: base");
+    git_output(&app, &["push", "-q", "origin", "main"]);
+
+    let other = scratch.root.join("other");
+    git_output(
+        &scratch.root,
+        &[
+            "clone",
+            "-q",
+            origin.to_string_lossy().as_ref(),
+            other.to_string_lossy().as_ref(),
+        ],
+    );
+    commit_file(&other, "tracked.txt", "two\n", "feat: remote change");
+    git_output(&other, &["push", "-q", "origin", "main"]);
+
+    commit_file(&app, "tracked.txt", "three\n", "feat: local change");
+
+    let gitea = StubServer::start(|_| not_found()).await;
+    let gh = StubServer::start(|_| not_found()).await;
+    let mut args = test_args(&app, &gitea, &gh, None);
+    let clock = FakeClock::new(0);
+    args.clock = Some(clock.clone());
+    args.sleeper = Some(Arc::new(FakeSleeper {
+        clock: clock.clone(),
+        step: 30_000,
+    }));
+    let error = publish(args).await.expect_err("a diverged main is refused");
+    let message = format!("{error:#}");
+    assert!(message.contains("diverged from origin/main"), "{message}");
+    assert!(
+        message.contains("integrate origin/main into main"),
+        "{message}"
+    );
+    assert_eq!(
+        clock.now_millis(),
+        0,
+        "a divergence cannot settle by waiting"
     );
 }
 
