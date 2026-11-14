@@ -1868,6 +1868,92 @@ async fn a_replay_reaches_its_own_page_alone() {
     drop(owner);
 }
 
+/// A state read carries the newest lines of every running agent, never their
+/// whole logs.
+///
+/// The Issues body polls this read every two seconds. Replaying every running
+/// agent's whole log made one read 8 MB on a dashboard with eight running
+/// agents, and the page parsed and rendered every line on its main thread, so
+/// an operator's Stop answered behind that work and missed its one-second
+/// budget. The preview is bounded per agent; a run's own read still carries its
+/// whole log.
+#[tokio::test]
+async fn a_state_read_carries_a_bounded_activity_preview() {
+    let (repo, state) = scratch("read-preview");
+    let owner = spawn_owner(&repo, &state);
+    let agents: Vec<Value> = (0..3)
+        .map(|index| running_agent(&format!("run-{index}"), 10 + index))
+        .collect();
+    let mut document = state_document(&repo, "running", json!(agents));
+    document["worker"] = attached_worker(&owner.pid, &state);
+    write_state(&repo, &state, &document);
+    let log: Vec<String> = (0..400)
+        .map(|number| format!("{number:03} {}", "x".repeat(60)))
+        .collect();
+    let entries: Vec<&str> = log.iter().map(String::as_str).collect();
+    for index in 0..3 {
+        write_run_activity(&repo, &state, &format!("run-{index}"), &entries);
+        running_run(&repo, &state, &format!("run-{index}"));
+    }
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+
+    let (outbox, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    bridge.read(&conn);
+
+    let state_frame = next_frame(&mut inbox).await;
+    assert_eq!(state_frame["type"], "issuesState");
+    assert_eq!(
+        state_frame["agents"].as_array().map(Vec::len),
+        Some(3),
+        "a read still names every running agent: {state_frame}"
+    );
+    let mut bytes = 0usize;
+    for index in 0..3 {
+        let frame = next_frame(&mut inbox).await;
+        assert_eq!(frame["type"], "issuesActivity", "{frame}");
+        assert_eq!(frame["runId"], json!(format!("run-{index}")));
+        assert_eq!(frame["replay"], json!(true));
+        let carried = frame["entries"].as_array().expect("entries");
+        assert!(
+            carried.len() <= 100,
+            "run-{index} carried {} lines: {frame}",
+            carried.len()
+        );
+        assert_eq!(
+            carried.last().map(|entry| &entry["text"]),
+            Some(&json!(log[399])),
+            "the newest line is the one a page needs: {frame}"
+        );
+        bytes += serde_json::to_string(carried).expect("entries JSON").len();
+    }
+    assert!(
+        bytes < 64 * 1024,
+        "three running agents' previews cost {bytes} bytes"
+    );
+    let extra = inbox.try_recv();
+    assert!(extra.is_err(), "one read answers one page: {extra:?}");
+
+    let detail = bridge.run(&json!("run-0")).expect("the run's own read");
+    assert_eq!(
+        detail["activityLines"].as_array().map(Vec::len),
+        Some(400),
+        "a run's own read carries its whole log"
+    );
+    drop(owner);
+}
+
 /// One tracker read per interval serves both the worker and the bridge.
 ///
 /// A live worker owns the repository and reads the tracker on its interval.

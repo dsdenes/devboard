@@ -3971,9 +3971,14 @@ files. Each run's activity is persisted before the dashboard can read it, bounde
 1,000 entries or 1 MiB with the trimmed marker, and is never merged with another run's activity.
 On connect, the bridge replays `issuesState` and then one `issuesActivity` with `replay: true` for
 every running agent, so a dashboard connecting mid-flight sees every agent and all its output. The
-replay reaches the page that asked and no other page; a `GET /issues` read replays the same
-activity to its own page, which is how a page heals a log whose delta a hidden or failed poll
-missed. An operator action's answer, a Start included, carries the state document alone: one run's
+replay reaches the page that asked and no other page. A `GET /issues` read replays the newest
+lines of every running agent to its own page — at most 100 lines and 16 KiB per agent — which is how
+a page heals an output pane whose delta a hidden or failed poll missed. A read is polled every two
+seconds, while a whole log reaches 1 MiB: replaying every running agent's log made one read 8 MB
+on a dashboard with eight running agents, and the page's parse and render of every line delayed
+the answer to an operator's Stop past its one-second budget. A run's whole log is that run's own
+read (`GET /issues/runs/<runId>`), which a live agent's page follows. An operator action's answer,
+a Start included, carries the state document alone: one run's
 activity reaches 1 MiB, so replaying every running agent's log inside an action's answer made one
 Start's response 32 MB on a dashboard with sixteen running agents. That answer restates the
 projection the bridge already published, with the Start facts the action changed, so no action's
@@ -4028,11 +4033,13 @@ tracker URL while the queue lists the issue and as plain text without an `href` 
 the `Focus` control, and it does not repeat the fleet's status or waiting state as
 a badge. Below it the issue title reserves two lines, then one compact elapsed and started-time
 line whose tooltip carries the exact timestamp. Cards in one grid row share a height. The run id
-appears in the Focus tab, not on the card. Every card renders its agent's full streamed output in
-`data-testid="issues-agent-activity"` with `data-run`, under the `Latest activity` label; the log
-scrolls, follows its newest line while the operator is at the bottom, and stays put when scrolled
-back. It is 64px on a waiting card and fills the remaining card body otherwise. A pending question
-renders inside only that agent's card as `data-testid="issues-agent-question"` with `data-run`, its
+appears in the Focus tab, not on the card. Every card renders the newest lines of its agent's
+streamed output in `data-testid="issues-agent-activity"` with `data-run`, under the `Latest
+activity` label; the log scrolls, follows its newest line while the operator is at the bottom, and
+stays put when scrolled back. A state read carries at most the newest 100 lines or 16 KiB of each
+running agent, so the card's window is that preview; the run's whole log is its own read. It is
+64px on a waiting card and fills the remaining card body otherwise. A pending question renders
+inside only that agent's card as `data-testid="issues-agent-question"` with `data-run`, its
 options with a recommended marker, and a free-text answer. The controls are
 `data-testid="issues-agent-choice"`,
 `data-testid="issues-agent-answer-input"`, and `data-testid="issues-agent-answer-submit"`, each
@@ -4043,8 +4050,8 @@ questions.
 
 Activating a card (its `Focus` control) opens
 `{ id: "agent:<runId>", kind: "agent", resourceId: <runId>, title: "#<issue> <title>" }`, rendering
-`data-testid="issues-agent-focus"` with `data-testid="issues-agent-focus-status"`, the same full
-activity in `data-testid="issues-agent-focus-activity"`, its question in
+`data-testid="issues-agent-focus"` with `data-testid="issues-agent-focus-status"`, that run's
+whole log from its own read in `data-testid="issues-agent-focus-activity"`, its question in
 `data-testid="issues-agent-focus-question"`, and `data-testid="issues-agent-focus-close"`. The
 output panel header names its run once: a `Run` label, the identifier as a `.code-chip` in
 `data-testid="issues-agent-focus-run-id"` (capped at 220px; the full id is in its `title`), and
@@ -4076,8 +4083,8 @@ open, reports the reason as an error notification, and releases that row's contr
 takes a retry; a stalled credential probe or `gh`/`glab` close fails at its 60-second deadline with
 that timeout as the reason instead of leaving the control pending; a successful one reports
 `Closed issue #<number>.` and disables the control until the queue drops the issue.
-The right column renders only the selected agent's output in
-`data-testid="issues-overview-output"` with `data-run`, its stream in
+The right column renders the newest lines of the selected agent's output in
+`data-testid="issues-overview-output"` with `data-run`, that preview in
 `data-testid="issues-overview-activity"`, and its question in
 `data-testid="issues-overview-question"`. The first agent is selected by default, the row's select
 control switches the output, and the pane falls back to the first live agent when the selected run

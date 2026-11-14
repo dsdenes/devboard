@@ -28,6 +28,10 @@ const RUN_HISTORY_LIMIT: usize = 50;
 const ACTIVITY_MAX_ENTRIES: usize = 1000;
 const ACTIVITY_MAX_BYTES: usize = 1024 * 1024;
 const ACTIVITY_TRIMMED_MARKER: &str = "Earlier activity was trimmed.";
+/// The newest lines of one running agent a state read carries.
+const ACTIVITY_PREVIEW_LINES: usize = 100;
+/// The bytes those lines may cost together; a page reads every two seconds.
+const ACTIVITY_PREVIEW_BYTES: usize = 16 * 1024;
 
 /// A goal issue carries the one label the goal lifecycle claims.
 fn is_goal_issue(issue: &Issue) -> bool {
@@ -1988,6 +1992,35 @@ fn read_activity(directory: &Path) -> Vec<String> {
     crate::sampling::text(&activity_path(directory))
         .and_then(|text| parse_activity(&text))
         .unwrap_or_default()
+}
+
+/// The newest lines of one run's log that a state read carries.
+///
+/// At most [`ACTIVITY_PREVIEW_LINES`] lines, newest first until they cost
+/// [`ACTIVITY_PREVIEW_BYTES`] together, restored to reading order. A single
+/// line longer than the budget is cut to it rather than skipped, so the newest
+/// output is always the first thing the page shows.
+fn preview_activity(lines: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for line in lines.iter().rev() {
+        if kept.len() >= ACTIVITY_PREVIEW_LINES {
+            break;
+        }
+        let remaining = ACTIVITY_PREVIEW_BYTES.saturating_sub(used);
+        if remaining == 0 {
+            break;
+        }
+        let bounded = crate::text_budget::bound_bytes(line, remaining, "…");
+        used += bounded.text.len();
+        let cut = bounded.truncated;
+        kept.push(bounded.text);
+        if cut {
+            break;
+        }
+    }
+    kept.reverse();
+    kept
 }
 
 fn write_activity(directory: &Path, lines: &[String]) -> std::io::Result<()> {
@@ -4210,13 +4243,40 @@ impl IssuesBridge {
         }
     }
 
+    /// Answers one page's read of this resource: the published state and the
+    /// newest lines of every running agent.
+    ///
+    /// A read is polled by every open Issues page — once per two seconds from
+    /// the mode's body — so it carries a bounded preview, never a whole log.
+    /// One run's activity reaches 1 MiB, and replaying every running agent's
+    /// log made one read 8 MB on a dashboard with eight running agents; the
+    /// page parsed and rendered every line on its main thread, and an
+    /// operator's Stop answered behind that work instead of inside its
+    /// one-second budget. A run's whole log is that run's own read
+    /// (`Command::GetIssuesRun`), and a socket client's connect replay
+    /// ([`Self::replay`]) still carries every line it may have missed.
+    ///
+    /// The preview never moves this bridge's delta marker: [`Self::replay`]
+    /// publishes deltas from the whole log it last replayed, and a preview
+    /// recorded there would push the rest of the log at every socket page.
+    pub fn read(&self, conn: &Conn) {
+        self.demand_at.store(monotonic_millis(), Ordering::Relaxed);
+        let cached = self.cached_projection();
+        conn.send_payload(cached.frame_text);
+        for run_id in self.active_run_ids(&cached.snapshot) {
+            let activity = preview_activity(&self.read_activity(&run_id));
+            conn.send(self.activity_frame(&run_id, true, Self::entries(&activity)));
+        }
+    }
+
     /// Answers one action with the state alone.
     ///
-    /// The worker's whole activity is replayed with a read or a connect
-    /// ([`Self::replay`]), where it heals a page that missed a delta. An
-    /// action's answer only confirms the change it made: one run's activity
-    /// reaches 1 MiB, so replaying every running agent's log here made a
-    /// Start's answer 32 MB on a dashboard with sixteen running agents.
+    /// A connecting socket replays every running agent's whole activity
+    /// ([`Self::replay`]), where it heals a page that missed a delta, and a
+    /// read carries the newest lines ([`Self::read`]). An action's answer only
+    /// confirms the change it made: one run's activity reaches 1 MiB, so
+    /// replaying every running agent's log here made a Start's answer 32 MB on
+    /// a dashboard with sixteen running agents.
     ///
     /// The state it answers with is the projection this bridge already
     /// published, restated with the Start facts the action changed. Rebuilding
@@ -5645,7 +5705,7 @@ pub async fn handle(app: &Arc<App>, conn: &Conn, command: &Command) -> bool {
     match command {
         Command::GetIssues => {
             if let Some(bridge) = bridge_for(app) {
-                bridge.replay(conn);
+                bridge.read(conn);
                 bridge.request_sync();
             }
             true
@@ -8424,6 +8484,41 @@ mod tests {
             written["finishedAt"].is_null(),
             "a run still owned carries no finish time: {written}"
         );
+    }
+
+    /// A state read carries the newest lines of a log within both bounds, and
+    /// a single line longer than the byte budget is cut instead of skipped.
+    #[test]
+    fn an_activity_preview_keeps_the_newest_lines_within_its_bounds() {
+        let lines: Vec<String> = (0..400).map(|number| format!("line {number:03}")).collect();
+        let preview = preview_activity(&lines);
+        assert_eq!(preview.len(), ACTIVITY_PREVIEW_LINES, "{preview:?}");
+        assert_eq!(preview.last().map(String::as_str), Some("line 399"));
+        assert_eq!(preview.first().map(String::as_str), Some("line 300"));
+
+        let long = "x".repeat(ACTIVITY_PREVIEW_BYTES * 2);
+        let preview = preview_activity(&[long, "newest".to_string()]);
+        assert_eq!(preview.len(), 2, "{preview:?}");
+        assert_eq!(preview[1], "newest");
+        assert!(
+            preview[0].len() <= ACTIVITY_PREVIEW_BYTES,
+            "a cut line stays inside the budget: {} bytes",
+            preview[0].len()
+        );
+        assert!(
+            preview[0].ends_with('…'),
+            "the cut is marked: {} bytes",
+            preview[0].len()
+        );
+
+        let single = preview_activity(&["é".repeat(ACTIVITY_PREVIEW_BYTES)]);
+        assert_eq!(single.len(), 1);
+        assert!(
+            single[0].len() <= ACTIVITY_PREVIEW_BYTES,
+            "a code point is never split: {} bytes",
+            single[0].len()
+        );
+        assert!(single[0].ends_with('…'));
     }
 
     #[test]

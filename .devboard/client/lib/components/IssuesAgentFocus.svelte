@@ -21,7 +21,10 @@
   const runId = $derived(tab.resourceId);
   const agent = $derived(issues.agentFor(runId));
   const detail = $derived(issues.run?.runId === runId ? issues.run : null);
-  const lines = $derived(agent !== null ? issues.activityFor(runId) : (detail?.activityLines ?? []));
+  // The run's own read carries its whole log. The Issues state read carries
+  // only the newest lines of each running agent, so a live agent's page shows
+  // the run read as soon as it lands and the preview until then.
+  const lines = $derived(detail !== null ? detail.activityLines : issues.activityFor(runId));
   const unavailable = $derived(agent === null && detail === null && issues.runError !== null);
   const harnessVersion = $derived(detail?.harnessVersion ?? issues.versionForRun(runId));
   const startedAt = $derived(agent?.startedAt ?? detail?.startedAt ?? null);
