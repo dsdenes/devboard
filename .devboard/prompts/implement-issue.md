@@ -356,11 +356,14 @@ the prerequisite in another agent's place.
   and the task branch is unpublished until it lands, so that rebase is safe. Never rebase, merge,
   fetch, or push by hand before the call.
 - Land with exactly one `devboard land <branch>` call, run from the canonical checkout whose
-  working directory is already set: never a `cd` prefix, never a `| tail` or `| head`, and never a
-  trailing `; echo "..._EXIT:$?"`, whose status belongs to the filter rather than the call. Its
-  own exit status is the landing verdict, and the `remote <upstream> <sha> verified` line it prints
-  is the push proof. Never `--no-ff`, never a forced merge, and never a merge that writes a merge
-  commit: the command merges `--ff-only` or refuses.
+  working directory is already set: never a `cd` prefix, never a `| tail` or `| head` and no
+  `2>&1 | tail -5` suffix, never a trailing `; echo "MERGE_EXIT:$?"` or `; echo "..._EXIT:$?"`
+  whose status belongs to the filter rather than the call, and never an appended
+  `git status --short --branch` or any other probe, because the call prints the merged commit, the
+  verified remote tip, and the ahead/behind count itself. Its own exit status is the landing
+  verdict, and the `remote <upstream> <sha> verified` line it prints is the push proof. Never
+  `--no-ff`, never a forced merge, and never a merge that writes a merge commit: the command merges
+  `--ff-only` or refuses.
 - A `cannot lock ref 'HEAD'` refusal from a concurrent landing is retried inside the command with
   bounded backoff, and the commit that won is the `merged` line it prints; never recover the lock
   by hand and never rerun the call to look for a different answer.
@@ -428,8 +431,9 @@ the remote tip equals it. `ahead 0 behind 0` says neither side holds a commit th
 The command's own exit status is the verdict, and a nonzero exit names its cause on the first
 stderr line — a refused fetch, a refused push, a rebase that does not apply cleanly, or a remote
 tip that names another commit. Put that line in the final response, leave the worktree and its
-committed branch in place, and never answer it with a `git fetch`, `git merge --ff-only`,
-`git rebase`, `git push`, `git ls-remote`, or a rerun of the same command.
+committed branch in place, and never answer it with a `git fetch`, a `git merge` that writes a
+merge commit, `git reset`, `git rebase`, `git push`, `git ls-remote`, or a rerun of the same
+command; never report a landing done without the printed remote tip naming the landed commit.
 
 A rebase that does not apply cleanly is the one landing step this run finishes by hand: the command
 aborts its own rebase and names the conflicting paths, so rebase the task branch onto `main` inside
