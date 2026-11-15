@@ -8,6 +8,12 @@
 
   let { entries }: Props = $props();
 
+  /** The one state every entry shares, or `changes` for a mixed list. */
+  const stateLabel = $derived.by(() => {
+    const states = new Set(entries.map((entry) => entry.state));
+    return states.size === 1 ? [...states][0] : "changes";
+  });
+
   /** A local clock reading; the raw ISO value stays in the tooltip. */
   function releasedLabel(value: string): string {
     const date = new Date(value);
@@ -30,13 +36,13 @@
   <div class="panel__header">
     <h2 class="panel__title">Documentation changes</h2>
     <span class="panel__subtitle" data-testid="agent-documentation-count">
-      {entries.length} released
+      {entries.length} {stateLabel}
     </span>
   </div>
   <div class="panel__body panel__body--flush">
     {#if entries.length === 0}
       <p class="agent-documentation__empty" data-testid="agent-documentation-empty">
-        No documentation change has been released yet.
+        No documentation change has been pushed or released yet.
       </p>
     {:else}
       <ul class="agent-documentation__list">
@@ -70,6 +76,12 @@
                   >
                     {releasedLabel(entry.at)}
                   </time>
+                  <span
+                    class="agent-documentation__state"
+                    data-testid="agent-documentation-state"
+                  >
+                    {entry.state}
+                  </span>
                   <span class="agent-documentation__files mono" data-testid="agent-documentation-files">
                     {entry.files.join(", ")}
                   </span>

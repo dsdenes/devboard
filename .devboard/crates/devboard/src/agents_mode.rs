@@ -759,6 +759,16 @@ fn normalize_documentation(values: Vec<Value>) -> Vec<Value> {
             strings && files
         })
         .take(DOCUMENTATION_HISTORY_LIMIT)
+        .map(|mut entry| {
+            if let Some(object) = entry.as_object_mut() {
+                // A state file written before the state field loads as the
+                // harness source answer its release version already implies.
+                object
+                    .entry("state".to_string())
+                    .or_insert_with(|| Value::String("released".to_string()));
+            }
+            entry
+        })
         .collect()
 }
 
@@ -1663,7 +1673,24 @@ impl ForgeProjection {
 /* Live forge reader                                                         */
 /* ------------------------------------------------------------------------ */
 
+/// How long the dashboard's filed-issue read waits for one release list.
+/// The list only decorates a closed row with its shipped version, so a slow or
+/// absent release history is dropped rather than delaying the issue read.
+const FILED_ISSUE_RELEASE_READ_MS: u64 = 10_000;
+
 fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) -> ForgeReader {
+    live_forge_reader_within(repo_dir, environment, FILED_ISSUE_RELEASE_READ_MS)
+}
+
+/// The live filed-issue read with an explicit release-list deadline, so a
+/// test can prove that a release read which never answers cannot hold the
+/// issue facts.
+pub fn live_forge_reader_within(
+    repo_dir: PathBuf,
+    environment: HashMap<String, String>,
+    release_read_ms: u64,
+) -> ForgeReader {
+    let release_read_ms = release_read_ms.max(1);
     Arc::new(move |urls: Vec<String>| {
         let repo_dir = repo_dir.clone();
         let environment = environment.clone();
@@ -1712,10 +1739,15 @@ fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) ->
                             continue;
                         }
                         if !releases.contains_key(&repository) {
-                            let listed = client
-                                .list_releases()
-                                .await
-                                .map_err(|detail| detail.to_string())?;
+                            let listed = match tokio::time::timeout(
+                                Duration::from_millis(release_read_ms),
+                                client.list_releases(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(listed)) => listed,
+                                Ok(Err(_)) | Err(_) => Vec::new(),
+                            };
                             releases.insert(repository.clone(), listed);
                         }
                         let published = releases.get(&repository).cloned().unwrap_or_default();
@@ -1725,16 +1757,17 @@ fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) ->
                             created_at: times.created_at,
                             closed_at: times.closed_at,
                         };
-                        let resolution = crate::forge::resolve_shipped_version(
-                            &issue,
-                            client,
-                            &published,
-                        )
-                        .await;
+                        let version = if published.is_empty() {
+                            None
+                        } else {
+                            crate::forge::resolve_shipped_version(&issue, client, &published)
+                                .await
+                                .version
+                        };
                         facts.push(ForgeFact {
                             url,
                             state: "implemented".to_string(),
-                            version: resolution.version,
+                            version,
                         });
                     }
                     Ok(facts)
@@ -1803,18 +1836,37 @@ fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) ->
                             continue;
                         }
                         if releases.is_none() {
-                            let listed = crate::release_cache::list(
-                                &target, &transport, &options,
+                            let listed = match tokio::time::timeout(
+                                Duration::from_millis(release_read_ms),
+                                crate::release_cache::list(&target, &transport, &options),
                             )
                             .await
-                            .map_err(|error| error.to_string())?
-                            .into_iter()
-                            .map(|release| crate::forge::GitHubRelease {
-                                tag: release.tag,
-                                published_at: release.published_at,
-                            })
-                            .collect();
+                            {
+                                Ok(Ok(listed)) => listed
+                                    .into_iter()
+                                    .map(|release| crate::forge::GitHubRelease {
+                                        tag: release.tag,
+                                        published_at: release.published_at,
+                                    })
+                                    .collect(),
+                                Ok(Err(_)) | Err(_) => Vec::new(),
+                            };
                             releases = Some(listed);
+                        }
+                        if releases
+                            .as_deref()
+                            .map(|listed| listed.is_empty())
+                            .unwrap_or(true)
+                        {
+                            // No release history proves nothing about this
+                            // row: keep it implemented with no version and
+                            // read no closing commit or tag for it.
+                            facts.push(ForgeFact {
+                                url,
+                                state: "implemented".to_string(),
+                                version: None,
+                            });
+                            continue;
                         }
                         let closing = crate::forge::gitea_closing_commits(
                             &target, number, &transport, &options,
@@ -1837,16 +1889,17 @@ fn live_forge_reader(repo_dir: PathBuf, environment: HashMap<String, String>) ->
                                 .and_then(Value::as_str)
                                 .map(str::to_string),
                         };
-                        let resolution = crate::forge::resolve_shipped_version(
+                        let version = crate::forge::resolve_shipped_version(
                             &issue,
                             &client,
                             releases.as_deref().unwrap_or_default(),
                         )
-                        .await;
+                        .await
+                        .version;
                         facts.push(ForgeFact {
                             url,
                             state: "implemented".to_string(),
-                            version: resolution.version,
+                            version,
                         });
                     }
                     Ok(facts)
@@ -4178,7 +4231,7 @@ pub async fn run_worker(family: &str, args: &[String]) -> anyhow::Result<()> {
 /* ------------------------------------------------------------------------ */
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RepoFamilyId {
+pub enum RepoFamilyId {
     Scout,
     Design,
     DeadCode,
@@ -4560,6 +4613,56 @@ fn project_repo_issue(family_id: RepoFamilyId, issue: &Value) -> Value {
         );
     }
     Value::Object(row)
+}
+
+/// One filed-issue row with the live forge's answer applied.
+///
+/// The release-derived version is best effort: when the dashboard's fact
+/// carries none, the row keeps the worker state's resolved version instead of
+/// overwriting it with null. A release read failure never marks a closed row
+/// unknown.
+pub fn project_filed_issue(
+    family_id: RepoFamilyId,
+    issue: &Value,
+    fact: Option<&ForgeAnswer>,
+    unreadable: bool,
+) -> Value {
+    let mut row = project_repo_issue(family_id, issue);
+    if let Some(fact) = fact {
+        if let Some(object) = row.as_object_mut() {
+            let version = fact.version.clone().or_else(|| {
+                issue
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+            object.insert("state".to_string(), Value::String(fact.state.clone()));
+            object.insert("version".to_string(), nullable_text(version.clone()));
+            if family_id == RepoFamilyId::DeadCode {
+                let note = if version.is_none() {
+                    issue
+                        .get("versionError")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                };
+                object.insert("note".to_string(), nullable_text(note));
+            }
+        }
+        return row;
+    }
+    if unreadable
+        && matches!(
+            family_id,
+            RepoFamilyId::Scout | RepoFamilyId::Design | RepoFamilyId::DeadCode
+        )
+    {
+        if let Some(object) = row.as_object_mut() {
+            object.insert("state".to_string(), Value::String("unknown".to_string()));
+        }
+    }
+    row
 }
 
 fn merge_repo_issues(states: &[RepoState]) -> Vec<Value> {
@@ -5285,39 +5388,13 @@ impl RepoFamily {
             .map(|issue| {
                 let url = issue.get("url").and_then(Value::as_str).unwrap_or("");
                 if self.family_id.uses_forge() {
-                    if let Some(fact) = self.forge.fact(url) {
-                        let mut row = project_repo_issue(self.family_id, &issue);
-                        if let Some(object) = row.as_object_mut() {
-                            object.insert("state".to_string(), Value::String(fact.state));
-                            object
-                                .insert("version".to_string(), nullable_text(fact.version.clone()));
-                            if self.family_id == RepoFamilyId::DeadCode {
-                                let note = if fact.version.is_none() {
-                                    issue
-                                        .get("versionError")
-                                        .and_then(Value::as_str)
-                                        .map(str::to_string)
-                                } else {
-                                    None
-                                };
-                                object.insert("note".to_string(), nullable_text(note));
-                            }
-                        }
-                        return row;
-                    }
-                    if self.forge.unreadable(url)
-                        && matches!(
-                            self.family_id,
-                            RepoFamilyId::Scout | RepoFamilyId::Design | RepoFamilyId::DeadCode
-                        )
-                    {
-                        let mut row = project_repo_issue(self.family_id, &issue);
-                        if let Some(object) = row.as_object_mut() {
-                            object
-                                .insert("state".to_string(), Value::String("unknown".to_string()));
-                        }
-                        return row;
-                    }
+                    let fact = self.forge.fact(url);
+                    return project_filed_issue(
+                        self.family_id,
+                        &issue,
+                        fact.as_ref(),
+                        self.forge.unreadable(url),
+                    );
                 }
                 project_repo_issue(self.family_id, &issue)
             })

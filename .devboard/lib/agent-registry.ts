@@ -112,8 +112,10 @@ export interface AgentDocumentationEntry {
   url: string;
   summary: string;
   files: string[];
-  /** The exact unified diff of the released documents. */
+  /** The exact unified diff of the changed documents. */
   diff: string;
+  /** `pushed` on a host project; `released` in the harness source checkout. */
+  state: "pushed" | "released";
 }
 
 export interface AgentTimerGate {

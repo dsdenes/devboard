@@ -1539,6 +1539,34 @@ pub trait ForgeClient: Send + Sync {
     ) -> ForgeFuture<'_, Vec<String>>;
 }
 
+/// The release read leaves this much of the periodic read to the issue read.
+const RELEASE_READ_GRACE_MS: u64 = 25;
+
+/// A release read is best effort: a missing, empty, broken, or hanging list
+/// yields no releases and one log line, and the issue rows still land.
+async fn read_releases_best_effort(
+    forge: &Arc<dyn ForgeClient>,
+    budget: Duration,
+) -> (Vec<Release>, Option<String>) {
+    match tokio::time::timeout(budget, forge.list_releases()).await {
+        Ok(Ok(releases)) => (releases, None),
+        Ok(Err(detail)) => (
+            Vec::new(),
+            Some(format!(
+                "could not read published releases: {detail}; issue rows are unaffected"
+            )),
+        ),
+        Err(_) => (
+            Vec::new(),
+            Some(format!(
+                "could not read published releases: the read did not finish within {} ms; \
+                 issue rows are unaffected",
+                budget.as_millis()
+            )),
+        ),
+    }
+}
+
 #[derive(Clone)]
 struct RealForge {
     issues: Arc<crate::forge::ForgeIssuesClient>,
@@ -2356,19 +2384,32 @@ impl Worker {
     /// consumed once per cycle, so `begin_cycle` reads them where they are
     /// used. Keeping that whole-history walk out of every sync keeps one
     /// periodic read inside its deadline.
-    async fn read_forge(&self) -> Result<(Vec<ForgeIssue>, Vec<Release>), String> {
+    async fn read_forge(
+        &self,
+        release_budget: Duration,
+    ) -> Result<(Vec<ForgeIssue>, Vec<Release>, Option<String>), String> {
         let forge = lock(&self.inner).forge.clone();
         let Some(forge) = forge else {
             return Err("no forge client is configured".to_string());
         };
-        let (issues, releases) = tokio::join!(forge.list_issues(), forge.list_releases());
-        Ok((issues?, releases?))
+        let (issues, (releases, release_notice)) = tokio::join!(
+            forge.list_issues(),
+            read_releases_best_effort(&forge, release_budget)
+        );
+        Ok((issues?, releases, release_notice))
     }
 
-    async fn read_forge_within_deadline(&self) -> Result<(Vec<ForgeIssue>, Vec<Release>), String> {
+    async fn read_forge_within_deadline(
+        &self,
+    ) -> Result<(Vec<ForgeIssue>, Vec<Release>, Option<String>), String> {
+        let release_budget = Duration::from_millis(
+            self.read_timeout_ms
+                .saturating_sub(RELEASE_READ_GRACE_MS)
+                .max(1),
+        );
         match tokio::time::timeout(
             Duration::from_millis(self.read_timeout_ms),
-            self.read_forge(),
+            self.read_forge(release_budget),
         )
         .await
         {
@@ -2414,7 +2455,10 @@ impl Worker {
         lock(&self.inner).syncing = true;
         match self.read_forge_within_deadline().await {
             Err(detail) => self.record_sync_failure(&detail),
-            Ok((issues, releases)) => {
+            Ok((issues, releases, release_notice)) => {
+                if let Some(text) = release_notice {
+                    (self.log)(text);
+                }
                 self.apply_read(issues, releases).await;
                 lock(&self.inner).retry.succeed();
                 lock(&self.inner).next_sync_at = self.now() + self.sync_ms as i64;
@@ -2470,13 +2514,23 @@ impl Worker {
                     None
                 },
                 version_error: if state == IssueState::Implemented {
-                    before.and_then(|row| row.version_error.clone())
+                    if releases.is_empty() {
+                        None
+                    } else {
+                        before.and_then(|row| row.version_error.clone())
+                    }
                 } else {
                     None
                 },
             };
             rows.push(row.clone());
             if row.state != IssueState::Implemented || row.version.is_some() {
+                continue;
+            }
+            // An empty release list proves nothing: no release history, a
+            // failed read, and a timed-out read all withhold the version
+            // rather than claim the issue is unshipped.
+            if releases.is_empty() {
                 continue;
             }
             let Some(forge) = forge.clone() else {
@@ -2986,7 +3040,10 @@ impl Worker {
         }
         if filed_now > 0 || !lock(&self.inner).state.issues.is_empty() {
             match self.read_forge_within_deadline().await {
-                Ok((issues, releases)) => {
+                Ok((issues, releases, release_notice)) => {
+                    if let Some(text) = release_notice {
+                        record(text);
+                    }
                     self.apply_read(issues, releases).await;
                 }
                 Err(failure) => record(format!("could not re-read the forge: {failure}")),

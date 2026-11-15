@@ -130,8 +130,8 @@ fn catalog() -> Vec<Value> {
         ),
         tool(
             "design_release_request",
-            "Request a Design System release",
-            "Records the documentation release summary and rationale beside the cycle's edited draft documents. The worker commits, pushes, waits for the release workflow, and publishes; the request path is returned.",
+            "Request a Design System documentation push",
+            "Records the documentation push summary and rationale beside the cycle's edited draft documents. The worker commits and pushes the documents and never releases or waits for a release workflow; the request path is returned.",
             object_schema(
                 json!({"cycleDir": string_schema(), "summary": string_schema(), "rationale": string_schema()}),
                 &["cycleDir", "summary", "rationale"],

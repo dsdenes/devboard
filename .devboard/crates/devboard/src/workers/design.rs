@@ -461,6 +461,14 @@ pub struct DesignDocumentationEntry {
     pub summary: String,
     pub files: Vec<String>,
     pub diff: String,
+    /// `released` when a Release Train published this documentation commit,
+    /// `pushed` on a host project, where the push is the completion.
+    #[serde(default = "released_state")]
+    pub state: String,
+}
+
+fn released_state() -> String {
+    "released".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2638,13 +2646,22 @@ pub async fn release_documents(input: ReleaseInput) -> ReleaseResult {
         if contains.code != 0 {
             return Err("the integration checkout does not contain the pushed commit".to_string());
         }
-        let version = crate::publish::release_version(&input.repo_dir, &sha)
-            .unwrap_or_else(|_| crate::publish::BASELINE_VERSION.to_string());
-        let url = commit_url(&input.repo_dir, &environment, &project, &sha);
-        (input.activity)(&format!(
-            "pushed documentation {}; the Release Train will release it",
+        let host = crate::project_kind::of(&input.repo_dir) == crate::project_kind::ProjectKind::Host;
+        let version = if host {
             short_sha(&sha)
-        ));
+        } else {
+            crate::publish::release_version(&input.repo_dir, &sha)
+                .unwrap_or_else(|_| crate::publish::BASELINE_VERSION.to_string())
+        };
+        let url = commit_url(&input.repo_dir, &environment, &project, &sha);
+        if host {
+            (input.activity)(&format!("pushed documentation {}", short_sha(&sha)));
+        } else {
+            (input.activity)(&format!(
+                "pushed documentation {}; the Release Train will release it",
+                short_sha(&sha)
+            ));
+        }
         let branch = worktree.as_ref().expect("the worktree").branch.clone();
         let mut files = changed.clone();
         files.sort();
@@ -2671,7 +2688,7 @@ pub async fn release_documents(input: ReleaseInput) -> ReleaseResult {
             }
             ReleaseResult::Failed(ReleaseFailure {
                 detail,
-                step: if pushed { "release" } else { "documentation" }.to_string(),
+                step: if pushed { "push" } else { "documentation" }.to_string(),
             })
         }
     }
@@ -3519,21 +3536,31 @@ impl DesignWorkerInner {
     /// that whole-history walk out of every sync keeps one periodic read inside
     /// its deadline, and the two remaining requests share the deadline instead
     /// of spending it one after the other.
-    async fn read_forge(&self) -> Result<ForgeRead, String> {
+    async fn read_forge(&self, release_budget: Duration) -> Result<ForgeRead, String> {
         let Some(forge) = self.forge_client() else {
             return Err("no forge client is configured".to_string());
         };
-        let (issues, releases) = tokio::join!(forge.list_issues(), forge.list_releases());
+        let (issues, (releases, release_notice)) = tokio::join!(
+            forge.list_issues(),
+            read_releases_best_effort(&forge, release_budget)
+        );
         Ok(ForgeRead {
             issues: issues?,
-            releases: releases?,
+            releases,
+            release_notice,
         })
     }
 
     async fn read_forge_within_deadline(&self) -> Result<ForgeRead, String> {
+        let release_budget = Duration::from_millis(
+            self.options
+                .read_timeout_ms
+                .saturating_sub(RELEASE_READ_GRACE_MS)
+                .max(1),
+        );
         match tokio::time::timeout(
             Duration::from_millis(self.options.read_timeout_ms),
-            self.read_forge(),
+            self.read_forge(release_budget),
         )
         .await
         {
@@ -3587,7 +3614,11 @@ impl DesignWorkerInner {
             }
             Ok(read) => {
                 let now = (self.options.clock)();
+                let release_notice = read.release_notice.clone();
                 self.apply_read(read).await;
+                if let Some(text) = release_notice {
+                    lock_unpoisoned(&self.state).notice = Some(text);
+                }
                 lock_unpoisoned(&self.retry).succeed();
                 self.next_sync_at
                     .store(now + self.options.sync_ms as i64, Ordering::SeqCst);
@@ -3659,7 +3690,7 @@ impl DesignWorkerInner {
             } else {
                 None
             };
-            if implemented && version.is_none() {
+            if implemented && version.is_none() && !read.releases.is_empty() {
                 if let Some(forge) = &forge {
                     if let Ok(Some(shipped)) = forge
                         .shipped_version(issue.clone(), read.releases.clone())
@@ -4207,12 +4238,16 @@ impl DesignWorkerInner {
                             match (self.options.release)(release_input).await {
                                 ReleaseResult::Ok(released) => {
                                     let at = iso_from_millis((self.options.clock)());
+                                    let host = crate::project_kind::of(&self.options.repo_dir)
+                                        == crate::project_kind::ProjectKind::Host;
                                     let mut state = lock_unpoisoned(&self.state);
-                                    state.release = Some(DesignStateRelease {
-                                        version: released.version.clone(),
-                                        url: released.url.clone(),
-                                        at: at.clone(),
-                                    });
+                                    if !host {
+                                        state.release = Some(DesignStateRelease {
+                                            version: released.version.clone(),
+                                            url: released.url.clone(),
+                                            at: at.clone(),
+                                        });
+                                    }
                                     state.documentation = record_documentation_entry(
                                         &state.documentation,
                                         DesignDocumentationEntry {
@@ -4222,13 +4257,25 @@ impl DesignWorkerInner {
                                             summary: request.summary.clone(),
                                             files: released.files.clone(),
                                             diff: released.diff.clone(),
+                                            state: if host {
+                                                "pushed".to_string()
+                                            } else {
+                                                "released".to_string()
+                                            },
                                         },
                                     );
                                     drop(state);
-                                    record(&format!(
-                                    "pushed documentation {}; the Release Train will release it",
-                                    short_sha(&released.sha)
-                                ));
+                                    if host {
+                                        record(&format!(
+                                            "pushed documentation {}",
+                                            short_sha(&released.sha)
+                                        ));
+                                    } else {
+                                        record(&format!(
+                                            "pushed documentation {}; the Release Train will release it",
+                                            short_sha(&released.sha)
+                                        ));
+                                    }
                                 }
                                 ReleaseResult::Failed(failure) => {
                                     release_error = Some(failure.detail);
@@ -4475,6 +4522,35 @@ fn latest(left: Option<String>, right: Option<String>) -> Option<String> {
 struct ForgeRead {
     issues: Vec<DesignForgeIssue>,
     releases: Vec<ForgeRelease>,
+    release_notice: Option<String>,
+}
+
+/// The release read leaves this much of the periodic read to the issue read.
+const RELEASE_READ_GRACE_MS: u64 = 25;
+
+/// A release read is best effort: a missing, empty, broken, or hanging list
+/// yields no releases and one notice, and the issue rows still land.
+async fn read_releases_best_effort(
+    forge: &Arc<dyn DesignForge>,
+    budget: Duration,
+) -> (Vec<ForgeRelease>, Option<String>) {
+    match tokio::time::timeout(budget, forge.list_releases()).await {
+        Ok(Ok(releases)) => (releases, None),
+        Ok(Err(detail)) => (
+            Vec::new(),
+            Some(format!(
+                "Could not read published releases: {detail}; issue rows are unaffected."
+            )),
+        ),
+        Err(_) => (
+            Vec::new(),
+            Some(format!(
+                "Could not read published releases: the read did not finish within {} ms; \
+                 issue rows are unaffected.",
+                budget.as_millis()
+            )),
+        ),
+    }
 }
 
 fn append_activity_line(lines: &mut Vec<String>, text: &str, append: bool) {

@@ -2247,8 +2247,44 @@ pub trait ScoutForge: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubRead {
     pub issues: Vec<ScoutForgeIssue>,
+    /// Empty when the release read failed, timed out, or the forge publishes
+    /// no releases. An empty list is never evidence that an issue is
+    /// unshipped; it only withholds the version resolution for that read.
     pub releases: Vec<GitHubRelease>,
     pub open_titles: Vec<String>,
+    /// The best-effort release failure, recorded as a notice, never as the
+    /// sync error.
+    pub release_notice: Option<String>,
+}
+
+/// The release read leaves this much of the read deadline to the issue and
+/// open-title reads, so a hung release walk cannot consume the whole budget.
+const RELEASE_READ_GRACE_MS: i64 = 25;
+
+/// Reads the published releases without letting their failure fail the sync.
+/// A missing, empty, broken, or hanging release list yields an empty list and
+/// one notice; the issue rows still land.
+async fn read_releases_best_effort(
+    github: &Arc<dyn ScoutForge>,
+    budget: Duration,
+) -> (Vec<GitHubRelease>, Option<String>) {
+    match tokio::time::timeout(budget, github.list_releases()).await {
+        Ok(Ok(releases)) => (releases, None),
+        Ok(Err(detail)) => (
+            Vec::new(),
+            Some(format!(
+                "Could not read published releases: {detail}; issue rows are unaffected."
+            )),
+        ),
+        Err(_) => (
+            Vec::new(),
+            Some(format!(
+                "Could not read published releases: the read did not finish within {} ms; \
+                 issue rows are unaffected.",
+                budget.as_millis()
+            )),
+        ),
+    }
 }
 
 fn first_line(text: &str) -> String {
@@ -2953,6 +2989,7 @@ struct ReadPatch {
     issues: Vec<ScoutIssueRow>,
     release_signature: String,
     open_titles: Vec<String>,
+    release_notice: Option<String>,
 }
 
 struct Runtime {
@@ -3587,16 +3624,21 @@ impl ScoutWorker {
     /* Reads                                                                 */
     /* -------------------------------------------------------------------- */
 
-    async fn read_github(&self, github: &Arc<dyn ScoutForge>) -> Result<GitHubRead, String> {
-        let (issues, releases, open_titles) = tokio::join!(
+    async fn read_github(
+        &self,
+        github: &Arc<dyn ScoutForge>,
+        release_budget: Duration,
+    ) -> Result<GitHubRead, String> {
+        let (issues, (releases, release_notice), open_titles) = tokio::join!(
             github.list_issues(),
-            github.list_releases(),
+            read_releases_best_effort(github, release_budget),
             github.list_open_issue_titles()
         );
         Ok(GitHubRead {
             issues: issues?,
-            releases: releases?,
+            releases,
             open_titles: open_titles?,
+            release_notice,
         })
     }
 
@@ -3609,9 +3651,11 @@ impl ScoutWorker {
             ));
         }
         let github = Arc::clone(&lock_unpoisoned(&self.runtime).github);
+        let release_budget =
+            Duration::from_millis((remaining - RELEASE_READ_GRACE_MS).max(1) as u64);
         match tokio::time::timeout(
             Duration::from_millis(remaining as u64),
-            self.read_github(&github),
+            self.read_github(&github, release_budget),
         )
         .await
         {
@@ -3753,6 +3797,9 @@ impl ScoutWorker {
                 error: None,
             };
             runtime.state.last_error = None;
+            if let Some(text) = patch.release_notice.clone() {
+                runtime.state.note(text);
+            }
             runtime.retry.succeed();
             runtime.next_sync_at = now + self.sync_ms as i64;
             self.publish_locked(&mut runtime);
@@ -4312,7 +4359,13 @@ impl ScoutWorker {
                 .error
                 .as_ref()
                 .map(|error| format!("{SCAN_FAILED_PREFIX}{error}"))
-                .or_else(|| completion.notice.clone());
+                .or_else(|| completion.notice.clone())
+                .or_else(|| {
+                    completion
+                        .read
+                        .as_ref()
+                        .and_then(|patch| patch.release_notice.clone())
+                });
             match notice {
                 Some(text) => runtime.state.note(text),
                 None => runtime.state.notice = None,
@@ -4949,16 +5002,18 @@ async fn complete_scan_inner(task: &ScanTaskOptions, settle_deadline: i64) -> Sc
             Some("the scan timed out while reading and filing".to_string()),
         );
     }
+    let release_budget = Duration::from_millis((remaining - RELEASE_READ_GRACE_MS).max(1) as u64);
     let read = match tokio::time::timeout(Duration::from_millis(remaining as u64), async {
-        let (issues, releases, open_titles) = tokio::join!(
+        let (issues, (releases, release_notice), open_titles) = tokio::join!(
             task.github.list_issues(),
-            task.github.list_releases(),
+            read_releases_best_effort(&task.github, release_budget),
             task.github.list_open_issue_titles()
         );
         Ok::<GitHubRead, String>(GitHubRead {
             issues: issues?,
-            releases: releases?,
+            releases,
             open_titles: open_titles?,
+            release_notice,
         })
     })
     .await
@@ -5185,7 +5240,11 @@ async fn apply_read_rows(
                 None
             },
             version_error: if implemented {
-                before.and_then(|row| row.version_error.clone())
+                if read.releases.is_empty() {
+                    None
+                } else {
+                    before.and_then(|row| row.version_error.clone())
+                }
             } else {
                 None
             },
@@ -5194,6 +5253,13 @@ async fn apply_read_rows(
         rows.push(row);
         let row = &rows[index];
         if row.state != ScoutIssueState::Implemented || row.version.is_some() {
+            continue;
+        }
+        // No published release is no evidence about a closed issue: the forge
+        // may have no release history, may not answer that read, or may have
+        // timed out. Skip every closing-commit and tag resolution until a real
+        // list arrives.
+        if read.releases.is_empty() {
             continue;
         }
         let client = github.closing_client();
@@ -5249,6 +5315,7 @@ async fn apply_read_rows(
         issues: newest_first(rows),
         release_signature: signature,
         open_titles: read.open_titles.clone(),
+        release_notice: read.release_notice.clone(),
     }
 }
 

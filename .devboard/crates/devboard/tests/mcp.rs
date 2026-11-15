@@ -122,3 +122,18 @@ fn probe_reads_a_bun_database() {
         serde_json::json!({"journal_search": 2, "devboard_status": 1})
     );
 }
+
+#[test]
+fn the_design_request_describes_a_documentation_push() {
+    let payload = devboard::mcp::tool_list_payload();
+    let tool = payload["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "design_release_request")
+        .expect("the design request tool");
+    let description = tool["description"].as_str().expect("a description");
+    assert!(description.contains("commits and pushes the documents"));
+    assert!(description.contains("never releases or waits for a release workflow"));
+    assert!(!description.contains("waits for the release workflow, and publishes"));
+}

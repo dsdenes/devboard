@@ -72,6 +72,14 @@ impl Fixture {
         std::fs::create_dir_all(repo.join(".devboard/client")).expect("the client directory");
         std::fs::create_dir_all(repo.join("design")).expect("the token directory");
         std::fs::create_dir_all(&state).expect("the state directory");
+        // The audited `.devboard/client` belongs to a harness source checkout:
+        // these fixtures exercise the release-version side of the design
+        // documentation record. A host fixture removes this manifest.
+        std::fs::write(
+            repo.join(".devboard/package.json"),
+            "{\"name\":\"@dsdenes/devboard\",\"version\":\"1.52.1\"}\n",
+        )
+        .expect("a harness manifest");
         std::fs::write(
             repo.join(".devboard/client/index.html"),
             "<!doctype html>\n<div id=\"app\"></div>\n",
@@ -127,6 +135,9 @@ impl Drop for Fixture {
 struct FakeForge {
     issues: Mutex<Vec<DesignForgeIssue>>,
     open_title_calls: AtomicU64,
+    releases: Mutex<Vec<ForgeRelease>>,
+    release_failure: Mutex<Option<String>>,
+    release_delay_ms: AtomicU64,
 }
 
 impl FakeForge {
@@ -134,7 +145,18 @@ impl FakeForge {
         Arc::new(Self {
             issues: Mutex::new(issues),
             open_title_calls: AtomicU64::new(0),
+            releases: Mutex::new(Vec::new()),
+            release_failure: Mutex::new(None),
+            release_delay_ms: AtomicU64::new(0),
         })
+    }
+
+    fn fail_releases(&self, detail: &str) {
+        *self.release_failure.lock().expect("the release failure") = Some(detail.to_string());
+    }
+
+    fn delay_releases(&self, delay_ms: u64) {
+        self.release_delay_ms.store(delay_ms, Ordering::SeqCst);
     }
 }
 
@@ -170,7 +192,22 @@ impl DesignForge for FakeForge {
     }
 
     fn list_releases(&self) -> ForgeFuture<Vec<ForgeRelease>> {
-        Box::pin(async { Ok(Vec::new()) })
+        let delay = self.release_delay_ms.load(Ordering::SeqCst);
+        let failure = self
+            .release_failure
+            .lock()
+            .expect("the release failure")
+            .clone();
+        let releases = self.releases.lock().expect("the releases").clone();
+        Box::pin(async move {
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            match failure {
+                Some(detail) => Err(detail),
+                None => Ok(releases),
+            }
+        })
     }
 }
 
@@ -249,6 +286,66 @@ fn write_json(path: &Path, value: &serde_json::Value) {
         format!("{}\n", serde_json::to_string_pretty(value).unwrap()),
     )
     .expect("a JSON file");
+}
+
+/// One cycle that admits a documentation edit and records the injected release
+/// result, returning the persisted state and the cycle activity.
+async fn documentation_cycle(
+    fixture: &Fixture,
+    version: &str,
+    sha: &str,
+) -> (devboard::workers::design::DesignState, String) {
+    let forge = FakeForge::new(Vec::new());
+    let clock = Clock::new(NOW);
+    let mut worker_options = options(fixture, &clock);
+    worker_options.forge = Some(forge as Arc<dyn DesignForge>);
+    let version = version.to_string();
+    let sha = sha.to_string();
+    let url = format!("https://forge.test/acme/fixture/commit/{sha}");
+    worker_options.release = Some(Arc::new(move |input: ReleaseInput| -> ReleaseFuture {
+        let version = version.clone();
+        let sha = sha.clone();
+        let url = url.clone();
+        Box::pin(async move {
+            ReleaseResult::Ok(ReleaseOk {
+                version,
+                url,
+                sha,
+                branch: format!("design/{}", input.cycle_id),
+                files: vec!["DESIGN.md".to_string(), "design/tokens.json".to_string()],
+                diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+            })
+        })
+    }));
+    worker_options.audit = Some(Arc::new(|turn: AuditTurn| {
+        Box::pin(async move {
+            let design = turn.directory.join("draft").join("DESIGN.md");
+            let text = std::fs::read_to_string(&design).expect("the draft prose");
+            std::fs::write(&design, format!("{text}\n- One accent token.\n")).expect("the draft");
+            write_json(
+                &turn.directory.join("release-request.json"),
+                &serde_json::json!({
+                    "version": 1,
+                    "summary": "Document the accent standard",
+                    "rationale": "Two surfaces share the token.",
+                    "requestedAt": "2026-01-10T10:00:00.000Z",
+                }),
+            );
+            Ok(())
+        })
+    }));
+
+    let worker = DesignWorker::new(worker_options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    let state = worker.current_state();
+    let directories = cycle_directories(&fixture.repo);
+    let activity =
+        std::fs::read_to_string(directories[0].join("activity.json")).expect("the cycle activity");
+    worker.stop().await;
+    (state, activity)
 }
 
 #[tokio::test]
@@ -1461,5 +1558,114 @@ async fn a_version_keeps_its_own_published_state() {
     );
     assert_eq!(state.newest_cycle_id.as_deref(), Some("own-cycle"));
     assert_eq!(state.limits.max_per_hour, Some(44));
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_host_documentation_push_records_the_commit_as_pushed() {
+    let fixture = Fixture::new("host-documentation");
+    std::fs::remove_file(fixture.repo.join(".devboard/package.json"))
+        .expect("a host checkout has no harness manifest");
+    let sha = "abcdef1234567890";
+    let (state, activity) = documentation_cycle(&fixture, "abcdef1", sha).await;
+    assert_eq!(state.documentation.len(), 1);
+    let entry = &state.documentation[0];
+    assert_eq!(entry.state, "pushed");
+    assert_eq!(entry.version, "abcdef1");
+    assert_eq!(
+        entry.url,
+        format!("https://forge.test/acme/fixture/commit/{sha}")
+    );
+    assert!(activity.contains("pushed documentation abcdef1"));
+    assert!(
+        !activity.contains("Release Train"),
+        "a host push claims no release: {activity}"
+    );
+    assert!(
+        state.release.is_none(),
+        "a host push records no release: {:?}",
+        state.release
+    );
+}
+
+#[tokio::test]
+async fn a_harness_source_documentation_push_keeps_the_release_version() {
+    let fixture = Fixture::new("harness-documentation");
+    let (state, activity) = documentation_cycle(&fixture, "0.1.42", "abcdef1234567890").await;
+    assert_eq!(state.documentation.len(), 1);
+    let entry = &state.documentation[0];
+    assert_eq!(entry.state, "released");
+    assert_eq!(entry.version, "0.1.42");
+    assert_eq!(
+        state
+            .release
+            .as_ref()
+            .map(|release| release.version.as_str()),
+        Some("0.1.42")
+    );
+    assert!(activity.contains("pushed documentation abcdef1"));
+}
+
+#[tokio::test]
+async fn a_failed_release_read_never_blocks_a_cycle() {
+    let fixture = Fixture::new("release-failure");
+    let forge = FakeForge::new(vec![issue(
+        7,
+        "Existing accent drift",
+        ForgeIssueState::Closed,
+    )]);
+    forge.fail_releases("the release endpoint failed");
+    let clock = Clock::new(NOW);
+    let mut worker_options = options(&fixture, &clock);
+    worker_options.forge = Some(Arc::clone(&forge) as Arc<dyn DesignForge>);
+    worker_options.read_timeout_ms = Some(200);
+    let worker = DesignWorker::new(worker_options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, DesignSyncState::Ok);
+    assert!(state.sync.error.is_none());
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1, "the issue rows are retained");
+    assert!(
+        state
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("Could not read published releases")),
+        "the release failure is only a notice: {:?}",
+        state.notice
+    );
+
+    // A release read that never answers still finishes inside the read timeout.
+    forge.delay_releases(5_000);
+    tokio::time::timeout(Duration::from_secs(2), worker.refresh())
+        .await
+        .expect("the release read cannot hold the cycle read");
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, DesignSyncState::Ok);
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn an_empty_release_list_leaves_the_cycle_synced() {
+    let fixture = Fixture::new("empty-releases");
+    let forge = FakeForge::new(vec![issue(
+        7,
+        "Existing accent drift",
+        ForgeIssueState::Closed,
+    )]);
+    let clock = Clock::new(NOW);
+    let mut worker_options = options(&fixture, &clock);
+    worker_options.forge = Some(forge as Arc<dyn DesignForge>);
+    let worker = DesignWorker::new(worker_options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, DesignSyncState::Ok);
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1);
+    assert!(state.issues[0].version.is_none());
     worker.stop().await;
 }

@@ -7,7 +7,7 @@ description: Audit the harness interface against DESIGN.md and design/tokens.jso
 Your goal is to leave the design system consistent with its documented standard, and the
 observable result is one `design` issue per admissible divergence filed through the Devboard MCP
 issue tool, plus a documentation push request when the documents themselves must change. The
-Release Train releases the pushed commit later; you never release.
+pushed commit is the completion; you never release and never wait for a release.
 
 ## Contract
 
@@ -131,18 +131,18 @@ draft. When the current document lacks either section, add it with principles dr
 documented tokens and the audited surfaces; adding a missing section is a required part of the
 edit, not unrelated prose. A token addition or correction appears in both the prose tables and
 `design/tokens.json`. Change no other prose. When no admissible decision exists, edit nothing and
-call no release tool.
+call no documentation-push tool.
 
 ## Documentation push
 
-You edit only your cycle draft and record the release request. The worker pushes it, never you,
+You edit only your cycle draft and record the documentation push request. The worker pushes it, never you,
 from one isolated worktree under `<REPO_DIR>/.worktree/`. In that worktree the worker commits only
 `DESIGN.md` and `design/tokens.json`, fetches and integrates `origin/main`, pushes `main`
 without force, advances the main checkout by fast-forward, removes the worktree and its branch,
-and reports the pushed commit. It never waits for a workflow and never invokes the publish entry
-point: the Release Train is the only component that releases, on its own schedule.
+and reports the pushed commit. It never waits for a workflow, a release, or a deployment, and
+never invokes the publish entry point.
 
 You never edit the main checkout and never run git: no branch, worktree, commit, push, or publish.
 Never invoke the publish entry point and never request a release. Your write surfaces are
-`<cycle-dir>/draft/`, the MCP issue tool, and the MCP release tool that stages this documentation
+`<cycle-dir>/draft/`, the MCP issue tool, and the MCP tool that stages this documentation push
 request.

@@ -149,8 +149,8 @@ comment on, close, or reopen another issue.
   `set -a; . ./.env; set +a`) or call `curl` with `$GITEA_TOKEN` or `$DEVBOARD_GITEA_URL` to read
   or write an issue, label, run, job, or release.
   Never call `gh` or `glab` for a tracker read or mutation. This run never releases and never
-  verifies a release: the Release Train publishes on its own schedule after the push, so do not
-  inspect or wait for a release workflow.
+  verifies a release: the pushed commit is the completion, so do not inspect or wait for a
+  release workflow or a deployment.
 
 ## Landing budget
 
@@ -260,9 +260,8 @@ no browser step into a workflow.
   break, at most 16 of each. `tests` requires `packages`; an empty list, a non-string entry, and a
   name that could read as a cargo flag are refused.
 - The full workspace suite is not every change's local gate: the Gitea CI Test step runs it on
-  every push and the Release Train runs it before any tag, so iterating never needs it. A
-  `{"check": "rust:test"}` with neither argument still runs the full runner when one check must
-  reproduce a suite failure.
+  every push, so iterating never needs it. A `{"check": "rust:test"}` with neither argument still
+  runs the full runner when one check must reproduce a suite failure.
 - The client checks keep their existing entry points: `{"check": "build"}` runs the client build,
   `{"check": "check"}` runs its typecheck, `{"check": "typecheck"}` is the raw typecheck, and
   `{"check": "test"}` runs the client unit suite (optionally with `paths`).
@@ -395,7 +394,7 @@ other consumer.
 The commit that lands MUST also name this issue by ending its subject with `(#<number>)`, for
 example `fix(agents): resolve a shipped version from the landed commit (#989)`. Use that reference,
 not a closing keyword: the forge links it in the issue timeline without closing the issue, and the
-link is what lets the dashboard report the release that shipped the work. A commit subject without
+link lets the dashboard report the release that shipped the work when a release exists. A commit subject without
 the reference still lands, but its issue shows no shipped version.
 
 Commit in the worktree on the run's own task branch, then land it with one call, from the
@@ -455,10 +454,8 @@ Never delete the worktree or its branch until `devboard land` printed the `remot
 line naming the commit its `merged` line named: a worktree whose branch is unproven on the remote
 stays in place, and a local-only merge, or a deleted worktree before that proof, is a failed task.
 
-Never publish: the Release Train releases the pushed commit on its own schedule.
-
-After that proof, close the issue with `issue_close` and report. Do not release, and do not wait
-for a release workflow: the Release Train releases later.
+After that proof, close the issue with `issue_close` and report. The landed and pushed change is
+the run's completion: do not release, and do not wait for a release workflow or a deployment.
 
 Untracked scratch entries already present under `.devboard/` are expected status noise: they never
 justify a commit, and `devboard land` never refuses them. This run adds none of them: every scratch
@@ -475,20 +472,19 @@ CI waiting in this run covers only the checks the change itself needs: the one s
 foreground `verification_run` per check, and one long-lived background watcher for a local check
 process, started with `async: true` and `timeout: 0`. After it starts, end the turn.
 
-Never wait for the release workflow: this run releases nothing, and the Release Train dispatches
-and verifies `devboard-release.yml` later on its own schedule. Never poll a workflow run with a
+Never wait for a release workflow or a deployment: this run releases nothing. Never poll a
+workflow run with a
 hand-rolled `for i in $(seq 1 60)` loop over `/actions/runs/<id>`, never background a poll of the
 Gitea API, and never read `/actions/runs/<id>`, `/commits/<sha>/status`, a statuses feed, or a
 "count busy runs" page. The forge rule above already requires run reads through the `devboard` MCP
 tools, never `curl`.
 
-## Release
+## Completion
 
-This run never releases. Close the issue with `issue_close` after `devboard land` proved the push
-and the required checks pass. Never invoke the publish entry point, never dispatch a workflow,
-never call npm or the Gitea release API, and never wait for a release tag. The Release Train
-collects every unreleased `main` commit, publishes one version for the range, and records the
-version and release URL itself; a separate release from this run would collide with it.
+This run ends at the landing proof. Close the issue with `issue_close` after `devboard land` proved
+the push and the required checks pass. The landed and pushed commit is the completion; never invoke
+the publish entry point, never dispatch a workflow, never call npm or the Gitea release API, and
+never wait for a release tag or a deployment.
 
 ## Reporting
 

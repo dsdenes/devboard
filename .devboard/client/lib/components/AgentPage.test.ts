@@ -1031,3 +1031,40 @@ test("a page opened in a hidden document sends no refresh until the document is 
     restoreFetch();
   }
 });
+
+test("the documentation panel distinguishes a pushed change from a released one", () => {
+  const entry = (state: "pushed" | "released") => ({
+    at: "2026-01-10T10:00:00.000Z",
+    version: state === "pushed" ? "abcdef1" : "1.2.3",
+    url: "https://forge.test/acme/fixture/commit/abcdef1234567890",
+    summary: "Document the accent standard",
+    files: ["DESIGN.md", "design/tokens.json"],
+    diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n",
+    state,
+  });
+
+  let view = presentAgent(
+    "design",
+    releaseSnapshot({ id: "design", documentation: [entry("pushed")] }),
+    "open",
+  );
+  expect(
+    within(view.container).getByTestId("agent-documentation-count").textContent,
+  ).toContain("1 pushed");
+  expect(
+    within(view.container).getByTestId("agent-documentation-state").textContent?.trim(),
+  ).toBe("pushed");
+
+  cleanup();
+  view = presentAgent(
+    "design",
+    releaseSnapshot({ id: "design", documentation: [entry("released")] }),
+    "open",
+  );
+  expect(
+    within(view.container).getByTestId("agent-documentation-count").textContent,
+  ).toContain("1 released");
+  expect(
+    within(view.container).getByTestId("agent-documentation-state").textContent?.trim(),
+  ).toBe("released");
+});

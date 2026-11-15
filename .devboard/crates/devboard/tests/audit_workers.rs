@@ -404,8 +404,30 @@ struct DeadForge {
     closing_calls: AtomicU64,
     open_title_calls: AtomicU64,
     read_delay_ms: AtomicU64,
+    release_delay_ms: AtomicU64,
+    release_failure: Mutex<Option<String>>,
+    contained: Mutex<Option<Vec<String>>>,
     resolve_failure: Mutex<Option<String>>,
     tags_failure: Mutex<Option<String>>,
+}
+
+impl DeadForge {
+    fn fail_releases(&self, detail: &str) {
+        *self.release_failure.lock().expect("the fake") = Some(detail.to_string());
+    }
+
+    fn delay_releases(&self, delay_ms: u64) {
+        self.release_delay_ms.store(delay_ms, Ordering::SeqCst);
+    }
+
+    fn contain(&self, tags: &[&str]) {
+        *self.contained.lock().expect("the fake") =
+            Some(tags.iter().map(|tag| tag.to_string()).collect());
+    }
+
+    fn closing_calls(&self) -> u64 {
+        self.closing_calls.load(Ordering::SeqCst)
+    }
 }
 
 impl dead::ForgeClient for DeadForge {
@@ -434,7 +456,18 @@ impl dead::ForgeClient for DeadForge {
     }
 
     fn list_releases(&self) -> dead::ForgeFuture<'_, Vec<dead::Release>> {
-        Box::pin(async move { Ok(self.releases.lock().expect("the fake").clone()) })
+        let delay = self.release_delay_ms.load(Ordering::SeqCst);
+        let failure = self.release_failure.lock().expect("the fake").clone();
+        let releases = self.releases.lock().expect("the fake").clone();
+        Box::pin(async move {
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            match failure {
+                Some(detail) => Err(detail),
+                None => Ok(releases),
+            }
+        })
     }
 
     fn closing_commits(&self, _issue_number: i64) -> dead::ForgeFuture<'_, Vec<String>> {
@@ -464,7 +497,17 @@ impl dead::ForgeClient for DeadForge {
             if let Some(detail) = self.tags_failure.lock().expect("the fake").clone() {
                 return Err(detail);
             }
-            Ok(releases.into_iter().map(|release| release.tag).collect())
+            let contained = self.contained.lock().expect("the fake").clone();
+            Ok(releases
+                .into_iter()
+                .filter(|release| {
+                    contained
+                        .as_ref()
+                        .map(|tags| tags.contains(&release.tag))
+                        .unwrap_or(true)
+                })
+                .map(|release| release.tag)
+                .collect())
         })
     }
 }
@@ -1378,6 +1421,17 @@ async fn dead_code_resolves_a_release_once_and_retries_after_a_new_one() {
         .lock()
         .expect("the fake")
         .push(commit.to_string());
+    // A real published release that does not contain the commit is the proof
+    // that the release is missing; an empty list proves nothing.
+    forge
+        .releases
+        .lock()
+        .expect("the fake")
+        .push(dead::Release {
+            tag: "v0.0.0".to_string(),
+            published_at: "2026-01-01T00:00:00Z".to_string(),
+        });
+    forge.contain(&[]);
     let millis = Arc::new(Mutex::new(
         api::parse_iso_millis("2026-01-01T00:00:00.000Z").expect("the clock"),
     ));
@@ -1414,6 +1468,7 @@ async fn dead_code_resolves_a_release_once_and_retries_after_a_new_one() {
             tag: "v0.1.0".to_string(),
             published_at: "2026-01-01T00:00:30Z".to_string(),
         });
+    forge.contain(&["v0.1.0"]);
     worker.refresh().await;
     let row = worker.current_state().issues[0].clone();
     assert_eq!(row.version.as_deref(), Some("v0.1.0"));
@@ -1494,6 +1549,15 @@ async fn dead_code_records_a_failed_commit_read_as_the_version_error() {
         .push(commit.to_string());
     let detail = format!("gh: could not resolve {commit}: HTTP 502");
     *forge.resolve_failure.lock().expect("the fake") = Some(detail.clone());
+    // Resolution runs only against a real release list.
+    forge
+        .releases
+        .lock()
+        .expect("the fake")
+        .push(dead::Release {
+            tag: "v0.1.0".to_string(),
+            published_at: "2026-01-01T00:00:30Z".to_string(),
+        });
     let worker = dead_worker(
         &fixture,
         Arc::clone(&forge),
@@ -3269,4 +3333,170 @@ fn every_audited_family_keeps_its_own_published_state() {
     for (label, family) in published_families() {
         assert_own_state_is_kept(label, &family);
     }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Best-effort release metadata for the Dead Code worker                     */
+/* ------------------------------------------------------------------------ */
+
+const DEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn dead_release_worker(
+    fixture: &Fixture,
+    forge: &Arc<DeadForge>,
+    clock: &Arc<Mutex<i64>>,
+    read_timeout_ms: u64,
+) -> Arc<dead::Worker> {
+    let clock_source = Arc::clone(clock);
+    let mut options = dead::WorkerOptions::new(&fixture.repo, &fixture.state_dir);
+    options.harness_version = Some(VERSION.to_string());
+    options.sync_ms = Some(60_000);
+    options.cadence_ms = Some(60 * 60_000);
+    options.manual_cycles = true;
+    options.read_timeout_ms = Some(read_timeout_ms);
+    options.clock = Some(Arc::new(move || *clock_source.lock().expect("the clock")));
+    options.connect = Some(fake_connect(|_prompt| Box::pin(async move { Ok(()) })));
+    options.forge = Some(Arc::clone(forge) as Arc<dyn dead::ForgeClient>);
+    dead::Worker::new(options)
+}
+
+fn dead_closed_fixture(fixture: &Fixture, forge: &Arc<DeadForge>, closing_commit: Option<&str>) {
+    fixture.write("src/a.ts", "export const dead = 1;\n");
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(dead::ForgeIssue {
+            number: 1,
+            title: "Remove dead fixture code".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "closed".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            closed_at: Some("2026-01-01T00:00:00.000Z".to_string()),
+            body: "## Category\n\nunreferenced-symbol\n".to_string(),
+        });
+    if let Some(commit) = closing_commit {
+        forge
+            .closing
+            .lock()
+            .expect("the fake")
+            .push(commit.to_string());
+    }
+}
+
+fn dead_clock() -> Arc<Mutex<i64>> {
+    Arc::new(Mutex::new(
+        api::parse_iso_millis("2026-01-01T00:00:00.000Z").expect("the clock"),
+    ))
+}
+
+#[tokio::test]
+async fn a_failed_release_read_never_blocks_a_dead_code_cycle() {
+    let fixture = Fixture::new("dead-release-failure");
+    let forge = Arc::new(DeadForge::default());
+    dead_closed_fixture(&fixture, &forge, Some(DEAD_SHA));
+    forge.fail_releases("the release endpoint failed");
+    let clock = dead_clock();
+    let worker = dead_release_worker(&fixture, &forge, &clock, 200);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, dead::SyncState::Ok);
+    assert!(state.sync.error.is_none());
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1, "the issue rows are retained");
+    assert_eq!(state.issues[0].version_error, None);
+    assert_eq!(
+        forge.closing_calls(),
+        0,
+        "no resolution runs without releases"
+    );
+
+    // A release read that never answers still finishes within the read timeout.
+    forge.delay_releases(5_000);
+    tokio::time::timeout(Duration::from_secs(2), worker.refresh())
+        .await
+        .expect("the release read cannot hold the sync");
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, dead::SyncState::Ok);
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn an_empty_release_list_leaves_no_version_error() {
+    let fixture = Fixture::new("dead-empty-releases");
+    let forge = Arc::new(DeadForge::default());
+    dead_closed_fixture(&fixture, &forge, Some(DEAD_SHA));
+    let clock = dead_clock();
+    let worker = dead_release_worker(&fixture, &forge, &clock, 500);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert!(row.version.is_none());
+    assert!(row.version_error.is_none());
+    assert_eq!(forge.closing_calls(), 0);
+
+    *clock.lock().expect("the clock") += dead::RESOLUTION_RETRY_MS;
+    worker.refresh().await;
+    assert_eq!(
+        forge.closing_calls(),
+        0,
+        "an empty list keeps resolving nothing"
+    );
+
+    forge
+        .releases
+        .lock()
+        .expect("the fake")
+        .push(dead::Release {
+            tag: "v1.2.3".to_string(),
+            published_at: "2026-01-02T00:00:00Z".to_string(),
+        });
+    forge.contain(&["v1.2.3"]);
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert_eq!(row.version.as_deref(), Some("v1.2.3"));
+    assert!(row.version_error.is_none());
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn an_uncontained_commit_still_retries() {
+    let fixture = Fixture::new("dead-uncontained");
+    let forge = Arc::new(DeadForge::default());
+    dead_closed_fixture(&fixture, &forge, Some(DEAD_SHA));
+    forge
+        .releases
+        .lock()
+        .expect("the fake")
+        .push(dead::Release {
+            tag: "v1.0.0".to_string(),
+            published_at: "2026-01-02T00:00:00Z".to_string(),
+        });
+    forge.contain(&[]);
+    let clock = dead_clock();
+    let worker = dead_release_worker(&fixture, &forge, &clock, 500);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert!(row.version.is_none());
+    assert_eq!(
+        row.version_error,
+        Some(format!("no published release contains {DEAD_SHA}"))
+    );
+    assert_eq!(forge.closing_calls(), 1);
+
+    *clock.lock().expect("the clock") += dead::RESOLUTION_RETRY_MS;
+    worker.refresh().await;
+    assert_eq!(forge.closing_calls(), 2, "the resolution is retried");
+
+    forge.contain(&["v1.0.0"]);
+    *clock.lock().expect("the clock") += dead::RESOLUTION_RETRY_MS;
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert_eq!(row.version.as_deref(), Some("v1.0.0"));
+    assert!(row.version_error.is_none());
+    worker.stop().await;
 }

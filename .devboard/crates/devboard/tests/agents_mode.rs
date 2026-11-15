@@ -5,8 +5,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use devboard::agents_mode::{ForgeFact, ForgeProjection, ForgeReader};
+use axum::extract::State;
+use devboard::agents_mode::{ForgeAnswer, ForgeFact, ForgeProjection, ForgeReader, RepoFamilyId};
 use devboard::app::{App, Conn};
 use devboard::command::Command;
 use devboard::config::Config;
@@ -3767,4 +3769,230 @@ async fn a_project_kind_flip_republishes_both_gated_families() {
         json!({"state": "enabled", "reason": null}),
         "{deploy}"
     );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Best-effort release metadata in the dashboard read                        */
+/* ------------------------------------------------------------------------ */
+
+#[derive(Clone, Debug)]
+struct StubResponse {
+    status: u16,
+    body: String,
+}
+
+fn json_response(value: Value) -> StubResponse {
+    StubResponse {
+        status: 200,
+        body: value.to_string(),
+    }
+}
+
+fn text_response(status: u16, body: &str) -> StubResponse {
+    StubResponse {
+        status,
+        body: body.to_string(),
+    }
+}
+
+type StubFuture = std::pin::Pin<Box<dyn std::future::Future<Output = StubResponse> + Send>>;
+
+#[derive(Clone)]
+struct StubState {
+    handler: Arc<dyn Fn(String) -> StubFuture + Send + Sync>,
+}
+
+async fn stub_entry(
+    State(state): State<StubState>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let path = request.uri().path().to_string();
+    let answer = (state.handler)(path).await;
+    axum::response::Response::builder()
+        .status(answer.status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(answer.body))
+        .expect("a stub response")
+}
+
+struct StubServer {
+    base: String,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl StubServer {
+    async fn start(handler: impl Fn(String) -> StubFuture + Send + Sync + 'static) -> Self {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a stub listener");
+        let port = listener.local_addr().expect("an address").port();
+        let app = axum::Router::new()
+            .fallback(stub_entry)
+            .with_state(StubState {
+                handler: Arc::new(handler),
+            });
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Self {
+            base: format!("http://127.0.0.1:{port}"),
+            handle,
+        }
+    }
+}
+
+impl Drop for StubServer {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+fn gitea_checkout(root: &Path, base: &str) -> PathBuf {
+    let repo = root.join("repo");
+    for args in [
+        vec!["init", "-q"],
+        vec!["remote", "add", "origin", &format!("{base}/owner/name.git")],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    repo
+}
+
+/// 0 answers the release read with a failure, 1 never answers it.
+const RELEASE_FAILS: u64 = 0;
+const RELEASE_HANGS: u64 = 1;
+
+async fn filed_issue_read(mode: &Arc<AtomicU64>) -> (Vec<ForgeFact>, Duration, String) {
+    let mode = Arc::clone(mode);
+    let server = StubServer::start(move |path| {
+        let mode = Arc::clone(&mode);
+        Box::pin(async move {
+            match path.as_str() {
+                "/api/v1/repos/owner/name" => json_response(json!({
+                    "full_name": "owner/name",
+                    "private": false,
+                    "permissions": {"pull": true, "push": false, "admin": false},
+                })),
+                "/api/v1/repos/owner/name/issues/1" => json_response(json!({
+                    "number": 1,
+                    "state": "closed",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "closed_at": "2026-01-02T00:00:00Z",
+                })),
+                "/api/v1/repos/owner/name/releases" => {
+                    if mode.load(Ordering::SeqCst) == RELEASE_HANGS {
+                        std::future::pending::<()>().await;
+                    }
+                    text_response(500, "the release endpoint failed")
+                }
+                _ => text_response(404, "unexpected"),
+            }
+        })
+    })
+    .await;
+    let root = scratch("filed-release");
+    let repo = gitea_checkout(&root, &server.base);
+    let environment = HashMap::from([("DEVBOARD_GITEA_URL".to_string(), server.base.clone())]);
+    let reader = devboard::agents_mode::live_forge_reader_within(repo, environment, 150);
+    let url = format!("{}/owner/name/issues/1", server.base);
+    let started = std::time::Instant::now();
+    let facts = tokio::time::timeout(Duration::from_secs(2), reader(vec![url.clone()]))
+        .await
+        .expect("the issue read finishes under its deadline")
+        .expect("the issue read answers");
+    (facts, started.elapsed(), url)
+}
+
+#[tokio::test]
+async fn a_release_read_failure_keeps_closed_issues_implemented() {
+    let mode = Arc::new(AtomicU64::new(RELEASE_FAILS));
+    let (facts, _, url) = filed_issue_read(&mode).await;
+    assert_eq!(facts.len(), 1, "no row is dropped: {facts:?}");
+    assert_eq!(facts[0].url, url);
+    assert_eq!(facts[0].state, "implemented");
+    assert!(facts[0].version.is_none());
+
+    // The same read against a release endpoint that never answers still lands
+    // the closed row, and finishes well before the release read would.
+    mode.store(RELEASE_HANGS, Ordering::SeqCst);
+    let (facts, elapsed, _) = filed_issue_read(&mode).await;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].state, "implemented");
+    assert!(facts[0].version.is_none());
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the read kept its deadline: {elapsed:?}"
+    );
+
+    // A worker state's resolved version fills a dashboard fact with none.
+    let issue = json!({
+        "number": 1,
+        "title": "A closed finding",
+        "url": url,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "implemented",
+        "category": null,
+        "version": "1.2.3",
+        "versionError": null,
+    });
+    let row = devboard::agents_mode::project_filed_issue(
+        RepoFamilyId::Scout,
+        &issue,
+        Some(&ForgeAnswer {
+            state: "implemented".to_string(),
+            version: None,
+        }),
+        false,
+    );
+    assert_eq!(row["state"], "implemented");
+    assert_eq!(row["version"], "1.2.3");
+}
+
+#[tokio::test]
+async fn every_host_family_is_enabled_without_a_release_train() {
+    let root = scratch("host-families");
+    std::fs::remove_file(root.join("repo/.devboard/package.json"))
+        .expect("a host checkout has no harness manifest");
+    let app = app_at(&root);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let state = all
+        .iter()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .expect("an agentsState frame");
+    let agents = state
+        .get("agents")
+        .and_then(Value::as_array)
+        .expect("an agents list");
+    assert_eq!(agents.len(), 10);
+    for agent in agents {
+        let id = agent.get("id").and_then(Value::as_str).expect("an id");
+        let availability = &agent["availability"];
+        if id == "release-train" {
+            assert_eq!(availability["state"], "disabled", "{agent}");
+            assert!(
+                availability["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("host project")),
+                "{agent}"
+            );
+        } else {
+            assert_eq!(
+                availability["state"], "enabled",
+                "{id} is available on a host project: {agent}"
+            );
+            assert!(availability["reason"].is_null(), "{id}: {agent}");
+        }
+    }
 }

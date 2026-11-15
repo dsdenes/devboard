@@ -425,13 +425,16 @@ never hand-edit them.
 - Both modes: done in `.worktree/<name>`, merged to main, pushed to the canonical upstream, and
   verified that the upstream tip is the integrated commit. Only then are the worktree and branch
   removed. Local-only main is never done.
+- Harness source: a change is finished when it is merged, pushed, and released by the Release
+  Train. The Release Train dispatches and verifies the release workflow, the GitHub assets, and the
+  Gitea manifest; installed dashboards report the release through `versionState` and keep their
+  update path, while live source dashboards replace themselves from the publish-written request.
+- Host project: a change is finished when it is merged and pushed. Deployment belongs to the host's
+  own Deploy on main path; no background agent waits for, inspects, or claims a release or a
+  deployment.
 - Host mode: host build/tests run; `.devboard/` unchanged.
-- Harness mode: the pushed commit is released by the Release Train, which dispatched and verified
-  the release workflow, the GitHub assets, and the Gitea manifest; installed dashboards report the
-  release through `versionState` and keep their update path, while live source dashboards replace
-  themselves from the publish-written request; the changed entry point runs from the repo root
-  against a supplied host path; no absolute paths or host specifics under `.devboard/`; nothing
-  created outside `.devboard/`.
+- Harness mode: the changed entry point runs from the repo root against a supplied host path; no
+  absolute paths or host specifics under `.devboard/`; nothing created outside `.devboard/`.
 
 ## Map
 

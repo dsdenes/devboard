@@ -2603,7 +2603,11 @@ A row filed through another forge is answered as `unreadable`: the Gitea reader 
 so the row stays listed with `unknown` in the State cell, claims no version, and a successful
 read never removes it. Only a row the reader actually asked its own forge about is dropped when
 the answer omits it. A closed issue whose shipping release cannot be resolved still reads
-`implemented` with `—` in the Shipped cell and stays listed. A successful read is authoritative
+`implemented` with `—` in the Shipped cell and stays listed. Release metadata is best effort: a
+release read that fails, times out, or returns no releases never blocks the issue read, and no row
+is marked `unknown` or dropped because of it. An empty release list is never evidence that an
+issue is unshipped; the row keeps `implemented`, no version, and no error. A release failure is
+recorded only as a notice or activity line, never as the table's sync error. A successful read is authoritative
 for its rows: a filed issue the answer no longer names leaves the table on the next publish, and
 `agent-issues-count` and the sidebar `agent-count-<id>` count exactly the rendered rows.
 
@@ -2614,7 +2618,8 @@ none. With no client connected the dashboard makes no read for these tables. The
 reads: it starts no worker, writes no worker state, and runs no agent turn. A resolved fact is
 cached: a row already `implemented` is never asked about again, and the next cycle requests only
 the URLs still `pending` or unreadable. One read batches every pending URL
-for its table, so the release list is read at most once per cycle. A dashboard restart seeds the
+for its table, so the release list is read at most once per cycle, under its own deadline, and a
+failed or hanging release list is dropped rather than delaying the issue facts. A dashboard restart seeds the
 cache from the worker states it already persisted, so a restart re-reads only the unresolved
 rows instead of the whole history. The Issues Open list keeps its own reader and its own
 30-second cadence.
@@ -2958,8 +2963,10 @@ Devboard MCP `design_release_request` tool with the summary and rationale: the w
 worktree under `<REPO_DIR>/.worktree/`, commits only the two documents, fetches and integrates
 `main` with every conflict resolved and every check rerun, pushes to `main` without force,
 fast-forwards the integration checkout without discarding uncommitted work, removes the worktree
-and branch, and reports the pushed commit. It never waits for a release workflow and never runs
-the publish entry point: the Release Train releases the pushed commit later. A cycle with no
+and branch, and reports the pushed commit. It never waits for a release workflow, a release, or a
+deployment, and never runs the publish entry point. On a host project the pushed commit is the
+completion; only in the harness source checkout does the Release Train release it on its own
+schedule. A cycle with no
 request makes no commit, push, or checkout update. A failed integration or push leaves the
 pushed commit intact, never force-pushes, never reverts, and reports the failing step in
 `agent-error` and activity.
@@ -2972,15 +2979,17 @@ releases.
 
 Every successful documentation push appends one entry to the bounded `documentation` list in the
 design state file, newest first and at most 20: the cycle's one-sentence summary, the push time,
-the version the Release Train will derive, the commit URL, the changed document paths, and the
-unified diff of the removed and added lines. A rejected document edit, a cycle with no admissible
+its state, a version, the commit URL, the changed document paths, and the unified diff of the
+removed and added lines. On a host project the state is `pushed`, the version is the
+seven-character pushed SHA, and the activity says `pushed documentation <short>`; in the harness
+source checkout the state is `released` and the version is the derived release version. A rejected document edit, a cycle with no admissible
 decision, and a failed push add no entry. A state file written before the list existed loads with
 an empty list rather than being quarantined. On the Design System page the `Documentation changes`
 panel (`data-testid="agent-documentation"`) renders immediately above the Filed issues panel
 (`agent-issues`); `agent-documentation-empty` states that no change has been pushed yet. Each
 entry (`agent-documentation-entry`) shows `agent-documentation-summary`,
-`agent-documentation-files`, `agent-documentation-at`, and the version link
-`agent-documentation-version`; opening its `agent-documentation-summary` reveals the exact
+`agent-documentation-files`, `agent-documentation-at`, its `pushed` or `released` state, and the
+version link `agent-documentation-version`; opening its `agent-documentation-summary` reveals the exact
 `agent-documentation-diff` and closing it hides the diff again. The Filed issues table and its empty
 state remain below the panel on every page.
 
@@ -3745,9 +3754,9 @@ from those headers and parses only the matching file, so one read does not cost 
   `discover_significance_stage`, and `discover_skill_stage` write one Discover agent's staged slice
   under `<REPO_DIR>/.omp/discover/staging/` and return the path and identity. Publication reads
   exactly those paths.
-- `design_release_request` records one cycle's release summary and rationale as
-  `<cycle>/release-request.json`; the Design System worker still performs the commit, push, release
-  workflow wait, and publish.
+- `design_release_request` records one cycle's documentation push summary and rationale as
+  `<cycle>/release-request.json`; the Design System worker commits and pushes the documents and
+  never releases or waits for a release workflow.
 - `watchdog_duplicate_record` records one watchdog candidate's duplicate disposition for the
   cycle, and `mcp_optimizer_proposal_skip` records why one MCP optimizer family filed nothing.
   Neither creates or comments on an issue.

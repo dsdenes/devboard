@@ -2322,3 +2322,279 @@ async fn a_version_keeps_its_own_published_state() {
     assert_eq!(state.release_signature.as_deref(), Some("own"));
     worker.stop().await;
 }
+
+/* ------------------------------------------------------------------------ */
+/* Best-effort release metadata                                              */
+/* ------------------------------------------------------------------------ */
+
+const RELEASE_FIXTURE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+/// A forge whose release read can fail, hang, or answer a controllable list,
+/// while its issue read always succeeds.
+#[derive(Clone)]
+struct ReleaseReadForge {
+    issues: Arc<Mutex<Vec<ScoutForgeIssue>>>,
+    releases: Arc<Mutex<Vec<GitHubRelease>>>,
+    /// 0 answers the list, 1 fails, 2 never answers.
+    mode: Arc<AtomicUsize>,
+    closing_reads: Arc<AtomicUsize>,
+    contained: Arc<Mutex<Vec<String>>>,
+    sha: String,
+}
+
+impl ReleaseReadForge {
+    fn new(issues: Vec<ScoutForgeIssue>) -> Self {
+        Self {
+            issues: Arc::new(Mutex::new(issues)),
+            releases: Arc::new(Mutex::new(Vec::new())),
+            mode: Arc::new(AtomicUsize::new(0)),
+            closing_reads: Arc::new(AtomicUsize::new(0)),
+            contained: Arc::new(Mutex::new(Vec::new())),
+            sha: RELEASE_FIXTURE_SHA.to_string(),
+        }
+    }
+
+    fn release_error(&self) {
+        self.mode.store(1, Ordering::SeqCst);
+    }
+
+    fn release_hangs(&self) {
+        self.mode.store(2, Ordering::SeqCst);
+    }
+
+    fn add_release(&self, tag: &str, published_at: &str) {
+        self.releases
+            .lock()
+            .expect("the releases")
+            .push(GitHubRelease {
+                tag: tag.to_string(),
+                published_at: published_at.to_string(),
+            });
+    }
+
+    fn contain(&self, tags: &[&str]) {
+        *self.contained.lock().expect("the containment") =
+            tags.iter().map(|tag| tag.to_string()).collect();
+    }
+
+    fn closing_reads(&self) -> usize {
+        self.closing_reads.load(Ordering::SeqCst)
+    }
+}
+
+impl ClosingCommitClient for ReleaseReadForge {
+    fn closing_commit(&self, _issue_number: i64) -> ClientFuture<'_, Option<String>> {
+        self.closing_reads.fetch_add(1, Ordering::SeqCst);
+        let sha = self.sha.clone();
+        Box::pin(async move { Ok(Some(sha)) })
+    }
+
+    fn resolve_commit(&self, short: String) -> ClientFuture<'_, Option<String>> {
+        Box::pin(async move { Ok(Some(short)) })
+    }
+
+    fn containing_release_tags(
+        &self,
+        _commit: String,
+        releases: Vec<GitHubRelease>,
+    ) -> ClientFuture<'_, Vec<String>> {
+        let contained = self.contained.lock().expect("the containment").clone();
+        Box::pin(async move {
+            Ok(releases
+                .into_iter()
+                .filter(|release| contained.contains(&release.tag))
+                .map(|release| release.tag)
+                .collect())
+        })
+    }
+}
+
+impl ScoutForge for ReleaseReadForge {
+    fn list_issues(&self) -> ForgeFuture<Vec<ScoutForgeIssue>> {
+        let issues = self.issues.lock().expect("the issues").clone();
+        Box::pin(async move { Ok(issues) })
+    }
+
+    fn list_open_issue_titles(&self) -> ForgeFuture<Vec<String>> {
+        let titles = self
+            .issues
+            .lock()
+            .expect("the issues")
+            .iter()
+            .filter(|issue| issue.state == "open")
+            .map(|issue| issue.title.clone())
+            .collect();
+        Box::pin(async move { Ok(titles) })
+    }
+
+    fn list_releases(&self) -> ForgeFuture<Vec<GitHubRelease>> {
+        let mode = self.mode.load(Ordering::SeqCst);
+        let releases = self.releases.lock().expect("the releases").clone();
+        Box::pin(async move {
+            match mode {
+                1 => Err("the release endpoint failed".to_string()),
+                2 => {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    Ok(Vec::new())
+                }
+                _ => Ok(releases),
+            }
+        })
+    }
+
+    fn closing_client(&self) -> &dyn ClosingCommitClient {
+        self
+    }
+}
+
+fn closed_scout_issue(number: i64) -> ScoutForgeIssue {
+    ScoutForgeIssue {
+        number,
+        title: format!("Closed finding {number}"),
+        url: format!("https://github.com/acme/fixture/issues/{number}"),
+        state: "closed".to_string(),
+        created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        closed_at: Some("2026-01-02T00:00:00.000Z".to_string()),
+        body: "## Category\nclarity\n\nThe finding.".to_string(),
+    }
+}
+
+fn release_worker(
+    repo: &Path,
+    forge: ReleaseReadForge,
+    clock: Arc<AtomicI64>,
+    read_timeout_ms: u64,
+) -> ScoutWorker {
+    let mut options = ScoutWorkerOptions::new(repo, repo.join(".devboard").join("state"));
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(forge));
+    options.agent = Some(Arc::new(|_context| Box::pin(async { Ok(()) })));
+    options.sync_ms = Some(1000);
+    options.read_timeout_ms = Some(read_timeout_ms);
+    options.now = Some(Arc::new(move || clock.load(Ordering::SeqCst)));
+    ScoutWorker::new(options)
+}
+
+#[tokio::test]
+async fn a_failed_release_read_never_blocks_a_scan() {
+    let repo = scratch("release-failure");
+    let forge = ReleaseReadForge::new(vec![closed_scout_issue(1)]);
+    let clock = Arc::new(AtomicI64::new(1_773_000_000_000));
+    forge.release_error();
+    let worker = release_worker(&repo, forge.clone(), Arc::clone(&clock), 200);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, "ok");
+    assert!(state.sync.error.is_none());
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1, "the issue rows are retained");
+    assert_eq!(state.issues[0].state.as_str(), "implemented");
+    assert!(
+        state
+            .notices
+            .iter()
+            .any(|line| line.contains("Could not read published releases")),
+        "the failure is only a notice: {:?}",
+        state.notices
+    );
+
+    // The same sync against a release read that never answers still finishes
+    // inside the configured read timeout and still lands the issue rows.
+    forge.release_hangs();
+    tokio::time::timeout(Duration::from_secs(2), worker.refresh())
+        .await
+        .expect("the release read cannot hold the sync");
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, "ok");
+    assert!(state.last_error.is_none());
+    assert_eq!(state.issues.len(), 1);
+    assert!(
+        state
+            .notices
+            .iter()
+            .any(|line| line.contains("did not finish within")),
+        "the deadline is named as a notice: {:?}",
+        state.notices
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn an_empty_release_list_leaves_no_version_error() {
+    let repo = scratch("release-empty");
+    let forge = ReleaseReadForge::new(vec![closed_scout_issue(1)]);
+    let clock = Arc::new(AtomicI64::new(1_773_000_000_000));
+    let worker = release_worker(&repo, forge.clone(), Arc::clone(&clock), 500);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.sync.state, "ok");
+    assert_eq!(state.issues.len(), 1);
+    assert_eq!(state.issues[0].state.as_str(), "implemented");
+    assert!(state.issues[0].version.is_none());
+    assert!(state.issues[0].version_error.is_none());
+    assert_eq!(
+        forge.closing_reads(),
+        0,
+        "no closing-commit resolution runs on an empty release list"
+    );
+
+    // A retry window passes with the list still empty: still no resolution.
+    clock.fetch_add(
+        devboard::workers::scout::RESOLUTION_RETRY_MS,
+        Ordering::SeqCst,
+    );
+    worker.refresh().await;
+    assert_eq!(forge.closing_reads(), 0);
+
+    // One published release that contains the closing commit resolves the row.
+    forge.add_release("v1.2.3", "2026-01-03T00:00:00Z");
+    forge.contain(&["v1.2.3"]);
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert_eq!(row.version.as_deref(), Some("v1.2.3"));
+    assert!(row.version_error.is_none());
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn an_uncontained_commit_still_retries() {
+    let repo = scratch("release-uncontained");
+    let forge = ReleaseReadForge::new(vec![closed_scout_issue(1)]);
+    let clock = Arc::new(AtomicI64::new(1_773_000_000_000));
+    forge.add_release("v1.0.0", "2026-01-03T00:00:00Z");
+    let worker = release_worker(&repo, forge.clone(), Arc::clone(&clock), 500);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert!(row.version.is_none());
+    assert_eq!(
+        row.version_error,
+        Some(format!(
+            "no published release contains {RELEASE_FIXTURE_SHA}"
+        ))
+    );
+    assert_eq!(forge.closing_reads(), 1);
+
+    // After the retry window the resolution runs again.
+    clock.fetch_add(
+        devboard::workers::scout::RESOLUTION_RETRY_MS,
+        Ordering::SeqCst,
+    );
+    worker.refresh().await;
+    assert_eq!(forge.closing_reads(), 2, "the resolution is retried");
+    assert!(worker.current_state().issues[0].version.is_none());
+
+    // A later release that contains the commit resolves the row.
+    forge.contain(&["v1.0.0"]);
+    clock.fetch_add(
+        devboard::workers::scout::RESOLUTION_RETRY_MS,
+        Ordering::SeqCst,
+    );
+    worker.refresh().await;
+    let row = worker.current_state().issues[0].clone();
+    assert_eq!(row.version.as_deref(), Some("v1.0.0"));
+    assert!(row.version_error.is_none());
+    worker.stop().await;
+}
