@@ -117,7 +117,11 @@ export class AgentsStore {
   count(id: string): number {
     const snapshot = this.snapshots[id];
     if (snapshot === undefined) return 0;
-    if (agentRegistry.get(id)?.releases !== undefined) {
+    const descriptor = agentRegistry.get(id);
+    if (descriptor?.deploys !== undefined) {
+      return snapshot.deploys?.length ?? 0;
+    }
+    if (descriptor?.releases !== undefined) {
       return snapshot.releases?.length ?? 0;
     }
     return snapshot.issues.length;

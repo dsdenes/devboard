@@ -770,3 +770,50 @@ test("the Devboard group lists Resources directly after Complexity", async () =>
     expect(entry).not.toBeNull();
   }
 });
+
+test("the deploy sidebar count is the history rows, not the filed issues", async () => {
+  layout.mode = "devboard";
+  agents.snapshots = {
+    "deploy-on-main": backgroundSnapshot("deploy-on-main", "Deploy on main", {
+      state: "enabled",
+      reason: null,
+    }) as (typeof agents.snapshots)[string],
+  };
+  agents.snapshots["deploy-on-main"] = {
+    ...agents.snapshots["deploy-on-main"],
+    issues: [
+      {
+        title: "one filed issue",
+        category: "deploy",
+        createdAt: "2026-11-03T10:15:00.000Z",
+        url: "https://example.test/issues/1",
+        state: "pending",
+        version: null,
+      },
+    ],
+    deploys: [
+      {
+        id: "run-2",
+        commit: "bbbbbbb",
+        startedAt: "2026-11-04T10:00:00.000Z",
+        endedAt: "2026-11-04T10:05:00.000Z",
+        state: "failed",
+        commits: 2,
+      },
+      {
+        id: "run-1",
+        commit: "aaaaaaa",
+        startedAt: "2026-11-03T09:00:00.000Z",
+        endedAt: "2026-11-03T09:05:00.000Z",
+        state: "succeeded",
+        commits: 0,
+      },
+    ],
+  } as (typeof agents.snapshots)[string];
+  mount();
+  await tick();
+
+  expect(
+    document.querySelector('[data-testid="agent-count-deploy-on-main"]')?.textContent?.trim(),
+  ).toBe("2");
+});

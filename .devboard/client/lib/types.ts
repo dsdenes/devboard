@@ -212,6 +212,7 @@ export type {
   AgentCycle,
   AgentCycleWindow,
   AgentCyclesDetail,
+  AgentDeployRow,
   AgentDescriptor,
   AgentDetail,
   AgentDocumentationEntry,

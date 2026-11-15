@@ -18,7 +18,7 @@
  * renders Start and no gate.
  */
 
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
@@ -30,7 +30,7 @@ import {
   startFamily,
   stopFamily,
 } from "./dashboard.ts";
-import { escapePattern, pidAlive, processesMatching, readState } from "./support.ts";
+import { escapePattern, pidAlive, processesMatching, readState, run } from "./support.ts";
 
 test.beforeEach(async ({ page }) => {
   await openDashboard(page);
@@ -159,3 +159,153 @@ function processed(pattern: string) {
   const matches = processesMatching(pattern);
   return matches.filter((match) => !match.command.includes("pgrep"));
 }
+
+/**
+ * The Deploy on main page on a host project: its prompt plus one deploy
+ * history panel. The fixture's harness source manifest is removed for the
+ * duration, so the family is available; its state file and worker record are
+ * seeded, then the fixture manifest and state bytes are restored.
+ */
+test("Deploy on main history: seeded runs fill one panel and nothing else", async ({ page }) => {
+  const state = readState();
+  const manifest = path.join(state.repoDir, ".devboard", "package.json");
+  expect(existsSync(manifest)).toBe(true);
+  const originalManifest = readFileSync(manifest);
+
+  const directory = path.join(state.stateDir, "deploy-on-main");
+  const stateFile = path.join(directory, "state.json");
+  const originalState = existsSync(stateFile) ? readFileSync(stateFile) : null;
+  const head = run("git", ["rev-parse", "HEAD"], state.repoDir);
+  const runningStarted = "2026-11-05T11:00:00.000Z";
+  const skippedAt = "2026-11-04T10:30:00.000Z";
+  const stoppedAt = "2026-11-04T10:05:00.000Z";
+  const failedAt = "2026-11-03T09:05:00.000Z";
+  const succeededAt = "2026-11-02T08:05:00.000Z";
+  const runRecord = (
+    id: string,
+    state_: string,
+    at: string,
+    endedAt: string | null,
+    commits: number | null,
+  ) => ({
+    version: 1,
+    id,
+    startedAt: at,
+    endedAt,
+    state: state_,
+    commit: head,
+    worktree: path.join(state.repoDir, ".worktree", "deploy-main"),
+    detail: "seeded",
+    peer: null,
+    commits,
+  });
+  const seeded = {
+    version: 1,
+    repo: state.repoDir,
+    root: state.repoDir,
+    updatedAt: runningStarted,
+    activity: [],
+    runs: [
+      runRecord("run-running", "running", runningStarted, null, 1),
+      runRecord("run-skipped", "skipped", skippedAt, skippedAt, null),
+      runRecord("run-stopped", "stopped", stoppedAt, stoppedAt, 2),
+      runRecord("run-failed", "failed", failedAt, failedAt, 3),
+      runRecord("run-succeeded", "succeeded", succeededAt, succeededAt, 0),
+    ],
+    issues: [
+      {
+        title: "Deploy on main failed at 1234567",
+        category: "deploy",
+        createdAt: failedAt,
+        url: "https://example.test/issues/7",
+        state: "filed",
+        version: null,
+        note: null,
+      },
+    ],
+    issuedCommits: [head],
+    lastCommit: head,
+  };
+  const workerDirectory = path.join(directory, "workers", state.harnessVersion);
+  const workerFile = path.join(workerDirectory, "worker.json");
+  const originalWorker = existsSync(workerFile) ? readFileSync(workerFile) : null;
+  mkdirSync(workerDirectory, { recursive: true });
+  writeFileSync(stateFile, `${JSON.stringify(seeded, null, 2)}\n`);
+  writeFileSync(
+    workerFile,
+    `${JSON.stringify(
+      {
+        version: 1,
+        pid: process.pid,
+        startTicks: null,
+        startedAt: runningStarted,
+        root: state.repoDir,
+        stateDir: state.stateDir,
+        lifecycle: "running",
+        enabled: true,
+        paused: false,
+        harnessVersion: state.harnessVersion,
+        argv: ["devboard", "worker", "deploy-on-main"],
+        lastRunAt: runningStarted,
+        lastError: null,
+        notice: "deploy failed: the seeded run failed",
+        activeRun: null,
+        baseline: head,
+        updatedAt: runningStarted,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  rmSync(manifest);
+  try {
+    await openDashboard(page);
+    const agentPage = await showAgentPage(page, "deploy-on-main");
+
+    await expect(agentPage.locator('[data-testid="agent-prompt"]')).toBeVisible();
+    await expect(agentPage.getByRole("heading", { name: "Deploy history" })).toBeVisible();
+    await expect(agentPage.locator('[data-testid="agent-deploys"]')).toHaveCount(1);
+    await expect(agentPage.locator('[aria-label="Filing limits"]')).toHaveCount(0);
+    await expect(agentPage.locator('[data-testid="agent-limit-hour"]')).toHaveCount(0);
+    await expect(agentPage.locator('[data-testid="agent-limit-pending"]')).toHaveCount(0);
+    await expect(agentPage.locator('[data-testid="agent-save-limits"]')).toHaveCount(0);
+    await expect(agentPage.locator('[data-testid="agent-issues"]')).toHaveCount(0);
+    await expect(agentPage.locator('[data-testid="agent-issues-count"]')).toHaveCount(0);
+    await expect(agentPage.getByRole("heading", { name: "Filed issues" })).toHaveCount(0);
+    // The seeded worker notice names a run status; the page keeps it out.
+    await expect(agentPage.locator('[data-testid="agent-notice"]')).toHaveCount(0);
+
+    const rows = agentPage.locator('[data-testid="agent-deploy"]');
+    await expect(rows).toHaveCount(4);
+    const expected = [
+      { state: "running", at: runningStarted, commits: "1" },
+      { state: "stopped", at: stoppedAt, commits: "2" },
+      { state: "failed", at: failedAt, commits: "3" },
+      { state: "succeeded", at: succeededAt, commits: "0" },
+    ];
+    for (const [index, row] of expected.entries()) {
+      const locator = rows.nth(index);
+      await expect(locator).toHaveAttribute("data-state", row.state);
+      const at = locator.locator('[data-testid="agent-deploy-at"]');
+      await expect(at).toHaveAttribute("datetime", row.at);
+      await expect(at).not.toHaveText(row.at);
+      await expect(at).not.toHaveText("");
+      await expect(locator.locator('[data-testid="agent-deploy-commits"]')).toHaveText(row.commits);
+    }
+    await expect(agentPage.locator('[data-state="skipped"]')).toHaveCount(0);
+    await expect(
+      page.locator('[data-testid="agent-count-deploy-on-main"]'),
+    ).toHaveText("4");
+
+    // The page's Filed issues panel is gone, and the Issues workspace still
+    // opens over the same dashboard.
+    await page.locator('[data-testid="mode-issues"]').click();
+    await expect(page.locator('[data-testid="issues-overview"]')).toBeVisible();
+  } finally {
+    writeFileSync(manifest, originalManifest);
+    if (originalState === null) rmSync(stateFile, { force: true });
+    else writeFileSync(stateFile, originalState);
+    if (originalWorker === null) rmSync(workerFile, { force: true });
+    else writeFileSync(workerFile, originalWorker);
+  }
+});

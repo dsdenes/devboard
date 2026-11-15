@@ -273,33 +273,78 @@ test("an enabled gate keeps the Start control unchanged", () => {
   expect(within(view.container).getByTestId("agent-start")).toBeTruthy();
 });
 
-test("a push-triggered family renders no interval input and no cadence save", () => {
-  const view = presentAgent("deploy-on-main", deploySnapshot(), "open");
+test("the deploy page is its prompt plus one deploy history panel", () => {
+  const view = presentAgent(
+    "deploy-on-main",
+    deploySnapshot({
+      issues: [
+        {
+          title: "a filed deploy failure",
+          category: "deploy",
+          createdAt: "2026-11-03T10:15:00.000Z",
+          url: "https://example.test/issues/1",
+          state: "pending",
+          version: null,
+        },
+      ],
+      deploys: [
+        {
+          id: "run-2",
+          commit: "2222222",
+          startedAt: "2026-11-04T10:00:00.000Z",
+          endedAt: "2026-11-04T10:05:00.000Z",
+          state: "failed",
+          commits: 2,
+        },
+      ],
+    }),
+    "open",
+  );
+  const page = within(view.container);
+  expect(page.getByTestId("agent-prompt")).toBeTruthy();
+  expect(page.getByRole("heading", { name: "Deploy history" })).toBeTruthy();
+  expect(page.getAllByTestId("agent-deploys")).toHaveLength(1);
+  expect(page.getAllByTestId("agent-deploy")).toHaveLength(1);
   expect(agents.snapshot("deploy-on-main")?.cadence).toBeNull();
-  expect(within(view.container).queryByTestId("agent-cadence")).toBeNull();
-  expect(within(view.container).queryByTestId("agent-save-cadence")).toBeNull();
-  expect(within(view.container).queryByTestId("agent-last-run")).toBeNull();
-  expect(within(view.container).queryByTestId("agent-next-run")).toBeNull();
-  // Filing limits still render and save.
-  expect(within(view.container).getByTestId("agent-save-limits")).toBeTruthy();
+  expect(page.queryByTestId("agent-cadence")).toBeNull();
+  expect(page.queryByTestId("agent-save-cadence")).toBeNull();
+  expect(page.queryByTestId("agent-last-run")).toBeNull();
+  expect(page.queryByTestId("agent-next-run")).toBeNull();
+  expect(page.queryByLabelText("Filing limits")).toBeNull();
+  expect(page.queryByTestId("agent-limit-hour")).toBeNull();
+  expect(page.queryByTestId("agent-limit-pending")).toBeNull();
+  expect(page.queryByTestId("agent-save-limits")).toBeNull();
+  expect(page.queryByTestId("agent-issues")).toBeNull();
+  expect(page.queryByTestId("agent-issues-count")).toBeNull();
+  expect(page.queryByRole("heading", { name: "Filed issues" })).toBeNull();
 });
 
-test("a push-triggered family's limits save sends no interval", async () => {
-  const previous = connection.state;
-  connection.state = "open";
-  const socket = recordSettingsSends();
-  jest.useFakeTimers();
-  try {
-    const view = presentAgent("deploy-on-main", deploySnapshot());
-    await fireEvent.click(within(view.container).getByTestId("agent-save-limits"));
-    expect(settingsFrames(socket.sent)).toEqual([
-      { type: "setAgentSettings", id: "deploy-on-main", maxPerHour: null, maxPending: null },
-    ]);
-  } finally {
-    jest.useRealTimers();
-    socket.restore();
-    connection.state = previous;
-  }
+test("a deploy run-status notice stays out of the page while a foreign notice renders", () => {
+  const failed = presentAgent(
+    "deploy-on-main",
+    deploySnapshot({ notice: "deploy failed: the fixture deploy failed" }),
+    "open",
+  );
+  expect(within(failed.container).queryByTestId("agent-notice")).toBeNull();
+
+  const deployed = presentAgent(
+    "deploy-on-main",
+    deploySnapshot({ notice: "deployed 1234567" }),
+    "open",
+  );
+  expect(within(deployed.container).queryByTestId("agent-notice")).toBeNull();
+
+  const foreign = presentAgent(
+    "deploy-on-main",
+    deploySnapshot({
+      notice:
+        "Deploy on main is running for this root from another dashboard (STATE_DIR /elsewhere).",
+    }),
+    "open",
+  );
+  expect(within(foreign.container).getByTestId("agent-notice").textContent).toContain(
+    "another dashboard",
+  );
 });
 
 test("a frame without workers renders the page with no live worker row", () => {
@@ -1067,4 +1112,34 @@ test("the documentation panel distinguishes a pushed change from a released one"
   expect(
     within(view.container).getByTestId("agent-documentation-state").textContent?.trim(),
   ).toBe("released");
+});
+
+test("a cycle family keeps its filing limits and filed issues", () => {
+  const view = presentAgent(
+    "scout",
+    releaseSnapshot({
+      id: "scout",
+      label: "Auto Scout",
+      issues: [
+        {
+          title: "a scan finding",
+          category: "quality",
+          createdAt: "2026-11-03T10:15:00.000Z",
+          url: "https://example.test/issues/2",
+          state: "pending",
+          version: null,
+        },
+      ],
+    }),
+    "open",
+  );
+  const page = within(view.container);
+  expect(page.getByLabelText("Filing limits")).toBeTruthy();
+  expect(page.getByTestId("agent-limit-hour")).toBeTruthy();
+  expect(page.getByTestId("agent-limit-pending")).toBeTruthy();
+  expect(page.getByTestId("agent-save-limits")).toBeTruthy();
+  expect(page.getByTestId("agent-issues")).toBeTruthy();
+  expect(page.getByTestId("agent-issues-count").textContent).toContain("1");
+  expect(page.queryByTestId("agent-deploys")).toBeNull();
+  expect(page.queryByRole("heading", { name: "Deploy history" })).toBeNull();
 });

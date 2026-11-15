@@ -316,6 +316,10 @@ async fn family_snapshots_and_prompts_replay_in_registry_order() {
     assert_eq!(scout["limits"]["maxPending"], 5);
     assert_eq!(scout["detail"]["panel"], "activity");
     assert!(scout["issues"].as_array().expect("issues").is_empty());
+    assert!(
+        scout["deploys"].as_array().expect("deploys").is_empty(),
+        "every non-deploy family carries an empty history"
+    );
     assert_eq!(scout["notices"], json!([]));
     assert_eq!(scout["lastScan"], Value::Null);
     assert!(scout["workers"].as_array().expect("workers").is_empty());
@@ -3612,6 +3616,11 @@ async fn a_host_project_enables_deploy_and_gates_the_release_train() {
         json!({"state": "enabled", "reason": null}),
         "{deploy}"
     );
+    assert_eq!(
+        deploy["deploys"],
+        json!([]),
+        "a family with no recorded run lists no deploy"
+    );
 
     let release = state_agent(&all, "release-train").expect("a release-train snapshot");
     assert_eq!(
@@ -3689,8 +3698,8 @@ async fn a_deploy_start_on_the_source_checkout_refuses_and_spawns_nothing() {
 }
 
 #[tokio::test]
-async fn a_deploy_interval_is_refused_as_push_triggered() {
-    let root = host_scratch("deploy-interval");
+async fn a_deploy_settings_save_is_refused_because_the_family_has_none() {
+    let root = host_scratch("deploy-settings");
     let app = app_at(&root);
     let (conn, mut inbox) = connection_for(&app).await;
     devboard::agents_mode::handle(
@@ -3710,8 +3719,11 @@ async fn a_deploy_interval_is_refused_as_push_triggered() {
         .filter_map(|frame| frame.get("message").and_then(Value::as_str))
         .collect();
     assert_eq!(errors.len(), 1, "{all:?}");
-    assert!(errors[0].contains("push-triggered"), "{errors:?}");
-    assert!(errors[0].contains("no interval"), "{errors:?}");
+    assert_eq!(errors[0], "Deploy on main has no settings.", "{errors:?}");
+    assert!(
+        !root.join("state/deploy-on-main/settings.json").exists(),
+        "no deploy settings file is written"
+    );
 }
 
 #[tokio::test]

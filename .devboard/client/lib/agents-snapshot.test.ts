@@ -152,3 +152,55 @@ test("a push-triggered family projects a null cadence whatever the frame sends",
   expect(snapshot.cadence).toBeNull();
   expect(snapshot.availability).toEqual({ state: "enabled", reason: null });
 });
+
+test("a frame without deploys reads as an empty history", () => {
+  const agents = new AgentsStore();
+  agents.handleEvent({ type: "agentState", agent: frame() });
+  expect(agents.snapshot("scout")?.deploys).toEqual([]);
+});
+
+test("the deploy history projects newest first and drives the sidebar count", () => {
+  const agents = new AgentsStore();
+  agents.handleEvent({
+    type: "agentState",
+    agent: frame({
+      id: "deploy-on-main",
+      label: "Deploy on main",
+      cadence: null,
+      issues: [
+        {
+          title: "a filed deploy failure",
+          category: "deploy",
+          createdAt: "2026-11-03T10:15:00.000Z",
+          url: "https://example.test/issues/1",
+          state: "pending",
+          version: null,
+        },
+      ],
+      deploys: [
+        {
+          id: "run-2",
+          commit: "bbbbbbb",
+          startedAt: "2026-11-04T10:00:00.000Z",
+          endedAt: "2026-11-04T10:05:00.000Z",
+          state: "failed",
+          commits: 2,
+        },
+        {
+          id: "run-1",
+          commit: "aaaaaaa",
+          startedAt: "2026-11-03T09:00:00.000Z",
+          endedAt: "2026-11-03T09:05:00.000Z",
+          state: "succeeded",
+          commits: 0,
+        },
+      ],
+    }),
+  });
+  expect(agents.snapshot("deploy-on-main")?.deploys?.map((row) => row.id)).toEqual([
+    "run-2",
+    "run-1",
+  ]);
+  expect(agents.count("deploy-on-main")).toBe(2);
+  expect(agents.count("scout")).toBe(0);
+});

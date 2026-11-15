@@ -8,6 +8,7 @@
   import { statusTone } from "../status-tone";
   import type {
     AgentCycle,
+    AgentDeployRow,
     AgentDocumentationEntry,
     AgentIssueRow,
     AgentReleaseRow,
@@ -15,6 +16,7 @@
     AgentWorker,
   } from "../types";
   import AgentActivityBar from "./AgentActivityBar.svelte";
+  import AgentDeploysTable from "./AgentDeploysTable.svelte";
   import AgentDocumentationPanel from "./AgentDocumentationPanel.svelte";
   import AgentIssuesTable from "./AgentIssuesTable.svelte";
   import AgentPromptSection from "./AgentPromptSection.svelte";
@@ -35,8 +37,26 @@
   const snapshot = $derived(agents.snapshot(agentId));
   const lifecycle = $derived(snapshot?.lifecycle ?? "stopped");
   const sync = $derived<AgentSync>(snapshot?.sync ?? { state: "stale", at: null, error: null });
+  // Deploy on main lists its runs in one history panel; the run-status line
+  // that used to sit under the prompt repeats what a row already states.
+  const RUN_STATUS_NOTICE_PREFIXES = [
+    "deploying ",
+    "deployed ",
+    "deploy failed:",
+    "deploy skipped:",
+    "deploy stopped:",
+  ];
+  const notice = $derived(snapshot?.notice ?? null);
+  const visibleNotice = $derived(
+    notice !== null &&
+      descriptor?.deploys !== undefined &&
+      RUN_STATUS_NOTICE_PREFIXES.some((prefix) => notice.startsWith(prefix))
+      ? null
+      : notice,
+  );
   const issues = $derived<AgentIssueRow[]>(snapshot?.issues ?? []);
   const releases = $derived<AgentReleaseRow[]>(snapshot?.releases ?? []);
+  const deploys = $derived<AgentDeployRow[]>(snapshot?.deploys ?? []);
   const releaseRun = $derived(agents.releaseRun(agentId));
   const releaseGate = $derived(agents.releaseGate(agentId));
   // The run panel belongs to the Release Train page and only when the server
@@ -337,47 +357,49 @@
         </span>
       {/snippet}
       {#snippet footer()}
-        <AgentSettings
-          bind:cadenceText
-          bind:maxPerHourText
-          bind:maxPendingText
-          cadence={descriptor.cadence !== undefined}
-          lastRunAt={snapshot?.cadence?.lastRunAt ?? null}
-          nextRunAt={snapshot?.cadence?.nextRunAt ?? null}
-          cadenceError={settingsError?.field === "cadence" ? settingsError.message : null}
-          limitsError={settingsError?.field === "limits" ? settingsError.message : null}
-        >
-          {#snippet cadenceActions()}
-            <CommandButton
-              variant="secondary"
-              label="Save cadence"
-              busyLabel="Saving…"
-              evidence={() => agents.snapshot(agentId)?.detail}
-              command={() => saveSettings(`agent.cadence.${agentId}`)}
-              data-testid="agent-save-cadence"
-              data-command={`issues.${agentId}.settings.cadence`}
-              disabled={!connection.open || snapshot === null}
-            >
-              Save cadence
-            </CommandButton>
-            <SaveFeedback scope={`agent.cadence.${agentId}`} />
-          {/snippet}
-          {#snippet limitsActions()}
-            <CommandButton
-              variant="secondary"
-              label="Save limits"
-              busyLabel="Saving…"
-              evidence={() => agents.snapshot(agentId)?.detail}
-              command={() => saveSettings(`agent.limits.${agentId}`)}
-              data-testid="agent-save-limits"
-              data-command={`issues.${agentId}.settings.limits`}
-              disabled={!connection.open || snapshot === null}
-            >
-              Save limits
-            </CommandButton>
-            <SaveFeedback scope={`agent.limits.${agentId}`} />
-          {/snippet}
-        </AgentSettings>
+        {#if descriptor.limits !== undefined}
+          <AgentSettings
+            bind:cadenceText
+            bind:maxPerHourText
+            bind:maxPendingText
+            cadence={descriptor.cadence !== undefined}
+            lastRunAt={snapshot?.cadence?.lastRunAt ?? null}
+            nextRunAt={snapshot?.cadence?.nextRunAt ?? null}
+            cadenceError={settingsError?.field === "cadence" ? settingsError.message : null}
+            limitsError={settingsError?.field === "limits" ? settingsError.message : null}
+          >
+            {#snippet cadenceActions()}
+              <CommandButton
+                variant="secondary"
+                label="Save cadence"
+                busyLabel="Saving…"
+                evidence={() => agents.snapshot(agentId)?.detail}
+                command={() => saveSettings(`agent.cadence.${agentId}`)}
+                data-testid="agent-save-cadence"
+                data-command={`issues.${agentId}.settings.cadence`}
+                disabled={!connection.open || snapshot === null}
+              >
+                Save cadence
+              </CommandButton>
+              <SaveFeedback scope={`agent.cadence.${agentId}`} />
+            {/snippet}
+            {#snippet limitsActions()}
+              <CommandButton
+                variant="secondary"
+                label="Save limits"
+                busyLabel="Saving…"
+                evidence={() => agents.snapshot(agentId)?.detail}
+                command={() => saveSettings(`agent.limits.${agentId}`)}
+                data-testid="agent-save-limits"
+                data-command={`issues.${agentId}.settings.limits`}
+                disabled={!connection.open || snapshot === null}
+              >
+                Save limits
+              </CommandButton>
+              <SaveFeedback scope={`agent.limits.${agentId}`} />
+            {/snippet}
+          </AgentSettings>
+        {/if}
       {/snippet}
     </PageHeader>
 
@@ -412,8 +434,8 @@
       </div>
     {/if}
 
-    {#if snapshot !== null && snapshot.notice !== null}
-      <p class="agent-notice" data-testid="agent-notice" role="status">{snapshot.notice}</p>
+    {#if visibleNotice !== null}
+      <p class="agent-notice" data-testid="agent-notice" role="status">{visibleNotice}</p>
     {/if}
 
     {#if snapshot?.error !== null || sync.error !== null}
@@ -440,7 +462,16 @@
         {#if descriptor.documentation !== undefined}
           <AgentDocumentationPanel entries={documentation} />
         {/if}
-        {#if descriptor.releases !== undefined}
+        {#if descriptor.deploys !== undefined}
+          <section class="panel agent-page__deploys" aria-label={`${descriptor.label} deploy history`}>
+            <div class="panel__header">
+              <h2 class="panel__title">Deploy history</h2>
+            </div>
+            <div class="panel__body panel__body--flush">
+              <AgentDeploysTable {deploys} />
+            </div>
+          </section>
+        {:else if descriptor.releases !== undefined}
           <section class="panel agent-page__releases" aria-label={`${descriptor.label} release history`}>
             <div class="panel__header">
               <h2 class="panel__title">Releases</h2>
@@ -565,11 +596,13 @@
   }
 
   .agent-page__column .agent-page__issues,
+  .agent-page__column .agent-page__deploys,
   .agent-page__column .agent-page__releases {
     flex: 1 1 auto;
   }
 
   .agent-page__issues,
+  .agent-page__deploys,
   .agent-page__releases {
     display: flex;
     flex-direction: column;
@@ -578,6 +611,7 @@
   }
 
   .agent-page__issues :global(.panel__body),
+  .agent-page__deploys :global(.panel__body),
   .agent-page__releases :global(.panel__body) {
     flex: 1 1 auto;
     min-height: 0;

@@ -54,10 +54,6 @@ pub fn state_path(directory: &Path) -> PathBuf {
     directory.join("state.json")
 }
 
-pub fn settings_path(directory: &Path) -> PathBuf {
-    directory.join("settings.json")
-}
-
 /// The shared worker lock; each version gets its own beside it.
 pub fn lock_path(directory: &Path) -> PathBuf {
     directory.join("lock")
@@ -401,6 +397,9 @@ pub struct DeployRun {
     pub worktree: String,
     pub detail: Option<String>,
     pub peer: Option<DeployPeer>,
+    /// Non-merge commits since the nearest earlier successful deploy, or null
+    /// while the range cannot be read.
+    pub commits: Option<i64>,
 }
 
 impl DeployRun {
@@ -415,7 +414,24 @@ impl DeployRun {
             "worktree": self.worktree,
             "detail": self.detail,
             "peer": self.peer.as_ref().map(DeployPeer::to_json),
+            "commits": self.commits,
         })
+    }
+
+    /// The one row the Deploy history page lists. A skipped run deployed
+    /// nothing, so it is hidden and never anchors a later count.
+    pub fn to_history_json(&self) -> Option<Value> {
+        if self.state == DeployRunState::Skipped {
+            return None;
+        }
+        Some(json!({
+            "id": self.id,
+            "commit": self.commit,
+            "startedAt": self.started_at,
+            "endedAt": self.ended_at,
+            "state": self.state.as_str(),
+            "commits": self.commits,
+        }))
     }
 
     fn parse(value: &Value) -> Option<Self> {
@@ -433,6 +449,7 @@ impl DeployRun {
             worktree: text("worktree")?,
             detail: text("detail"),
             peer: object.get("peer").and_then(DeployPeer::parse),
+            commits: object.get("commits").and_then(Value::as_i64),
         })
     }
 }
@@ -539,6 +556,40 @@ fn record_run(runs: &[DeployRun], run: DeployRun) -> Vec<DeployRun> {
     next.insert(0, run);
     next.truncate(RUN_HISTORY_LIMIT);
     next
+}
+
+/// The nearest recorded run strictly earlier than `index` that succeeded.
+fn previous_success(runs: &[DeployRun], index: usize) -> Option<&DeployRun> {
+    runs.iter()
+        .skip(index + 1)
+        .find(|run| run.state == DeployRunState::Succeeded)
+}
+
+/// The non-merge commits one run deployed since the previous success. A run
+/// with no earlier success, or a range git cannot read, has no count.
+fn commit_count(repo_dir: &Path, runs: &[DeployRun], index: usize) -> Option<i64> {
+    let run = runs.get(index)?;
+    let base = previous_success(runs, index)?;
+    if base.commit == run.commit {
+        return Some(0);
+    }
+    let range = format!("{}..{}", base.commit, run.commit);
+    git(repo_dir, &["rev-list", "--count", "--no-merges", &range])
+        .ok()
+        .and_then(|text| text.parse::<i64>().ok())
+        .filter(|count| *count >= 0)
+}
+
+/// Fills every count the history is missing. A count already present is never
+/// recomputed, so a later start retries only the records still missing one.
+fn backfill_commits(repo_dir: &Path, runs: &mut [DeployRun]) {
+    for index in 0..runs.len() {
+        if runs[index].commits.is_some() {
+            continue;
+        }
+        let commits = commit_count(repo_dir, runs, index);
+        runs[index].commits = commits;
+    }
 }
 
 fn append_activity(lines: &mut Vec<String>, text: &str) {
@@ -663,51 +714,6 @@ pub fn deploy_worker_states(directory: &Path) -> Vec<DeployWorkerRecord> {
 /// Live owners of the family's shared lock, across every harness version.
 pub fn deploy_owners(directory: &Path) -> Vec<LockOwner> {
     live_lock_owners(&lock_path(directory))
-}
-
-/* ------------------------------------------------------------------------ */
-/* Settings                                                                  */
-/* ------------------------------------------------------------------------ */
-
-/// The deploy family has no interval: its trigger is an advance of `main`.
-/// Only the filing limits are a setting.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DeploySettings {
-    pub max_per_hour: Option<u32>,
-    pub max_pending: Option<u32>,
-}
-
-impl DeploySettings {
-    pub fn to_json(&self) -> Value {
-        json!({
-            "maxPerHour": self.max_per_hour,
-            "maxPending": self.max_pending,
-        })
-    }
-}
-
-pub fn read_settings(directory: &Path) -> DeploySettings {
-    let Some(text) = crate::sampling::text(&settings_path(directory)) else {
-        return DeploySettings::default();
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return DeploySettings::default();
-    };
-    let limit = |key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_u64)
-            .and_then(|number| u32::try_from(number).ok())
-            .filter(|number| (1..=100).contains(number))
-    };
-    DeploySettings {
-        max_per_hour: limit("maxPerHour"),
-        max_pending: limit("maxPending"),
-    }
-}
-
-pub fn write_settings(directory: &Path, settings: &DeploySettings) -> std::io::Result<()> {
-    write_json_atomic(&settings_path(directory), &settings.to_json())
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1077,7 +1083,6 @@ impl DeployWorkerOptions {
 
 struct Inner {
     shared: DeployState,
-    settings: DeploySettings,
     worker: Option<DeployWorkerRecord>,
     lock: Option<AcquiredLock>,
     stopping: bool,
@@ -1098,7 +1103,6 @@ impl Inner {
     fn new(repo_dir: &Path, now_ms: i64) -> Self {
         Self {
             shared: DeployState::empty("", &repo_dir.to_string_lossy(), now_ms),
-            settings: DeploySettings::default(),
             worker: None,
             lock: None,
             stopping: false,
@@ -1258,7 +1262,9 @@ impl DeployWorker {
         let now = (self.clock)();
         inner.shared = read_state(&self.directory)
             .unwrap_or_else(|| DeployState::empty("", &self.repo_dir.to_string_lossy(), now));
-        inner.settings = read_settings(&self.directory);
+        // A history recorded before the count existed is completed here, and
+        // the persisted state carries it from now on.
+        backfill_commits(&self.repo_dir, &mut inner.shared.runs);
         inner.last_commit = main_commit(&self.repo_dir);
         let acquisition = acquire_lock(
             &versioned_lock_path(&self.directory, self.harness_version.as_deref()),
@@ -1453,11 +1459,13 @@ impl DeployWorker {
             worktree: worktree.to_string_lossy().into_owned(),
             detail: None,
             peer: None,
+            commits: None,
         };
         {
             let mut inner = lock_unpoisoned(&self.inner);
             inner.active_run = Some(run.clone());
             inner.shared.runs = record_run(&inner.shared.runs, run.clone());
+            backfill_commits(&self.repo_dir, &mut inner.shared.runs);
             inner.shared.last_commit = Some(commit.clone());
             if let Some(worker) = inner.worker.as_mut() {
                 worker.active_run = Some(run_id.clone());
@@ -1616,6 +1624,7 @@ impl DeployWorker {
         {
             let mut inner = lock_unpoisoned(&self.inner);
             inner.shared.runs = record_run(&inner.shared.runs, run.clone());
+            backfill_commits(&self.repo_dir, &mut inner.shared.runs);
             inner.shared.last_commit = Some(run.commit.clone());
             inner.active_run = None;
             inner.notice = Some(notice.clone());

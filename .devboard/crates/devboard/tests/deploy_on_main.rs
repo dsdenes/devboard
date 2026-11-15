@@ -12,7 +12,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use devboard::app::{App, Conn};
+use devboard::command::Command as WireCommand;
+use devboard::config::Config;
+use devboard::journal::Journal;
 use serde_json::{json, Value};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::watch;
 
 use devboard::workers::deploy_on_main::{
@@ -682,4 +687,219 @@ fn the_registry_command_maps_the_deploy_family_to_its_worker() {
     )
     .expect("the harness source checkout refuses deploy");
     assert!(refusal.contains("host projects"), "{refusal}");
+}
+
+fn seeded_run(id: &str, state: &str, commit: &str, at: &str, commits: Option<i64>) -> Value {
+    let mut run = json!({
+        "version": 1,
+        "id": id,
+        "startedAt": at,
+        "endedAt": at,
+        "state": state,
+        "commit": commit,
+        "worktree": "/fixture/.worktree/deploy-main",
+        "detail": "seeded",
+        "peer": null,
+    });
+    if let Some(commits) = commits {
+        run["commits"] = json!(commits);
+    }
+    run
+}
+
+fn seed_history(fixture: &Fixture, runs: Vec<Value>) {
+    let directory = fixture.directory();
+    std::fs::create_dir_all(&directory).expect("the deploy directory");
+    let state = json!({
+        "version": 1,
+        "repo": fixture.repo.to_string_lossy(),
+        "root": fixture.repo.to_string_lossy(),
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+        "activity": [],
+        "runs": runs,
+        "issues": [],
+        "issuedCommits": [],
+        "lastCommit": null,
+    });
+    std::fs::write(directory.join("state.json"), format!("{state}\n"))
+        .expect("a seeded deploy state");
+}
+
+fn fixture_app(fixture: &Fixture) -> Arc<App> {
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: fixture.repo.join("adrs"),
+        repo_dir: fixture.repo.clone(),
+        goal_file: fixture.repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "omp acp".to_string(),
+        state_dir: fixture.state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 1);
+    App::new(config, journal)
+}
+
+async fn fixture_connection(app: &Arc<App>) -> (Conn, UnboundedReceiver<String>) {
+    let (outbox, inbox) = tokio::sync::mpsc::unbounded_channel();
+    let conn = Conn::new(outbox);
+    app.register(conn.clone()).await;
+    (conn, inbox)
+}
+
+fn drain(inbox: &mut UnboundedReceiver<String>) -> Vec<Value> {
+    let mut result = Vec::new();
+    while let Ok(text) = inbox.try_recv() {
+        result.push(serde_json::from_str(&text).expect("a JSON frame"));
+    }
+    result
+}
+
+#[tokio::test]
+async fn old_records_are_backfilled_and_the_deploy_snapshot_lists_the_history() {
+    let fixture = Fixture::new("history-backfill", true);
+    let base = fixture.head();
+    let _first = fixture.commit("first");
+    let failing = fixture.commit("failing");
+    let skipped = fixture.commit("skipped");
+    let stopped = fixture.commit("stopped");
+    let success = fixture.commit("success");
+    assert_eq!(fixture.head(), success);
+
+    // Newest first, exactly as the worker records them. Only the last success
+    // carries a count already; every other record predates the field.
+    seed_history(
+        &fixture,
+        vec![
+            seeded_run(
+                "run-5",
+                "succeeded",
+                &success,
+                "2026-11-05T05:00:00.000Z",
+                None,
+            ),
+            seeded_run(
+                "run-4",
+                "stopped",
+                &stopped,
+                "2026-11-04T04:00:00.000Z",
+                None,
+            ),
+            seeded_run(
+                "run-3",
+                "skipped",
+                &skipped,
+                "2026-11-03T03:00:00.000Z",
+                None,
+            ),
+            seeded_run(
+                "run-2",
+                "failed",
+                &failing,
+                "2026-11-02T02:00:00.000Z",
+                None,
+            ),
+            seeded_run(
+                "run-1",
+                "succeeded",
+                &base,
+                "2026-11-01T01:00:00.000Z",
+                Some(9),
+            ),
+        ],
+    );
+
+    let first_start = worker(&fixture, Gate::new().runner(), no_issues().0);
+    assert!(first_start.begin(), "the first worker starts");
+    let after_first = first_start.current_state();
+    let counts: Vec<(String, Option<i64>)> = after_first
+        .runs
+        .iter()
+        .map(|run| (run.id.clone(), run.commits))
+        .collect();
+    assert_eq!(
+        counts,
+        vec![
+            ("run-5".to_string(), Some(5)),
+            ("run-4".to_string(), Some(4)),
+            ("run-3".to_string(), Some(3)),
+            ("run-2".to_string(), Some(2)),
+            // A present count is never recomputed.
+            ("run-1".to_string(), Some(9)),
+        ],
+        "every missing count is filled from the last success; a present one stands"
+    );
+    drop(first_start);
+
+    let second_start = worker(&fixture, Gate::new().runner(), no_issues().0);
+    assert!(second_start.begin(), "the second worker starts");
+    let after_second = second_start.current_state();
+    assert_eq!(
+        after_second.runs, after_first.runs,
+        "a later start changes no count and reorders no run"
+    );
+    drop(second_start);
+
+    let app = fixture_app(&fixture);
+    let (conn, mut inbox) = fixture_connection(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = drain(&mut inbox);
+    let deploy = all
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .flat_map(|frame| {
+            frame
+                .get("agents")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|agent| agent.get("id").and_then(Value::as_str) == Some("deploy-on-main"))
+        .expect("a deploy-on-main snapshot");
+    let deploys = deploy["deploys"].as_array().expect("a deploys array");
+    assert_eq!(deploys.len(), 4, "the skipped run is hidden: {deploy}");
+    assert_eq!(deploys[0]["state"], "succeeded");
+    assert_eq!(deploys[0]["commit"], json!(success));
+    assert_eq!(deploys[0]["commits"], json!(5));
+    assert_eq!(deploys[1]["state"], "stopped");
+    assert_eq!(deploys[1]["commits"], json!(4));
+    assert_eq!(deploys[2]["state"], "failed");
+    assert_eq!(deploys[2]["commits"], json!(2));
+    assert_eq!(deploys[3]["state"], "succeeded");
+    assert_eq!(deploys[3]["commits"], json!(9));
+    assert!(
+        deploys
+            .iter()
+            .all(|row| row.get("commit") != Some(&json!(skipped))),
+        "a skipped run is never a row: {deploy}"
+    );
+
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &WireCommand::SetAgentSettings {
+            id: Some(json!("deploy-on-main")),
+            minutes: Some(json!(5)),
+            max_per_hour: Some(json!(10)),
+            max_pending: Some(json!(5)),
+        },
+    )
+    .await;
+    let all = drain(&mut inbox);
+    let errors: Vec<&str> = all
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("error"))
+        .filter_map(|frame| frame.get("message").and_then(Value::as_str))
+        .collect();
+    assert_eq!(errors.len(), 1, "{all:?}");
+    assert!(
+        errors[0].contains("Deploy on main has no settings"),
+        "{errors:?}"
+    );
+    assert!(
+        !fixture.directory().join("settings.json").exists(),
+        "no deploy settings file is created"
+    );
 }

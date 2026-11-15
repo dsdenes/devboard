@@ -672,6 +672,8 @@ struct SnapshotInput {
     issues: Vec<Value>,
     documentation: Vec<Value>,
     releases: Vec<Value>,
+    /// Deploy on main's history, newest first; empty for every other family.
+    deploys: Vec<Value>,
     pending: u64,
     sync: AgentSync,
     detail: Detail,
@@ -802,6 +804,47 @@ fn normalize_release(entry: &Value) -> Option<Value> {
     }))
 }
 
+const DEPLOY_RUN_STATES: [&str; 4] = ["succeeded", "failed", "stopped", "running"];
+
+/// One deploy-history row, validated against every field the page reads.
+fn normalize_deploy(entry: &Value) -> Option<Value> {
+    let object = entry.as_object()?;
+    let id = object.get("id").and_then(Value::as_str)?;
+    let commit = object.get("commit").and_then(Value::as_str)?;
+    let state = object.get("state").and_then(Value::as_str)?;
+    if !DEPLOY_RUN_STATES.contains(&state) {
+        return None;
+    }
+    let timestamp = |key: &str| match object.get(key) {
+        Some(Value::Null) | None => Some(Value::Null),
+        Some(Value::String(text)) => Some(Value::String(text.clone())),
+        _ => None,
+    };
+    let started_at = timestamp("startedAt")?;
+    let ended_at = timestamp("endedAt")?;
+    let commits = match object.get("commits") {
+        Some(Value::Null) | None => Value::Null,
+        Some(Value::Number(number)) => json!(number.as_u64()?),
+        _ => return None,
+    };
+    Some(json!({
+        "id": id,
+        "commit": commit,
+        "startedAt": started_at,
+        "endedAt": ended_at,
+        "state": state,
+        "commits": commits,
+    }))
+}
+
+fn normalize_deploys(values: Vec<Value>) -> Vec<Value> {
+    values
+        .iter()
+        .filter_map(normalize_deploy)
+        .take(DOCUMENTATION_HISTORY_LIMIT)
+        .collect()
+}
+
 fn normalize_workers(workers: Vec<Worker>) -> Vec<Value> {
     workers
         .into_iter()
@@ -892,6 +935,7 @@ fn project_snapshot(descriptor: &Descriptor, input: SnapshotInput) -> Value {
         "sync": input.sync.to_json(),
         "detail": detail,
         "releases": releases,
+        "deploys": normalize_deploys(input.deploys),
         "notice": nullable_text(input.notice),
         "notices": input.notices,
         "lastScan": input.last_scan.unwrap_or(Value::Null),
@@ -4182,6 +4226,7 @@ fn persisted_snapshot(descriptor: &Descriptor, state_dir: &Path, repo_dir: &Path
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default(),
+            deploys: Vec::new(),
             pending,
             sync,
             detail,
@@ -5504,6 +5549,7 @@ impl RepoFamily {
                 issues: rows,
                 documentation,
                 releases: Vec::new(),
+                deploys: Vec::new(),
                 pending,
                 sync,
                 detail: Detail::Activity {
@@ -6726,6 +6772,7 @@ fn empty_repo_input(descriptor: &Descriptor, repo_dir: &Path) -> SnapshotInput {
         issues: Vec::new(),
         documentation: Vec::new(),
         releases: Vec::new(),
+        deploys: Vec::new(),
         pending: 0,
         sync: AgentSync::stale(),
         detail: if descriptor.panel == "activity" {
@@ -7916,6 +7963,7 @@ impl WatchdogFamily {
                 issues: issue_rows,
                 documentation: Vec::new(),
                 releases: Vec::new(),
+                deploys: Vec::new(),
                 pending,
                 sync: self.forge.sync(now),
                 detail: Detail::Cycles(cycles),
@@ -9224,6 +9272,7 @@ impl McpFamily {
                 issues: issue_rows,
                 documentation: Vec::new(),
                 releases: Vec::new(),
+                deploys: Vec::new(),
                 pending,
                 sync: self.forge.sync(now),
                 detail: Detail::Cycles(cycles),
@@ -10391,6 +10440,7 @@ impl ReleaseFamily {
                 issues: Vec::new(),
                 documentation: Vec::new(),
                 releases,
+                deploys: Vec::new(),
                 pending: 0,
                 sync,
                 detail: Detail::Activity {
@@ -11105,6 +11155,18 @@ impl DeployFamily {
                         .and_then(|run| run.ended_at.clone().or_else(|| run.started_at.clone()))
                 })
             });
+        // The history the page lists: every recorded run except a skipped one,
+        // newest first, within the state's existing 20-run bound.
+        let deploys: Vec<Value> = state
+            .as_ref()
+            .map(|state| {
+                state
+                    .runs
+                    .iter()
+                    .filter_map(crate::workers::deploy_on_main::DeployRun::to_history_json)
+                    .collect()
+            })
+            .unwrap_or_default();
         project_snapshot(
             self.descriptor,
             SnapshotInput {
@@ -11140,6 +11202,7 @@ impl DeployFamily {
                 issues,
                 documentation: Vec::new(),
                 releases: Vec::new(),
+                deploys,
                 pending: 0,
                 sync: AgentSync::stale(),
                 detail: Detail::Activity {
@@ -11466,34 +11529,11 @@ impl DeployFamily {
 
     fn set_settings(
         &self,
-        minutes: Option<u64>,
-        max_per_hour: Option<Value>,
-        max_pending: Option<Value>,
+        _minutes: Option<u64>,
+        _max_per_hour: Option<Value>,
+        _max_pending: Option<Value>,
     ) -> AgentResult {
-        if minutes.is_some() {
-            return AgentResult::failure(
-                "Deploy on main is push-triggered: it has no interval, so no cadence can be saved. It deploys once per advance of main."
-                    .to_string(),
-            );
-        }
-        let (Some(max_per_hour), Some(max_pending)) =
-            (strict_limit(&max_per_hour), strict_limit(&max_pending))
-        else {
-            return AgentResult::failure(
-                "Both limits must be empty or integers from 1 through 100.".to_string(),
-            );
-        };
-        let settings = crate::workers::deploy_on_main::DeploySettings {
-            max_per_hour,
-            max_pending,
-        };
-        if let Err(error) = crate::workers::deploy_on_main::write_settings(
-            &self.state_dir.join("deploy-on-main"),
-            &settings,
-        ) {
-            return AgentResult::failure(format!("Could not save the settings: {error}"));
-        }
-        AgentResult::ok()
+        AgentResult::failure("Deploy on main has no settings.".to_string())
     }
 }
 

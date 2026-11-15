@@ -150,6 +150,17 @@ export interface AgentReleaseRow {
   url: string | null;
 }
 
+/** One Deploy on main run, newest first, as the deploy history lists it. */
+export interface AgentDeployRow {
+  id: string;
+  commit: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  state: "succeeded" | "failed" | "stopped" | "running";
+  /** Non-merge commits since the previous successful deploy; null when unknown. */
+  commits: number | null;
+}
+
 export type AgentDetail = AgentActivityDetail | AgentCyclesDetail;
 
 /** One live worker process of a background agent family. */
@@ -191,6 +202,8 @@ export interface AgentSnapshot {
   documentation: AgentDocumentationEntry[];
   /** Verified releases, newest first; empty for most agents. */
   releases: AgentReleaseRow[];
+  /** Deploy on main's run history, newest first; empty for every other agent. */
+  deploys?: AgentDeployRow[];
   /** Findings or fingerprints waiting for a successful filing. */
   pending: number;
   sync: AgentSync;
@@ -229,6 +242,8 @@ export interface AgentSnapshotInput {
   documentation?: AgentDocumentationEntry[];
   /** Optional so an adapter of an older server keeps projecting. */
   releases?: AgentReleaseRow[];
+  /** Optional so an adapter of an older server keeps projecting. */
+  deploys?: AgentDeployRow[];
   pending: number;
   sync: AgentSync;
   detail: AgentDetail;
@@ -268,7 +283,8 @@ export interface AgentDescriptor {
   lifecycle: readonly AgentLifecycle[];
   /** Absent for a push-triggered family: it persists no interval. */
   cadence?: AgentCadence;
-  limits: {
+  /** Absent for a family that persists no settings, such as Deploy on main. */
+  limits?: {
     maxPerHour: AgentLimitField;
     maxPending: AgentLimitField;
     default: AgentLimits;
@@ -294,6 +310,10 @@ export interface AgentDescriptor {
   /** A verified release history that replaces the filed-issues table. */
   releases?: {
     testId: "agent-releases";
+  };
+  /** A deploy history that replaces the filing limits and filed-issues panel. */
+  deploys?: {
+    testId: "agent-deploys";
   };
   tab: {
     id: string;
@@ -386,18 +406,20 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     throw new AgentRegistryError(`${id}: cadence must declare a valid minutes field`);
   }
   const limits = descriptor.limits;
-  if (!isRecord(limits) || !isAgentLimits(limits.default)) {
-    throw new AgentRegistryError(`${id}: limits must declare nullable defaults`);
-  }
-  for (const field of ["maxPerHour", "maxPending"] as const) {
-    const schema = limits[field];
-    if (
-      !isRecord(schema) ||
-      schema.min !== 1 ||
-      schema.max !== 100 ||
-      schema.nullable !== true
-    ) {
-      throw new AgentRegistryError(`${id}: ${field} must be a nullable 1..100 field`);
+  if (limits !== undefined) {
+    if (!isRecord(limits) || !isAgentLimits(limits.default)) {
+      throw new AgentRegistryError(`${id}: limits must declare nullable defaults`);
+    }
+    for (const field of ["maxPerHour", "maxPending"] as const) {
+      const schema = limits[field];
+      if (
+        !isRecord(schema) ||
+        schema.min !== 1 ||
+        schema.max !== 100 ||
+        schema.nullable !== true
+      ) {
+        throw new AgentRegistryError(`${id}: ${field} must be a nullable 1..100 field`);
+      }
     }
   }
   const commands = descriptor.commands;
@@ -436,6 +458,12 @@ export function validateAgentDescriptor(value: unknown): AgentDescriptor {
     (!isRecord(descriptor.releases) || descriptor.releases.testId !== "agent-releases")
   ) {
     throw new AgentRegistryError(`${id}: releases must declare the shared panel`);
+  }
+  if (
+    descriptor.deploys !== undefined &&
+    (!isRecord(descriptor.deploys) || descriptor.deploys.testId !== "agent-deploys")
+  ) {
+    throw new AgentRegistryError(`${id}: deploys must declare the shared panel`);
   }
   if (
     !isRecord(descriptor.tab) ||
@@ -640,6 +668,36 @@ function normalizeReleases(value: unknown): AgentReleaseRow[] {
   return rows.slice(0, 20);
 }
 
+const AGENT_DEPLOY_STATES = ["succeeded", "failed", "stopped", "running"] as const;
+
+/** The deploy history a page lists, newest first and bounded. */
+function normalizeDeploys(value: unknown): AgentDeployRow[] {
+  if (!Array.isArray(value)) return [];
+  const rows: AgentDeployRow[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.commit !== "string") {
+      continue;
+    }
+    if (!AGENT_DEPLOY_STATES.includes(entry.state as (typeof AGENT_DEPLOY_STATES)[number])) {
+      continue;
+    }
+    if (!(entry.startedAt === null || typeof entry.startedAt === "string")) continue;
+    if (!(entry.endedAt === null || typeof entry.endedAt === "string")) continue;
+    if (!(entry.commits === null || isIntegerIn(entry.commits, 0, Number.MAX_SAFE_INTEGER))) {
+      continue;
+    }
+    rows.push({
+      id: entry.id,
+      commit: entry.commit,
+      startedAt: entry.startedAt as string | null,
+      endedAt: entry.endedAt as string | null,
+      state: entry.state as AgentDeployRow["state"],
+      commits: entry.commits as number | null,
+    });
+  }
+  return rows.slice(0, 20);
+}
+
 /** The one sort every agent's filed-issue table uses. */
 export function sortAgentIssues(rows: readonly AgentIssueRow[]): AgentIssueRow[] {
   const instant = (value: string): number => {
@@ -771,6 +829,7 @@ export function projectAgentSnapshot(
     sync: { state: sync.state, at: sync.at, error: sync.error },
     detail: projectedDetail,
     releases: normalizeReleases(input.releases),
+    deploys: normalizeDeploys(input.deploys),
     notice: nullableTimestamp(input.notice),
     error: nullableTimestamp(input.error),
     timer: projectedTimer,
@@ -1099,14 +1158,10 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
       file: "deploy-on-main.md",
     },
     lifecycle: AGENT_LIFECYCLES,
-    limits: {
-      maxPerHour: { min: 1, max: 100, nullable: true },
-      maxPending: { min: 1, max: 100, nullable: true },
-      default: { maxPerHour: null, maxPending: null },
-    },
     commands: SHARED_COMMANDS,
     issues: SHARED_ISSUES,
     detail: { panel: "activity", testId: "agent-detail" },
+    deploys: { testId: "agent-deploys" },
     tab: { id: "deploy-on-main", kind: "deploy-on-main", title: "Deploy on main" },
   }),
 ]);
