@@ -11,7 +11,10 @@ export interface ResourceSettings {
 
 /** The governor's current counters; the slice fields are zero without one. */
 export interface ResourceLive {
+  /** Live peers that hold the global cap. */
   activeAgents: number;
+  /** Live Discover peers outside the cap. */
+  exemptAgents: number;
   availableMb: number;
   slicePresent: boolean;
   memoryHighMb: number;
@@ -66,8 +69,14 @@ function liveRow(value: unknown): ResourceLive | undefined {
   ) {
     return undefined;
   }
+  // A frame from a harness that predates the separate count carries no exempt
+  // peers because it never admitted one outside the cap.
+  if (row.exemptAgents !== undefined && !isCount(row.exemptAgents)) {
+    return undefined;
+  }
   return {
     activeAgents: row.activeAgents,
+    exemptAgents: isCount(row.exemptAgents) ? row.exemptAgents : 0,
     availableMb: row.availableMb,
     slicePresent: row.slicePresent,
     memoryHighMb: row.memoryHighMb,

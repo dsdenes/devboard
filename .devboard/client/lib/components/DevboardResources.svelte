@@ -241,6 +241,10 @@
             <dd data-testid="resource-live-agents">{budget.live.activeAgents}</dd>
           </div>
           <div class="resources-live__row">
+            <dt>Exempt agents</dt>
+            <dd data-testid="resource-live-exempt-agents">{budget.live.exemptAgents}</dd>
+          </div>
+          <div class="resources-live__row">
             <dt>Available</dt>
             <dd data-testid="resource-live-available">{budget.live.availableMb} MB</dd>
           </div>

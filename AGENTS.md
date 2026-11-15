@@ -365,10 +365,15 @@ The API Standards worker reads the project copy: `apiStandardsConfig().skillDocu
 Every worker, run owner, and `omp acp` peer the dashboard starts runs inside the transient
 `devboard.slice`; the dashboard process itself stays outside it, so a slice kill never takes the
 control plane down. One global cap bounds concurrent agent peers across the Issues worker, every
-background family, goal, flow, and discover runs, the Release Train, and manual runs. A start at
-the cap or below the memory reserve is deferred with a recorded reason and retried on a later
-tick; it is never marked failed, and running work is never stopped for budget reasons. The
-kernel's hard slice limit is the only kill.
+background family, goal, flow, the Release Train, and manual runs. Discover runs are outside that
+cap: a Discover start is admitted while every cap slot is held, so its peer never waits in a
+silent `starting` state and never records a cap deferral. The memory reserve and the slice's
+kernel `MemoryMax` still defer or kill a Discover start like any other. A start at the cap or
+below the memory reserve is deferred with a recorded reason and retried on a later tick; it is
+never marked failed, and running work is never stopped for budget reasons. The kernel's hard
+slice limit is the only kill. The Resources page reports the cap's live count and, beside it, the
+live Discover peers outside the cap in a separate exempt count; the cap's holder groups and
+deferral lines name only cap slots.
 
 The budget is derived from host memory and CPUs: the reserve is `max(1 GiB, 25% of MemTotal)`,
 the hard maximum is `MemTotal - reserve`, the soft high mark is 80% of the maximum, and the agent

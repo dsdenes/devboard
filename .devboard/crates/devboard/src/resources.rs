@@ -4,8 +4,17 @@
 //! concurrent agent peers and a memory reserve below which no new start is
 //! admitted. The cap is shared by every process that starts a peer — the
 //! dashboard, each worker, each run owner — through slot files in the state
-//! directory, so the Issues worker, the background families, goal, flow, and
-//! discover runs, the Release Train, and manual runs all draw from one pool.
+//! directory, so the Issues worker, the background families, goal, flow, the
+//! Release Train, and manual runs all draw from one pool. Discover runs
+//! are outside the cap: a Discover start is admitted while every cap slot is
+//! held, so its peer never waits in a silent `starting` state and never
+//! records a cap deferral. The memory reserve and the slice's kernel
+//! `MemoryMax` still apply to it.
+//!
+//! Reporting keeps the two sets apart: [`Governor::active_agents`] counts the
+//! slots that hold the cap, [`Governor::exempt_agents`] counts the live
+//! Discover peers outside it, and the cap's holder groups name only the
+//! former.
 //!
 //! On Linux the same governor owns the transient `devboard.slice`. Every
 //! worker, run owner, and peer the dashboard starts is either started through
@@ -29,6 +38,9 @@ use serde_json::{json, Value};
 
 /// The state-directory subtree the governor owns.
 pub const RESOURCES_DIRECTORY: &str = "resources";
+/// The run family the peer cap excludes. A Discover start is admitted at a
+/// full cap; the memory reserve still applies to it.
+pub const DISCOVER_KIND: &str = "discover";
 /// The transient slice every agentic process joins on Linux.
 pub const SLICE_NAME: &str = "devboard.slice";
 /// The `IOWeight` the slice and every transient scope under it carry. The
@@ -560,6 +572,17 @@ fn cap_groups(slots: &[Value]) -> Vec<CapGroup> {
     groups
 }
 
+/// True when a start of this kind is outside the peer cap.
+fn cap_exempt(kind: &str) -> bool {
+    kind == DISCOVER_KIND
+}
+
+/// True when a live slot record belongs outside the peer cap. A record an
+/// older harness wrote carries no marker and counts toward the cap.
+fn slot_exempt(slot: &Value) -> bool {
+    slot.get("exempt").and_then(Value::as_bool).unwrap_or(false)
+}
+
 /* ------------------------------------------------------------------------ */
 /* Governor                                                                  */
 /* ------------------------------------------------------------------------ */
@@ -945,18 +968,24 @@ impl Governor {
 
     /// Tries once to admit a start. A deferral leaves the caller's work
     /// queued; nothing is marked failed and nothing already running stops.
+    ///
+    /// A Discover start is outside the cap: its slot is created while every
+    /// cap slot is held. The memory reserve still defers it like any other
+    /// start, and its slot is marked so the cap never counts it.
     pub fn try_acquire(&self, kind: &str, starter: &str, label: &str) -> Result<Slot, DeferReason> {
         self.refresh_settings();
         let settings = self.settings();
+        let exempt = cap_exempt(kind);
         // The count and the slot creation happen under one lock so two
         // processes cannot both see a free slot at the cap boundary.
         let _guard = file_lock(&self.directory.join(LOCK_FILE));
-        let active = self.live_slots();
-        if active.len() >= settings.max_agent_peers as usize {
+        let (cap_slots, _) = self.split_live_slots();
+        let active = cap_slots.len() as u32;
+        if !exempt && active >= settings.max_agent_peers {
             return Err(DeferReason::Cap {
-                active: active.len() as u32,
+                active,
                 cap: settings.max_agent_peers,
-                groups: cap_groups(&active),
+                groups: cap_groups(&cap_slots),
             });
         }
         if let Some(available) = self.memory.available_mb() {
@@ -967,11 +996,11 @@ impl Governor {
                 });
             }
         }
-        self.create_slot(kind, starter, label)
+        self.create_slot(kind, starter, label, exempt)
             .ok_or_else(|| DeferReason::Cap {
-                active: active.len() as u32,
+                active,
                 cap: settings.max_agent_peers,
-                groups: cap_groups(&active),
+                groups: cap_groups(&cap_slots),
             })
     }
 
@@ -989,25 +1018,31 @@ impl Governor {
         }
     }
 
-    /// The live slot count.
+    /// The live slot count that holds the cap. A Discover peer never counts.
     pub fn active_agents(&self) -> u32 {
-        self.live_slots().len() as u32
+        self.split_live_slots().0.len() as u32
+    }
+
+    /// The live Discover peers outside the cap.
+    pub fn exempt_agents(&self) -> u32 {
+        self.split_live_slots().1.len() as u32
     }
 
     /// The live slots grouped by the starter that created each one. The counts
     /// sum to [`Governor::active_agents`], and a slot an older harness wrote
-    /// without a starter counts as `unknown`.
+    /// without a starter counts as `unknown`. A Discover peer is outside the
+    /// cap and never appears here.
     pub fn active_by_starter(&self) -> BTreeMap<String, u32> {
-        cap_groups(&self.live_slots())
+        cap_groups(&self.split_live_slots().0)
             .into_iter()
             .map(|group| (group.starter, group.count))
             .collect()
     }
 
-    /// How many live slots one starter holds. A family between cadence ticks
-    /// holds none, which is narrower than its worker still running.
+    /// How many live cap slots one starter holds. A family between cadence
+    /// ticks holds none, which is narrower than its worker still running.
     pub fn active_for(&self, starter: &str) -> u32 {
-        cap_groups(&self.live_slots())
+        cap_groups(&self.split_live_slots().0)
             .into_iter()
             .find(|group| group.starter == starter)
             .map(|group| group.count)
@@ -1103,11 +1138,26 @@ impl Governor {
         live
     }
 
-    fn create_slot(&self, kind: &str, starter: &str, label: &str) -> Option<Slot> {
+    /// The live slot records split into the ones that hold the cap and the
+    /// ones outside it. The two lengths sum to the live slot count.
+    fn split_live_slots(&self) -> (Vec<Value>, Vec<Value>) {
+        let mut cap = Vec::new();
+        let mut exempt = Vec::new();
+        for slot in self.live_slots() {
+            if slot_exempt(&slot) {
+                exempt.push(slot);
+            } else {
+                cap.push(slot);
+            }
+        }
+        (cap, exempt)
+    }
+
+    fn create_slot(&self, kind: &str, starter: &str, label: &str, exempt: bool) -> Option<Slot> {
         let id = uuid::Uuid::new_v4().to_string();
         let path = self.slots_directory().join(format!("{id}.json"));
         let pid = std::process::id();
-        let record = json!({
+        let mut record = json!({
             "id": id,
             "pid": pid,
             "pidStart": process_start_ticks(pid),
@@ -1116,6 +1166,9 @@ impl Governor {
             "label": label,
             "startedAt": iso_now(),
         });
+        if exempt {
+            record["exempt"] = Value::Bool(true);
+        }
         write_json_atomically(&path, &record).ok()?;
         Some(Slot {
             path,
@@ -1292,13 +1345,17 @@ impl Governor {
         let saved = self.saved_settings();
         let effective = self.settings();
         let info = self.slice_info();
+        // One read answers both counts, so the cap's count and the exempt
+        // count always add up to the slots a reader can list.
+        let (cap_slots, exempt_slots) = self.split_live_slots();
         json!({
             "type": "resourcesState",
             "state": {
                 "saved": if saved.is_empty() { Value::Null } else { saved.to_json() },
                 "effective": effective.to_json(),
                 "live": {
-                    "activeAgents": self.active_agents(),
+                    "activeAgents": cap_slots.len() as u32,
+                    "exemptAgents": exempt_slots.len() as u32,
                     "availableMb": self.memory.available_mb().unwrap_or(0),
                     "slicePresent": info.present,
                     "memoryHighMb": info.memory_high_mb,

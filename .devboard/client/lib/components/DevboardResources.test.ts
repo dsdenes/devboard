@@ -29,6 +29,7 @@ function deliver(
       effective,
       live: {
         activeAgents: 0,
+        exemptAgents: 0,
         availableMb: 50000,
         slicePresent: true,
         memoryHighMb: 38587,
@@ -75,4 +76,13 @@ test("a changed budget still reseeds the form", async () => {
   // A save made by another client changes the budget and lands here.
   await deliver({ ...BUDGET, maxAgentPeers: 8 });
   expect(input.value).toBe("8");
+});
+
+test("the live panel keeps the cap count beside the exempt Discover count", async () => {
+  const view = render(DevboardResources);
+  await tick();
+  await deliver(BUDGET, { activeAgents: 3, exemptAgents: 1 });
+
+  expect(view.getByTestId("resource-live-agents").textContent).toBe("3");
+  expect(view.getByTestId("resource-live-exempt-agents").textContent).toBe("1");
 });

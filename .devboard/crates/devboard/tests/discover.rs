@@ -1,5 +1,6 @@
 //! Discover Mode: the crawl, its published artifacts, and the remote target.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,8 +10,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use devboard::app::{App, Conn};
 use devboard::command::Command;
 use devboard::config::Config;
+use devboard::detached_run::{
+    detached_run_directory, read_detached_run_state, DetachedRunState, DetachedRunStatus,
+};
 use devboard::journal::Journal;
 use devboard::providers::{save_subscriptions, ProviderId, StoredSubscription};
+use devboard::resources::{CapGroup, DeferReason, Governor, GovernorOptions, MemoryReader};
+use devboard::supervision::live_process;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -2272,4 +2278,248 @@ fn a_tracked_host_file_grounds_a_concept() {
         glossary.concepts[0].grounding,
         vec!["code:src/order.ts".to_string()]
     );
+}
+
+/// A memory reader a test can hold below the reserve.
+struct FixedMemory {
+    total_mb: u64,
+    available_mb: u64,
+    cpus: u32,
+}
+
+impl MemoryReader for FixedMemory {
+    fn total_mb(&self) -> u64 {
+        self.total_mb
+    }
+
+    fn available_mb(&self) -> Option<u64> {
+        Some(self.available_mb)
+    }
+
+    fn cpu_count(&self) -> u32 {
+        self.cpus
+    }
+}
+
+/// The detached state once it reports `running`, or `None` when the deadline
+/// passes first. The caller keeps its own bounds so a deferred start fails the
+/// test instead of hanging it.
+async fn wait_for_detached_running(
+    state_dir: &Path,
+    repo: &Path,
+    run_id: &str,
+    timeout: Duration,
+) -> Option<DetachedRunState> {
+    let directory = detached_run_directory(state_dir, repo, "discover", run_id);
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(state) = read_detached_run_state(&directory) {
+            if state.status == DetachedRunStatus::Running {
+                return Some(state);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A Discover start is outside the peer cap: with every cap slot held by a
+/// non-Discover peer, both a single agent and Run all reach a live running
+/// peer without a cap deferral, while a non-Discover start at that same
+/// moment is still deferred with the cap's own grouped message. The memory
+/// reserve keeps deferring every kind of start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_discover_start_is_admitted_at_the_peer_cap() {
+    let scratch = Scratch::new("peer-cap");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let state = scratch.path().join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    provider(&state);
+    let command = format!("{} --discover --discover-delay-ms=30000", stub_agent());
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = App::new(
+        config(&repo, &state, command.clone()),
+        Journal::open(&state, &repo, 0),
+    );
+
+    // One cap slot, held by a non-Discover starter: the cap is full.
+    let mut settings = app.resources.settings();
+    settings.max_agent_peers = 1;
+    app.resources
+        .save(settings)
+        .expect("the cap of one is saved");
+    let _held = app
+        .resources
+        .try_acquire("issue", "Issues", "issue #1")
+        .expect("the holder takes the only cap slot");
+
+    // The same moment, a non-Discover start is deferred with the cap's own
+    // grouped message naming its holder.
+    match app.resources.try_acquire("issue", "Issues", "issue #2") {
+        Err(DeferReason::Cap {
+            active,
+            cap,
+            groups,
+        }) => {
+            assert_eq!((active, cap), (1, 1));
+            assert_eq!(
+                groups,
+                vec![CapGroup {
+                    starter: "Issues".to_string(),
+                    count: 1,
+                }]
+            );
+        }
+        other => panic!("a non-Discover start at the cap must defer: {other:?}"),
+    }
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    let peer_label = format!("{command} --no-skills ({})", repo.display());
+
+    // A single agent is admitted at the full cap.
+    app.command(
+        &conn,
+        Command::DiscoverAgent {
+            agent: Some(json!("sheet")),
+        },
+    )
+    .await;
+    let started = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStarted"),
+        Duration::from_secs(10),
+    )
+    .await;
+    let started = started.last().expect("a discoverStarted frame");
+    let run_id = started["runId"].as_str().expect("a run id").to_string();
+    let running = wait_for_detached_running(&state, &repo, &run_id, Duration::from_secs(5)).await;
+    if running.is_none() {
+        app.command(&conn, Command::StopDiscover).await;
+    }
+    let running = running.expect("a single Discover agent runs at the full cap");
+    let pid = running.peer.expect("the admitted run records its peer").pid;
+    assert!(live_process(pid), "the admitted peer is live");
+    let live = app.resources.state_event()["state"]["live"].clone();
+    assert_eq!(
+        live["activeAgents"],
+        json!(1),
+        "the cap counts only its slot"
+    );
+    assert_eq!(
+        live["exemptAgents"],
+        json!(1),
+        "the Discover peer is outside the cap"
+    );
+    assert_eq!(
+        app.resources.active_by_starter(),
+        BTreeMap::from([("Issues".to_string(), 1)]),
+        "a Discover peer is never a cap holder"
+    );
+    assert_eq!(
+        app.resources.status_json()["slots"]
+            .as_array()
+            .expect("the live slots")
+            .len(),
+        2,
+        "the cap count and the exempt count cover every live peer"
+    );
+    assert!(
+        app.resources
+            .read_deferrals()
+            .iter()
+            .all(|line| line["label"] != json!(peer_label)),
+        "no deferral names the admitted Discover peer"
+    );
+    app.command(&conn, Command::StopDiscover).await;
+    frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(10),
+    )
+    .await;
+    // The stopped owner releases its slot only after its peer is proven gone.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let exempt = app.resources.state_event()["state"]["live"]["exemptAgents"]
+            .as_u64()
+            .unwrap_or(1);
+        if exempt == 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stopped peer released its slot"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Run all is admitted at the same full cap.
+    app.command(&conn, Command::DiscoverProject).await;
+    let started = frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStarted"),
+        Duration::from_secs(10),
+    )
+    .await;
+    let started = started.last().expect("a discoverStarted frame");
+    assert_eq!(started["agent"], json!("sheet"));
+    assert_eq!(started["mode"], json!("all"));
+    let run_id = started["runId"].as_str().expect("a run id").to_string();
+    let running = wait_for_detached_running(&state, &repo, &run_id, Duration::from_secs(5)).await;
+    if running.is_none() {
+        app.command(&conn, Command::StopDiscover).await;
+    }
+    let running = running.expect("Run all runs its first agent at the full cap");
+    let pid = running.peer.expect("the admitted run records its peer").pid;
+    assert!(live_process(pid), "the Run all peer is live");
+    let live = app.resources.state_event()["state"]["live"].clone();
+    assert_eq!(live["activeAgents"], json!(1));
+    assert_eq!(live["exemptAgents"], json!(1));
+    assert!(
+        app.resources
+            .read_deferrals()
+            .iter()
+            .all(|line| line["label"] != json!(peer_label)),
+        "no deferral names the Run all peer"
+    );
+    app.command(&conn, Command::StopDiscover).await;
+    frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // The memory reserve still defers a Discover start exactly like any other.
+    let reserve_state = scratch.path().join("reserve-state");
+    std::fs::create_dir_all(&reserve_state).expect("a reserve state directory");
+    let governor = Governor::new(
+        &reserve_state,
+        GovernorOptions {
+            memory: Arc::new(FixedMemory {
+                total_mb: 96_000,
+                available_mb: 1_000,
+                cpus: 32,
+            }),
+            env: BTreeMap::new(),
+            slice: false,
+        },
+    );
+    for kind in ["discover", "issue"] {
+        match governor.try_acquire(kind, "Run owner", "omp acp (repo)") {
+            Err(DeferReason::Memory {
+                available_mb,
+                reserve_mb,
+            }) => {
+                assert_eq!((available_mb, reserve_mb), (1_000, 24_000));
+            }
+            other => panic!("{kind} below the reserve must defer on memory: {other:?}"),
+        }
+    }
 }

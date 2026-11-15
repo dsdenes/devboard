@@ -277,10 +277,13 @@ or a CLI only joins it and never rewrites its budget.
 The page asks for `getResources` when the connection opens and renders every `resourcesState`
 frame. Its header names whether the budget is saved settings or derived defaults, and
 `resource-unsaved` marks inputs that differ from the effective values. The live panel is read-only:
-`resource-live-agents` and `resource-live-available` always render, while the slice's
-`resource-live-high`, `resource-live-max`, and `resource-live-current` render only when the slice
-exists. A frame whose effective or live figures are not finite non-negative numbers is dropped, so
-no label ever shows a value the server did not send.
+`resource-live-agents`, `resource-live-exempt-agents`, and `resource-live-available` always render,
+while the slice's `resource-live-high`, `resource-live-max`, and `resource-live-current` render only
+when the slice exists. `resource-live-agents` counts the peers that hold the global cap, and
+`resource-live-exempt-agents` counts the live Discover peers outside it, so the two together cover
+every live peer. A Discover peer is never a cap holder and never appears in a cap deferral. A frame
+whose effective or live figures are not finite non-negative numbers is dropped, so no label ever
+shows a value the server did not send.
 
 ### Single-agent activity bar
 
@@ -4078,9 +4081,12 @@ A start the resource governor defers is never a failure: the issue stays queued,
 recorded with its reason under `<STATE_DIR>/resources/`, and the Overview states it in
 `data-testid="issues-deferral"` as
 `issue #<n> deferred: <A> agent peer(s) already run at the cap of <C> (<starter> <count>, ...); the start is deferred`.
-`<C>` is the effective saved cap, `<A>` is the number of live governed slots, and each `<starter>`
+`<C>` is the effective saved cap, `<A>` is the number of live cap slots, and each `<starter>`
 is the starter name recorded on the slots that starter created. Groups are ordered by count
-descending, then starter name ascending, and the counts sum to `<A>`. The same grouping answers
+descending, then starter name ascending, and the counts sum to `<A>`. A Discover start is outside
+the cap: it is admitted while every cap slot is held, never records a cap deferral, and its live
+peer is counted separately as the exempt count, so it is never named in `<A>` or a group. The
+memory reserve still defers a Discover start like any other start. The same grouping answers
 each family's agent-page `peers` count, so the line and the page name one set of live peers.
 That line is the deferral in force, not a message: the worker recomputes it on every pass and
 drops it as soon as no start is deferred — a peer ends, the queue empties, or the worker pauses or stops — so the Overview never

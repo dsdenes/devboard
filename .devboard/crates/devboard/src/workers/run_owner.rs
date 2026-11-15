@@ -124,7 +124,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         .context("listening for SIGINT")?;
 
-    let (peer, mut events) = match connect_peer(&owner, &command, &cwd, permission).await {
+    let (peer, mut events) = match connect_peer(&owner, &kind, &command, &cwd, permission).await {
         Ok(connected) => connected,
         Err(message) => {
             owner.finish(DetachedRunStatus::Failed, Some(message)).await;
@@ -524,6 +524,7 @@ impl Owner {
 
 async fn connect_peer(
     owner: &Owner,
+    kind: &str,
     command: &str,
     cwd: &std::path::Path,
     permission: PermissionPolicy,
@@ -535,6 +536,7 @@ async fn connect_peer(
     String,
 > {
     let options = AcpConnectionOptions::new(command, cwd.display().to_string())
+        .with_kind(kind)
         .with_starter("Run owner")
         .with_permission_policy(permission);
     let _ = owner;

@@ -132,6 +132,10 @@ pub struct AcpConnectionOptions {
     /// generated `mcp.json` registration.
     pub mcp_servers: Option<Vec<SessionMcpServer>>,
     pub permission_policy: PermissionPolicy,
+    /// The run family that opens this peer, e.g. `peer` for a dashboard start
+    /// or `discover` for a Discover run owner. The governor reads it to decide
+    /// whether the start is inside the peer cap.
+    pub kind: String,
     /// The surface that starts this peer. It is recorded on the governor slot
     /// so a cap deferral can name who holds the cap.
     pub starter: String,
@@ -148,9 +152,16 @@ impl AcpConnectionOptions {
             env: None,
             mcp_servers: None,
             permission_policy: PermissionPolicy::default(),
+            kind: "peer".to_string(),
             starter: "Agent".to_string(),
             permit: None,
         }
+    }
+
+    /// Names the run family that opens this peer on its governor slot.
+    pub fn with_kind(mut self, kind: impl Into<String>) -> Self {
+        self.kind = kind.into();
+        self
     }
 
     /// Names the surface that starts this peer on its governor slot.
@@ -468,7 +479,7 @@ impl AcpConnection {
                     let label = format!("{} ({})", options.command, options.cwd);
                     Some(Arc::new(
                         governor
-                            .wait_for_admission("peer", &options.starter, &label)
+                            .wait_for_admission(&options.kind, &options.starter, &label)
                             .await,
                     ))
                 }

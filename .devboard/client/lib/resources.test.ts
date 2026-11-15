@@ -105,6 +105,7 @@ function frame(
     effective: options.effective ?? DERIVED,
     live: {
       activeAgents: 0,
+      exemptAgents: 0,
       availableMb: 50000,
       slicePresent: true,
       memoryHighMb: 38587,
@@ -149,6 +150,7 @@ test("a resources frame updates the budget and confirms the pending save", () =>
   expect(store.state?.effective).toEqual(DERIVED);
   expect(store.state?.live).toEqual({
     activeAgents: 0,
+    exemptAgents: 0,
     availableMb: 50000,
     slicePresent: true,
     memoryHighMb: 38587,
