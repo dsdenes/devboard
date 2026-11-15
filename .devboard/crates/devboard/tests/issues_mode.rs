@@ -536,6 +536,54 @@ async fn an_operator_closed_issue_leaves_the_attached_queue() {
     );
 }
 
+/// A second process writing this version's state document is not the attached
+/// worker: its notice, error, and poll never answer for the worker the lock
+/// names. Two Issues workers of one version could otherwise alternate one
+/// state file, and the dashboard showed the other process's stale
+/// `Issue #461 was closed` notice beside "0 running" every few seconds.
+#[tokio::test]
+async fn a_state_document_another_process_wrote_never_answers_for_the_attached_worker() {
+    let (repo, state) = scratch("foreign-writer");
+    let owner = spawn_versioned_owner(&repo, &state, "1.2.3");
+    let directory = versioned_worker_directory(&repo, &state, "1.2.3");
+    std::fs::create_dir_all(&directory).expect("a worker state directory");
+    let mut document = state_document(&repo, "stopped", json!([]));
+    // A live process no lock names: it once held this version's lock, and the
+    // file it left behind is still this version's state document.
+    document["worker"] = attached_worker(&std::process::id(), &state);
+    document["notice"] = json!("Issue #461 was closed on the tracker; its run was stopped.");
+    document["lastError"] = json!("Agent process exited before answering.");
+    std::fs::write(
+        directory.join("state.json"),
+        serde_json::to_string(&document).expect("state JSON"),
+    )
+    .expect("the other process's state");
+
+    let bridge = IssuesBridge::new(options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["attached"], true);
+    assert_eq!(
+        snapshot["worker"]["pid"],
+        json!(owner.pid),
+        "the lock owner is named, not the process that wrote the document"
+    );
+    assert_eq!(snapshot["notice"], Value::Null);
+    assert_eq!(snapshot["lastError"], Value::Null);
+    assert_eq!(snapshot["agents"], json!([]));
+}
+
 /// The bridge's own read is older than the close it just made, so the row it
 /// still carries is dropped the same way.
 #[tokio::test]

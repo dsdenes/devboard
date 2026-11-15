@@ -345,17 +345,15 @@ fn pid_alive(pid: u32) -> bool {
 /// The platform facts a lock owner's liveness depends on.
 ///
 /// A lock records the owner's pid and start instant. A pid alone cannot prove
-/// identity: the OS recycles pids. `/proc` supplies the start instant, and a
-/// platform without it can only prove the pid is alive. Keeping the two probes
-/// behind one trait makes that rule explicit and lets a test run it where
-/// `/proc` is unavailable.
+/// identity: the OS recycles pids. `/proc` supplies the start instant; when it
+/// cannot be read, a live pid still keeps the lock, because only a vanished
+/// owner may be replaced. Keeping the probes behind one trait lets a test run
+/// that rule where `/proc` is unavailable.
 trait LockProbe: Send + Sync {
     fn pid_alive(&self, pid: u32) -> bool;
     /// The instant `pid` started, in epoch milliseconds, when the platform
     /// reports it.
     fn process_started_at(&self, pid: u32) -> Option<i64>;
-    /// Whether this platform has a process table that reports start instants.
-    fn reports_process_start(&self) -> bool;
 }
 
 struct SystemLockProbe;
@@ -367,10 +365,6 @@ impl LockProbe for SystemLockProbe {
 
     fn process_started_at(&self, pid: u32) -> Option<i64> {
         process_started_at(pid)
-    }
-
-    fn reports_process_start(&self) -> bool {
-        cfg!(target_os = "linux")
     }
 }
 
@@ -411,7 +405,12 @@ fn owner_alive_with(owner: &LockOwner, probe: &dyn LockProbe) -> bool {
     let recorded = epoch_millis(recorded);
     match probe.process_started_at(owner.pid) {
         Some(actual) => (actual - recorded).abs() <= 2_000,
-        None => !probe.reports_process_start(),
+        // The pid is live, so an unreadable start instant is a failed read,
+        // never proof of a dead owner. Stealing a live worker's lock gives one
+        // checkout two writers on one state document, and each write clears
+        // the other's agents from the dashboard; keeping the lock is the only
+        // safe answer to "could not prove either way".
+        None => true,
     }
 }
 
@@ -1388,6 +1387,20 @@ struct WorkerRecord {
     state_dir: String,
     harness_version: Option<String>,
     argv: Vec<String>,
+}
+
+/// The worker one live lock names. A projection whose version's state document
+/// is missing, or was overwritten by another process, still knows this pid
+/// serves the checkout; the document only adds what it is doing.
+fn worker_from_owner(owner: &LockOwner) -> WorkerRecord {
+    WorkerRecord {
+        pid: owner.pid,
+        start_ticks: crate::supervision::start_ticks(owner.pid),
+        started_at: owner.started_at.clone(),
+        state_dir: owner.state_dir.clone(),
+        harness_version: owner.harness_version.clone(),
+        argv: owner.argv.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -3838,7 +3851,12 @@ impl IssuesBridge {
         } else {
             "paused".to_string()
         };
-        let candidates: Vec<IssuesState> = if attached && !newest.is_empty() {
+        // An attached worker's own document is the only state that may answer
+        // for it. Every version writes `workers/<version>/state.json`, so a
+        // second process writing this version's path (a worker whose lock was
+        // reclaimed) would otherwise supply a foreign notice, error, and poll
+        // as if the attached worker had published them.
+        let candidates: Vec<IssuesState> = if attached {
             newest.clone()
         } else {
             sorted.clone()
@@ -3936,8 +3954,15 @@ impl IssuesBridge {
             && lifecycle != "stopped"
             && live_states.iter().any(|state| state.enabled);
         let paused = lifecycle == "pausing" || lifecycle == "paused";
-        let attached_worker = if attached && !attached_pairs.is_empty() {
-            active.as_ref().and_then(|state| state.worker.clone())
+        let attached_worker = if attached {
+            // The lock proves the process serves this checkout. Its document
+            // only adds activity, so a worker whose state has not arrived —
+            // or whose version's path another process wrote — is still named
+            // by the pid the lock carries, never as "none".
+            active
+                .as_ref()
+                .and_then(|state| state.worker.clone())
+                .or_else(|| attached_owners.first().map(worker_from_owner))
         } else {
             None
         };
@@ -5967,6 +5992,9 @@ struct IssuesWorker {
     runs: Vec<RunEntry>,
     draining: bool,
     stopping: bool,
+    /// Set when another process holds this checkout's lock: this worker is no
+    /// longer the one worker, so it publishes nothing more and exits.
+    detached: bool,
     polling: bool,
     next_poll_due: std::time::Instant,
     lock: Option<(PathBuf, String)>,
@@ -6012,6 +6040,7 @@ impl IssuesWorker {
             runs: Vec::new(),
             draining: false,
             stopping: false,
+            detached: false,
             polling: false,
             next_poll_due: std::time::Instant::now(),
             lock: None,
@@ -6188,7 +6217,66 @@ impl IssuesWorker {
             .collect()
     }
 
+    /// True when another process holds this checkout's lock now: the file is
+    /// gone or carries a token other than the one this worker took. A worker
+    /// that never took a lock has lost nothing.
+    ///
+    /// A path that still exists but could not be read proves neither way, so
+    /// it never ends a worker: the cost of stopping on a failed read is a
+    /// killed worker with live agents, while a stale lock is caught by the next
+    /// successful read.
+    fn lost_lock(&self) -> bool {
+        let Some((path, token)) = &self.lock else {
+            return false;
+        };
+        let Some(text) = crate::sampling::text(path) else {
+            return !path.exists();
+        };
+        let owner: Option<Value> = serde_json::from_str(text.as_str()).ok();
+        owner
+            .as_ref()
+            .and_then(|value| value.get("token"))
+            .and_then(Value::as_str)
+            .map(|held| held != token)
+            .unwrap_or(true)
+    }
+
+    /// Stops this worker when the lock names another process.
+    ///
+    /// The version's state document has one writer by construction: a second
+    /// worker of this version cannot hold the lock. A worker whose lock was
+    /// reclaimed or removed — a stale-lock judgement on a live process, a
+    /// removed file — is that second writer, and every publish would clear the
+    /// real owner's agents from the dashboard for a frame. It stops without
+    /// publishing, so the owner's document stays intact, and it releases only
+    /// the claims it proved are its own.
+    fn verify_lock(&mut self) {
+        if self.detached || !self.lost_lock() {
+            return;
+        }
+        self.detached = true;
+        self.stopping = true;
+        eprintln!(
+            "issues: {} no longer names this worker; stopping without publishing",
+            lock_path(&self.repo_dir).display()
+        );
+        let numbers: Vec<u64> = self.active.keys().copied().collect();
+        for number in numbers {
+            self.close_peer(number);
+        }
+        self.active.clear();
+        for number in std::mem::take(&mut self.claiming) {
+            release_issue_claim(&self.repo_dir, number);
+        }
+        // Forgetting the lock keeps the exit path from releasing a lock that
+        // names another process; its token would not match anyway.
+        self.lock = None;
+    }
+
     fn publish(&mut self) {
+        if self.detached {
+            return;
+        }
         self.state.updated_at = iso_now();
         let value = serde_json::to_value(&self.state).unwrap_or(Value::Null);
         let text = crate::jsjson::stringify(&value);
@@ -6211,6 +6299,10 @@ impl IssuesWorker {
     /* ------------------------------------------------------------------ */
 
     async fn tick(&mut self) {
+        if self.stopping {
+            return;
+        }
+        self.verify_lock();
         if self.stopping {
             return;
         }
@@ -7148,6 +7240,12 @@ impl IssuesWorker {
     }
 
     async fn on_event(&mut self, event: WorkerEvent) {
+        // An event can arrive between ticks; a worker that lost its lock must
+        // not answer one with a publish that clears the owner's agents.
+        self.verify_lock();
+        if self.stopping {
+            return;
+        }
         match event {
             WorkerEvent::Activity { number, entry } => self.record_activity(number, entry),
             WorkerEvent::Question { number, question } => self.record_question(number, question),
@@ -8281,10 +8379,6 @@ mod tests {
         fn process_started_at(&self, _pid: u32) -> Option<i64> {
             None
         }
-
-        fn reports_process_start(&self) -> bool {
-            false
-        }
     }
 
     fn owner() -> LockOwner {
@@ -8299,7 +8393,11 @@ mod tests {
     }
 
     #[test]
-    fn a_live_owner_on_a_platform_without_proc_is_live() {
+    fn a_live_owner_whose_start_instant_is_unreadable_keeps_its_lock() {
+        // The pid is live but the platform answered no start instant: a failed
+        // read is not proof of a dead owner. Answering "dead" here let a
+        // second worker reclaim a live worker's lock, and both then wrote one
+        // state document.
         assert!(owner_alive_with(&owner(), &NoProcProbe { alive: true }));
         assert!(!owner_alive_with(&owner(), &NoProcProbe { alive: false }));
     }
@@ -8330,6 +8428,49 @@ mod tests {
         assert!(acquired.is_ok(), "the stale lock was not reclaimed");
         let owner = read_lock(&path).expect("the new lock");
         assert_eq!(owner.pid, std::process::id());
+    }
+
+    /// A worker that lost its lock stops at once. Two processes of one version
+    /// writing one state document alternate the dashboard's whole projection —
+    /// agents empty, worker "none", and the other process's stale notice — so
+    /// the loser must publish nothing more and leave.
+    #[tokio::test]
+    async fn a_worker_whose_lock_was_taken_stops_without_publishing() {
+        let (repo, state) = unit_root("lost-lock");
+        let mut worker = worker(&repo, &state);
+        assert!(worker.start("acme/app"), "the first worker starts");
+        let published_path = versioned_state_path(&state, &repo, Some("1.2.3"));
+        let published = std::fs::read(&published_path).expect("the published state");
+
+        let thief = LockOwner {
+            pid: 4242,
+            started_at: iso_now(),
+            repo: repo.display().to_string(),
+            state_dir: state.display().to_string(),
+            harness_version: Some("1.2.3".to_string()),
+            argv: Vec::new(),
+        };
+        let mut document = thief.to_json();
+        document["token"] = json!("another-process");
+        std::fs::write(
+            versioned_lock_path(&repo, Some("1.2.3")),
+            crate::jsjson::stringify(&document),
+        )
+        .expect("the reclaimed lock");
+
+        worker.tick().await;
+
+        assert!(worker.detached, "the lock names another process");
+        assert!(worker.stopping, "the worker leaves its run loop");
+        assert!(
+            worker.lock.is_none(),
+            "it forgets a lock it no longer holds"
+        );
+        assert_eq!(
+            std::fs::read(&published_path).expect("the owner's state"),
+            published,
+            "a detached worker writes nothing"
+        );
     }
 
     /// A `running` record whose worker pid is dead and whose `harnessVersion`
