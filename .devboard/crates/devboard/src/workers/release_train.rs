@@ -1039,6 +1039,36 @@ pub fn write_worker_state(path: &Path, state: &ReleaseTrainWorkerRecord) -> std:
     write_json_atomic(path, &value)
 }
 
+/// Records an explicit Stop on the newest persisted worker record, so a
+/// dashboard that starts with no live worker starts nothing. A drain never
+/// calls this: it keeps the enabled intent for the replacing dashboard.
+pub fn disable_latest_worker(directory: &Path) -> bool {
+    let mut newest: Option<(String, PathBuf, ReleaseTrainWorkerRecord)> = None;
+    for directory in worker_state_directories(directory) {
+        let path = directory.join("worker.json");
+        let Some(record) = read_worker_state(&path) else {
+            continue;
+        };
+        let replace = newest
+            .as_ref()
+            .map(|(updated, _, _)| record.updated_at > *updated)
+            .unwrap_or(true);
+        if replace {
+            newest = Some((record.updated_at.clone(), path, record));
+        }
+    }
+    let Some((_, path, mut record)) = newest else {
+        return false;
+    };
+    if !record.enabled && record.lifecycle == AgentLifecycle::Stopped {
+        return false;
+    }
+    record.enabled = false;
+    record.lifecycle = AgentLifecycle::Stopped;
+    record.updated_at = iso_from_millis(now_millis());
+    write_worker_state(&path, &record).is_ok()
+}
+
 /* ------------------------------------------------------------------------ */
 /* Locks                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -1654,15 +1684,10 @@ fn release_tag_regex() -> &'static regex::Regex {
 // Refusals carry the gate's full explanation so callers can surface it as-is;
 // boxing a cold failure path would only add indirection.
 #[allow(clippy::result_large_err)]
-/// Every release tag of the pinned line: its commit is merged into `target`,
-/// or the commit's parent is (one release commit past a tip of this line).
-///
-/// A pinned release commits its bump only on the tag and never advances
-/// `main`, so the newest release is not merged into the target. Anchoring the
-/// line on the release commit's parent keeps the next gate moving past that
-/// release, while a tag an operator made elsewhere satisfies neither test and
-/// never moves the range base.
-fn merged_tags(run: &GateGit, target: &str) -> Result<Vec<ReleaseTrainTag>, ReleaseTrainGate> {
+/// Every release tag of the pinned line, read through the shared release-line
+/// rule: its commit is an ancestor of `target`, or that commit's parent is
+/// (one release commit past a tip of this line).
+fn gate_tags(run: &GateGit, target: &str) -> Result<Vec<ReleaseTrainTag>, ReleaseTrainGate> {
     let listed = run(&["tag", "--list", "v*"]);
     if listed.code != 0 {
         return Err(gate_failure(
@@ -1670,38 +1695,20 @@ fn merged_tags(run: &GateGit, target: &str) -> Result<Vec<ReleaseTrainTag>, Rele
             &listed,
         ));
     }
-    let mut tags = Vec::new();
-    for line in listed
-        .stdout
-        .split('\n')
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let Some(captures) = release_tag_regex().captures(line) else {
-            continue;
-        };
-        let version = captures.get(1).map(|entry| entry.as_str()).unwrap_or("");
-        if version.is_empty() {
-            continue;
-        }
-        let peeled = format!("refs/tags/{line}^{{commit}}");
-        let commit = run(&["rev-parse", &peeled]);
-        if commit.code != 0 {
-            continue;
-        }
-        let commit = commit.stdout.trim().to_string();
-        let merged = run(&["merge-base", "--is-ancestor", &commit, target]).code == 0;
-        let parent = run(&["rev-parse", &format!("{commit}^")]);
-        let parent_merged = parent.code == 0
-            && run(&["merge-base", "--is-ancestor", parent.stdout.trim(), target]).code == 0;
-        if merged || parent_merged {
-            tags.push(ReleaseTrainTag {
-                tag: line.to_string(),
-                version: version.to_string(),
-            });
-        }
-    }
-    Ok(tags)
+    let tags = crate::release_line::release_tags(
+        &mut |args| {
+            let outcome = run(args);
+            (outcome.code == 0).then(|| outcome.stdout.trim().to_string())
+        },
+        target,
+    );
+    Ok(tags
+        .into_iter()
+        .map(|tag| ReleaseTrainTag {
+            tag: tag.tag,
+            version: tag.version,
+        })
+        .collect())
 }
 
 /// One deterministic answer for the tracked branch: release, nothing, or
@@ -1759,7 +1766,7 @@ pub fn check_release_train(repo_dir: &Path, options: ReleaseTrainGateOptions) ->
             ),
         };
     }
-    let tags = match merged_tags(&run, &target) {
+    let tags = match gate_tags(&run, &target) {
         Ok(tags) => tags,
         Err(failure) => return failure,
     };
@@ -2047,25 +2054,15 @@ fn git_stdout(repo_dir: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The release tags reachable from `head`, with their `v` stripped.
-pub fn release_tags(repo_dir: &Path, head: &str) -> Vec<ReleaseTrainTag> {
-    let Some(stdout) = git_stdout(repo_dir, &["tag", "--merged", head, "--list", "v*"]) else {
-        return Vec::new();
-    };
-    let mut tags = Vec::new();
-    for line in stdout.split('\n') {
-        let line = line.trim();
-        if let Some(captures) = release_tag_regex().captures(line) {
-            let version = captures.get(1).map(|entry| entry.as_str()).unwrap_or("");
-            if !version.is_empty() {
-                tags.push(ReleaseTrainTag {
-                    tag: format!("v{version}"),
-                    version: version.to_string(),
-                });
-            }
-        }
-    }
-    tags
+/// The release tags on `head`'s line, with their `v` stripped.
+pub fn line_tags(repo_dir: &Path, head: &str) -> Vec<ReleaseTrainTag> {
+    crate::release_line::release_tags_in(repo_dir, head)
+        .into_iter()
+        .map(|tag| ReleaseTrainTag {
+            tag: tag.tag,
+            version: tag.version,
+        })
+        .collect()
 }
 
 /// The highest release version whose tag points exactly at `sha`.
@@ -3851,7 +3848,7 @@ impl ReleaseTrainWorker {
         if release_version_at(&self.repo_dir, &failure.sha).as_deref() == Some(version) {
             return true;
         }
-        release_tags(&self.repo_dir, tip)
+        line_tags(&self.repo_dir, tip)
             .iter()
             .any(|tag| tag.version == version)
     }
@@ -4046,8 +4043,17 @@ impl ReleaseTrainWorker {
                     run.state = ReleaseTrainRunState::Failed;
                     run.detail = Some(detail.clone());
                     if let Some(worker) = inner.worker.as_mut() {
-                        worker.lifecycle = AgentLifecycle::Failed;
-                        worker.last_error = Some(detail.clone());
+                        if crate::publish::is_integration_refusal(detail) {
+                            // The integrated release commit is the repair, not
+                            // a family fault: the run failed to ship, but the
+                            // worker keeps its enabled intent and stays
+                            // running for the next due tick.
+                            worker.lifecycle = AgentLifecycle::Running;
+                            worker.last_error = None;
+                        } else {
+                            worker.lifecycle = AgentLifecycle::Failed;
+                            worker.last_error = Some(detail.clone());
+                        }
                     }
                 }
                 self.activity(&format!("release failed: {detail}"));
@@ -4204,9 +4210,15 @@ impl ReleaseTrainWorker {
         } else {
             None
         };
+        let stopping = inner.stopping;
         if let Some(worker) = inner.worker.as_mut() {
             worker.lifecycle = AgentLifecycle::Stopped;
-            worker.enabled = false;
+            // Only an operator Stop disables the family. A version drain ends
+            // this worker but keeps the intent, so the dashboard that replaces
+            // it starts a worker again without an operator Start.
+            if stopping {
+                worker.enabled = false;
+            }
         }
         self.publish_worker(&mut inner);
         if let Some(lock) = inner.lock.take() {

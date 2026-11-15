@@ -404,6 +404,61 @@ fn discovery_deduplicates_excludes_the_watchdog_and_resolves_the_harness() {
 }
 
 #[test]
+fn a_launcher_shaped_serve_command_is_discovered_without_environment_variables() {
+    let repo = scratch("launcher-shape");
+    let state_dir = repo.join(".devboard").join(".tmp");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness tree");
+    std::fs::create_dir_all(&state_dir).expect("a state directory");
+    let process = ProcessSnapshot {
+        pid: 5252,
+        cmdline: format!(
+            "devboard serve --repo-dir {} --port 8210 --state-dir {}",
+            repo.display(),
+            state_dir.display()
+        ),
+        env: HashMap::new(),
+        cwd: Some(repo.clone()),
+        exe: None,
+        ancestors: vec![1],
+    };
+    let instances = instances_from_processes_including(&[process], &HashSet::new(), Some(&repo));
+    assert_eq!(
+        instances.len(),
+        1,
+        "the command line alone names the dashboard"
+    );
+    assert_eq!(instances[0].repo_dir, repo.to_string_lossy());
+    assert_eq!(instances[0].port, 8210);
+    assert_eq!(instances[0].state_dir, state_dir.to_string_lossy());
+}
+
+#[test]
+fn a_verification_fixture_without_its_opt_in_is_ignored() {
+    let root = scratch("fixture-discovery");
+    let fixture = root.join(".devboard").join(".test-tmp").join("fixture");
+    std::fs::create_dir_all(&fixture).expect("a fixture repository");
+    let snapshot = |environment: HashMap<String, String>| ProcessSnapshot {
+        pid: 5353,
+        cmdline: format!(
+            "devboard serve --repo-dir {} --port 8211",
+            fixture.display()
+        ),
+        env: environment,
+        cwd: Some(fixture.clone()),
+        exe: None,
+        ancestors: vec![1],
+    };
+    assert!(
+        instances_from_processes(&[snapshot(HashMap::new())], &HashSet::new()).is_empty(),
+        "a verification fixture is invisible without its opt-in"
+    );
+    let opted_in = HashMap::from([("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string())]);
+    let instances = instances_from_processes(&[snapshot(opted_in)], &HashSet::new());
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].pid, 5353);
+}
+
+#[test]
 fn a_replacement_that_presents_its_parent_proc_link_is_discovered() {
     let repo = scratch("proc-link");
     let harness = repo.join(".devboard");

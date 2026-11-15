@@ -2,6 +2,7 @@
 //! newest release the update check has seen.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -206,7 +207,10 @@ pub fn host_harness_dir(repo_dir: &Path) -> PathBuf {
 /// tag reachable from its `HEAD`.
 fn source_version(directory: &Path) -> Option<String> {
     static CACHE: Mutex<Option<HashMap<PathBuf, Option<PathBuf>>>> = Mutex::new(None);
-    let harness = directory.to_path_buf();
+    // One spelling per directory: `<repo>/../repo/.devboard` and its canonical
+    // path name the same harness and must hit the same cache entry and root
+    // comparison.
+    let harness = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
     let root = {
         let mut cache = CACHE.lock().ok()?;
         let map = cache.get_or_insert_with(HashMap::new);
@@ -221,25 +225,12 @@ fn source_version(directory: &Path) -> Option<String> {
     if root.join(".devboard") != harness {
         return None;
     }
-    let tags = git(&harness, &["tag", "--merged", "HEAD", "--list", "v*"])?;
-    let versions: Vec<String> = tags
-        .split('\n')
-        .filter_map(|line| {
-            let line = line.trim();
-            let version = line.strip_prefix('v')?;
-            is_release_version(version).then(|| version.to_string())
-        })
-        .collect();
+    // A pinned release commits its bump only on the tag, so a merged-only read
+    // would miss the release one commit past this tip. The shared release-line
+    // rule counts that tag through its parent.
+    let tags = crate::release_line::release_tags(&mut |args| git(&harness, args), "HEAD");
+    let versions: Vec<String> = tags.into_iter().map(|tag| tag.version).collect();
     highest_release_version(&versions)
-}
-
-/// Whether a value is a plain `major.minor.patch` release version.
-fn is_release_version(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// The highest release version, by numeric component.
@@ -285,19 +276,31 @@ fn git(directory: &Path, args: &[&str]) -> Option<String> {
         .stdin(Stdio::null())
         .spawn()
         .ok()?;
+    // A tag listing or revision walk can exceed the pipe buffer. Draining it
+    // beside the wait keeps a large answer from parking the child until the
+    // timeout and turning a readable repository into no version at all.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
     let started = std::time::Instant::now();
     loop {
         match child.try_wait().ok()? {
             Some(status) => {
+                let bytes = reader.join().ok()?;
                 if !status.success() {
                     return None;
                 }
-                let output = child.wait_with_output().ok()?;
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                return (!text.is_empty()).then_some(text);
+                // Success is the answer even with empty stdout: an ancestor
+                // check prints nothing on success, and the release-line rule
+                // reads that as `true`.
+                return Some(String::from_utf8_lossy(&bytes).trim().to_string());
             }
             None if started.elapsed() > Duration::from_millis(GIT_TIMEOUT_MS) => {
                 let _ = child.kill();
+                let _ = reader.join();
                 return None;
             }
             None => std::thread::sleep(Duration::from_millis(10)),
@@ -308,7 +311,7 @@ fn git(directory: &Path, args: &[&str]) -> Option<String> {
 /// The version facts a serving process resolved once, when it started.
 ///
 /// Resolving them reads the harness manifest and, for a source checkout, spawns
-/// `git rev-parse` and `git tag --merged HEAD` behind a blocking poll loop. A
+/// `git rev-parse` and the release-line tag reads behind a blocking poll loop. A
 /// `versionState` read is polled every second by every open page, so it must
 /// never pay that: the facts hold for the process's lifetime. Only a publish or
 /// an install moves them, and either one replaces the process.
@@ -370,5 +373,58 @@ mod tests {
         ];
         assert_eq!(highest_release_version(&versions), Some("1.10.0".into()));
         assert_eq!(highest_release_version(&[]), None);
+    }
+
+    fn git_fixture(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("version-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo/.devboard")).expect("a harness");
+        run_git(&root.join("repo"), &["init", "-q"]);
+        run_git(&root.join("repo"), &["config", "user.name", "Test"]);
+        run_git(
+            &root.join("repo"),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        root
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn a_release_tag_one_commit_past_the_tip_still_names_the_source_version() {
+        let root = git_fixture("one-past");
+        let repo = root.join("repo");
+        std::fs::write(repo.join("base.txt"), "base\n").expect("a file");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "base"]);
+        let base = run_git(&repo, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("version.txt"), "1.2.3\n").expect("a release file");
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "chore(release): v1.2.3"]);
+        run_git(&repo, &["tag", "v1.2.3"]);
+        // The release commit sits one past the tip, exactly as a pinned
+        // release leaves it: `main` never advances to the tag.
+        run_git(&repo, &["reset", "--hard", &base]);
+        assert_eq!(
+            source_version(&repo.join(".devboard")),
+            Some("1.2.3".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

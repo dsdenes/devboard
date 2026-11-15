@@ -805,8 +805,13 @@ the request only after its fast-forward, client build, cargo-dist workflow wait,
 check, and Gitea-manifest check have all passed; a failed or partial publish writes no request.
 
 A request is one JSON file, `<STATE_DIR>/source-refresh/request.json`, written atomically for each
-live dashboard whose `REPO_DIR` is the checkout and whose serving harness is that checkout's
-`.devboard`. It carries the published commit, the released version, and a deterministic SHA-256 of
+live dashboard discovered through the shared process inventory — its `serve` command line names
+the repository, port, and state directory even when no `REPO_DIR`, `PORT`, or `STATE_DIR` reaches
+its environment — whose serving harness is that checkout's `.devboard`. A dashboard serving the
+same repository through a published release worktree such as
+`<repo>/.devboard/published/vX/.devboard` is reported as skipped and written nothing, and a
+verification fixture without `DEVBOARD_WATCHDOG_FIXTURE=1` is ignored. The request carries the
+published commit, the released version, and a deterministic SHA-256 of
 the built `.devboard/dist` tree. The dashboard re-reads it on a fixed interval and verifies that
 the running binary's embedded client digests identically; it never runs a second build. A matching
 request replaces the process through the ordinary replacement handoff: the replacement starts a
@@ -2214,10 +2219,21 @@ A push to `main` releases nothing, and neither does an implementation or design 
 component that dispatches it.
 
 - The Release Train's worker runs on a 10-minute default cadence (1 through 1440 minutes).
-- On each tick it fetches `origin/main` and its tags and runs one deterministic gate. Unreleased
-  means at least one non-merge commit after the newest `v<version>` tag reachable from that tip;
-  with no release tag, every non-merge commit is unreleased. Only merge commits release nothing.
-  An unreadable remote, tag, or commit read records a failure and starts no agent.
+- On each tick it fetches `origin/main` and its tags and runs one deterministic gate. A release
+  tag counts when its peeled commit is an ancestor of the tip, or when that commit's parent is;
+  the gate, `devboard publish`, and the source `versionState` call the one release-line helper,
+  so a tag one release commit past the tip still moves the line. Unreleased means at least one
+  non-merge commit after the newest counting tag; with no release tag, every non-merge commit is
+  unreleased. Only merge commits release nothing. An unreadable remote, tag, or commit read
+  records a failure and starts no agent.
+- A dashboard that starts with the family enabled starts a worker again when the recorded worker
+  pid is dead or its kernel start ticks differ, without an operator Start. A version drain ends
+  the worker but leaves `enabled: true`, so the replacing dashboard starts one; only an explicit
+  Stop clears the intent. A failed automatic start is journaled once per attempt and retried on a
+  bounded backoff of at least 5 and at most 60 seconds.
+- A run whose publish integrates an already-published release commit records the run as `failed`
+  with that detail but leaves the worker `running` and `enabled`, so the next due tick re-gates
+  without an operator Start.
 - The gate starts exactly one `omp acp` release agent only for a non-empty range and hands it the
   whole range. At most one run exists per repository: a second worker of the same harness version
   refuses to start, and a cadence tick during an active run starts nothing.
@@ -2355,15 +2371,20 @@ the running server intact. A Gitea instance that is unreachable or serves an unr
 description is journaled once per attempt and retried with exponential backoff
 (`DEVBOARD_UPDATE_BACKOFF_MAX_MS` caps it); it never records the range as released.
 
+The desktop launcher installs the selected release binary over
+`.devboard/target/release/devboard` by staging beside it and renaming atomically: a process that
+executes the canonical path keeps its inode, so the upgrade never fails with `Text file busy`, and
+a failed copy leaves the canonical bytes unchanged and removes the staged file.
 `versionState` reports `running`, `installed`, `latest`, and `stale`. A newer installed version
 replaces the running server without a click and reloads every connected page. When a replacement
 cannot start, the running version keeps serving, `versionState.replacement` carries both versions
 and the failure, the journal records it, and the reload control retries the launcher; the control
 is absent on the normal path. A dashboard serving the canonical source checkout reads neither side
-from the installed manifest: it reports the newest release tag reachable from its `HEAD` on both
-sides, so an unreleased commit on top never changes the number and an unpacked checkout never
-claims `0.1.0`. After `cargo run -p devboard -- publish` the source checkout's `running` is the
-version that tag just published.
+from the installed manifest: it reports the newest release tag on its `HEAD` line, counting a tag
+whose commit or whose commit's parent is on the line, on both sides. That keeps `running` and
+`installed` equal at a one-past tag, so an unreleased commit on top never changes the number and an
+unpacked checkout never claims `0.1.0`. After `cargo run -p devboard -- publish` the source
+checkout's `running` is the version that tag just published.
 
 |Variable|Default|Purpose|
 |---|---|---|

@@ -734,16 +734,11 @@ fn valid_version(value: &str) -> bool {
     compare_versions(value, value).is_some()
 }
 
-/// The highest `v<major>.<minor>.<patch>` tag reachable from `head`, without the `v`.
+/// The highest `v<major>.<minor>.<patch>` tag on `head`'s line, without the
+/// `v`, read through the shared release-line rule.
 fn previous_release_version(repo_dir: &Path, head: &str) -> Option<String> {
-    let tags = forge::git(repo_dir, &["tag", "--merged", head, "--list", "v*"]);
-    if tags.code != 0 {
-        return None;
-    }
-    highest_version(tags.stdout.split('\n').filter_map(|line| {
-        let version = line.trim().strip_prefix('v')?;
-        valid_version(version).then_some(version)
-    }))
+    let tags = crate::release_line::release_tags_in(repo_dir, head);
+    highest_version(tags.iter().map(|tag| tag.version.as_str()))
 }
 
 /// Every commit of `range`, read with its body and parents.
@@ -1158,61 +1153,19 @@ impl<'a> Git<'a> {
         self.is_ancestor(&target, commit).await
     }
 
-    /// Every release tag of the pinned line: its commit is merged into the
-    /// target, or the commit's parent is (one release commit past a tip of
-    /// this line).
-    ///
-    /// A pinned release commits its bump only on the tag and never advances
-    /// `main`, so the newest release is not merged into the target. Anchoring
-    /// the line on the release commit's parent keeps the next derivation
-    /// moving past that release, while a tag an operator made elsewhere
-    /// satisfies neither test and never moves the base.
-    async fn release_tags(&self, head: &str) -> Vec<ReleaseTag> {
-        let output = self.run(&["tag", "--list", "v*"]).await;
-        if output.code != 0 {
-            return Vec::new();
-        }
-        let mut tags = Vec::new();
-        for line in output
-            .stdout
-            .split('\n')
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-        {
-            let Some(version) = line
-                .strip_prefix('v')
-                .filter(|version| valid_version(version))
-            else {
-                continue;
-            };
-            let Some(commit) = self.tag_commit(line).await else {
-                continue;
-            };
-            let merged = self.is_ancestor(&commit, head).await;
-            let parent_merged = match self.run(&["rev-parse", &format!("{commit}^")]).await {
-                parent if parent.code == 0 => self.is_ancestor(parent.stdout.trim(), head).await,
-                _ => false,
-            };
-            if merged || parent_merged {
-                tags.push(ReleaseTag {
-                    tag: line.to_string(),
-                    version: version.to_string(),
-                });
-            }
-        }
-        tags
-    }
-
     async fn previous_release_tag(&self, head: &str) -> Option<ReleaseTag> {
         let mut previous: Option<ReleaseTag> = None;
-        for tag in self.release_tags(head).await {
+        for tag in crate::release_line::release_tags_in(self.repo_dir, head) {
             let replace = previous
                 .as_ref()
                 .and_then(|current| compare_versions(&tag.version, &current.version))
                 .map(|order| order > 0)
                 .unwrap_or(true);
             if replace {
-                previous = Some(tag);
+                previous = Some(ReleaseTag {
+                    tag: tag.tag,
+                    version: tag.version,
+                });
             }
         }
         previous
@@ -2916,7 +2869,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         let instances = args
             .instances
             .clone()
-            .unwrap_or_else(discover_dashboard_instances);
+            .unwrap_or_else(|| discover_dashboard_instances(&args.repo_dir));
         let source_refresh = deliver_source_refresh(SourceRefreshOptions {
             repo_root: args.repo_dir.clone(),
             harness_root: args.harness_root.clone(),
@@ -3124,6 +3077,17 @@ async fn settle_existing_tag(
         short_sha(target)
     ));
     Ok(Some(bound))
+}
+
+/// The sentence a publish error carries when it integrated an already-published
+/// release commit instead of shipping a release.
+pub const INTEGRATION_REFUSAL_MARKER: &str = "integrated its release commit";
+
+/// True when a publish failure is the forward-only integration repair: the run
+/// failed to ship, but the family stays running and the next tick re-gates at a
+/// `main` that already carries the release.
+pub fn is_integration_refusal(detail: &str) -> bool {
+    detail.contains(INTEGRATION_REFUSAL_MARKER)
 }
 
 /// Integrates a published release commit that no longer covers the pinned
@@ -4954,173 +4918,23 @@ fn same_path(left: &Path, right: &Path) -> bool {
     absolute_path(left) == absolute_path(right)
 }
 
-fn discover_dashboard_instances() -> Vec<DashboardInstance> {
-    dashboard_instances(&crate::supervision::process_table(), std::process::id())
-}
-
-fn dashboard_instances(
-    processes: &[crate::supervision::ProcessSnapshot],
-    self_pid: u32,
-) -> Vec<DashboardInstance> {
-    dashboard_instances_with(processes, self_pid, listening_ports_of)
-}
-
-fn dashboard_instances_with(
-    processes: &[crate::supervision::ProcessSnapshot],
-    self_pid: u32,
-    ports_of: impl Fn(u32) -> Vec<u16>,
-) -> Vec<DashboardInstance> {
-    let mut instances = Vec::new();
-    let mut seen = HashSet::new();
-    for process in processes {
-        if process.pid == self_pid || process.ancestors.contains(&self_pid) {
-            continue;
-        }
-        let command = &process.cmdline;
-        if !command.contains("devboard") || !command.contains("serve") {
-            continue;
-        }
-        let Some(repo_dir) = process.env.get("REPO_DIR") else {
-            continue;
-        };
-        if repo_dir.is_empty() {
-            continue;
-        }
-        // `PORT` is inherited by every child of a dashboard, so it names the
-        // socket the caller was told about, not the one this process bound. An
-        // agent-started server in a worktree therefore claimed the host's port
-        // and hid the real dashboard from refresh delivery.
-        let Some(port) = dashboard_port(&process.env, &ports_of(process.pid)) else {
-            continue;
-        };
-        if crate::supervision::is_verification_scratch(repo_dir)
-            && process
-                .env
-                .get("DEVBOARD_WATCHDOG_FIXTURE")
-                .map(String::as_str)
-                != Some("1")
-        {
-            continue;
-        }
-        let harness = process
-            .env
-            .get("STATIC_DIR")
-            .and_then(|value| Path::new(value).parent().map(Path::to_path_buf))
-            .or_else(|| {
-                let cwd = process.cwd.clone()?;
-                // A source dashboard started at the repository root serves
-                // `<repo>/.devboard`; its cwd alone names the wrong harness.
-                let source = Path::new(repo_dir).join(".devboard");
-                if same_path(&cwd, Path::new(repo_dir)) && source.is_dir() {
-                    return Some(source);
-                }
-                Some(cwd)
-            });
-        let Some(harness) = harness else {
-            continue;
-        };
-        let state_dir = process
-            .env
-            .get("STATE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| harness.join(".tmp"));
-        // Two processes with the same repository and port are one dashboard
-        // during a handoff, but a process that serves the same repository
-        // through another harness is a different one and must never take the
-        // real dashboard's place.
-        let key = format!("{repo_dir}\0{port}\0{}", harness.display());
-        if !seen.insert(key) {
-            continue;
-        }
-        instances.push(DashboardInstance {
-            pid: process.pid,
-            port,
-            repo_dir: PathBuf::from(repo_dir),
-            harness,
-            state_dir,
-        });
-    }
-    instances
-}
-
-/// The port one dashboard actually owns: an inherited `PORT` counts only when
-/// this process listens on it.
-fn dashboard_port(environment: &HashMap<String, String>, listening: &[u16]) -> Option<u16> {
-    let port = environment
-        .get("PORT")
-        .and_then(|value| value.parse::<u16>().ok())
-        .filter(|port| *port > 0 && listening.contains(port));
-    if port.is_some() {
-        return port;
-    }
-    match listening {
-        [only] => Some(*only),
-        _ => None,
-    }
-}
-
-/// The listening ports one process owns, read from `/proc`.
-fn listening_ports_of(pid: u32) -> Vec<u16> {
-    let inodes = socket_inodes_of(pid);
-    if inodes.is_empty() {
-        return Vec::new();
-    }
-    let mut table = HashMap::new();
-    for source in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        if let Ok(text) = std::fs::read_to_string(source) {
-            table.extend(listening_sockets_from(&text));
-        }
-    }
-    let mut ports: Vec<u16> = inodes
-        .iter()
-        .filter_map(|inode| table.get(inode).copied())
-        .collect();
-    ports.sort_unstable();
-    ports.dedup();
-    ports
-}
-
-/// The socket inodes one process holds open.
-fn socket_inodes_of(pid: u32) -> Vec<u64> {
-    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| {
-            let link = std::fs::read_link(entry.ok()?.path()).ok()?;
-            let text = link.to_str()?;
-            let inode = text.strip_prefix("socket:[")?.strip_suffix(']')?;
-            inode.parse().ok()
-        })
+/// Every live dashboard serving this checkout, from the shared process
+/// inventory the dashboard, the MCP server, and the watchdog already read.
+fn discover_dashboard_instances(repo_dir: &Path) -> Vec<DashboardInstance> {
+    crate::mcp_server::discover_dashboards(repo_dir)
+        .into_iter()
+        .map(dashboard_instance)
         .collect()
 }
 
-/// Every listening socket in one `/proc/net/tcp` table: inode to local port.
-///
-/// Only `0A` (LISTEN) rows count; the port is the hex field after the address,
-/// and the inode is the tenth whitespace-separated field.
-fn listening_sockets_from(table: &str) -> HashMap<u64, u16> {
-    let mut sockets = HashMap::new();
-    for line in table.lines().skip(1) {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 10 || fields[3] != "0A" {
-            continue;
-        }
-        let Some(port) = fields[1]
-            .rsplit(':')
-            .next()
-            .and_then(|hex| u16::from_str_radix(hex, 16).ok())
-        else {
-            continue;
-        };
-        let Some(inode) = fields[9].parse::<u64>().ok() else {
-            continue;
-        };
-        if inode != 0 {
-            sockets.insert(inode, port);
-        }
+fn dashboard_instance(live: crate::mcp_server::LiveDashboard) -> DashboardInstance {
+    DashboardInstance {
+        pid: live.pid,
+        port: live.port,
+        repo_dir: PathBuf::from(live.repo_dir),
+        harness: PathBuf::from(live.harness),
+        state_dir: PathBuf::from(live.state_dir),
     }
-    sockets
 }
 
 // ---------------------------------------------------------------------------
@@ -5624,121 +5438,125 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
     }
 
     #[test]
-    fn a_source_dashboard_at_the_repo_root_names_its_harness() {
-        use crate::supervision::ProcessSnapshot;
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.tmp")
-            .join(format!("publish-instance-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".devboard")).expect("a source harness");
-        let mut env = std::collections::HashMap::new();
-        env.insert("REPO_DIR".to_string(), root.display().to_string());
-        env.insert("PORT".to_string(), "8080".to_string());
-        env.insert("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string());
-        let process = ProcessSnapshot {
+    fn the_shared_inventory_names_the_refresh_fields_of_one_dashboard() {
+        let live = crate::mcp_server::LiveDashboard {
             pid: 424242,
-            cmdline: format!("{}/devboard serve", root.display()),
-            env,
-            cwd: Some(root.clone()),
-            exe: None,
-            ancestors: vec![1],
+            start_ticks: Some(7),
+            port: 8204,
+            repo_dir: "/repo".to_string(),
+            harness: "/repo/.devboard".to_string(),
+            state_dir: "/repo/.devboard/.tmp".to_string(),
         };
-        let instances = dashboard_instances_with(&[process], 999_999, |_| vec![8080]);
-        assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].harness, root.join(".devboard"));
-        assert!(instances[0].state_dir.ends_with(".devboard/.tmp"));
-        let _ = std::fs::remove_dir_all(&root);
+        let instance = dashboard_instance(live);
+        assert_eq!(instance.pid, 424242);
+        assert_eq!(instance.port, 8204);
+        assert_eq!(instance.repo_dir, PathBuf::from("/repo"));
+        assert_eq!(instance.harness, PathBuf::from("/repo/.devboard"));
+        assert_eq!(instance.state_dir, PathBuf::from("/repo/.devboard/.tmp"));
     }
 
     #[test]
-    fn the_port_is_the_socket_the_process_bound_not_the_one_it_inherited() {
-        use crate::supervision::ProcessSnapshot;
+    fn publish_discovers_a_launcher_shaped_dashboard_from_its_command_line() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.tmp")
-            .join(format!("publish-bound-port-{}", std::process::id()));
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("publish-discovery-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".devboard")).expect("a source harness");
-        let mut env = std::collections::HashMap::new();
-        env.insert("REPO_DIR".to_string(), root.display().to_string());
-        env.insert("PORT".to_string(), "8080".to_string());
-        env.insert("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string());
-        let process = ProcessSnapshot {
-            pid: 424243,
-            cmdline: format!("{}/devboard serve --port 8204", root.display()),
-            env,
-            cwd: Some(root.clone()),
-            exe: None,
-            ancestors: vec![1],
-        };
-        let instances = dashboard_instances_with(&[process], 999_999, |_| vec![8204]);
-        assert_eq!(instances.len(), 1, "the inherited port names no socket");
-        assert_eq!(instances[0].port, 8204);
+        let repo = root.join("repo");
+        let harness = repo.join(".devboard");
+        let state = harness.join(".tmp");
+        std::fs::create_dir_all(&harness).expect("a harness tree");
+        std::fs::create_dir_all(&state).expect("a state directory");
+        // A process whose command line names the dashboard before the flags
+        // always keeps those flags in its argv: `sh -c` may exec its last
+        // command in place and drop them.
+        let mut child = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import time; time.sleep(10)",
+                "devboard",
+                "serve",
+                "--repo-dir",
+            ])
+            .arg(&repo)
+            .args(["--port", "18210", "--state-dir"])
+            .arg(&state)
+            .env_clear()
+            .current_dir(&repo)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a dashboard-shaped process");
+        let pid = child.id();
+        let instances = discover_dashboard_instances(&repo);
+        let found = instances
+            .into_iter()
+            .find(|instance| instance.pid == pid)
+            .unwrap_or_else(|| panic!("pid {pid} was not discovered"));
+        assert_eq!(found.repo_dir, repo);
+        assert_eq!(found.port, 18210);
+        assert_eq!(found.state_dir, state);
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[test]
-    fn an_inherited_port_hidden_behind_another_harness_never_hides_the_dashboard() {
-        use crate::supervision::ProcessSnapshot;
+    #[tokio::test]
+    async fn a_source_refresh_reaches_only_the_dashboard_that_serves_this_harness() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../.tmp")
-            .join(format!("publish-shadow-{}", std::process::id()));
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("publish-refresh-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".devboard")).expect("a source harness");
-        let environment = || {
-            let mut env = std::collections::HashMap::new();
-            env.insert("REPO_DIR".to_string(), root.display().to_string());
-            env.insert("PORT".to_string(), "8080".to_string());
-            env.insert("DEVBOARD_WATCHDOG_FIXTURE".to_string(), "1".to_string());
-            env
-        };
-        let shadow = ProcessSnapshot {
-            pid: 424244,
-            cmdline: format!("{}/devboard serve", root.display()),
-            env: environment(),
-            cwd: Some(root.join(".worktree/perf/.devboard")),
-            exe: None,
-            ancestors: vec![1],
-        };
-        let dashboard = ProcessSnapshot {
-            pid: 424245,
-            cmdline: format!("{}/devboard serve", root.display()),
-            env: environment(),
-            cwd: Some(root.clone()),
-            exe: None,
-            ancestors: vec![1],
-        };
-        let instances = dashboard_instances_with(&[shadow, dashboard], 999_999, |_| vec![8080]);
-        assert_eq!(instances.len(), 2, "another harness is its own instance");
-        assert!(instances
-            .iter()
-            .any(|instance| instance.pid == 424245 && instance.harness == root.join(".devboard")));
+        let repo = root.join("repo");
+        let harness = repo.join(".devboard");
+        std::fs::create_dir_all(&harness).expect("a source harness");
+        std::fs::write(
+            harness.join("package.json"),
+            "{\"name\":\"@dsdenes/devboard\",\"version\":\"0.1.0\"}\n",
+        )
+        .expect("a source manifest");
+        std::fs::create_dir_all(harness.join("dist")).expect("a bundle");
+        std::fs::write(harness.join("dist/index.html"), "<html></html>\n").expect("a bundle file");
+        let source_state = root.join("state/source");
+        let published_state = root.join("state/published");
+        let instances = vec![
+            DashboardInstance {
+                pid: 1,
+                port: 8080,
+                repo_dir: repo.clone(),
+                harness: harness.clone(),
+                state_dir: source_state.clone(),
+            },
+            DashboardInstance {
+                pid: 2,
+                port: 8081,
+                repo_dir: repo.clone(),
+                harness: harness.join("published/v1.2.3/.devboard"),
+                state_dir: published_state.clone(),
+            },
+        ];
+        let report = deliver_source_refresh(SourceRefreshOptions {
+            repo_root: repo.clone(),
+            harness_root: harness.clone(),
+            commit: "0123456789abcdef".to_string(),
+            version: "1.2.4".to_string(),
+            dist_dir: harness.join("dist"),
+            instances,
+            requested_at: "2026-01-01T00:00:00.000Z".to_string(),
+        })
+        .await
+        .expect("the refresh is delivered");
+        assert_eq!(report.written.len(), 1);
+        assert_eq!(report.written[0].pid, 1);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].pid, 2);
+        assert!(source_refresh_directory(&source_state)
+            .join(SOURCE_REFRESH_REQUEST_FILE)
+            .is_file());
+        assert!(!source_refresh_directory(&published_state).exists());
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_bound_listener_is_found_through_the_proc_socket_tables() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
-        let port = listener.local_addr().expect("an address").port();
-        let ports = listening_ports_of(std::process::id());
-        assert!(
-            ports.contains(&port),
-            "the bound listener is found: {ports:?}"
-        );
-    }
-
-    #[test]
-    fn the_listening_table_names_only_the_sockets_in_the_listen_state() {
-        let table = "\
-  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 424242 1 0000000000000000 100 0 0 10 0\n\
-   1: 0100007F:8AE4 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 99 1 0000000000000000 20 4 30 10 -1\n";
-        let sockets = listening_sockets_from(table);
-        assert_eq!(sockets.get(&424242), Some(&8080));
-        assert!(
-            !sockets.contains_key(&99),
-            "an established socket is not a listener"
-        );
-        assert_eq!(listening_sockets_from(""), HashMap::new());
     }
 
     #[test]

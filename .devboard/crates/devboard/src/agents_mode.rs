@@ -38,6 +38,11 @@ const POLL_MS: u64 = 250;
 const CYCLE_ROWS: usize = 100;
 /// How long a spawned worker may take to publish its state before Start fails.
 const START_PROOF_MS: i64 = 5_000;
+/// How often the dashboard looks for an enabled family whose worker is gone.
+const RELEASE_AUTO_START_POLL_MS: u64 = 1_000;
+/// The shortest and longest wait between failed automatic starts.
+const RELEASE_AUTO_START_BACKOFF_MIN_MS: i64 = 5_000;
+const RELEASE_AUTO_START_BACKOFF_MAX_MS: i64 = 60_000;
 /// Wall-clock bound for a family's Start preflight. A preflight that never
 /// settles must answer with a refusal instead of leaving the family starting.
 const AGENT_PREFLIGHT_TIMEOUT_MS: u64 = 20_000;
@@ -2975,6 +2980,12 @@ impl AgentsMode {
             })
         });
         let spawn: SharedSpawn = Arc::new(Mutex::new(Arc::new(default_spawn) as SpawnFn));
+        let journal_weak = Arc::downgrade(app);
+        let journal: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |line: &str| {
+            if let Some(app) = journal_weak.upgrade() {
+                app.shared.journal.write("server-error", line, None);
+            }
+        });
         let agent_environment_cell = Arc::new(Mutex::new(agent_environment.clone()));
         let forge_reader = match crate::forge::origin_forge_with(&repo_dir, &environment) {
             Some(remote) if remote.forge != crate::forge::Forge::GitLab => {
@@ -3055,6 +3066,7 @@ impl AgentsMode {
             spawn.clone(),
             new_preflight(),
             now.clone(),
+            journal,
         ))));
         ordered.push(Adapter::Deploy(Arc::new(DeployFamily::new(
             &repo_dir,
@@ -3146,6 +3158,28 @@ impl AgentsMode {
             };
             for adapter in &mode.adapters {
                 adapter.takeover().await;
+            }
+        });
+        // An enabled Release Train survives a dead or drained worker: the
+        // dashboard starts the replacement itself, and only an operator Stop
+        // clears the intent. A failed start is journaled once and retried on a
+        // bounded backoff.
+        let weak_release = weak.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(RELEASE_AUTO_START_POLL_MS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let Some(mode) = weak_release.upgrade() else {
+                    break;
+                };
+                for adapter in &mode.adapters {
+                    if let Adapter::Release(family) = adapter {
+                        family.auto_start().await;
+                    }
+                }
             }
         });
         let weak = Arc::downgrade(self);
@@ -9743,6 +9777,10 @@ struct ReleaseMutable {
     last_sync_request_at: i64,
     /// The Start whose preflight may still settle.
     start_attempt: u64,
+    /// When the next automatic start may run, and the backoff it earns after
+    /// a failed one.
+    auto_start_next_at: i64,
+    auto_start_backoff_ms: i64,
 }
 
 /// The notice a page reads while a worker of another dashboard's STATE_DIR owns
@@ -9830,6 +9868,23 @@ fn release_run_view(shared: &Value, directory: &Path, now: i64) -> Value {
     })
 }
 
+/// True while a worker record still names a live process. A pid the kernel
+/// reused is not the worker: its start tick differs from the recorded one.
+fn worker_record_is_live(record: &crate::workers::release_train::ReleaseTrainWorkerRecord) -> bool {
+    if !crate::supervision::live_process(record.pid) {
+        return false;
+    }
+    match (
+        record.start_ticks,
+        crate::supervision::start_ticks(record.pid),
+    ) {
+        (Some(recorded), Some(actual)) => recorded == actual,
+        // A record that carries no tick (from an older harness) is trusted
+        // while its pid is alive; starting a second worker would be worse.
+        _ => true,
+    }
+}
+
 struct ReleaseFamily {
     descriptor: &'static Descriptor,
     repo_dir: PathBuf,
@@ -9841,6 +9896,8 @@ struct ReleaseFamily {
     preflight_override: SharedPreflight,
     preflight_timeout_ms: Arc<AtomicU64>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    /// Records one automatic-start failure per attempt.
+    journal: Arc<dyn Fn(&str) + Send + Sync>,
     program: ProgramLink,
     publisher: SharedPublish,
     mutable: Arc<Mutex<ReleaseMutable>>,
@@ -9856,6 +9913,7 @@ impl ReleaseFamily {
         spawn: SharedSpawn,
         preflight_override: SharedPreflight,
         now: Arc<dyn Fn() -> i64 + Send + Sync>,
+        journal: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Self {
         Self {
             descriptor: descriptor("release-train").expect("release-train descriptor"),
@@ -9868,6 +9926,7 @@ impl ReleaseFamily {
             preflight_override,
             preflight_timeout_ms: Arc::new(AtomicU64::new(AGENT_PREFLIGHT_TIMEOUT_MS)),
             now,
+            journal,
             program: ProgramLink::default(),
             publisher: Arc::new(Mutex::new(None)),
             mutable: Arc::new(Mutex::new(ReleaseMutable {
@@ -9881,6 +9940,8 @@ impl ReleaseFamily {
                 notice: None,
                 last_sync_request_at: i64::MIN / 2,
                 start_attempt: 0,
+                auto_start_next_at: 0,
+                auto_start_backoff_ms: RELEASE_AUTO_START_BACKOFF_MIN_MS,
             })),
             start_lock: tokio::sync::Mutex::new(()),
         }
@@ -9942,6 +10003,97 @@ impl ReleaseFamily {
             return true;
         };
         mutable.starting || mutable.preview_starting || mutable.stop_requested
+    }
+
+    /// The newest worker record that still carries the operator's enabled
+    /// intent while its process is gone. A dead pid and a reused pid whose
+    /// kernel start tick differs both count as gone.
+    fn auto_start_record(&self) -> Option<crate::workers::release_train::ReleaseTrainWorkerRecord> {
+        let mut newest: Option<crate::workers::release_train::ReleaseTrainWorkerRecord> = None;
+        for directory in crate::workers::release_train::worker_state_directories(&self.directory) {
+            let Some(record) =
+                crate::workers::release_train::read_worker_state(&directory.join("worker.json"))
+            else {
+                continue;
+            };
+            let replace = newest
+                .as_ref()
+                .map(|current| record.updated_at > current.updated_at)
+                .unwrap_or(true);
+            if replace {
+                newest = Some(record);
+            }
+        }
+        let record = newest?;
+        if !record.enabled {
+            return None;
+        }
+        if resolved(Path::new(&record.root)) != resolved(&self.repo_dir) {
+            return None;
+        }
+        if worker_record_is_live(&record) {
+            return None;
+        }
+        Some(record)
+    }
+
+    /// Starts the worker an enabled record still asks for. One attempt per
+    /// backoff window, journaled once when it fails.
+    async fn auto_start(self: &Arc<Self>) {
+        if crate::project_kind::reason(self.descriptor.gate, &self.repo_dir).is_some() {
+            return;
+        }
+        if !self.owners().is_empty() {
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.auto_start_backoff_ms = RELEASE_AUTO_START_BACKOFF_MIN_MS;
+                mutable.auto_start_next_at = 0;
+            }
+            return;
+        }
+        if self.auto_start_record().is_none() {
+            if let Ok(mut mutable) = self.mutable.lock() {
+                mutable.auto_start_backoff_ms = RELEASE_AUTO_START_BACKOFF_MIN_MS;
+                mutable.auto_start_next_at = 0;
+            }
+            return;
+        }
+        let now = (self.now)();
+        {
+            let Ok(mutable) = self.mutable.lock() else {
+                return;
+            };
+            if mutable.starting
+                || mutable.preview_starting
+                || mutable.stop_requested
+                || now < mutable.auto_start_next_at
+            {
+                return;
+            }
+        }
+        let result = self.start().await;
+        let Ok(mut mutable) = self.mutable.lock() else {
+            return;
+        };
+        if result.ok {
+            // Give the worker it spawned time to attach before another look.
+            mutable.auto_start_next_at = (self.now)() + RELEASE_AUTO_START_BACKOFF_MIN_MS;
+            mutable.auto_start_backoff_ms = RELEASE_AUTO_START_BACKOFF_MIN_MS;
+            return;
+        }
+        let delay = mutable.auto_start_backoff_ms.clamp(
+            RELEASE_AUTO_START_BACKOFF_MIN_MS,
+            RELEASE_AUTO_START_BACKOFF_MAX_MS,
+        );
+        mutable.auto_start_next_at = (self.now)() + delay;
+        mutable.auto_start_backoff_ms =
+            (mutable.auto_start_backoff_ms * 2).min(RELEASE_AUTO_START_BACKOFF_MAX_MS);
+        let detail = result
+            .message
+            .unwrap_or_else(|| "the worker could not be started".to_string());
+        drop(mutable);
+        (self.journal)(&format!(
+            "Release Train automatic start failed; retrying in {delay} ms: {detail}"
+        ));
     }
 
     /// Overlays a Start's own facts onto the published projection, so the
@@ -10539,6 +10691,10 @@ impl ReleaseFamily {
                     foreign.state_dir
                 ));
             }
+            // No live worker can receive the stop, so the persisted intent is
+            // the only thing an automatic start would read. An explicit Stop
+            // clears it.
+            crate::workers::release_train::disable_latest_worker(&self.directory);
             return AgentResult::failure(
                 "No Release Train worker is running for this repository.".to_string(),
             );

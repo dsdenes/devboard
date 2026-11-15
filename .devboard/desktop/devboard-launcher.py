@@ -598,13 +598,27 @@ def build_release(version: str) -> tuple[Path | None, str]:
 
 
 def install_canonical(binary: Path) -> str:
-    """Copies the built release beside the checkout, where the harness reads it."""
+    """Installs the built release beside the checkout, where the harness reads it.
+
+    The copy is staged beside the canonical path and renamed over it, so a
+    process that is executing the canonical binary keeps its inode and never
+    makes the upgrade fail with `Text file busy`. A failed copy or rename leaves
+    the canonical path byte-identical and removes the staged file.
+    """
     canonical = HARNESS / "target" / "release" / "devboard"
+    staged = canonical.with_name(
+        f".{canonical.name}.new-{os.getpid()}-{time.time_ns()}"
+    )
     try:
         canonical.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(binary, canonical)
-        os.chmod(canonical, 0o755)
+        shutil.copyfile(binary, staged)
+        os.chmod(staged, 0o755)
+        os.replace(staged, canonical)
     except OSError as error:
+        try:
+            staged.unlink()
+        except OSError:
+            pass
         return f"the release binary could not be copied to {canonical}: {error}"
     try:
         identical = filecmp.cmp(binary, canonical, shallow=False)

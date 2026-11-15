@@ -199,6 +199,53 @@ fn hanging_preflight() -> devboard::agents_mode::PreflightCallback {
     Arc::new(|_request| Box::pin(std::future::pending()))
 }
 
+/// A git checkout at the fixture repository, which the Release Train start
+/// path requires before it resolves a worker program.
+fn make_checkout(repo: &Path) {
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "base"]);
+}
+
+/// A persisted Release Train worker record that still asks to run, naming a
+/// pid no live process holds.
+fn enabled_dead_release_worker(repo: &Path, state: &Path, pid: u32) {
+    let now = devboard::journal::now_iso8601();
+    write_json(
+        &state.join("release-train/workers/1.0.0/worker.json"),
+        json!({
+            "version": 1,
+            "pid": pid,
+            "startTicks": null,
+            "startedAt": now,
+            "root": repo.to_string_lossy(),
+            "stateDir": state.to_string_lossy(),
+            "lifecycle": "running",
+            "enabled": true,
+            "paused": false,
+            "harnessVersion": "1.0.0",
+            "argv": ["devboard", "worker", "release-train"],
+            "lastRunAt": null,
+            "nextRunAt": now,
+            "lastError": null,
+            "notice": null,
+            "activeRun": null,
+            "updatedAt": now,
+        }),
+    );
+}
+
 /// A live stand-in worker that outlives the call without being reaped.
 fn stand_in_watchdog() -> u32 {
     let child = std::process::Command::new("sleep")
@@ -3737,6 +3784,109 @@ async fn an_installed_host_inverts_the_two_project_gates() {
         json!({"state": "disabled", "reason": RELEASE_HOST_REASON}),
         "{release}"
     );
+}
+
+#[tokio::test]
+async fn an_enabled_dead_release_worker_is_started_without_a_start_click() {
+    let root = scratch("release-auto-start");
+    let repo = root.join("repo");
+    let state = root.join("state");
+    make_checkout(&repo);
+    enabled_dead_release_worker(&repo, &state, 999_999_999);
+    let app = app_at(&root);
+
+    let recorded: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let child_pid = Arc::new(Mutex::new(None::<u32>));
+    let recorded_spawn = Arc::clone(&recorded);
+    let child_for_spawn = Arc::clone(&child_pid);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded_spawn
+            .lock()
+            .expect("recorded spawns")
+            .push((argv.to_vec(), environment.clone()));
+        let child = std::process::Command::new("sleep")
+            .arg("5")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let pid = child.id();
+        std::mem::forget(child);
+        *child_for_spawn.lock().expect("a pid") = Some(pid);
+        Some(pid)
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if !recorded.lock().expect("recorded spawns").is_empty() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an enabled dead worker was never restarted"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let spawned = recorded.lock().expect("recorded spawns");
+    assert_eq!(spawned[0].0[1..3], ["worker", "release-train"]);
+    let pid = *child_pid.lock().expect("a pid");
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .status();
+    }
+}
+
+#[tokio::test]
+async fn a_failing_release_auto_start_retries_on_a_bounded_backoff() {
+    let root = scratch("release-auto-start-backoff");
+    let repo = root.join("repo");
+    let state = root.join("state");
+    make_checkout(&repo);
+    enabled_dead_release_worker(&repo, &state, 999_999_998);
+    let app = app_at(&root);
+
+    let attempts: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&attempts);
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        recorded
+            .lock()
+            .expect("attempts")
+            .push(std::time::Instant::now());
+        None
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    loop {
+        if attempts.lock().expect("attempts").len() >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a failing automatic start was not retried"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let times = attempts.lock().expect("attempts").clone();
+    let gap = times[1].duration_since(times[0]);
+    assert!(
+        gap >= std::time::Duration::from_millis(5_000),
+        "the retry came back after only {gap:?}"
+    );
+    assert!(
+        gap <= std::time::Duration::from_millis(60_000),
+        "the retry waited {gap:?}"
+    );
+    let journal = std::fs::read_to_string(devboard::journal::journal_file(&state, &repo))
+        .expect("the dashboard journal");
+    let failures = journal
+        .lines()
+        .filter(|line| line.contains("automatic start failed"))
+        .count();
+    assert_eq!(failures, times.len(), "one journal line per attempt");
 }
 
 #[tokio::test]

@@ -16,6 +16,7 @@ import importlib.util
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -401,6 +402,60 @@ class LauncherTest(unittest.TestCase):
         self.assertIsNone(version)
         self.assertEqual(binary, installed)
         self.assertEqual(built, [])
+
+    def test_install_canonical_replaces_an_executing_binary(self) -> None:
+        module = self.module
+        harness = self.fixture / "harness"
+        canonical = harness / "target" / "release" / "devboard"
+        canonical.parent.mkdir(parents=True)
+        sleep = Path(shutil.which("sleep") or "/bin/sleep")
+        shutil.copyfile(sleep, canonical)
+        os.chmod(canonical, 0o755)
+        running = subprocess.Popen(
+            [str(canonical), "30"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            built = self.fixture / "built" / "devboard"
+            built.parent.mkdir(parents=True)
+            shutil.copyfile(Path("/bin/true"), built)
+            os.chmod(built, 0o755)
+            with mock.patch.object(module, "HARNESS", harness):
+                problem = module.install_canonical(built)
+            self.assertEqual(problem, "")
+            self.assertIsNone(
+                running.poll(), "the process executing the canonical path survives"
+            )
+            self.assertEqual(canonical.read_bytes(), built.read_bytes())
+        finally:
+            running.kill()
+            running.wait()
+
+    def test_a_failed_install_keeps_the_canonical_bytes_and_no_temporary(self) -> None:
+        module = self.module
+        harness = self.fixture / "harness"
+        canonical = harness / "target" / "release" / "devboard"
+        canonical.parent.mkdir(parents=True)
+        canonical.write_bytes(b"canonical bytes")
+        built = self.fixture / "built" / "devboard"
+        built.parent.mkdir(parents=True)
+        built.write_bytes(b"built bytes")
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("the rename was refused")
+
+        with mock.patch.object(module, "HARNESS", harness), \
+                mock.patch.object(module.os, "replace", side_effect=refuse):
+            problem = module.install_canonical(built)
+        self.assertIn("could not be copied", problem)
+        self.assertEqual(canonical.read_bytes(), b"canonical bytes")
+        self.assertEqual(
+            sorted(path.name for path in canonical.parent.iterdir()),
+            ["devboard"],
+            "a failed install leaves no staged file behind",
+        )
 
     def test_remote_reference_parses_every_remote_form(self) -> None:
         module = self.module

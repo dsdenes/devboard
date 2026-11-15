@@ -1359,7 +1359,10 @@ async fn a_drain_finishes_the_active_run_without_stopping_it() {
     ))
     .expect("the worker record");
     assert_eq!(record.lifecycle, AgentLifecycle::Stopped);
-    assert!(!record.enabled);
+    assert!(
+        record.enabled,
+        "a drain keeps the enabled intent for the replacing dashboard"
+    );
     assert_eq!(
         record.notice.as_deref(),
         Some("Drained: exited after its in-flight cycle.")
@@ -1401,7 +1404,10 @@ async fn a_drain_of_an_idle_worker_starts_nothing_and_exits() {
     ))
     .expect("the worker record");
     assert_eq!(record.lifecycle, AgentLifecycle::Stopped);
-    assert!(!record.enabled);
+    assert!(
+        record.enabled,
+        "a drain keeps the enabled intent for the replacing dashboard"
+    );
     assert!(!release_train_owners(&directory)
         .iter()
         .any(|owner| owner.pid == std::process::id()
@@ -1875,6 +1881,78 @@ async fn a_failed_publish_records_its_error_without_the_withdrawn_tag_phase() {
         failure.detail
     );
     assert_eq!(state.runs[0].state, ReleaseTrainRunState::Failed);
+    worker.stop().await;
+}
+
+/// A publish that integrates an already-published release commit fails the
+/// run, but the integration is the forward-only repair: the family keeps its
+/// enabled intent, stays running, and the next due tick tries again without an
+/// operator Start.
+#[tokio::test]
+async fn an_integration_refusal_keeps_the_family_running_and_enabled() {
+    let workspace = workspace("integration-refusal");
+    let target = "d".repeat(40);
+    let clock = FakeClock::new(start_ms());
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let mut options = ReleaseTrainWorkerOptions::new(&workspace.repo_dir, &workspace.state_dir);
+    options.harness_version = Some("test-version".to_string());
+    options.manual = true;
+    options.now = Some(clock.function());
+    options.gate = Some(gate_ok(unreleased(&target, "1.0.1")));
+    options.publish = Some({
+        let attempts = attempts.clone();
+        Arc::new(move |_args: PublishArgs| -> PublishFuture {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Err(anyhow::anyhow!(
+                    "v1.0.0 is already released for the range before the pinned target {}; \
+                     integrated its release commit {} into main so the next tick re-gates there; \
+                     nothing was tagged or dispatched",
+                    &"e".repeat(7),
+                    &"f".repeat(7)
+                ))
+            })
+        })
+    });
+    options.verify = Some(Arc::new(
+        |options: ReleaseVerificationOptions| -> Pin<
+            Box<dyn Future<Output = ReleaseVerification> + Send>,
+        > {
+            Box::pin(async move {
+                ReleaseVerification::Failed {
+                    phase: ReleaseVerificationPhase::Tag,
+                    version: options.version.clone(),
+                    detail: format!(
+                        "tag binding: no release tag names or contains {} for v{}",
+                        &options.target[..7],
+                        options.version
+                    ),
+                }
+            })
+        },
+    ));
+    options.log = Some(Arc::new(|_line: &str| {}));
+    let worker = ReleaseTrainWorker::new(options);
+    assert!(worker.begin());
+    worker.tick_now(true).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let state = worker.current_state();
+    let failure = state.failure.clone().expect("a recorded failure");
+    assert!(
+        failure.detail.contains("integrated its release commit"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(state.runs[0].state, ReleaseTrainRunState::Failed);
+    let record = worker.current_worker().expect("the worker record");
+    assert_eq!(record.lifecycle, AgentLifecycle::Running);
+    assert!(
+        record.enabled,
+        "the integration refusal is not an operator Stop"
+    );
+    // The next due tick runs without an operator Start.
+    worker.tick_now(true).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
     worker.stop().await;
 }
 

@@ -118,9 +118,13 @@ manifest beside it on an installed host, the checkout's released source version 
 checkout. The status bar labels that second value `installed` on an installed host and `source` on
 a source checkout. The reload control is rendered only when a replacement could not start: the
 running version keeps serving, its accessible name and title name both versions, and clicking it
-retries the same launcher. A canonical source checkout never installs and never replaces itself on
-an update check. It replaces itself only after one successful `devboard publish`: that path writes
-a source-refresh request into each live dashboard's own `STATE_DIR` only after its fast-forward,
+retries the same launcher. The desktop launcher installs the selected release binary over
+`.devboard/target/release/devboard` by staging beside it and renaming atomically, so a process
+executing the canonical binary keeps its inode and the upgrade never fails with `Text file busy`.
+A canonical source checkout never installs and never replaces itself on an update check. It
+replaces itself only after one successful `devboard publish`: that path discovers live dashboards
+through the shared process inventory and writes a source-refresh request into each one's own
+`STATE_DIR` only after its fast-forward,
 client build, cargo-dist workflow wait, GitHub-asset check, and Gitea-manifest check have all
 passed. The request names the published commit, the released version, and a SHA-256 of the built
 `.devboard/dist`; the dashboard verifies that digest without a second build, replaces itself through
@@ -172,10 +176,19 @@ commits. Nothing is published under `@dsdenes/devboard-harness`.
 - **Cadence.** The default is 10 minutes, and the field accepts 1 through 1440 minutes.
 - **Gate.** The worker fetches `origin/main` and its tags and compares that tip with the newest
   release tag of the line: a tag whose commit is merged into the tip, or whose commit's parent is
-  (a pinned release commits its bump only on the tag and never advances `main`). Unreleased means
-  at least one non-merge commit after that tag; with no release tag, every non-merge commit is
-  unreleased. Only merge commits release nothing. An unreadable remote, tag, or commit read
+  (a pinned release commits its bump only on the tag and never advances `main`). The gate,
+  `devboard publish`, and the source `versionState` share that one release-line rule. Unreleased
+  means at least one non-merge commit after that tag; with no release tag, every non-merge commit
+  is unreleased. Only merge commits release nothing. An unreadable remote, tag, or commit read
   records a failure and starts no agent.
+- **Lifecycle.** A dashboard that starts with the family enabled starts a worker again when the
+  recorded worker is dead or its kernel start ticks differ. A version drain ends the worker but
+  leaves `enabled: true`, so the replacing dashboard starts one without an operator Start. Only an
+  explicit Stop clears the intent. A failed automatic start is journaled once per attempt and
+  retried on a bounded backoff of at least 5 and at most 60 seconds.
+- **Integration refusal.** A run whose publish integrates an already-published release commit
+  records the run as `failed` with that detail, keeps the worker `running` and `enabled`, and
+  re-gates on the next due tick without an operator Start.
 - **Singleton.** At most one release agent run exists per repository. A second worker of the same
   harness version refuses to start while one is live; a cadence tick or Check now during an active
   run starts nothing. After a run ends, the next due tick may start one.

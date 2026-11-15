@@ -246,28 +246,17 @@ pub fn report_violations(violations: &[CommitViolation]) -> i32 {
     1
 }
 
-/// The release tags reachable from `head`, with their `v` stripped.
-pub async fn release_tags(directory: &Path, head: &str) -> Vec<ReleaseTag> {
-    let result = run_git(
-        directory,
-        &["tag", "--merged", head, "--list", "v*"],
-        &Default::default(),
-        GIT_TIMEOUT_MS,
-    )
-    .await;
-    if result.code != 0 {
-        return Vec::new();
-    }
-    let mut tags = Vec::new();
-    for line in result.stdout.split('\n') {
-        if let Some(version) = release_version_of(line.trim()) {
-            tags.push(ReleaseTag {
-                tag: format!("v{version}"),
-                version,
-            });
-        }
-    }
-    tags
+/// The release tags on `head`'s line, with their `v` stripped, read through
+/// the shared release-line rule: a tag counts when its commit or that
+/// commit's parent is on the line.
+pub fn line_tags(directory: &Path, head: &str) -> Vec<ReleaseTag> {
+    crate::release_line::release_tags_in(directory, head)
+        .into_iter()
+        .map(|tag| ReleaseTag {
+            tag: tag.tag,
+            version: tag.version,
+        })
+        .collect()
 }
 
 /// The version inside one `v<major>.<minor>.<patch>` tag name, if any.
@@ -287,7 +276,7 @@ fn release_version_of(line: &str) -> Option<String> {
 /// The highest release tag reachable from `head`.
 pub async fn previous_release_tag(directory: &Path, head: &str) -> Option<ReleaseTag> {
     let mut previous: Option<ReleaseTag> = None;
-    for tag in release_tags(directory, head).await {
+    for tag in line_tags(directory, head) {
         let order = match &previous {
             None => Some(1),
             Some(current) => compare_versions(&tag.version, &current.version),
