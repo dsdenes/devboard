@@ -120,6 +120,10 @@ impl Fixture {
             ".devboard/crates/devboard/src/journal.rs",
             "pub fn write(text: &str) {\n    let _ = text;\n}\n",
         );
+        self.skill_inputs();
+    }
+
+    fn skill_inputs(&self) {
         self.write(
             ".omp/skills/devboard-restful-api-implementation/SKILL.md",
             "# RESTful API Implementation\n\nAudit the HTTP API.\n",
@@ -134,6 +138,80 @@ impl Fixture {
                 "| Rule | Level | Directive |\n| --- | --- | --- |\n",
                 "| 148 | MUST | Use HTTP methods according to RFC 9110. |\n",
                 "| 100 | MAY | Offer an optional OpenAPI document. |\n",
+            ),
+        );
+    }
+
+    fn typescript_inputs(&self) {
+        self.skill_inputs();
+        self.write(
+            "package.json",
+            "{\"name\":\"items\",\"dependencies\":{\"express\":\"^5.0.0\"}}\n",
+        );
+        self.write(
+            "server.ts",
+            concat!(
+                "import express from 'express';\n",
+                "const app = express();\n",
+                "app.get('/items', (_request, response) => response.json([]));\n",
+                "app.post('/items', (_request, response) => response.status(201).json({}));\n",
+                "app.get('/items/:id', (request, response) => response.json({ id: request.params.id }));\n",
+            ),
+        );
+    }
+
+    fn python_inputs(&self) {
+        self.skill_inputs();
+        self.write(
+            "pyproject.toml",
+            "[project]\nname = \"items\"\ndependencies = [\"fastapi\"]\n",
+        );
+        self.write(
+            "app/main.py",
+            concat!(
+                "from fastapi import FastAPI\n",
+                "\n",
+                "app = FastAPI()\n",
+                "\n",
+                "@app.get(\"/items\")\n",
+                "def list_items():\n",
+                "    return []\n",
+                "\n",
+                "@app.post(\"/items\")\n",
+                "def create_item():\n",
+                "    return {}\n",
+                "\n",
+                "@app.get(\"/items/{item_id}\")\n",
+                "def read_item(item_id: int):\n",
+                "    return {\"id\": item_id}\n",
+            ),
+        );
+    }
+
+    fn openapi_inputs(&self) {
+        self.skill_inputs();
+        self.write(
+            "openapi.yaml",
+            concat!(
+                "openapi: 3.0.0\n",
+                "info:\n",
+                "  title: Items\n",
+                "  version: 1.0.0\n",
+                "paths:\n",
+                "  /items:\n",
+                "    get:\n",
+                "      responses:\n",
+                "        \"200\":\n",
+                "          description: The items.\n",
+                "    post:\n",
+                "      responses:\n",
+                "        \"201\":\n",
+                "          description: Created.\n",
+                "  /items/{item_id}:\n",
+                "    get:\n",
+                "      responses:\n",
+                "        \"200\":\n",
+                "          description: The item.\n",
             ),
         );
     }
@@ -524,7 +602,13 @@ async fn api_standards_runs_one_cycle_and_files_a_must_finding() {
             )
             .expect("request JSON");
             assert_eq!(request["issueRoom"], 5);
-            assert_eq!(request["sourceDir"], ".devboard/crates/devboard/src");
+            assert!(request.get("sourceDir").is_none());
+            assert_eq!(request["environment"]["languages"], json!(["Rust"]));
+            assert_eq!(request["environment"]["frameworks"], json!(["axum"]));
+            assert_eq!(
+                request["environment"]["sourceRoots"],
+                json!([".devboard/crates/devboard/src"])
+            );
             assert!(request["knownTitles"].is_array());
             let finding = json!({
                 "title": "POST /api/ready ignores the method",
@@ -907,22 +991,35 @@ async fn api_standards_keeps_the_rows_when_the_title_read_stalls() {
 }
 
 #[tokio::test]
-async fn api_standards_preflight_refusals_name_the_missing_fact() {
+async fn api_standards_preflight_accepts_a_checkout_without_the_harness_source_directory() {
     let fixture = Fixture::new("api-preflight");
-    fixture.api_inputs();
+    fixture.typescript_inputs();
+    assert!(!fixture.repo.join(".devboard/crates").exists());
+    let options = api::PreflightOptions {
+        repo_dir: fixture.repo.clone(),
+        state_dir: fixture.state_dir.clone(),
+        origin: Some(origin("github", "github.test", "acme/fixture")),
+        run: Some(stub_preflight_run()),
+        ..api::PreflightOptions::default()
+    };
+    let repository = api::preflight_api_standards(&options)
+        .await
+        .expect("a TypeScript checkout with no .devboard/crates starts");
+    assert_eq!(repository, "acme/fixture");
+}
+
+#[tokio::test]
+async fn api_standards_preflight_refusals_name_the_missing_fact() {
+    let fixture = Fixture::new("api-preflight-refusals");
+    fixture.typescript_inputs();
     let mut options = api::PreflightOptions {
         repo_dir: fixture.repo.clone(),
         state_dir: fixture.state_dir.clone(),
+        origin: Some(origin("github", "github.test", "acme/fixture")),
+        run: Some(stub_preflight_run()),
         ..api::PreflightOptions::default()
     };
-    std::fs::remove_dir_all(fixture.repo.join(".devboard").join("crates")).expect("remove");
-    let message = api::preflight_api_standards(&options)
-        .await
-        .expect_err("a refusal");
-    assert!(message.contains(".devboard/crates/devboard/src"));
-    assert!(message.contains("installed npm prefix"));
 
-    fixture.api_inputs();
     std::fs::remove_file(
         fixture
             .repo
@@ -934,7 +1031,7 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         .expect_err("a refusal");
     assert!(message.contains("SKILL.md is not readable"));
 
-    fixture.api_inputs();
+    fixture.skill_inputs();
     fixture.write(
         ".omp/skills/devboard-restful-api-implementation/references/zalando-rest-rules.md",
         "## URLs\n\n| Rule | Level | Directive |\n| --- | --- | --- |\n",
@@ -944,19 +1041,76 @@ async fn api_standards_preflight_refusals_name_the_missing_fact() {
         .expect_err("a refusal");
     assert!(message.contains("no rule table"));
 
-    fixture.api_inputs();
+    fixture.skill_inputs();
     options.origin = Some(origin("gitlab", "gitlab.test", "acme/fixture"));
     let message = api::preflight_api_standards(&options)
         .await
         .expect_err("a refusal");
     assert!(message.contains("GitLab"));
 
-    options.origin = None;
     options.state_dir = fixture.root.clone();
     let message = api::preflight_api_standards(&options)
         .await
         .expect_err("a refusal");
     assert!(message.contains("not inside REPO_DIR"));
+
+    options.state_dir = fixture.state_dir.clone();
+    options.origin = Some(origin("github", "github.test", "acme/fixture"));
+    options.run = Some(Arc::new(
+        |argv: Vec<String>| -> Pin<Box<dyn Future<Output = devboard::forge::ExecResult> + Send>> {
+            Box::pin(async move {
+                if argv.iter().any(|argument| argument == ".permissions.push") {
+                    return devboard::forge::ExecResult {
+                        stdout: "true".to_string(),
+                        ..devboard::forge::ExecResult::default()
+                    };
+                }
+                if argv.first().map(String::as_str) == Some("label") {
+                    return devboard::forge::ExecResult {
+                        stderr: "the forge refused the label".to_string(),
+                        code: 1,
+                        ..devboard::forge::ExecResult::default()
+                    };
+                }
+                devboard::forge::ExecResult::default()
+            })
+        },
+    ));
+    let message = api::preflight_api_standards(&options)
+        .await
+        .expect_err("a refusal");
+    assert!(message.contains("label could not be created"), "{message}");
+    assert!(message.contains("the forge refused the label"), "{message}");
+}
+
+#[allow(clippy::type_complexity)]
+fn stub_preflight_run() -> Arc<
+    dyn Fn(Vec<String>) -> Pin<Box<dyn Future<Output = devboard::forge::ExecResult> + Send>>
+        + Send
+        + Sync,
+> {
+    Arc::new(
+        |argv: Vec<String>| -> Pin<Box<dyn Future<Output = devboard::forge::ExecResult> + Send>> {
+            Box::pin(async move {
+                if argv.iter().any(|argument| argument == ".permissions.push") {
+                    return devboard::forge::ExecResult {
+                        stdout: "true".to_string(),
+                        ..devboard::forge::ExecResult::default()
+                    };
+                }
+                if argv
+                    .iter()
+                    .any(|argument| argument.ends_with("/labels/api-standards"))
+                {
+                    return devboard::forge::ExecResult {
+                        stdout: "api-standards".to_string(),
+                        ..devboard::forge::ExecResult::default()
+                    };
+                }
+                devboard::forge::ExecResult::default()
+            })
+        },
+    )
 }
 
 #[test]
@@ -984,7 +1138,13 @@ fn api_standards_inventory_reads_the_rust_http_surface() {
     fixture.api_inputs();
     let input =
         api::read_audit_input(&fixture.repo, &api::Config::default()).expect("an audit input");
-    assert_eq!(input.source_dir, api::DEFAULT_API_SOURCE_DIRECTORY);
+    assert_eq!(input.environment.languages, ["Rust"]);
+    assert_eq!(input.environment.frameworks, ["axum"]);
+    assert_eq!(
+        input.environment.source_roots,
+        [".devboard/crates/devboard/src"]
+    );
+    assert!(input.environment.specifications.is_empty());
     let routes: Vec<(&str, Vec<&str>, &str)> = input
         .routes
         .iter()
@@ -2304,10 +2464,20 @@ fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
         .expect("the repository root")
         .to_path_buf();
     let config = api::api_standards_config();
-    assert_eq!(config.source_dir, ".devboard/crates/devboard/src");
     let input = api::read_audit_input(&root, &config).expect("the real surface is readable");
+    assert!(input.environment.languages.contains(&"Rust".to_string()));
+    assert!(input.environment.frameworks.contains(&"axum".to_string()));
+    assert_eq!(
+        input.environment.source_roots,
+        [".devboard/crates/devboard/src"]
+    );
     assert!(!input.sources.is_empty());
     for source in &input.sources {
+        assert!(
+            source.path.starts_with(".devboard/crates/devboard/src/"),
+            "{}",
+            source.path
+        );
         assert!(source.path.ends_with(".rs"), "{}", source.path);
         assert!(!source.path.contains("_test.rs"), "{}", source.path);
         assert!(!source.path.contains("/tests/"), "{}", source.path);
@@ -2356,6 +2526,315 @@ fn the_real_harness_surface_carries_every_route_and_only_rust_sources() {
     }
 }
 
+async fn api_cycle_filing(fixture: &Fixture, finding: Value) -> api::State {
+    let title = finding["title"]
+        .as_str()
+        .expect("a finding title")
+        .to_string();
+    let forge = Arc::new(ApiForge::default());
+    let forge_for_peer = Arc::clone(&forge);
+    let finding_for_peer = finding.clone();
+    let title_for_peer = title.clone();
+    let connect = fake_connect(move |prompt| {
+        let forge = Arc::clone(&forge_for_peer);
+        let finding = finding_for_peer.clone();
+        let title = title_for_peer.clone();
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/api-standards-audit ");
+            std::fs::write(
+                directory.join("findings.json"),
+                format!("{}\n", json!({"version": 1, "findings": [finding]})),
+            )
+            .expect("findings");
+            write_tool_record(&directory, 7, &title);
+            forge
+                .issues
+                .lock()
+                .expect("the fake")
+                .push(api::ForgeIssue {
+                    number: 7,
+                    title: title.clone(),
+                    url: "https://forge.test/acme/fixture/issues/7".to_string(),
+                    state: "open".to_string(),
+                    created_at: "2026-01-01T00:00:00.000Z".to_string(),
+                    body: String::new(),
+                    labels: vec!["api-standards".to_string()],
+                });
+            Ok(())
+        })
+    });
+    let worker = api_worker(fixture, forge, connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    let state = worker.current_state();
+    worker.stop().await;
+    state
+}
+
+fn must_finding(title: &str, method: &str, path: &str, evidence: Value) -> Value {
+    json!({
+        "title": title,
+        "ruleId": "148",
+        "level": "MUST",
+        "chapter": "HTTP requests",
+        "directive": "Use HTTP methods according to RFC 9110.",
+        "endpoints": [{"method": method, "path": path}],
+        "evidence": [evidence],
+        "proposedChange": "Answer the documented method only.",
+        "acceptanceCriteria": ["The endpoint answers the documented method."],
+        "decision": "filed",
+        "issueNumber": 7,
+        "issueUrl": "https://forge.test/acme/fixture/issues/7",
+    })
+}
+
+#[tokio::test]
+async fn api_standards_detects_a_typescript_code_first_api() {
+    let fixture = Fixture::new("api-express");
+    fixture.typescript_inputs();
+    let input =
+        api::read_audit_input(&fixture.repo, &api::api_standards_config()).expect("an audit input");
+    assert_eq!(input.environment.languages, ["TypeScript"]);
+    assert_eq!(input.environment.frameworks, ["express"]);
+    assert_eq!(input.environment.source_roots, ["."]);
+    let sources: Vec<&str> = input
+        .sources
+        .iter()
+        .map(|source| source.path.as_str())
+        .collect();
+    assert_eq!(sources, ["server.ts"]);
+    let routes: Vec<(&str, Vec<&str>)> = input
+        .routes
+        .iter()
+        .map(|route| {
+            (
+                route.path.as_str(),
+                route.methods.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            ("/items", vec!["GET", "POST"]),
+            ("/items/{id}", vec!["GET"]),
+        ]
+    );
+    let finding = must_finding(
+        "GET /items answers a POST-only body",
+        "GET",
+        "/items",
+        json!({"path": "server.ts", "lines": "3", "quote": "app.get('/items'"}),
+    );
+    let state = api_cycle_filing(&fixture, finding).await;
+    assert_eq!(state.issues.len(), 1);
+    assert_eq!(state.issues[0].title, "GET /items answers a POST-only body");
+}
+
+#[tokio::test]
+async fn api_standards_detects_a_python_code_first_api() {
+    let fixture = Fixture::new("api-fastapi");
+    fixture.python_inputs();
+    let input =
+        api::read_audit_input(&fixture.repo, &api::api_standards_config()).expect("an audit input");
+    assert_eq!(input.environment.languages, ["Python"]);
+    assert_eq!(input.environment.frameworks, ["fastapi"]);
+    assert_eq!(input.environment.source_roots, ["app"]);
+    let sources: Vec<&str> = input
+        .sources
+        .iter()
+        .map(|source| source.path.as_str())
+        .collect();
+    assert_eq!(sources, ["app/main.py"]);
+    let routes: Vec<(&str, Vec<&str>)> = input
+        .routes
+        .iter()
+        .map(|route| {
+            (
+                route.path.as_str(),
+                route.methods.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            ("/items", vec!["GET", "POST"]),
+            ("/items/{item_id}", vec!["GET"]),
+        ]
+    );
+    let finding = must_finding(
+        "GET /items returns an untyped body",
+        "GET",
+        "/items",
+        json!({
+            "path": "app/main.py",
+            "lines": "5-6",
+            "quote": "@app.get(\"/items\")",
+        }),
+    );
+    let state = api_cycle_filing(&fixture, finding).await;
+    assert_eq!(state.issues.len(), 1);
+}
+
+#[tokio::test]
+async fn api_standards_detects_an_openapi_described_api() {
+    let fixture = Fixture::new("api-openapi");
+    fixture.openapi_inputs();
+    let input =
+        api::read_audit_input(&fixture.repo, &api::api_standards_config()).expect("an audit input");
+    assert_eq!(input.environment.specifications, ["openapi.yaml"]);
+    assert!(input.sources.is_empty());
+    let routes: Vec<(&str, Vec<&str>)> = input
+        .routes
+        .iter()
+        .map(|route| {
+            (
+                route.path.as_str(),
+                route.methods.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        vec![
+            ("/items", vec!["GET", "POST"]),
+            ("/items/{item_id}", vec!["GET"]),
+        ]
+    );
+    let finding = must_finding(
+        "GET /items has no response schema",
+        "GET",
+        "/items",
+        json!({"path": "openapi.yaml", "lines": "6", "quote": "/items:"}),
+    );
+    let state = api_cycle_filing(&fixture, finding).await;
+    assert_eq!(state.issues.len(), 1);
+}
+
+#[tokio::test]
+async fn api_standards_with_no_http_surface_records_an_honest_skip() {
+    let fixture = Fixture::new("api-no-surface");
+    fixture.skill_inputs();
+    let input =
+        api::read_audit_input(&fixture.repo, &api::api_standards_config()).expect("an audit input");
+    assert!(input.sources.is_empty());
+    assert!(input.routes.is_empty());
+    assert!(input.environment.languages.is_empty());
+    assert!(input.environment.frameworks.is_empty());
+    assert!(input.environment.source_roots.is_empty());
+
+    let forge = Arc::new(ApiForge::default());
+    let connect = fake_connect(|prompt| {
+        Box::pin(async move {
+            let directory = prompt_directory(&prompt, "/api-standards-audit ");
+            std::fs::write(
+                directory.join("findings.json"),
+                "{\"version\":1,\"noHttpSurface\":true,\"findings\":[]}\n",
+            )
+            .expect("the no-surface answer");
+            Ok(())
+        })
+    });
+    let worker = api_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    worker.begin_cycle().await;
+    worker.wait_for_cycle().await;
+    let state = worker.current_state();
+    assert_eq!(state.lifecycle, api::Lifecycle::Idle);
+    assert_eq!(state.last_error, None);
+    let notice = state.notice.clone().unwrap_or_default();
+    assert!(notice.contains("no HTTP API surface detected"), "{notice}");
+    assert!(state.issues.is_empty());
+    let directory = api::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
+    assert!(api::read_activity(&directory)
+        .join("\n")
+        .contains("no HTTP API surface detected"));
+    worker.stop().await;
+}
+
+#[test]
+fn api_standards_evidence_accepts_any_text_file_and_refuses_unsafe_paths() {
+    let fixture = Fixture::new("api-evidence");
+    fixture.skill_inputs();
+    fixture.write("docs/note.md", "first\nsecond\nthird\n");
+    std::fs::write(
+        fixture.repo.join("docs/binary.bin"),
+        [0x00_u8, 0x01, 0x02, 0xff],
+    )
+    .expect("a binary file");
+    std::fs::write(fixture.root.join("outside.txt"), "outside\n").expect("an outside file");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        fixture.root.join("outside.txt"),
+        fixture.repo.join("escape.txt"),
+    )
+    .expect("an escaping symlink");
+
+    let skill = api::read_rest_skill(&fixture.repo, &api::Config::default()).expect("the skill");
+    let sources = HashMap::new();
+    let context = api::FindingContext {
+        rules: &skill.rules,
+        sources: &sources,
+        repo_dir: &fixture.repo,
+    };
+    let finding = |path: &str, lines: &str, quote: &str| {
+        must_finding(
+            "A finding",
+            "GET",
+            "/items",
+            json!({"path": path, "lines": lines, "quote": quote}),
+        )
+    };
+    assert!(matches!(
+        api::validate_finding(&finding("docs/note.md", "2", "second"), &context),
+        api::FindingProblem::Ok(_)
+    ));
+    let refusals = [
+        finding("../outside.txt", "1", "outside"),
+        finding(
+            fixture.root.join("outside.txt").to_str().expect("a path"),
+            "1",
+            "outside",
+        ),
+        finding("docs", "1", "first"),
+        finding("docs/binary.bin", "1", ""),
+        finding("docs/note.md", "99", "second"),
+        finding("docs/note.md", "2", "not copied"),
+        finding("missing.md", "1", "anything"),
+    ];
+    for refusal in refusals {
+        let problem = api::validate_finding(&refusal, &context);
+        assert!(
+            matches!(
+                problem,
+                api::FindingProblem::Problem {
+                    reason: api::SkipReason::MissingEvidence,
+                    ..
+                }
+            ),
+            "{refusal}"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let problem = api::validate_finding(&finding("escape.txt", "1", "outside"), &context);
+        assert!(
+            matches!(
+                problem,
+                api::FindingProblem::Problem {
+                    reason: api::SkipReason::MissingEvidence,
+                    ..
+                }
+            ),
+            "{problem:?}"
+        );
+    }
+}
+
 #[test]
 fn the_operator_suite_fixture_carries_an_auditable_api_surface() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2367,6 +2846,13 @@ fn the_operator_suite_fixture_carries_an_auditable_api_surface() {
     let fixture = root.join(".devboard/e2e/fixtures/repo");
     let input = api::read_audit_input(&fixture, &api::api_standards_config())
         .expect("the operator suite's fixture repository is auditable");
+    assert_eq!(input.environment.languages, ["Rust"]);
+    assert_eq!(input.environment.frameworks, ["axum"]);
+    assert_eq!(
+        input.environment.source_roots,
+        [".devboard/crates/devboard/src"]
+    );
+    assert!(input.environment.specifications.is_empty());
     let sources: Vec<&str> = input
         .sources
         .iter()

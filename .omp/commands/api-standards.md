@@ -1,5 +1,5 @@
 ---
-description: Audit the dashboard HTTP API for API Standards via the harness prompt at .devboard/prompts/api-standards.md
+description: Audit the repository HTTP API for API Standards via the harness prompt at .devboard/prompts/api-standards.md
 argument-hint: "[absolute cycle directory]"
 ---
 

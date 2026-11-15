@@ -968,7 +968,7 @@ export const DEFAULT_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = Object.free
     id: "api-standards",
     label: "API Standards",
     description:
-      "Audits the dashboard HTTP API against the project REST skill and files capped " +
+      "Audits the repository HTTP API against the project REST skill and files capped " +
       "conformance issues for every MUST or SHOULD violation.",
     scope: "repository",
     prompt: {

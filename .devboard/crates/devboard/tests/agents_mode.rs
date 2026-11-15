@@ -1189,7 +1189,12 @@ async fn a_slow_forge_start_refusal_stays_on_the_card_instead_of_raising_the_ala
 async fn api_standards_start_refuses_an_unusable_rule_table_instead_of_panicking() {
     let root = scratch("api-standards-rule-table");
     let repo = root.join("repo");
-    std::fs::create_dir_all(repo.join(".devboard/crates/devboard/src")).expect("a source root");
+    assert!(!repo.join(".devboard/crates").exists());
+    std::fs::write(
+        repo.join("server.ts"),
+        "import express from 'express';\nconst app = express();\napp.get('/items', (_q, s) => s.json([]));\n",
+    )
+    .expect("a TypeScript API source");
     let skill_dir = repo.join(".omp/skills/devboard-restful-api-implementation");
     std::fs::create_dir_all(skill_dir.join("references")).expect("a skill root");
     std::fs::write(skill_dir.join("SKILL.md"), "# REST\n\nBytes.\n").expect("a skill file");
@@ -1242,9 +1247,123 @@ async fn api_standards_start_refuses_an_unusable_rule_table_instead_of_panicking
     kill_recorded(&pids);
 }
 
-// The budget is wall clock, so a loaded host can spend it before the first
-// step starts. A paused clock makes the two steps and the deadline advance
-// together and the assertion independent of how busy the machine is.
+#[cfg(unix)]
+#[tokio::test]
+async fn api_standards_start_accepts_a_typescript_checkout_without_harness_sources() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = scratch("api-standards-typescript-start");
+    let repo = root.join("repo");
+    let state = repo.join(".devboard/.tmp/state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    assert!(!repo.join(".devboard/crates").exists());
+    std::fs::write(
+        repo.join("package.json"),
+        "{\"name\":\"items\",\"dependencies\":{\"express\":\"^5.0.0\"}}\n",
+    )
+    .expect("a package manifest");
+    std::fs::write(
+        repo.join("server.ts"),
+        "import express from 'express';\nconst app = express();\napp.get('/items', (_q, s) => s.json([]));\n",
+    )
+    .expect("a TypeScript API source");
+    let skill_dir = repo.join(".omp/skills/devboard-restful-api-implementation");
+    std::fs::create_dir_all(skill_dir.join("references")).expect("a skill root");
+    std::fs::write(skill_dir.join("SKILL.md"), "# REST\n\nBytes.\n").expect("a skill file");
+    std::fs::write(
+        skill_dir.join("references/zalando-rest-rules.md"),
+        "## HTTP requests\n\n| Rule | Level | Directive |\n| --- | --- | --- |\n| 148 | MUST | Use HTTP methods according to RFC 9110. |\n",
+    )
+    .expect("a rule table");
+
+    git_checkout(&repo);
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/fixture.git",
+        ])
+        .status()
+        .expect("git remote");
+    assert!(status.success());
+
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).expect("a stub bin");
+    let gh = bin.join("gh");
+    std::fs::write(
+        &gh,
+        "#!/bin/sh\ncase \"$*\" in\n  *\".permissions.push\"*) printf 'true\\n' ;;\n  *\"/labels/api-standards\"*) printf 'api-standards\\n' ;;\n  *) exit 0 ;;\nesac\n",
+    )
+    .expect("a gh stub");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable stub");
+
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "omp acp".to_string(),
+        state_dir: state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let journal = Journal::open(&state, &repo, 0);
+    let app = App::new(config, journal);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    devboard::agents_mode::set_agent_environment(&app, move || {
+        let path = path.clone();
+        Box::pin(async move {
+            let mut environment = HashMap::new();
+            environment.insert("PATH".to_string(), path);
+            environment.insert("HOME".to_string(), "/home/test".to_string());
+            Ok(environment)
+        })
+    });
+    let pids: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&pids);
+    let spawns: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let recorded_spawns = Arc::clone(&spawns);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded_spawns
+            .lock()
+            .expect("spawns")
+            .push((argv.to_vec(), environment.clone()));
+        let pid = stand_in_reapable();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("api-standards")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "start refused: {all:?}");
+    wait_until_spawned(&spawns, "api-standards").await;
+    let spawned = spawns.lock().expect("spawns");
+    assert_eq!(spawned.len(), 1);
+    assert!(spawned[0]
+        .0
+        .iter()
+        .any(|argument| argument == "api-standards"));
+    drop(spawned);
+    kill_recorded(&pids);
+}
 #[tokio::test(start_paused = true)]
 async fn a_shared_preflight_budget_bounds_every_step_and_names_the_slow_one() {
     use devboard::agents_mode::PreflightBudget;

@@ -391,7 +391,7 @@ const DESCRIPTORS: [Descriptor; 10] = [
     Descriptor {
         id: "api-standards",
         label: "API Standards",
-        description: "Audits the dashboard HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.",
+        description: "Audits the repository HTTP API against the project REST skill and files capped conformance issues for every MUST or SHOULD violation.",
         scope: "repository",
         prompt: PromptKind::File("api-standards.md"),
         gate: ProjectGate::Any,
@@ -6423,26 +6423,6 @@ impl RepoFamily {
     }
 
     async fn preflight_api_standards(&self, budget: PreflightBudget) -> Result<String, String> {
-        let source_dir = crate::workers::api_standards::DEFAULT_API_SOURCE_DIRECTORY;
-        let source_root = self.repo_dir.join(source_dir);
-        if !source_root.exists() {
-            return Err(format!(
-                "missing prerequisite: the canonical harness source checkout has no {source_dir} directory (an installed npm prefix is refused)"
-            ));
-        }
-        match std::fs::symlink_metadata(&source_root) {
-            Ok(metadata) if metadata.is_dir() => {}
-            Ok(_) => {
-                return Err(format!(
-                    "missing prerequisite: {source_dir} is not a directory"
-                ))
-            }
-            Err(_) => {
-                return Err(format!(
-                    "missing prerequisite: {source_dir} is not readable"
-                ))
-            }
-        }
         // The worker's own preflight reads the same two documents; one parser
         // answers both, so a rule table this Start accepts is one the worker
         // accepts.

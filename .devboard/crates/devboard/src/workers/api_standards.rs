@@ -66,7 +66,6 @@ pub const API_STANDARDS_LABEL: &str = "api-standards";
 pub const LABEL_COLOR: &str = "0e8a16";
 pub const LABEL_DESCRIPTION: &str = "HTTP API deviation from the project REST standard";
 
-pub const DEFAULT_API_SOURCE_DIRECTORY: &str = ".devboard/crates/devboard/src";
 pub const DEFAULT_SKILL_DIRECTORY: &str = ".omp/skills/devboard-restful-api-implementation";
 pub const SKILL_FILE: &str = "SKILL.md";
 pub const RULES_FILE: &str = "references/zalando-rest-rules.md";
@@ -82,7 +81,6 @@ pub const ACTIVITY_TRIMMED_MARKER: &str = "Earlier activity was trimmed.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    pub source_dir: String,
     pub skill_dir: String,
     pub skill_document: String,
     pub rules_document: String,
@@ -91,7 +89,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            source_dir: DEFAULT_API_SOURCE_DIRECTORY.to_string(),
             skill_dir: DEFAULT_SKILL_DIRECTORY.to_string(),
             skill_document: format!("{DEFAULT_SKILL_DIRECTORY}/{SKILL_FILE}"),
             rules_document: format!("{DEFAULT_SKILL_DIRECTORY}/{RULES_FILE}"),
@@ -1200,12 +1197,34 @@ impl RouteEntry {
     }
 }
 
+/// The HTTP API surface the checkout itself declares: the languages and
+/// frameworks its manifests and sources name, the API specification documents
+/// it carries, and the repository-relative roots that hold the surface.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DetectedEnvironment {
+    pub languages: Vec<String>,
+    pub frameworks: Vec<String>,
+    pub specifications: Vec<String>,
+    pub source_roots: Vec<String>,
+}
+
+impl DetectedEnvironment {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "languages": self.languages,
+            "frameworks": self.frameworks,
+            "specifications": self.specifications,
+            "sourceRoots": self.source_roots,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AuditInput {
     pub sources: Vec<AuditFile>,
     pub routes: Vec<RouteEntry>,
     pub skill: RestSkill,
-    pub source_dir: String,
+    pub environment: DetectedEnvironment,
 }
 
 fn line_count(text: &str) -> usize {
@@ -1214,6 +1233,10 @@ fn line_count(text: &str) -> usize {
     } else {
         text.strip_suffix('\n').unwrap_or(text).split('\n').count()
     }
+}
+
+fn line_at(text: &str, offset: usize) -> usize {
+    text[..offset].matches('\n').count() + 1
 }
 
 /// The dispatcher's match over the request path. The path is read once from
@@ -1243,17 +1266,131 @@ fn request_path_function(lines: &[&str]) -> Option<(usize, usize)> {
     Some((start, block_end(lines, start)))
 }
 
-/// A Rust file belongs to the dashboard's HTTP surface when it names axum's
-/// request types or dispatches on the request path.
-fn is_api_source(text: &str) -> bool {
-    text.contains("axum::")
-        || text.contains("HeaderMap")
-        || text.lines().any(dispatches_request_path)
+/// A source language the checkout carries an HTTP surface in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceKind {
+    Rust,
+    TypeScript,
+    JavaScript,
+    Python,
+    Go,
+    Ruby,
+    Java,
+    CSharp,
+    Kotlin,
+    Php,
 }
 
-/// The audit walks the crate's Rust modules; `is_api_source` selects the
-/// surface from their text.
-fn walk_sources(directory: &Path, found: &mut Vec<PathBuf>) {
+impl SourceKind {
+    fn language(self) -> &'static str {
+        match self {
+            Self::Rust => "Rust",
+            Self::TypeScript => "TypeScript",
+            Self::JavaScript => "JavaScript",
+            Self::Python => "Python",
+            Self::Go => "Go",
+            Self::Ruby => "Ruby",
+            Self::Java => "Java",
+            Self::CSharp => "C#",
+            Self::Kotlin => "Kotlin",
+            Self::Php => "PHP",
+        }
+    }
+}
+
+fn source_kind(path: &Path) -> Option<SourceKind> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    if name.ends_with(".d.ts") {
+        return None;
+    }
+    let extension = name.rsplit_once('.')?.1;
+    match extension {
+        "rs" => Some(SourceKind::Rust),
+        "ts" | "tsx" | "mts" | "cts" => Some(SourceKind::TypeScript),
+        "js" | "jsx" | "mjs" | "cjs" => Some(SourceKind::JavaScript),
+        "py" => Some(SourceKind::Python),
+        "go" => Some(SourceKind::Go),
+        "rb" => Some(SourceKind::Ruby),
+        "java" => Some(SourceKind::Java),
+        "cs" => Some(SourceKind::CSharp),
+        "kt" => Some(SourceKind::Kotlin),
+        "php" => Some(SourceKind::Php),
+        _ => None,
+    }
+}
+
+fn is_manifest_file(name: &str) -> bool {
+    matches!(
+        name,
+        "package.json"
+            | "Cargo.toml"
+            | "pyproject.toml"
+            | "requirements.txt"
+            | "setup.py"
+            | "go.mod"
+            | "Gemfile"
+            | "pom.xml"
+            | "composer.json"
+    )
+}
+
+fn is_specification_file(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "openapi.yaml"
+            | "openapi.yml"
+            | "openapi.json"
+            | "swagger.yaml"
+            | "swagger.yml"
+            | "swagger.json"
+    ) || name.ends_with(".openapi.yaml")
+        || name.ends_with(".openapi.yml")
+        || name.ends_with(".openapi.json")
+}
+
+/// Build, dependency, generated, and fixture trees that never carry the
+/// checkout's own served surface. An audit reads the repository it is given,
+/// so the walk is rooted there and every skipped name is a conventional
+/// non-source tree rather than a harness path.
+fn skipped_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".worktree"
+            | ".tmp"
+            | ".test-tmp"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | "vendor"
+            | "published"
+            | "fixtures"
+            | "tests"
+            | "test"
+            | "e2e"
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+            | ".tox"
+            | ".mypy_cache"
+            | ".pytest_cache"
+            | "site-packages"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+    )
+}
+
+#[derive(Default)]
+struct RepositoryFiles {
+    sources: Vec<PathBuf>,
+    manifests: Vec<PathBuf>,
+    specifications: Vec<PathBuf>,
+}
+
+fn walk_repository(directory: &Path, found: &mut RepositoryFiles) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
@@ -1267,17 +1404,626 @@ fn walk_sources(directory: &Path, found: &mut Vec<PathBuf>) {
             continue;
         };
         if metadata.is_dir() {
-            if name == "fixtures" || name == "node_modules" || name == "target" || name == "tests" {
-                continue;
+            if !skipped_directory(name) {
+                walk_repository(&child, found);
             }
-            walk_sources(&child, found);
             continue;
         }
-        if !metadata.is_file() || !name.ends_with(".rs") {
+        // A symlinked file can point anywhere; the audit reads the checkout's
+        // own regular files only.
+        if !metadata.is_file() {
             continue;
         }
-        found.push(child);
+        if is_specification_file(name) {
+            found.specifications.push(child.clone());
+        } else if is_manifest_file(name) {
+            found.manifests.push(child.clone());
+        } else if source_kind(&child).is_some() {
+            found.sources.push(child.clone());
+        }
     }
+}
+
+fn scan_repository(root: &Path) -> RepositoryFiles {
+    let mut found = RepositoryFiles::default();
+    walk_repository(root, &mut found);
+    found.sources.sort();
+    found.manifests.sort();
+    found.specifications.sort();
+    found
+}
+
+fn repository_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
+}
+
+const RUST_API_MARKERS: &[&str] = &[
+    "axum::",
+    "actix_web::",
+    "warp::",
+    "rocket::",
+    "poem::",
+    "tide::",
+    "hyper::server",
+    "tiny_http::",
+];
+
+/// A Rust file belongs to the checkout's HTTP surface when it names a server
+/// framework's request types or dispatches on the request path.
+fn is_api_source(text: &str) -> bool {
+    RUST_API_MARKERS.iter().any(|marker| text.contains(marker))
+        || text.lines().any(dispatches_request_path)
+}
+
+fn rust_frameworks(text: &str) -> Vec<String> {
+    let mut frameworks = Vec::new();
+    for (marker, framework) in [
+        ("axum::", "axum"),
+        ("actix_web::", "actix-web"),
+        ("warp::", "warp"),
+        ("rocket::", "rocket"),
+        ("poem::", "poem"),
+        ("tide::", "tide"),
+        ("hyper::server", "hyper"),
+        ("tiny_http::", "tiny-http"),
+    ] {
+        if text.contains(marker) && !frameworks.iter().any(|entry| entry == framework) {
+            frameworks.push(framework.to_string());
+        }
+    }
+    frameworks
+}
+
+/// `app.get('/items', …)`, `router.post(…)`, and the other receiver names a
+/// code-first JavaScript or TypeScript server uses for its route table.
+fn web_route_pattern() -> &'static regex::Regex {
+    static ROUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?m)^[ \t]*(?:app|router|server|api|fastify|routes?)[ \t]*\.[ \t]*(get|post|put|patch|delete|options|head)[ \t]*\([ \t]*['"]([^'"]+)['"]"#,
+        )
+        .expect("a web route pattern")
+    });
+    &ROUTE
+}
+
+/// A NestJS or similar decorator handlers surface.
+fn web_decorator_pattern() -> &'static regex::Regex {
+    static DECORATOR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?m)^[ \t]*@(Get|Post|Put|Patch|Delete|Options|Head)\s*\("#)
+            .expect("a web decorator pattern")
+    });
+    &DECORATOR
+}
+
+fn is_web_api_source(text: &str) -> bool {
+    web_route_pattern().is_match(text)
+        || web_decorator_pattern().is_match(text)
+        || text.contains("@nestjs/common")
+}
+
+fn python_decorator_pattern() -> &'static regex::Regex {
+    static DECORATOR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?m)^[ \t]*@[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\.[ \t]*(get|post|put|patch|delete|options|head)[ \t]*\([ \t]*['"]([^'"]+)['"]"#,
+        )
+        .expect("a Python route pattern")
+    });
+    &DECORATOR
+}
+
+fn python_route_pattern() -> &'static regex::Regex {
+    static ROUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?m)^[ \t]*@[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\.route[ \t]*\([ \t]*['"]([^'"]+)['"]([^)\n]*)"#,
+        )
+        .expect("a Flask route pattern")
+    });
+    &ROUTE
+}
+
+fn is_python_api_source(text: &str) -> bool {
+    python_decorator_pattern().is_match(text)
+        || python_route_pattern().is_match(text)
+        || text.contains("FastAPI(")
+        || text.contains("APIRouter(")
+        || text.contains("Flask(")
+        || text.contains("Blueprint(")
+}
+
+fn source_frameworks(kind: SourceKind, text: &str) -> Vec<String> {
+    let mut frameworks = Vec::new();
+    let mut add = |framework: &str| {
+        if !frameworks.iter().any(|entry| entry == framework) {
+            frameworks.push(framework.to_string());
+        }
+    };
+    match kind {
+        SourceKind::Rust => return rust_frameworks(text),
+        SourceKind::TypeScript | SourceKind::JavaScript => {
+            if text.contains("express") {
+                add("express");
+            }
+            if text.contains("fastify") {
+                add("fastify");
+            }
+            if text.contains("koa") {
+                add("koa");
+            }
+            if text.contains("@nestjs/common") {
+                add("nestjs");
+            }
+            if text.contains("hono") {
+                add("hono");
+            }
+            if text.contains("restify") {
+                add("restify");
+            }
+        }
+        SourceKind::Python => {
+            if text.contains("fastapi") || text.contains("FastAPI") {
+                add("fastapi");
+            }
+            if text.contains("flask") || text.contains("Flask") {
+                add("flask");
+            }
+            if text.contains("django") || text.contains("Django") {
+                add("django");
+            }
+            if text.contains("starlette") || text.contains("Starlette") {
+                add("starlette");
+            }
+        }
+        _ => {}
+    }
+    frameworks
+}
+
+fn package_frameworks(text: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let mut frameworks = Vec::new();
+    for section in ["dependencies", "devDependencies", "peerDependencies"] {
+        let Some(entries) = value.get(section).and_then(Value::as_object) else {
+            continue;
+        };
+        for name in entries.keys() {
+            let framework = match name.as_str() {
+                "express" => Some("express"),
+                "fastify" => Some("fastify"),
+                "@nestjs/core" => Some("nestjs"),
+                "koa" => Some("koa"),
+                "@hapi/hapi" => Some("hapi"),
+                "hono" => Some("hono"),
+                "restify" => Some("restify"),
+                "polka" => Some("polka"),
+                _ => None,
+            };
+            if let Some(framework) = framework {
+                if !frameworks.iter().any(|entry| entry == framework) {
+                    frameworks.push(framework.to_string());
+                }
+            }
+        }
+    }
+    frameworks
+}
+
+fn manifest_frameworks(path: &Path, text: &str) -> Vec<String> {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return Vec::new();
+    };
+    let lower = text.to_ascii_lowercase();
+    let found = match name {
+        "package.json" => return package_frameworks(text),
+        "Cargo.toml" => [
+            ("axum", "axum"),
+            ("actix-web", "actix-web"),
+            ("warp", "warp"),
+            ("rocket", "rocket"),
+            ("poem-openapi", "poem"),
+            ("tide", "tide"),
+        ]
+        .iter()
+        .filter(|(token, _)| lower.contains(token))
+        .map(|(_, framework)| (*framework).to_string())
+        .collect(),
+        "pyproject.toml" | "requirements.txt" | "setup.py" => [
+            ("fastapi", "fastapi"),
+            ("flask", "flask"),
+            ("django", "django"),
+            ("starlette", "starlette"),
+            ("aiohttp", "aiohttp"),
+            ("sanic", "sanic"),
+            ("falcon", "falcon"),
+            ("bottle", "bottle"),
+            ("tornado", "tornado"),
+        ]
+        .iter()
+        .filter(|(token, _)| lower.contains(token))
+        .map(|(_, framework)| (*framework).to_string())
+        .collect(),
+        "go.mod" => [
+            ("gin-gonic", "gin"),
+            ("labstack/echo", "echo"),
+            ("go-chi/chi", "chi"),
+            ("gofiber/fiber", "fiber"),
+        ]
+        .iter()
+        .filter(|(token, _)| lower.contains(token))
+        .map(|(_, framework)| (*framework).to_string())
+        .collect(),
+        _ => Vec::new(),
+    };
+    found
+}
+
+fn manifest_language(path: &Path) -> Option<&'static str> {
+    match path.file_name().and_then(|value| value.to_str())? {
+        "Cargo.toml" => Some("Rust"),
+        "pyproject.toml" | "requirements.txt" | "setup.py" => Some("Python"),
+        "go.mod" => Some("Go"),
+        "Gemfile" => Some("Ruby"),
+        "pom.xml" => Some("Java"),
+        "composer.json" => Some("PHP"),
+        _ => None,
+    }
+}
+
+fn normalize_route_path(path: &str) -> String {
+    let segments: Vec<String> = path
+        .split('/')
+        .map(|segment| match segment.strip_prefix(':') {
+            Some(name) => format!("{{{name}}}"),
+            None => segment.to_string(),
+        })
+        .collect();
+    let joined = segments.join("/");
+    if joined.is_empty() {
+        "/".to_string()
+    } else if !joined.starts_with('/') {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+fn push_route(routes: &mut Vec<RouteEntry>, source: &str, line: usize, method: &str, path: &str) {
+    let method = method.to_ascii_uppercase();
+    let path = normalize_route_path(path);
+    if let Some(existing) = routes
+        .iter_mut()
+        .find(|entry| entry.source == source && entry.path == path)
+    {
+        if !existing.methods.contains(&method) {
+            existing.methods.push(method);
+        }
+        return;
+    }
+    routes.push(RouteEntry {
+        path,
+        methods: vec![method],
+        kind: "endpoint".to_string(),
+        source: source.to_string(),
+        line,
+    });
+}
+
+fn web_route_calls(source: &AuditFile) -> Vec<RouteEntry> {
+    let mut routes = Vec::new();
+    for capture in web_route_pattern().captures_iter(&source.text) {
+        let (Some(method), Some(path), Some(whole)) =
+            (capture.get(1), capture.get(2), capture.get(0))
+        else {
+            continue;
+        };
+        push_route(
+            &mut routes,
+            &source.path,
+            line_at(&source.text, whole.start()),
+            method.as_str(),
+            path.as_str(),
+        );
+    }
+    routes
+}
+
+fn python_route_calls(source: &AuditFile) -> Vec<RouteEntry> {
+    let mut routes = Vec::new();
+    for capture in python_decorator_pattern().captures_iter(&source.text) {
+        let (Some(method), Some(path), Some(whole)) =
+            (capture.get(1), capture.get(2), capture.get(0))
+        else {
+            continue;
+        };
+        push_route(
+            &mut routes,
+            &source.path,
+            line_at(&source.text, whole.start()),
+            method.as_str(),
+            path.as_str(),
+        );
+    }
+    static METHOD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\b")
+            .expect("a declared method pattern")
+    });
+    for capture in python_route_pattern().captures_iter(&source.text) {
+        let (Some(path), Some(whole)) = (capture.get(1), capture.get(0)) else {
+            continue;
+        };
+        let tail = capture.get(2).map(|value| value.as_str()).unwrap_or("");
+        let mut methods: Vec<String> = METHOD
+            .captures_iter(tail)
+            .filter_map(|method| method.get(1).map(|value| value.as_str().to_string()))
+            .collect();
+        if methods.is_empty() {
+            methods.push("GET".to_string());
+        }
+        for method in methods {
+            push_route(
+                &mut routes,
+                &source.path,
+                line_at(&source.text, whole.start()),
+                &method,
+                path.as_str(),
+            );
+        }
+    }
+    routes
+}
+
+fn declared_http_routes(sources: &[AuditFile]) -> Vec<RouteEntry> {
+    let mut routes = Vec::new();
+    for source in sources {
+        let Some(kind) = source_kind(Path::new(&source.path)) else {
+            continue;
+        };
+        match kind {
+            SourceKind::TypeScript | SourceKind::JavaScript => {
+                routes.extend(web_route_calls(source));
+            }
+            SourceKind::Python => routes.extend(python_route_calls(source)),
+            _ => {}
+        }
+    }
+    routes
+}
+
+const HTTP_METHODS: &[&str] = &[
+    "get", "put", "post", "delete", "options", "head", "patch", "trace",
+];
+
+fn indentation(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+fn specification_routes(source: &str, text: &str) -> Vec<RouteEntry> {
+    if text.trim_start().starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<Value>(text) {
+            return json_specification_routes(source, text, &value);
+        }
+    }
+    yaml_specification_routes(source, text)
+}
+
+fn json_specification_routes(source: &str, text: &str, value: &Value) -> Vec<RouteEntry> {
+    let Some(paths) = value.get("paths").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut routes = Vec::new();
+    for (path, item) in paths {
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        let mut methods: Vec<String> = item
+            .keys()
+            .filter(|key| HTTP_METHODS.contains(&key.to_ascii_lowercase().as_str()))
+            .map(|key| key.to_ascii_uppercase())
+            .collect();
+        if methods.is_empty() {
+            continue;
+        }
+        methods.sort();
+        methods.dedup();
+        let needle = format!("\"{path}\"");
+        let line = text
+            .lines()
+            .position(|line| line.contains(&needle))
+            .map(|index| index + 1)
+            .unwrap_or(1);
+        routes.push(RouteEntry {
+            path: normalize_route_path(path),
+            methods,
+            kind: "endpoint".to_string(),
+            source: source.to_string(),
+            line,
+        });
+    }
+    routes.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    routes
+}
+
+/// Read one OpenAPI document's `paths` table without a YAML parser: a path key
+/// sits at the first indentation under `paths:`, and each HTTP method key below
+/// it names a method.
+fn yaml_specification_routes(source: &str, text: &str) -> Vec<RouteEntry> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(start) = lines
+        .iter()
+        .position(|line| indentation(line) == 0 && line.trim_end() == "paths:")
+    else {
+        return Vec::new();
+    };
+    let mut base: Option<usize> = None;
+    let mut current: Option<(String, usize, Vec<String>)> = None;
+    let mut routes = Vec::new();
+    let flush = |current: &mut Option<(String, usize, Vec<String>)>,
+                 routes: &mut Vec<RouteEntry>| {
+        if let Some((path, line, methods)) = current.take() {
+            if methods.is_empty() {
+                return;
+            }
+            routes.push(RouteEntry {
+                path: normalize_route_path(&path),
+                methods,
+                kind: "endpoint".to_string(),
+                source: source.to_string(),
+                line,
+            });
+        }
+    };
+    for (index, line) in lines.iter().enumerate().skip(start + 1) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = indentation(line);
+        if indent == 0 {
+            break;
+        }
+        let base_indent = *base.get_or_insert(indent);
+        if indent == base_indent && trimmed.starts_with('/') {
+            flush(&mut current, &mut routes);
+            let key = trimmed.strip_suffix(':').unwrap_or(trimmed).trim();
+            let key = key.trim_matches('"').trim_matches('\'');
+            current = Some((key.to_string(), index + 1, Vec::new()));
+            continue;
+        }
+        if indent > base_indent {
+            if let Some((_, _, methods)) = current.as_mut() {
+                let key = trimmed
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                if HTTP_METHODS.contains(&key.as_str()) {
+                    let method = key.to_ascii_uppercase();
+                    if !methods.contains(&method) {
+                        methods.push(method);
+                    }
+                }
+            }
+        }
+    }
+    flush(&mut current, &mut routes);
+    routes.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.line.cmp(&right.line))
+    });
+    routes
+}
+
+fn source_roots(sources: &[AuditFile]) -> Vec<String> {
+    let mut directories: Vec<String> = sources
+        .iter()
+        .map(|file| match file.path.rsplit_once('/') {
+            Some((directory, _)) if !directory.is_empty() => directory.to_string(),
+            _ => ".".to_string(),
+        })
+        .collect();
+    directories.sort();
+    directories.dedup();
+    let mut roots: Vec<String> = Vec::new();
+    for directory in directories {
+        let covered = roots.iter().any(|root| {
+            root == "." || directory == *root || directory.starts_with(&format!("{root}/"))
+        });
+        if !covered {
+            roots.push(directory);
+        }
+    }
+    roots
+}
+
+struct DetectedSurface {
+    environment: DetectedEnvironment,
+    sources: Vec<AuditFile>,
+    routes: Vec<RouteEntry>,
+}
+
+/// Detect the checkout's HTTP API surface from the repository it is given.
+/// Nothing here reads the harness, its manifest, or a fixed repository role:
+/// the walk is rooted at `repo_dir` and every fact comes from that tree.
+fn detect_surface(repo_dir: &Path) -> DetectedSurface {
+    let root = absolute(repo_dir);
+    let files = scan_repository(&root);
+    let mut environment = DetectedEnvironment::default();
+    for path in &files.manifests {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        environment
+            .frameworks
+            .extend(manifest_frameworks(path, &text));
+        if let Some(language) = manifest_language(path) {
+            environment.languages.push(language.to_string());
+        }
+    }
+    let mut sources = Vec::new();
+    for path in &files.sources {
+        let Some(kind) = source_kind(path) else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let selected = match kind {
+            SourceKind::Rust => is_api_source(&text),
+            SourceKind::TypeScript | SourceKind::JavaScript => is_web_api_source(&text),
+            SourceKind::Python => is_python_api_source(&text),
+            _ => false,
+        };
+        if !selected {
+            continue;
+        }
+        environment.languages.push(kind.language().to_string());
+        environment
+            .frameworks
+            .extend(source_frameworks(kind, &text));
+        sources.push(AuditFile {
+            path: repository_path(&root, path),
+            lines: line_count(&text),
+            text,
+        });
+    }
+    sources.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut document_routes = Vec::new();
+    for path in &files.specifications {
+        let relative = repository_path(&root, path);
+        environment.specifications.push(relative.clone());
+        if let Ok(text) = std::fs::read_to_string(path) {
+            document_routes.extend(specification_routes(&relative, &text));
+        }
+    }
+    environment.source_roots = source_roots(&sources);
+    environment.languages.sort();
+    environment.languages.dedup();
+    environment.frameworks.sort();
+    environment.frameworks.dedup();
+    environment.specifications.sort();
+    environment.specifications.dedup();
+    let mut routes = route_inventory(&sources);
+    routes.extend(declared_http_routes(&sources));
+    routes.extend(document_routes);
+    DetectedSurface {
+        environment,
+        sources,
+        routes: merged_routes(routes),
+    }
+}
+
+/// The environment the checkout declares, without building the cycle's input.
+pub fn detect_environment(repo_dir: &Path) -> DetectedEnvironment {
+    detect_surface(repo_dir).environment
 }
 
 /// One function definition inside an audited source.
@@ -1681,48 +2427,13 @@ pub fn route_inventory(sources: &[AuditFile]) -> Vec<RouteEntry> {
 
 pub fn read_audit_input(repo_dir: &Path, config: &Config) -> Result<AuditInput, String> {
     let root = absolute(repo_dir);
-    let source_root = root.join(&config.source_dir);
-    let metadata = std::fs::symlink_metadata(&source_root).map_err(|_| {
-        format!(
-            "the canonical harness source checkout has no {} directory \
-             (an installed npm prefix is refused)",
-            config.source_dir
-        )
-    })?;
-    if !metadata.is_dir() {
-        return Err(format!("{} is not a directory", config.source_dir));
-    }
-    let mut files = Vec::new();
-    walk_sources(&source_root, &mut files);
-    let mut sources = Vec::new();
-    for absolute_path in files {
-        let relative = absolute_path
-            .strip_prefix(&root)
-            .map(|path| path.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| absolute_path.to_string_lossy().into_owned());
-        let text = std::fs::read_to_string(&absolute_path)
-            .map_err(|_| format!("{relative} is not readable"))?;
-        if !is_api_source(&text) {
-            continue;
-        }
-        sources.push(AuditFile {
-            path: relative,
-            lines: line_count(&text),
-            text,
-        });
-    }
-    if sources.is_empty() {
-        return Err(format!(
-            "{} carries no API source file; a cycle cannot audit an empty surface",
-            config.source_dir
-        ));
-    }
+    let surface = detect_surface(&root);
     let skill = read_rest_skill(&root, config)?;
     Ok(AuditInput {
-        routes: route_inventory(&sources),
-        sources,
+        routes: surface.routes,
+        sources: surface.sources,
         skill,
-        source_dir: config.source_dir.clone(),
+        environment: surface.environment,
     })
 }
 
@@ -1736,7 +2447,7 @@ pub struct CycleRequest {
     pub cycle_id: String,
     pub repository: String,
     pub repo_dir: String,
-    pub source_dir: String,
+    pub environment: DetectedEnvironment,
     pub skill_document: String,
     pub rules_document: String,
     pub chapters: Vec<String>,
@@ -1755,7 +2466,7 @@ impl CycleRequest {
             "cycleId": self.cycle_id,
             "repository": self.repository,
             "repoDir": self.repo_dir,
-            "sourceDir": self.source_dir,
+            "environment": self.environment.to_json(),
             "skillDocument": self.skill_document,
             "rulesDocument": self.rules_document,
             "chapters": self.chapters,
@@ -1809,6 +2520,7 @@ pub struct Finding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FindingsAnswer {
     pub findings: Vec<Finding>,
+    pub no_http_surface: bool,
 }
 
 fn stamp(millis: i64) -> String {
@@ -1844,7 +2556,6 @@ pub struct WriteCycleOptions<'a> {
     pub repository: &'a str,
     pub repo_dir: &'a Path,
     pub input: &'a AuditInput,
-    pub config: &'a Config,
     pub known_titles: Vec<String>,
     pub issue_room: i64,
     pub now_millis: i64,
@@ -1861,7 +2572,7 @@ pub fn write_cycle(
         cycle_id: options.cycle_id.to_string(),
         repository: options.repository.to_string(),
         repo_dir: options.repo_dir.to_string_lossy().into_owned(),
-        source_dir: options.config.source_dir.clone(),
+        environment: options.input.environment.clone(),
         skill_document: options.input.skill.skill_path.clone(),
         rules_document: options.input.skill.rules_path.clone(),
         chapters: options.input.skill.chapters.clone(),
@@ -1878,6 +2589,7 @@ pub fn write_cycle(
         created_at: iso_from_millis(options.now_millis),
     };
     let input = json!({
+        "environment": options.input.environment.to_json(),
         "sources": options.input.sources.iter().map(|file| json!({
             "path": file.path,
             "lines": file.lines,
@@ -1907,6 +2619,7 @@ pub enum SkipReason {
     MissingCitation,
     MissingEvidence,
     ToolError,
+    NoHttpSurface,
 }
 
 impl SkipReason {
@@ -1919,6 +2632,7 @@ impl SkipReason {
             Self::MissingCitation => "missing-citation",
             Self::MissingEvidence => "missing-evidence",
             Self::ToolError => "tool-error",
+            Self::NoHttpSurface => "no-http-surface",
         }
     }
 }
@@ -1932,6 +2646,7 @@ pub enum FindingProblem {
 pub struct FindingContext<'a> {
     pub rules: &'a [RestRule],
     pub sources: &'a HashMap<String, String>,
+    pub repo_dir: &'a Path,
 }
 
 fn line_span(value: &str) -> Option<(usize, usize)> {
@@ -1962,6 +2677,70 @@ fn line_span(value: &str) -> Option<(usize, usize)> {
 
 fn evidence_json(entry: &FindingEvidence) -> Value {
     json!({"path": entry.path, "lines": entry.lines, "quote": entry.quote})
+}
+
+/// Resolves one cited path to the regular text file inside the checkout that
+/// backs it. Any repository-relative path is admissible, not only the files the
+/// detector pre-listed; a path outside, an escaping symlink, a directory, and a
+/// non-file are refused.
+fn evidence_path(root: &Path, path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() {
+        return Err("an evidence entry names no path".to_string());
+    }
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        return Err(format!("{path} is not a repository-relative path"));
+    }
+    let mut relative = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::Normal(part) => relative.push(part),
+            std::path::Component::CurDir => {}
+            _ => return Err(format!("{path} is not a repository-relative path")),
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(format!("{path} is not a repository-relative path"));
+    }
+    let root = absolute(root);
+    let joined = root.join(&relative);
+    let Ok(metadata) = std::fs::symlink_metadata(&joined) else {
+        return Err(format!("{path} is not a readable file"));
+    };
+    if metadata.is_dir() {
+        return Err(format!("{path} is a directory, not a file"));
+    }
+    let Ok(resolved) = std::fs::canonicalize(&joined) else {
+        return Err(format!("{path} is not a readable file"));
+    };
+    let Ok(resolved_root) = std::fs::canonicalize(&root) else {
+        return Err(format!("{path} is not inside the checkout"));
+    };
+    if !resolved.starts_with(&resolved_root) {
+        return Err(format!("{path} is a symlink escaping the checkout"));
+    }
+    let Ok(target) = std::fs::metadata(&resolved) else {
+        return Err(format!("{path} is not a readable file"));
+    };
+    if !target.is_file() {
+        return Err(format!("{path} is not a regular file"));
+    }
+    Ok(resolved)
+}
+
+/// Reads one resolved evidence file as text. A file that is not UTF-8 or that
+/// carries a NUL byte is binary and is refused.
+fn evidence_text(resolved: &Path, path: &str) -> Result<String, String> {
+    let Ok(bytes) = std::fs::read(resolved) else {
+        return Err(format!("{path} is not a readable file"));
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Err(format!("{path} is a binary file"));
+    };
+    if text.contains('\0') {
+        return Err(format!("{path} is a binary file"));
+    }
+    Ok(text)
 }
 
 impl Finding {
@@ -2133,18 +2912,31 @@ pub fn validate_finding(finding: &Value, context: &FindingContext<'_>) -> Findin
             };
         };
         let path = item.get("path").and_then(Value::as_str).unwrap_or("");
-        let Some(text) = context.sources.get(path) else {
-            return FindingProblem::Problem {
-                reason: SkipReason::MissingEvidence,
-                detail: format!(
-                    "{} is not an audited source file",
-                    if path.is_empty() {
-                        "an evidence entry"
-                    } else {
-                        path
+        let resolved = match evidence_path(context.repo_dir, path) {
+            Ok(resolved) => resolved,
+            Err(detail) => {
+                return FindingProblem::Problem {
+                    reason: SkipReason::MissingEvidence,
+                    detail,
+                }
+            }
+        };
+        let owned;
+        let text = if let Some(text) = context.sources.get(path) {
+            text.as_str()
+        } else {
+            match evidence_text(&resolved, path) {
+                Ok(text) => {
+                    owned = text;
+                    owned.as_str()
+                }
+                Err(detail) => {
+                    return FindingProblem::Problem {
+                        reason: SkipReason::MissingEvidence,
+                        detail,
                     }
-                ),
-            };
+                }
+            }
         };
         let Some(span) = item
             .get("lines")
@@ -2270,6 +3062,10 @@ pub fn read_findings(directory: &Path) -> Option<FindingsAnswer> {
         return None;
     }
     let entries = record.get("findings")?.as_array()?;
+    let no_http_surface = record.get("noHttpSurface").and_then(Value::as_bool) == Some(true)
+        || entries
+            .iter()
+            .any(|entry| entry.get("reason").and_then(Value::as_str) == Some("no-http-surface"));
     let mut findings = Vec::new();
     for entry in entries {
         let Some(candidate) = entry.as_object() else {
@@ -2325,7 +3121,10 @@ pub fn read_findings(directory: &Path) -> Option<FindingsAnswer> {
                 .map(str::to_string),
         });
     }
-    Some(FindingsAnswer { findings })
+    Some(FindingsAnswer {
+        findings,
+        no_http_surface,
+    })
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3469,7 +4268,6 @@ impl Worker {
                 repository: &repository,
                 repo_dir: &self.repo_dir,
                 input: &input,
-                config: &self.config,
                 known_titles,
                 issue_room: room,
                 now_millis: now,
@@ -3718,6 +4516,7 @@ impl Worker {
         };
         peer.close();
         let mut error: Option<String> = None;
+        let mut no_http_surface = false;
         let record = |text: String| self.record_activity_line(cycle_id, &text);
         let filed = self.filed_issues(&directory, &mut error, &record);
         match read_findings(&directory) {
@@ -3727,6 +4526,7 @@ impl Worker {
                 }
             }
             Some(answer) => {
+                no_http_surface = answer.no_http_surface;
                 let sources: HashMap<String, String> = input
                     .sources
                     .iter()
@@ -3735,6 +4535,7 @@ impl Worker {
                 let context = FindingContext {
                     rules: &input.skill.rules,
                     sources: &sources,
+                    repo_dir: &self.repo_dir,
                 };
                 let mut claimed: HashSet<String> = HashSet::new();
                 for finding in answer.findings {
@@ -3805,6 +4606,18 @@ impl Worker {
                 }
             }
         }
+        if no_http_surface && filed.is_empty() {
+            record("no HTTP API surface detected".to_string());
+            self.finish_cycle(
+                cycle_id,
+                None,
+                Some(
+                    "no HTTP API surface detected; the peer surveyed the checkout and found none."
+                        .to_string(),
+                ),
+            );
+            return;
+        }
         if !filed.is_empty() || !lock(&self.inner).state.issues.is_empty() {
             match self.read_forge_within_deadline().await {
                 Ok(issues) => self.apply_read(issues),
@@ -3823,7 +4636,7 @@ impl Worker {
             }
             other => other,
         };
-        self.finish_cycle(&directory, cycle_id, error);
+        self.finish_cycle(cycle_id, error, None);
     }
 
     fn filed_issues(
@@ -3924,7 +4737,7 @@ impl Worker {
         }
     }
 
-    fn finish_cycle(&self, _directory: &Path, cycle_id: &str, error: Option<String>) {
+    fn finish_cycle(&self, cycle_id: &str, error: Option<String>, notice: Option<String>) {
         let now = self.now();
         let cadence_at = self.cadence_ready_at(now);
         let cooldown_at = iso_from_millis(now + self.sync_ms as i64);
@@ -3947,7 +4760,9 @@ impl Worker {
             }
             inner.state.lifecycle = Lifecycle::Idle;
             inner.state.last_error = error.clone();
-            if let Some(error) = &error {
+            if let Some(notice) = notice {
+                inner.state.notice = Some(notice);
+            } else if let Some(error) = &error {
                 inner.state.notice = Some(format!("API Standards cycle failed: {error}"));
             }
             inner.state.next_attempt_at = match (cadence_at, cooldown_at.as_str()) {
@@ -4328,26 +5143,6 @@ pub async fn preflight_api_standards(options: &PreflightOptions) -> Result<Strin
     let config = &options.config;
     let root = absolute(&options.repo_dir);
 
-    let source_root = root.join(&config.source_dir);
-    if !source_root.exists() {
-        return Err(format!(
-            "missing prerequisite: the canonical harness source checkout has no {} directory \
-             (an installed npm prefix is refused)",
-            config.source_dir
-        ));
-    }
-    let metadata = std::fs::symlink_metadata(&source_root).map_err(|_| {
-        format!(
-            "missing prerequisite: {} is not readable",
-            config.source_dir
-        )
-    })?;
-    if !metadata.is_dir() {
-        return Err(format!(
-            "missing prerequisite: {} is not a directory",
-            config.source_dir
-        ));
-    }
     if let Err(detail) = read_rest_skill(&root, config) {
         return Err(format!(
             "missing prerequisite: the REST skill is unusable: {detail}"
@@ -4536,6 +5331,7 @@ mod length_tests {
         let context = FindingContext {
             rules: &rules,
             sources: &sources,
+            repo_dir: Path::new("."),
         };
         match validate_finding(&json!({"title": title}), &context) {
             FindingProblem::Problem { detail, .. } => detail,
@@ -4554,6 +5350,157 @@ mod length_tests {
         assert!(!title_problem(&plain_at_cap).contains("title must be"));
         let plain_over = "a".repeat(TITLE_MAX + 1);
         assert!(title_problem(&plain_over).contains("title must be"));
+    }
+}
+
+#[cfg(test)]
+mod detection_tests {
+    use super::*;
+
+    #[test]
+    fn route_parameters_are_normalized() {
+        assert_eq!(normalize_route_path("/items/:id"), "/items/{id}");
+        assert_eq!(normalize_route_path("/items/{item_id}"), "/items/{item_id}");
+        assert_eq!(normalize_route_path("items"), "/items");
+        assert_eq!(normalize_route_path("/"), "/");
+        assert_eq!(normalize_route_path("/a/:id/b/:name"), "/a/{id}/b/{name}");
+    }
+
+    #[test]
+    fn yaml_openapi_paths_carry_the_declared_methods() {
+        let document = concat!(
+            "openapi: 3.0.0\n",
+            "paths:\n",
+            "  /items:\n",
+            "    get:\n",
+            "      responses: {}\n",
+            "    post:\n",
+            "      responses: {}\n",
+            "  /items/{item_id}:\n",
+            "    get:\n",
+            "      responses: {}\n",
+            "components:\n",
+            "  schemas: {}\n",
+        );
+        let routes = yaml_specification_routes("openapi.yaml", document);
+        let table: Vec<(&str, Vec<&str>, usize)> = routes
+            .iter()
+            .map(|route| {
+                (
+                    route.path.as_str(),
+                    route.methods.iter().map(String::as_str).collect(),
+                    route.line,
+                )
+            })
+            .collect();
+        assert_eq!(
+            table,
+            vec![
+                ("/items", vec!["GET", "POST"], 3),
+                ("/items/{item_id}", vec!["GET"], 8),
+            ]
+        );
+    }
+
+    #[test]
+    fn json_openapi_paths_carry_the_declared_methods() {
+        let document = concat!(
+            "{\"openapi\":\"3.0.0\",\"paths\":{",
+            "\"/items\":{\"get\":{},\"post\":{}},",
+            "\"/items/{item_id}\":{\"get\":{}}}}\n",
+        );
+        let routes = specification_routes("openapi.json", document);
+        let table: Vec<(&str, Vec<&str>)> = routes
+            .iter()
+            .map(|route| {
+                (
+                    route.path.as_str(),
+                    route.methods.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            table,
+            vec![
+                ("/items", vec!["GET", "POST"]),
+                ("/items/{item_id}", vec!["GET"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn manifests_name_the_web_frameworks_they_depend_on() {
+        let package = package_frameworks(
+            "{\"dependencies\":{\"express\":\"^5\"},\"devDependencies\":{\"fastify\":\"^5\"}}",
+        );
+        assert_eq!(package, ["express", "fastify"]);
+        assert_eq!(
+            manifest_frameworks(Path::new("pyproject.toml"), "dependencies = [\"fastapi\"]"),
+            ["fastapi"]
+        );
+        assert_eq!(
+            manifest_frameworks(
+                Path::new("Cargo.toml"),
+                "[dependencies]\naxum.workspace = true\n"
+            ),
+            ["axum"]
+        );
+    }
+
+    #[test]
+    fn source_roots_collapse_a_nested_tree() {
+        let nested = [
+            AuditFile {
+                path: "src/http.rs".to_string(),
+                lines: 1,
+                text: String::new(),
+            },
+            AuditFile {
+                path: "src/workers/api_standards.rs".to_string(),
+                lines: 1,
+                text: String::new(),
+            },
+        ];
+        assert_eq!(source_roots(&nested), ["src"]);
+        let at_root = [
+            AuditFile {
+                path: "server.ts".to_string(),
+                lines: 1,
+                text: String::new(),
+            },
+            AuditFile {
+                path: "app/main.py".to_string(),
+                lines: 1,
+                text: String::new(),
+            },
+        ];
+        assert_eq!(source_roots(&at_root), ["."]);
+        let siblings = [
+            AuditFile {
+                path: "app/main.py".to_string(),
+                lines: 1,
+                text: String::new(),
+            },
+            AuditFile {
+                path: "lib/server.py".to_string(),
+                lines: 1,
+                text: String::new(),
+            },
+        ];
+        assert_eq!(source_roots(&siblings), ["app", "lib"]);
+    }
+
+    #[test]
+    fn evidence_paths_are_repository_relative() {
+        assert!(evidence_path(Path::new("."), "/etc/hostname")
+            .expect_err("an absolute path")
+            .contains("repository-relative"));
+        assert!(evidence_path(Path::new("."), "../outside.txt")
+            .expect_err("an escaping path")
+            .contains("repository-relative"));
+        assert!(evidence_path(Path::new("."), "")
+            .expect_err("an empty path")
+            .contains("names no path"));
     }
 }
 
