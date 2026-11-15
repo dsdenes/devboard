@@ -1007,6 +1007,12 @@ kbd {
   font-size: 11px;
 }
 
+.status-versions[data-stale="true"] .mono,
+.status-versions__drift .mono,
+.status-versions__drift .status-metric__label {
+  color: var(--warning);
+}
+
 .notification-region {
   bottom: 34px;
   display: flex;

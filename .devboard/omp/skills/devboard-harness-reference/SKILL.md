@@ -629,9 +629,12 @@ The right group states the running lane count, the issues worker state with a st
 watchdog's last action and age, the OS notifications control, and the running and second
 version; each metric carries a 10px uppercase label so its meaning never rests on color. On a
 source checkout the second value is labeled `source` and names the source version a restart
-would load; on an installed host it is labeled `installed` and names the binary and manifest
-beside the running one. `running` is always the version the process actually loaded, so the two differ, and
-`stale` is true, only while a restart would load different code. The reload control
+would load, or the newest fully published release on a launcher published-worktree dashboard; on
+an installed host it is labeled `installed` and names the binary and manifest beside the running
+one. `running` is always the version the process actually loaded, so the two differ, and `stale`
+is true, only while a restart would load different code. A `latest` entry
+(`status-version-drift`) renders whenever the newest published release differs from `running`, so a
+dashboard behind the newest release never reads as current. The reload control
 (`reload-devboard`) appears only when a replacement could not start; its accessible name and
 title name both versions, and clicking it retries the same launcher. A successful replacement
 needs no click and reloads every connected page once.
@@ -772,11 +775,27 @@ journaled like any other failed check.
 
 `versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `installed` is the
 version a restart would load — the manifest beside the running binary on an installed host, the
-checkout's released source version on a source checkout. The process resolves it once, when it
-starts, so a polled `getVersion` read answers without reading a manifest or spawning git; an
-install that lands beside the process records its version in that frame, which is what a failed
-replacement names. The status bar labels that value `installed` or `source` accordingly; the reload
+checkout's released source version on a source checkout, and the newest fully published release a
+launcher restart would load on a launcher published-worktree dashboard. The process resolves it
+once, when it starts, so a polled `getVersion` read answers without reading a manifest or spawning
+git; an install that lands beside the process records its version in that frame, which is what a
+failed replacement names. The status bar labels that value `installed` or `source` accordingly and
+renders a `latest` entry whenever the newest published release differs from `running`; the reload
 control appears only when a replacement could not start.
+
+A launcher published-worktree dashboard — one the launcher starts from
+`<repo>/.devboard/published/<version>/.devboard` — is a source deployment that upgrades itself.
+It reads the same release manifest, verifies the newest fully published release's platform
+artifact, installs the binary at `<repo>/.devboard/published/.releases/<version>/devboard`, and
+replaces its own process through the ordinary handoff. It never creates
+`<repo>/.devboard/bin/devboard` and never writes inside a tag worktree, so the launcher's clean
+checkout stays clean. Its `installed` and `latest` name the newest fully published release and
+`stale` is true while `running` is older. The release that introduces the path activates it once:
+`devboard publish` hands a restart to `desktop/devboard-launcher.py`, which waits for the run's
+`result.json` and then replaces the dashboard with the release publish just proved. The attempt is
+recorded once per published version in `STATE_DIR/desktop/published-bootstrap.json`, the launcher
+records success there, and a failed bootstrap leaves the old dashboard serving and never fails the
+release.
 
 ### Landing a branch
 
@@ -844,9 +863,10 @@ only once the attempt budget is spent, with the binary path and the errno.
 
 ### Publish-only source refresh
 
-A canonical source checkout never installs a released binary and never replaces itself on an
-update check. One successful `cargo run -p devboard -- publish` from `.devboard` is the only
-authorization for that dashboard to replace itself with the published revision. `publish` writes
+A canonical source checkout — one that is not a launcher published-worktree dashboard — never
+installs a released binary and never replaces itself on an update check. One successful
+`cargo run -p devboard -- publish` from `.devboard` is the only authorization for that dashboard to
+replace itself with the published revision. `publish` writes
 the request only after its fast-forward, client build, cargo-dist workflow wait, GitHub-asset
 check, and Gitea-manifest check have all passed; a failed or partial publish writes no request.
 
@@ -855,14 +875,15 @@ live dashboard discovered through the shared process inventory — its `serve` c
 the repository, port, and state directory even when no `REPO_DIR`, `PORT`, or `STATE_DIR` reaches
 its environment — whose serving harness is that checkout's `.devboard`. A dashboard serving the
 same repository through a published release worktree such as
-`<repo>/.devboard/published/vX/.devboard` is reported as skipped and written nothing, and a
-verification fixture without `DEVBOARD_WATCHDOG_FIXTURE=1` is ignored. The request carries the
-published commit, the released version, and a deterministic SHA-256 of
-the built `.devboard/dist` tree. The dashboard re-reads it on a fixed interval and verifies that
-the running binary's embedded client digests identically; it never runs a second build. A matching
-request replaces the process through the ordinary replacement handoff: the replacement starts a
-loopback readiness listener of its own and writes a marker naming it, the old process stops only
-once that listener answers the authenticated probe with the replacement's pid, every connected page
+`<repo>/.devboard/published/vX/.devboard` is reported as skipped and written nothing: it upgrades
+itself from the release manifest, and a verification fixture without `DEVBOARD_WATCHDOG_FIXTURE=1`
+is ignored. The request carries the published commit, the released version, and a deterministic
+SHA-256 of the built `.devboard/dist` tree. The dashboard re-reads it on a fixed interval and
+verifies that the running binary's embedded client digests identically; it never runs a second
+build. A matching request replaces the process through the ordinary replacement handoff: the
+replacement starts a loopback readiness listener of its own and writes a marker naming it, the old
+process stops only once that listener answers the authenticated probe with the replacement's pid,
+every connected page
 receives `serverRestarting` and reloads once, and the applied commit is recorded in
 `<STATE_DIR>/source-refresh/applied.json` so re-delivering the same publish never restarts again.
 The replacement cannot answer on the dashboard port before the old process exits, which is why it

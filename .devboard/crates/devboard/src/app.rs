@@ -427,6 +427,10 @@ fn config_repo_dir(shared: &Arc<Shared>) -> PathBuf {
     shared.config.repo_dir.clone()
 }
 
+/// The replacement hook receives the installed executable an update wants to
+/// start, when the update installs the release itself, and the version.
+pub type ReplacementHook = Arc<dyn Fn(Option<&Path>, &str) -> Result<(), String> + Send + Sync>;
+
 /// The dashboard application.
 pub struct App {
     pub shared: Arc<Shared>,
@@ -463,6 +467,8 @@ pub struct App {
     weak_self: std::sync::Weak<App>,
     /// Replaces this process; absent means the dashboard has no launcher.
     restart_hook: Mutex<Option<Arc<dyn Fn() -> Result<(), String> + Send + Sync>>>,
+    /// Stands in for the replacement spawn in a fixture; production has none.
+    replacement_hook: Mutex<Option<ReplacementHook>>,
     source_refresher: Mutex<Option<crate::source_refresh::SourceRefresher>>,
     restart_when_idle: Arc<std::sync::atomic::AtomicBool>,
     /// True while one restart request is in flight.
@@ -534,6 +540,20 @@ fn provider_audit_sink(shared: &Arc<Shared>) -> crate::providers::AuditSink {
 
 impl App {
     pub fn new(config: Config, journal: Journal) -> Arc<Self> {
+        let launched = crate::version::launched_release_from_env();
+        Self::with_launched_release(config, journal, launched)
+    }
+
+    /// Builds one dashboard for a launcher published-worktree release.
+    ///
+    /// `launched` names the release the launcher started. The running
+    /// executable also names it, so a dashboard that a replacement started
+    /// still resolves its release without an inherited environment.
+    pub fn with_launched_release(
+        config: Config,
+        journal: Journal,
+        launched: Option<String>,
+    ) -> Arc<Self> {
         let port = config.port;
         let allowed_hostnames =
             crate::http::allowed_request_hostnames(&config.hostname, &config.allowed_hosts);
@@ -588,8 +608,17 @@ impl App {
                 crate::version::read_harness_version(&crate::version::running_harness_dir())
             });
         // Resolved once here, so a polled `versionState` read never spawns git
-        // or reads a manifest on the request path.
-        let version_facts = crate::version::VersionFacts::resolve(&config_repo_dir(&shared));
+        // or reads a manifest on the request path. A launcher published-worktree
+        // dashboard resolves the release its executable names, and the version
+        // the launcher handed it wins over the path when both are present.
+        let mut version_facts = crate::version::VersionFacts::resolve_for(
+            &config_repo_dir(&shared),
+            &crate::relaunch::own_program(),
+        );
+        if let Some(version) = launched {
+            version_facts.published = Some(version.clone());
+            version_facts.installed = Some(version);
+        }
         let providers = crate::providers::ProviderService::with_options(
             config_state_dir(&shared),
             config_repo_dir(&shared),
@@ -629,6 +658,7 @@ impl App {
             resources,
             delivery,
             restart_hook: Mutex::new(None),
+            replacement_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             restarting: std::sync::atomic::AtomicBool::new(false),
@@ -661,6 +691,19 @@ impl App {
             app.hold_restart_until_idle();
         }
         app.terminate_restored_children();
+        if let Some(upgrade) = crate::version::take_pending_upgrade(
+            &app.config().state_dir,
+            app.running_version.as_deref(),
+        ) {
+            app.shared.journal.write(
+                "update",
+                &format!(
+                    "upgraded automatically from {} to {}",
+                    upgrade.from, upgrade.to
+                ),
+                None,
+            );
+        }
         app.start_lease_refresh();
         app.start_provider_refresh();
         app.start_run_journal_sweep();
@@ -1144,6 +1187,30 @@ impl App {
         self.complexity.begin();
     }
 
+    /// The published release a launcher started, when this process is a
+    /// launcher published-worktree dashboard.
+    pub fn published_release(&self) -> Option<String> {
+        self.version_facts
+            .lock()
+            .ok()
+            .and_then(|facts| facts.published.clone())
+    }
+
+    /// Records the newest fully published release this dashboard can name.
+    pub fn note_published_release(&self, version: &str) {
+        if let Ok(mut facts) = self.version_facts.lock() {
+            facts.published = Some(version.to_string());
+        }
+    }
+
+    /// The newest release a check has seen.
+    pub fn latest_version(&self) -> Option<String> {
+        self.latest_version
+            .lock()
+            .ok()
+            .and_then(|latest| latest.clone())
+    }
+
     /// Records the newest release a check has seen.
     pub fn note_latest_version(&self, version: &str) {
         if let Ok(mut latest) = self.latest_version.lock() {
@@ -1200,6 +1267,15 @@ impl App {
 
     /// Replaces this process with the installed harness, once per version.
     pub fn replace_with_installed(self: &Arc<Self>, version: &str) {
+        self.replace_with_installed_at(version, None);
+    }
+
+    /// Replaces this process with one installed executable, once per version.
+    ///
+    /// A launcher published-worktree dashboard installs the release artifact
+    /// itself, so it hands the exact executable here. An installed host names
+    /// none and starts the binary its prefix carries.
+    pub fn replace_with_installed_at(self: &Arc<Self>, version: &str, program: Option<PathBuf>) {
         {
             let Ok(mut attempted) = self.attempted_replacement.lock() else {
                 return;
@@ -1221,11 +1297,32 @@ impl App {
             ),
             None,
         );
+        if let Some(hook) = self
+            .replacement_hook
+            .lock()
+            .ok()
+            .and_then(|hook| hook.clone())
+        {
+            match hook(program.as_deref(), version) {
+                Ok(()) => {}
+                Err(error) => {
+                    self.shared.journal.write(
+                        "update-error",
+                        &format!("could not replace the server with {version}: {error}"),
+                        None,
+                    );
+                    self.replacement_failed(&error);
+                }
+            }
+            return;
+        }
         self.prepare_replacement();
         let app = self.clone();
         let version = version.to_string();
         tokio::spawn(async move {
-            let settings = crate::relaunch::RelaunchSettings::from_app(&app);
+            let mut settings = crate::relaunch::RelaunchSettings::from_app(&app);
+            settings.launched_release = program.as_ref().map(|_| version.clone());
+            settings.program = program;
             let ready_file = app
                 .config()
                 .state_dir
@@ -1258,6 +1355,13 @@ impl App {
     /// Installs the process launcher a `restartServer` command uses.
     pub fn set_restart_hook(&self, hook: Arc<dyn Fn() -> Result<(), String> + Send + Sync>) {
         if let Ok(mut slot) = self.restart_hook.lock() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// Installs the fixture replacement stand-in.
+    pub fn set_replacement_hook(&self, hook: ReplacementHook) {
+        if let Ok(mut slot) = self.replacement_hook.lock() {
             *slot = Some(hook);
         }
     }

@@ -30,7 +30,7 @@ pub enum UpdateOutcome {
 
 /// The check loop's shared state.
 pub struct Updater {
-    latest: Arc<Mutex<Option<String>>>,
+    app: std::sync::Weak<App>,
     stopped: Arc<AtomicBool>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
@@ -38,7 +38,7 @@ pub struct Updater {
 impl Updater {
     /// The newest release a check has seen, or `None` before the first check.
     pub fn latest(&self) -> Option<String> {
-        self.latest.lock().ok().and_then(|latest| latest.clone())
+        self.app.upgrade().and_then(|app| app.latest_version())
     }
 
     /// Stops the next check; an in-flight check finishes.
@@ -178,17 +178,21 @@ pub fn start(app: Arc<App>) -> Updater {
         std::env::var("DEVBOARD_UPDATE_BACKOFF_MAX_MS").ok(),
         DEFAULT_MAX_BACKOFF_MS,
     );
-    let latest = Arc::new(Mutex::new(None));
     let stopped = Arc::new(AtomicBool::new(false));
-    let latest_for_task = Arc::clone(&latest);
     let stopped_for_task = Arc::clone(&stopped);
+    let weak = Arc::downgrade(&app);
+    let weak_for_task = weak.clone();
     let handle = tokio::spawn(async move {
         let mut failures: u32 = 0;
         loop {
             if stopped_for_task.load(Ordering::SeqCst) {
                 return;
             }
-            let outcome = check_once(&app, &latest_for_task).await;
+            let Some(app) = weak_for_task.upgrade() else {
+                return;
+            };
+            let outcome = check(&app).await;
+            drop(app);
             match outcome {
                 UpdateOutcome::Failed => {
                     failures = failures.saturating_add(1);
@@ -203,49 +207,51 @@ pub fn start(app: Arc<App>) -> Updater {
         }
     });
     Updater {
-        latest,
+        app: weak,
         stopped,
         handle: Mutex::new(Some(handle)),
     }
 }
 
-/// Runs one check now.
-async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> UpdateOutcome {
+/// Runs one check now, reading the release source this process's environment
+/// names.
+pub async fn check(app: &Arc<App>) -> UpdateOutcome {
+    let Some(source) = manifest_source_from_env(&app.config().state_dir) else {
+        return check_installed_host(app);
+    };
+    check_with_source(app, &source).await
+}
+
+/// Runs one check now against one release source.
+pub async fn check_with_source(app: &Arc<App>, source: &ManifestSource) -> UpdateOutcome {
     let prefix = app.config().repo_dir.join(".devboard");
+    let repo_dir = app.config().repo_dir.clone();
+    // A launcher published-worktree dashboard runs a published release, not the
+    // checkout's working tree: it installs the newest release artifact under
+    // `.devboard/published` and replaces itself with it. `<repo>/.devboard/bin`
+    // is never populated, so the checkout stays a source deployment.
+    let published = app.published_release();
     // A source checkout never installs or replaces itself on an update check;
-    // only a publish-written source-refresh request may replace it.
-    let source_checkout = crate::version::is_harness_source_checkout(&app.config().repo_dir);
+    // only a publish-written source-refresh request may replace it. An
+    // installed host and a published-worktree dashboard may replace themselves.
+    let source_checkout = crate::version::is_harness_source_checkout(&repo_dir);
     if !source_checkout {
-        // Only an installed prefix is synchronized. A bare checkout or a
-        // fixture is never populated by an update check.
-        if crate::version::is_installed_host(&app.config().repo_dir) {
-            // Every check retries the host sync, so a failed write is journaled
-            // once per attempt and repaired on the next check.
-            if let Err(error) = app.sync_host_copies() {
-                app.journal_error("update-error", &format!("host sync failed: {error}"));
-            }
-        }
-        if let Some(installed) = release::installed_version(&prefix) {
-            if release::is_newer_version(&installed, app.running_version.as_deref()) {
-                app.replace_with_installed(&installed);
-                return UpdateOutcome::Installed;
-            }
+        if let UpdateOutcome::Installed = check_installed_host(app) {
+            return UpdateOutcome::Installed;
         }
     }
-    let Some(source) = manifest_source_from_env(&app.config().state_dir) else {
-        return UpdateOutcome::Current;
-    };
     let running = app.running_version.clone();
-    let release = match release::latest_manifest_for(&source, running.as_deref()).await {
+    let release = match release::latest_manifest_for(source, running.as_deref()).await {
         Ok(Some(release)) => release,
         Ok(None) => {
             // The newest release already names this process's version: there
             // is nothing newer to read, and no manifest was downloaded.
             if let Some(version) = running {
-                if let Ok(mut value) = latest.lock() {
-                    *value = Some(version.clone());
-                }
                 app.note_latest_version(&version);
+                if published.is_some() {
+                    app.note_installed_version(&version);
+                    app.note_published_release(&version);
+                }
             }
             return UpdateOutcome::Current;
         }
@@ -265,17 +271,46 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
             return UpdateOutcome::Failed;
         }
     };
-    if let Ok(mut value) = latest.lock() {
-        *value = Some(release.version.clone());
-    }
     app.note_latest_version(&release.version);
-    if source_checkout {
+    if published.is_some() {
+        // `installed` and `latest` name the newest fully published release: the
+        // launcher selects it on the next start even before this process has
+        // installed or replaced itself with it.
+        let not_older = running
+            .as_deref()
+            .is_none_or(|current| !release::is_newer_version(current, Some(&release.version)));
+        if not_older {
+            app.note_installed_version(&release.version);
+            app.note_published_release(&release.version);
+        }
+    }
+    if source_checkout && published.is_none() {
         return UpdateOutcome::Current;
     }
     if !release::is_newer_version(&release.version, app.running_version.as_deref()) {
         return UpdateOutcome::Current;
     }
-    match release::install_release(&source, &release, &prefix, &app.config().state_dir).await {
+    if published.is_some() {
+        return match release::install_published_release(
+            source,
+            &release,
+            &repo_dir,
+            &app.config().state_dir,
+        )
+        .await
+        {
+            Ok(program) => {
+                let version = release.version.clone();
+                app.replace_with_installed_at(&version, Some(program));
+                UpdateOutcome::Installed
+            }
+            Err(error) => {
+                app.journal_error("update-error", &format!("update install failed: {error}"));
+                UpdateOutcome::Failed
+            }
+        };
+    }
+    match release::install_release(source, &release, &prefix, &app.config().state_dir).await {
         Ok(version) => {
             let _ = app.sync_host_copies();
             app.replace_with_installed(&version);
@@ -286,6 +321,26 @@ async fn check_once(app: &Arc<App>, latest: &Arc<Mutex<Option<String>>>) -> Upda
             UpdateOutcome::Failed
         }
     }
+}
+
+/// The installed-host half of one check: the host sync and a binary that
+/// already sits beside this process.
+fn check_installed_host(app: &Arc<App>) -> UpdateOutcome {
+    if crate::version::is_installed_host(&app.config().repo_dir) {
+        // Every check retries the host sync, so a failed write is journaled
+        // once per attempt and repaired on the next check.
+        if let Err(error) = app.sync_host_copies() {
+            app.journal_error("update-error", &format!("host sync failed: {error}"));
+        }
+    }
+    let prefix = app.config().repo_dir.join(".devboard");
+    if let Some(installed) = release::installed_version(&prefix) {
+        if release::is_newer_version(&installed, app.running_version.as_deref()) {
+            app.replace_with_installed(&installed);
+            return UpdateOutcome::Installed;
+        }
+    }
+    UpdateOutcome::Current
 }
 
 /// True for a check failure the next interval resolves on its own: an

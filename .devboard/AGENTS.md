@@ -81,14 +81,32 @@ second implementation. Never restart a dashboard by hand outside those two surfa
 symlink a host. The reaper signals only processes of the host directory it runs for: a dashboard,
 worker, or run belonging to another host directory is never signalled.
 
+A launcher published-worktree dashboard — one the launcher starts from
+`<repo>/.devboard/published/<version>/.devboard` — is a source deployment that upgrades itself. It
+reads the same release manifests, verifies the newest fully published release's platform artifact,
+installs the binary under `<repo>/.devboard/published/.releases/<version>/devboard`, and replaces
+its own process through the ordinary handoff. It never creates `<repo>/.devboard/bin/devboard` and
+never writes inside a tag worktree, so every tag worktree stays a clean checkout. Its `installed`
+and `latest` name the newest fully published release, and the status bar renders `latest` beside
+`running` while they differ, so a dashboard behind the newest release cannot read as current. The
+release that introduces the path activates it once: `devboard publish` hands a restart to
+`desktop/devboard-launcher.py`, which waits for that run's `result.json` before it replaces the
+dashboard with the release publish just proved. It records the attempt at most once per published
+version under `STATE_DIR/desktop/published-bootstrap.json`, the launcher records success in the
+same document, and a bootstrap that cannot start leaves the old dashboard serving and is journaled
+without failing the release. Installed hosts keep their prefix path, and a canonical source
+dashboard that is not such a dashboard still refuses to install or replace itself.
+
 ## Restart the source interface after every change
 
-A canonical source dashboard never installs or replaces itself on an update check. After a
-successful publish, `devboard publish` writes a source-refresh request into each live dashboard's
-own `STATE_DIR`; the dashboard verifies the embedded client digest and replaces itself through the
-ordinary handoff. Editing a source file, rebuilding `dist`, a page reload, and an update check
-never restart it. Never stop or relaunch a source dashboard by hand outside the panel icon's
-sweep, which keeps the newest ready dashboard and ends only this host directory's strays.
+A canonical source dashboard — not a launcher published-worktree dashboard — never installs or
+replaces itself on an update check. After a successful publish, `devboard publish` writes a
+source-refresh request into each live dashboard's own `STATE_DIR`; the dashboard verifies the
+embedded client digest and replaces itself through the ordinary handoff. Editing a source file,
+rebuilding `dist`, a page reload, and an update check never restart it. A launcher published-worktree
+dashboard is skipped by that delivery and upgrades itself from the release manifest instead. Never
+stop or relaunch a source dashboard by hand outside the panel icon's sweep, which keeps the newest
+ready dashboard and ends only this host directory's strays.
 
 ## Commit messages
 

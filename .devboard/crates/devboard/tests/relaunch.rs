@@ -47,6 +47,8 @@ fn settings(root: &Path, port: u16) -> RelaunchSettings {
         goal_file: repo.join("GOAL.md"),
         static_dir: None,
         state_dir: root.join("state"),
+        program: None,
+        launched_release: None,
     }
 }
 

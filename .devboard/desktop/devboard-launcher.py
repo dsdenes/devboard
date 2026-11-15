@@ -62,6 +62,12 @@ LOG = CONTROL_DIR / "launcher.log"
 CREDENTIALS = CONTROL_DIR / "credentials.json"
 TITLE = "Devboard"
 READY_TIMEOUT = 60.0
+# A publish-side bootstrap waits for the release run's result before it stops
+# the dashboard: the run that invoked the release must finish writing first.
+BOOTSTRAP_WAIT_SECONDS = 30 * 60.0
+# The release run's result appears before its worker verifies the release, so
+# the launcher gives that verification a settle window before it stops serving.
+BOOTSTRAP_SETTLE_SECONDS = 60.0
 
 # Every published release this launcher may run is a worktree of its tag under
 # this directory. It sits outside the state directories and `.worktree`, so no
@@ -86,6 +92,7 @@ INSTANCE_VARIABLES = (
     "DEVBOARD_RUNNING_VERSION",
     "DEVBOARD_RUNNING_HARNESS_DIR",
     "DEVBOARD_HARNESS_VERSION",
+    "DEVBOARD_LAUNCHED_RELEASE",
     "DEVBOARD_REPLACEMENT_READY_FILE",
     "DEVBOARD_CREDENTIALS_CLEARED",
     "DEVBOARD_DASHBOARD_TOKEN",
@@ -240,6 +247,69 @@ def version_marker() -> dict:
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def record_upgrade(previous: object, served: object) -> None:
+    """Records one launcher replacement the new dashboard journals at startup.
+
+    Only a real version change is recorded: a start of the same release, a
+    fresh start with no previous dashboard, and a marker that is not a version
+    all write nothing. The write is staged beside its destination so a failing
+    record never leaves a partial document.
+    """
+    if not isinstance(previous, str) or not isinstance(served, str):
+        return
+    previous = previous.strip()
+    served = served.strip()
+    if not previous or not served or previous == served:
+        return
+    write_control_document(
+        CONTROL_DIR / "upgrade.json",
+        {"from": previous, "to": served, "at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+    )
+
+
+def write_control_document(path: Path, document: dict) -> bool:
+    """Writes one launcher control document atomically; false on failure."""
+    staged = path.with_name(f".{path.name}.new-{os.getpid()}")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(staged, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+            handle.write("\n")
+        os.replace(staged, path)
+        return True
+    except OSError as error:
+        try:
+            staged.unlink()
+        except OSError:
+            pass
+        log(f"control document not written at {path}: {error}")
+        return False
+
+
+def wait_for_path(path: Path, timeout: float, settle: float = 0.0) -> bool:
+    """Waits for one publish-written document; a timeout leaves the stack up."""
+    deadline = time.time() + timeout
+    while not path.exists():
+        if time.time() >= deadline:
+            return False
+        time.sleep(2.0)
+    if settle > 0:
+        time.sleep(settle)
+    return True
+
+
+def record_bootstrap(version: str, path: Path) -> None:
+    """Records that the one-time published-dashboard bootstrap succeeded."""
+    write_control_document(
+        path,
+        {
+            "version": version,
+            "active": True,
+            "attemptedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
+    )
 
 
 def port_owners(port: int) -> list[int]:
@@ -645,13 +715,18 @@ def prepare_release() -> tuple[str | None, Path | None, str]:
     return version, binary, ""
 
 
-def start(binary: Path, tokens: dict[str, str]) -> subprocess.Popen:
+def start(binary: Path, tokens: dict[str, str], version: str | None = None) -> subprocess.Popen:
     environment = dict(os.environ)
     # The launcher may itself run under a shell that an agent or an older
     # dashboard started. This process names its own port, repo, and version, so
     # none of an instance's own variables may be carried into it.
     for name in INSTANCE_VARIABLES:
         environment.pop(name, None)
+    if version is not None:
+        # The dashboard reads this release as the one its launcher selected, so
+        # its version facts name the newest fully published release even before
+        # its first update check.
+        environment["DEVBOARD_LAUNCHED_RELEASE"] = version
     environment["DEVBOARD_DASHBOARD_TOKEN"] = tokens["token"]
     environment["DEVBOARD_BOOTSTRAP_TOKEN"] = tokens["bootstrap"]
     environment.setdefault("ADRS_DIR", str(REPO / "adrs"))
@@ -816,8 +891,12 @@ def run_lifecycle(open_when_started: bool) -> int:
     # dashboard leave its port.
     sweep_dashboards(binary)
     running = running_dashboard()
+    previous_version = None
     if running is not None:
         old_pid, old_port = running
+        marker = version_marker()
+        if marker.get("pid") == old_pid:
+            previous_version = marker.get("running")
         tokens = adopt_credentials(old_pid)
         log(f"restart: stopping pid {old_pid} on port {old_port}")
         if not stop_dashboard(old_pid):
@@ -826,7 +905,12 @@ def run_lifecycle(open_when_started: bool) -> int:
                 f"pid {old_pid} on port {old_port} did not stop",
             )
 
-    process = start(binary, tokens)
+    # The new dashboard journals this record at startup, so it must exist
+    # before the process starts: the launcher only learns the served version
+    # after readiness, which is already past that read.
+    if version is not None:
+        record_upgrade(previous_version, version)
+    process = start(binary, tokens, version)
     ready = wait_ready(PORT, tokens["token"], process.pid, READY_TIMEOUT, process)
     if ready is None:
         status = process.poll()
@@ -1183,14 +1267,32 @@ def main() -> int:
                        help="open the dashboard page, starting the dashboard when needed")
     group.add_argument("--indicator", action="store_true",
                        help="run the resident panel indicator")
+    parser.add_argument("--after", metavar="PATH",
+                        help="wait for one publish-written document before acting")
+    parser.add_argument("--bootstrap-version", metavar="VERSION",
+                        help="record this release as the activated upgrade baseline")
+    parser.add_argument("--bootstrap-record", metavar="PATH",
+                        help="the record that names a successful bootstrap")
     arguments = parser.parse_args()
 
+    if arguments.after and not wait_for_path(
+        Path(arguments.after), BOOTSTRAP_WAIT_SECONDS, BOOTSTRAP_SETTLE_SECONDS
+    ):
+        log(f"bootstrap: {arguments.after} never appeared; the dashboard keeps serving")
+        return 1
     if arguments.status:
         return status_command()
     if arguments.start:
         return start_command()
     if arguments.restart:
-        return run_lifecycle(open_when_started=False)
+        status = run_lifecycle(open_when_started=False)
+        if (
+            status == 0
+            and arguments.bootstrap_version
+            and arguments.bootstrap_record
+        ):
+            record_bootstrap(arguments.bootstrap_version, Path(arguments.bootstrap_record))
+        return status
     if arguments.stop:
         return stop_command()
     if arguments.open_ui:

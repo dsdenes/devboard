@@ -684,20 +684,69 @@ pub async fn install_release(
     std::fs::write(&archive, &bytes).map_err(|error| error.to_string())?;
     let unpacked = unpack_binary(&archive, state_dir)?;
     let destination = prefix.join("bin").join("devboard");
+    stage_binary(&unpacked, &destination)?;
+    write_installed_manifest(prefix, &release.version)?;
+    let _ = std::fs::remove_file(&archive);
+    Ok(release.version.clone())
+}
+
+/// The binary an upgrade installs for one published release.
+///
+/// A launcher published-worktree dashboard installs the release artifact under
+/// its own published directory, beside the launcher's tag worktrees and never
+/// inside one: a tag worktree must stay a clean checkout of its tag, and the
+/// checkout's `<repo>/.devboard/bin/devboard` prefix is never populated.
+pub fn published_release_binary(repo_dir: &Path, version: &str) -> PathBuf {
+    crate::version::published_root(repo_dir)
+        .join(".releases")
+        .join(format!("v{version}"))
+        .join("devboard")
+}
+
+/// Installs one release for a launcher published-worktree dashboard, returning
+/// the executable a replacement must start.
+///
+/// The artifact is verified before anything is unpacked and the binary is
+/// staged beside its destination, so a failed download, checksum, or extraction
+/// leaves the running dashboard untouched.
+pub async fn install_published_release(
+    source: &ManifestSource,
+    release: &ReleaseInfo,
+    repo_dir: &Path,
+    state_dir: &Path,
+) -> Result<PathBuf, String> {
+    let target = current_target()?;
+    let asset = release
+        .asset_for_this_platform()?
+        .ok_or_else(|| format!("the release carries no artifact for {target}"))?;
+    let bytes = download_release_asset(source, release, asset).await?;
+    std::fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
+    let archive = state_dir.join(format!("devboard-{}.archive", release.version));
+    std::fs::write(&archive, &bytes).map_err(|error| error.to_string())?;
+    let unpacked = unpack_binary(&archive, state_dir)?;
+    let destination = published_release_binary(repo_dir, &release.version);
+    stage_binary(&unpacked, &destination)?;
+    let _ = std::fs::remove_file(&archive);
+    Ok(destination)
+}
+
+/// Stages one unpacked binary beside its destination and renames it into
+/// place, so a process executing the destination keeps its inode.
+fn stage_binary(unpacked: &Path, destination: &Path) -> Result<(), String> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
     let staged = destination.with_extension(format!("{}.new", std::process::id()));
-    std::fs::copy(&unpacked, &staged).map_err(|error| error.to_string())?;
+    std::fs::copy(unpacked, &staged).map_err(|error| error.to_string())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(&unpacked)
+        let mode = std::fs::metadata(unpacked)
             .map(|metadata| metadata.permissions().mode())
             .unwrap_or(0o755);
         let _ = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode));
     }
-    std::fs::rename(&staged, &destination).map_err(|error| error.to_string())?;
-    write_installed_manifest(prefix, &release.version)?;
-    let _ = std::fs::remove_file(&archive);
-    Ok(release.version.clone())
+    std::fs::rename(&staged, destination).map_err(|error| error.to_string())
 }
 
 /// Extracts the `devboard` binary from a release archive.

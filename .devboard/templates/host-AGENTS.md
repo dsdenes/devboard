@@ -115,15 +115,33 @@ finish its unit.
 `versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `running` is the
 version the process actually loaded; `installed` is what a restart would load now — the binary and
 manifest beside it on an installed host, the checkout's released source version on a source
-checkout. The status bar labels that second value `installed` on an installed host and `source` on
-a source checkout. The reload control is rendered only when a replacement could not start: the
+checkout, and the newest fully published release a launcher restart would load on a launcher
+published-worktree dashboard. The status bar labels that second value `installed` on an installed
+host and `source` on a source checkout, renders the newest published release beside it whenever
+`latest` differs from `running`, and marks the pair stale while a restart would load different
+code. The reload control is rendered only when a replacement could not start: the
 running version keeps serving, its accessible name and title name both versions, and clicking it
 retries the same launcher. The desktop launcher installs the selected release binary over
 `.devboard/target/release/devboard` by staging beside it and renaming atomically, so a process
 executing the canonical binary keeps its inode and the upgrade never fails with `Text file busy`.
-A canonical source checkout never installs and never replaces itself on an update check. It
-replaces itself only after one successful `devboard publish`: that path discovers live dashboards
-through the shared process inventory and writes a source-refresh request into each one's own
+
+A launcher published-worktree dashboard — a dashboard the launcher starts from a published tag
+worktree under `<repo>/.devboard/published/<version>/.devboard` — reads the newest fully published
+release at startup and every 60 seconds, verifies that release's platform artifact, installs its
+binary under `<repo>/.devboard/published/.releases/<version>/devboard` (never inside a tag worktree,
+never at `<repo>/.devboard/bin/devboard`), and replaces its own process through the ordinary
+handoff. Its `installed` and `latest` name that newest fully published release, so a dashboard the
+launcher started on an older release reports `stale: true` until it upgrades itself, and the
+checkout stays a source deployment. The release that introduces this path activates it once:
+`devboard publish` hands a restart to `desktop/devboard-launcher.py`, which waits for that run's
+`result.json` and then replaces the dashboard with the release publish just proved. The attempt is
+recorded at most once per published version, a successful launch records activation in
+`STATE_DIR/desktop/published-bootstrap.json` so no later release bootstraps again, and a bootstrap
+that cannot start leaves the old dashboard serving and is journaled without failing the release. A
+canonical source checkout that is not such a dashboard still never installs or replaces itself on
+an update check. It replaces itself only after one successful `devboard publish`: that path
+discovers live dashboards through the shared process inventory and writes a source-refresh request
+into each one's own
 `STATE_DIR` only after its fast-forward,
 client build, cargo-dist workflow wait, GitHub-asset check, and Gitea-manifest check have all
 passed. The request names the published commit, the released version, and a SHA-256 of the built

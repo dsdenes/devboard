@@ -327,3 +327,213 @@ fn the_gitea_update_source_is_anonymous() {
     assert_eq!(source.forge, devboard::release::ReleaseForge::Gitea);
     assert_eq!(source.token, None);
 }
+
+// ---------------------------------------------------------------------------
+// A launcher published-worktree dashboard upgrades itself
+
+/// Serializes the process environment a dashboard constructor reads.
+static RUNTIME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn dashboard_scratch(label: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".test-tmp")
+        .join(format!("updates-dashboard-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let repo = root.join("repo");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness");
+    std::fs::create_dir_all(repo.join(".devboard/.tmp/journal")).expect("a state directory");
+    std::fs::write(repo.join("GOAL.md"), "# Goal\n").expect("a goal document");
+    std::fs::write(
+        repo.join(".devboard/package.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"0.1.0\"}\n",
+    )
+    .expect("a source manifest");
+    root
+}
+
+fn dashboard_config(root: &std::path::Path) -> devboard::config::Config {
+    let repo = root.join("repo");
+    devboard::config::Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "omp acp".to_string(),
+        state_dir: repo.join(".devboard/.tmp"),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    }
+}
+
+fn dashboard_app(
+    root: &std::path::Path,
+    running: &str,
+    launched: Option<&str>,
+) -> std::sync::Arc<devboard::app::App> {
+    let config = dashboard_config(root);
+    let guard = RUNTIME_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    std::env::set_var("DEVBOARD_RUNNING_VERSION", running);
+    let app = devboard::app::App::with_launched_release(
+        config.clone(),
+        devboard::journal::Journal::open(&config.state_dir, &config.repo_dir, 0),
+        launched.map(str::to_string),
+    );
+    std::env::remove_var("DEVBOARD_RUNNING_VERSION");
+    drop(guard);
+    app
+}
+
+/// One local release directory whose archive carries an executable script.
+fn release_scratch(root: &std::path::Path, version: &str) -> std::path::PathBuf {
+    let directory = root.join(format!("release-{version}"));
+    std::fs::create_dir_all(&directory).expect("a release directory");
+    let target = devboard::release::current_target().expect("a supported platform");
+    let asset = format!("devboard-{target}.tar.gz");
+    let bytes = b"#!/bin/sh\nexit 0\n";
+    let file = std::fs::File::create(directory.join(&asset)).expect("an archive");
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o755);
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "devboard", &bytes[..])
+        .expect("an archive entry");
+    builder
+        .into_inner()
+        .expect("an archive stream")
+        .finish()
+        .expect("a finished archive");
+    let manifest = serde_json::json!({
+        "version": version,
+        "tag": format!("v{version}"),
+        "assets": [{
+            "target": target,
+            "url": asset,
+            "sha256": "",
+        }],
+    });
+    let text = format!(
+        "{}\n",
+        serde_json::to_string(&manifest).expect("a manifest")
+    );
+    std::fs::write(directory.join("devboard-manifest.json"), text).expect("a manifest file");
+    directory
+}
+
+#[test]
+fn the_version_facts_name_the_newest_published_release() {
+    let root = dashboard_scratch("facts");
+    let repo = root.join("repo");
+    let artifact = repo.join(".devboard/published/.releases/v1.3.0/devboard");
+    std::fs::create_dir_all(artifact.parent().expect("a release directory")).expect("a directory");
+    std::fs::write(&artifact, b"binary").expect("an artifact");
+    let worktree = repo.join(".devboard/published/v1.2.3/.devboard/target/release/devboard");
+    std::fs::create_dir_all(worktree.parent().expect("a worktree directory")).expect("a directory");
+    std::fs::write(&worktree, b"binary").expect("a worktree binary");
+    let canonical = repo.join(".devboard/target/release/devboard");
+    std::fs::create_dir_all(canonical.parent().expect("a build directory")).expect("a directory");
+    std::fs::write(&canonical, b"binary").expect("a build binary");
+
+    assert_eq!(
+        devboard::version::published_dashboard_version_for(&repo, &worktree).as_deref(),
+        Some("1.2.3"),
+        "a launcher worktree names its tag"
+    );
+    assert_eq!(
+        devboard::version::published_dashboard_version_for(&repo, &canonical),
+        None,
+        "a direct source build is not a launcher published worktree"
+    );
+
+    let facts = devboard::version::VersionFacts::resolve_for(&repo, &artifact);
+    assert_eq!(facts.published.as_deref(), Some("1.3.0"));
+    let older = devboard::version::server_version_from(
+        &facts,
+        Some("1.2.3".to_string()),
+        Some("1.3.0".to_string()),
+    );
+    assert_eq!(older.installed.as_deref(), Some("1.3.0"));
+    assert_eq!(older.latest.as_deref(), Some("1.3.0"));
+    assert!(older.stale, "an older running version is stale");
+    let current = devboard::version::server_version_from(
+        &facts,
+        Some("1.3.0".to_string()),
+        Some("1.3.0".to_string()),
+    );
+    assert!(!current.stale, "the newest release is not stale");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn a_published_dashboard_installs_and_replaces_without_a_bin_prefix() {
+    let root = dashboard_scratch("upgrade");
+    let repo = root.join("repo");
+    let app = dashboard_app(&root, "1.2.3", Some("1.2.3"));
+    let replacements = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&replacements);
+    app.set_replacement_hook(std::sync::Arc::new(move |program, version| {
+        seen.lock().expect("replacements").push((
+            program.map(std::path::Path::to_path_buf),
+            version.to_string(),
+        ));
+        Ok(())
+    }));
+    let directory = release_scratch(&root, "1.3.0");
+    let source = local_source(&directory);
+    let outcome = devboard::updates::check_with_source(&app, &source).await;
+    assert_eq!(outcome, devboard::updates::UpdateOutcome::Installed);
+    let installed = devboard::release::published_release_binary(&repo, "1.3.0");
+    assert!(installed.is_file(), "the release artifact is installed");
+    assert_eq!(
+        replacements.lock().expect("replacements").as_slice(),
+        &[(Some(installed.clone()), "1.3.0".to_string())],
+        "the replacement starts the installed release artifact"
+    );
+    assert!(
+        !repo.join(".devboard/bin/devboard").exists(),
+        "the checkout's installed prefix is never populated"
+    );
+    let state = app.version_state();
+    assert_eq!(state["running"], "1.2.3");
+    assert_eq!(state["installed"], "1.3.0");
+    assert_eq!(state["latest"], "1.3.0");
+    assert_eq!(state["stale"], true);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn a_canonical_source_checkout_never_installs_or_replaces_on_a_check() {
+    let root = dashboard_scratch("canonical");
+    let repo = root.join("repo");
+    let app = dashboard_app(&root, "1.2.3", None);
+    let replacements = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&replacements);
+    app.set_replacement_hook(std::sync::Arc::new(move |program, version| {
+        seen.lock().expect("replacements").push((
+            program.map(std::path::Path::to_path_buf),
+            version.to_string(),
+        ));
+        Ok(())
+    }));
+    let directory = release_scratch(&root, "1.3.0");
+    let source = local_source(&directory);
+    let outcome = devboard::updates::check_with_source(&app, &source).await;
+    assert_eq!(outcome, devboard::updates::UpdateOutcome::Current);
+    assert!(
+        replacements.lock().expect("replacements").is_empty(),
+        "a canonical source checkout never replaces itself on a check"
+    );
+    assert!(!devboard::release::published_release_binary(&repo, "1.3.0").exists());
+    assert!(!repo.join(".devboard/bin").exists());
+    let state = app.version_state();
+    assert_eq!(state["latest"], "1.3.0");
+    let _ = std::fs::remove_dir_all(&root);
+}

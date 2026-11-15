@@ -121,8 +121,76 @@ pub fn is_own_checkout_harness(repo_dir: &Path, harness_dir: &Path) -> bool {
 }
 
 /// True when this process runs the source harness of the repository it serves.
+///
+/// A launcher published-worktree dashboard is excluded even when its executable
+/// resolves the checkout's `.devboard`: it runs a published release, so a
+/// publish's source-refresh request is not its to apply, and its update path is
+/// the release manifest.
 pub fn serves_own_harness(repo_dir: &Path) -> bool {
     is_own_checkout_harness(repo_dir, &running_harness_dir())
+        && published_dashboard_version(repo_dir).is_none()
+}
+
+/// The environment name a launcher uses to name the published release it
+/// started, and a replacement uses to carry that fact forward.
+pub const LAUNCHED_RELEASE_VARIABLE: &str = "DEVBOARD_LAUNCHED_RELEASE";
+
+/// The directory every launcher-built release worktree and installed release
+/// artifact lives under.
+pub fn published_root(repo_dir: &Path) -> PathBuf {
+    repo_dir.join(".devboard").join("published")
+}
+
+/// The release version a path component names: `v<major>.<minor>.<patch>`.
+pub fn release_version_from_tag(name: &str) -> Option<String> {
+    let version = name.strip_prefix('v')?;
+    let mut parts = version.split('.');
+    for _ in 0..3 {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(version.to_string())
+}
+
+/// The published release a launcher-started executable belongs to.
+///
+/// The launcher builds and runs `<repo>/.devboard/published/v<version>/.devboard/
+/// target/release/devboard`, and the update path installs
+/// `<repo>/.devboard/published/.releases/v<version>/devboard`. Both name the
+/// release in the first component under `published`, so the running executable
+/// proves which release a process loaded and whether it is a launcher
+/// published-worktree dashboard rather than a direct source build.
+pub fn published_dashboard_version_for(repo_dir: &Path, executable: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(published_root(repo_dir)).ok()?;
+    let executable = PathBuf::from(executable.to_string_lossy().trim_end_matches(" (deleted)"));
+    let executable = std::fs::canonicalize(&executable).unwrap_or(executable);
+    let relative = executable.strip_prefix(&root).ok()?;
+    let mut parts = relative.components();
+    let first = parts.next()?.as_os_str().to_string_lossy().into_owned();
+    let name = if first == ".releases" {
+        parts.next()?.as_os_str().to_string_lossy().into_owned()
+    } else {
+        first
+    };
+    release_version_from_tag(&name)
+}
+
+/// [`published_dashboard_version_for`] against this process's own executable.
+pub fn published_dashboard_version(repo_dir: &Path) -> Option<String> {
+    published_dashboard_version_for(repo_dir, &crate::relaunch::own_program())
+}
+
+/// The published release a launcher named for this process, if any.
+pub fn launched_release_from_env() -> Option<String> {
+    std::env::var(LAUNCHED_RELEASE_VARIABLE)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// The harness directory this process belongs to.
@@ -321,17 +389,70 @@ pub struct VersionFacts {
     pub installed: Option<String>,
     /// Whether this process runs a source harness rather than an install.
     pub source: bool,
+    /// The published release a launcher started, when this is a launcher
+    /// published-worktree dashboard. Its `installed` value names the newest
+    /// fully published release a launcher restart would load.
+    pub published: Option<String>,
 }
 
 impl VersionFacts {
     /// Resolves the facts once for the repository and harness this process
     /// serves.
     pub fn resolve(repo_dir: &Path) -> Self {
+        Self::resolve_for(repo_dir, &crate::relaunch::own_program())
+    }
+
+    /// Resolves the facts for one executable, so a launcher published-worktree
+    /// dashboard is recognized from the release its own path names.
+    pub fn resolve_for(repo_dir: &Path, executable: &Path) -> Self {
+        let published = published_dashboard_version_for(repo_dir, executable);
+        // The environment override names the harness a fixture or an operator
+        // pinned, exactly as `running_harness_dir` reads it.
+        let harness = match std::env::var("DEVBOARD_RUNNING_HARNESS_DIR") {
+            Ok(value) if !value.is_empty() => PathBuf::from(value),
+            _ => harness_dir_from_executable(executable).unwrap_or_else(running_harness_dir),
+        };
         Self {
-            installed: read_harness_version(&host_harness_dir(repo_dir)),
-            source: is_source_harness(&running_harness_dir()),
+            installed: published
+                .clone()
+                .or_else(|| read_harness_version(&host_harness_dir(repo_dir))),
+            source: is_source_harness(&harness),
+            published,
         }
     }
+}
+
+/// One launcher replacement that finished before this process started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub from: String,
+    pub to: String,
+}
+
+/// Consumes the upgrade record a launcher wrote for the release it started.
+///
+/// The record is journaled once by the new process, so the automatic swap a
+/// launch performs is visible in the dashboard's own journal. A record naming
+/// another version belongs to a process that never started, so it stays for it.
+pub fn take_pending_upgrade(state_dir: &Path, running: Option<&str>) -> Option<PendingUpgrade> {
+    let path = state_dir.join("desktop").join("upgrade.json");
+    let source = std::fs::read_to_string(&path).ok()?;
+    let value: Value = serde_json::from_str(&source).ok()?;
+    let field = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    let from = field("from")?;
+    let to = field("to")?;
+    if running != Some(to.as_str()) {
+        return None;
+    }
+    let _ = std::fs::remove_file(&path);
+    Some(PendingUpgrade { from, to })
 }
 
 /// The version state for one dashboard process, from the facts it holds.

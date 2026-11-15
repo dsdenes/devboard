@@ -998,8 +998,42 @@ pub struct PublishReport {
     /// The exact `devboard-manifest.json` bytes the Gitea release carries.
     pub manifest: String,
     pub source_refresh: SourceRefreshReport,
+    /// The one-time activation of a launcher published-worktree dashboard.
+    pub bootstrap: PublishedBootstrap,
     /// One row per live dashboard, for the CLI inventory.
     pub dashboards: Vec<DashboardInventory>,
+}
+
+/// What one publish-side published-dashboard bootstrap did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedBootstrap {
+    /// `skipped`, `activated`, or `failed`. A failure is reported and never
+    /// turns the release result into a failure.
+    pub state: String,
+    pub detail: String,
+}
+
+impl PublishedBootstrap {
+    fn skipped(detail: impl Into<String>) -> Self {
+        Self {
+            state: "skipped".to_string(),
+            detail: detail.into(),
+        }
+    }
+
+    fn activated(detail: impl Into<String>) -> Self {
+        Self {
+            state: "started".to_string(),
+            detail: detail.into(),
+        }
+    }
+
+    fn failed(detail: impl Into<String>) -> Self {
+        Self {
+            state: "failed".to_string(),
+            detail: detail.into(),
+        }
+    }
 }
 
 /// One live dashboard as the publish inventory prints it.
@@ -2881,12 +2915,38 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         })
         .await?;
         let inventory = dashboard_inventory(&instances);
+        // A launcher published-worktree dashboard runs released code that
+        // predates this mechanism, so the release that introduces it activates
+        // the upgrade path once through the launcher. A failure leaves the old
+        // dashboard serving and is reported, never raised: the next release
+        // retries it.
+        let await_result = args
+            .progress_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|run_dir| run_dir.join("result.json"));
+        let bootstrap = bootstrap_published_dashboard(
+            &args.repo_dir,
+            &args.harness_root,
+            &version,
+            &iso_from_millis(clock.now_millis()),
+            await_result.as_deref(),
+            &instances,
+            &DetachedBootstrapLauncher,
+        )
+        .await;
 
-        Ok::<_, anyhow::Error>((workflow_run, verified, source_refresh, inventory))
+        Ok::<_, anyhow::Error>((
+            workflow_run,
+            verified,
+            source_refresh,
+            bootstrap,
+            inventory,
+        ))
     }
     .await;
 
-    let (workflow_run, verified, source_refresh, dashboards) = match shipped {
+    let (workflow_run, verified, source_refresh, bootstrap, dashboards) = match shipped {
         Ok(shipped) => shipped,
         Err(error) => {
             let _ = api.github_delete_ref(&build_ref(&tag)).await;
@@ -2932,6 +2992,7 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
         github_assets: verified.names,
         manifest: manifest_text,
         source_refresh,
+        bootstrap,
         dashboards,
     })
 }
@@ -4769,8 +4830,205 @@ fn collect_files(
     Ok(())
 }
 
+/// Writes one request for every live dashboard that serves this checkout.
 fn source_refresh_directory(state_dir: &Path) -> PathBuf {
     state_dir.join(SOURCE_REFRESH_DIRECTORY)
+}
+
+/// The record that makes the published-dashboard bootstrap one-time.
+pub const PUBLISHED_BOOTSTRAP_FILE: &str = "published-bootstrap.json";
+
+/// The live launcher published-worktree dashboard this checkout serves.
+///
+/// The harness a launcher starts is a worktree under
+/// `<repo>/.devboard/published`, which is what distinguishes it from the
+/// checkout's own source dashboard and from an installed host.
+fn published_dashboard_instance<'a>(
+    repo_root: &Path,
+    instances: &'a [DashboardInstance],
+) -> Option<&'a DashboardInstance> {
+    let published = absolute_path(&crate::version::published_root(repo_root));
+    instances.iter().find(|instance| {
+        same_path(&instance.repo_dir, repo_root)
+            && absolute_path(&instance.harness).starts_with(&published)
+    })
+}
+
+fn published_bootstrap_marker(instance: &DashboardInstance) -> PathBuf {
+    instance
+        .state_dir
+        .join("desktop")
+        .join(PUBLISHED_BOOTSTRAP_FILE)
+}
+
+fn read_published_bootstrap(instance: &DashboardInstance) -> (Option<String>, bool) {
+    let path = published_bootstrap_marker(instance);
+    let Some(text) = std::fs::read_to_string(path).ok() else {
+        return (None, false);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return (None, false);
+    };
+    let version = value
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    (
+        version,
+        value.get("active").and_then(Value::as_bool) == Some(true),
+    )
+}
+
+async fn write_published_bootstrap(
+    instance: &DashboardInstance,
+    version: &str,
+    active: bool,
+    attempted_at: &str,
+) -> std::result::Result<(), String> {
+    let path = published_bootstrap_marker(instance);
+    let mut text = jsjson::stringify(&json!({
+        "version": version,
+        "active": active,
+        "attemptedAt": attempted_at,
+    }));
+    text.push('\n');
+    crate::state::write_file_atomically(&path, &text)
+        .await
+        .map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
+/// Starts the detached launcher one bootstrap hands its restart to.
+///
+/// The restart must not stop the dashboard while the release run that invoked
+/// this publish is still writing its result: the launcher's stop ends every
+/// harness process in the dashboard's tree, the release peer included. The
+/// launcher therefore receives `--after <result.json>` and waits for the run's
+/// result before it replaces the dashboard. This seam is injectable so the
+/// decision is tested without launching a process.
+pub trait BootstrapLauncher: Send + Sync {
+    fn start<'a>(&'a self, invocation: CommandInvocation) -> BoxFuture<'a, Result<(), String>>;
+}
+
+/// The production launcher hand-off: a detached process in its own session so
+/// the run that started it can end without taking the build or the restart
+/// down with it.
+pub struct DetachedBootstrapLauncher;
+
+impl BootstrapLauncher for DetachedBootstrapLauncher {
+    fn start<'a>(&'a self, invocation: CommandInvocation) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let mut command = std::process::Command::new(&invocation.program);
+            command
+                .args(&invocation.args)
+                .current_dir(&invocation.cwd)
+                .envs(&invocation.env)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt as _;
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
+            command
+                .spawn()
+                .map(|_child| ())
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+/// Activates the automatic upgrade path of a launcher published-worktree
+/// dashboard once.
+///
+/// The release that introduces the path runs in a dashboard that predates it,
+/// so this bootstrap hands the restart to the launcher — the sanctioned restart
+/// path — and the launcher builds the release this publish just proved. The
+/// attempt is recorded before the launcher starts, so it happens at most once
+/// per published version; the launcher records success once it has replaced the
+/// dashboard, and that record stops every later bootstrap. Nothing here can
+/// fail the release: a refused spawn is reported and the old dashboard keeps
+/// serving until the next release.
+pub async fn bootstrap_published_dashboard(
+    repo_root: &Path,
+    harness_root: &Path,
+    version: &str,
+    attempted_at: &str,
+    await_result: Option<&Path>,
+    instances: &[DashboardInstance],
+    launcher: &dyn BootstrapLauncher,
+) -> PublishedBootstrap {
+    let Some(instance) = published_dashboard_instance(repo_root, instances) else {
+        return PublishedBootstrap::skipped(
+            "no live launcher published-worktree dashboard serves this checkout",
+        );
+    };
+    let program = harness_root.join("desktop").join("devboard-launcher.py");
+    if !program.is_file() {
+        return PublishedBootstrap::skipped(format!(
+            "the launcher is missing at {}",
+            program.display()
+        ));
+    }
+    let (recorded, active) = read_published_bootstrap(instance);
+    if active {
+        return PublishedBootstrap::skipped(
+            "the published-dashboard upgrade path is already active on this checkout",
+        );
+    }
+    if recorded.as_deref() == Some(version) {
+        return PublishedBootstrap::skipped(format!("the bootstrap already ran for v{version}"));
+    }
+    let Some(await_result) = await_result else {
+        // A restart outside a release run would stop the dashboard under the
+        // command that invoked publish. Only a run that names its own result
+        // document hands the launcher a safe moment to replace the dashboard.
+        return PublishedBootstrap::skipped(
+            "the bootstrap runs only inside a release run that names its result document",
+        );
+    };
+    if let Err(error) = write_published_bootstrap(instance, version, false, attempted_at).await {
+        return PublishedBootstrap::failed(format!(
+            "the bootstrap attempt for v{version} could not be recorded: {error}"
+        ));
+    }
+    let record = published_bootstrap_marker(instance);
+    let args = vec![
+        program.to_string_lossy().into_owned(),
+        "--restart".to_string(),
+        "--bootstrap-version".to_string(),
+        version.to_string(),
+        "--bootstrap-record".to_string(),
+        record.to_string_lossy().into_owned(),
+        "--after".to_string(),
+        await_result.to_string_lossy().into_owned(),
+    ];
+    match launcher
+        .start(CommandInvocation {
+            program: "python3".to_string(),
+            args,
+            cwd: repo_root.to_path_buf(),
+            env: HashMap::new(),
+            timeout: Duration::from_secs(0),
+        })
+        .await
+    {
+        Ok(()) => PublishedBootstrap::activated(format!(
+            "the launcher will restart the dashboard on v{version} once {} names the run's \
+             result",
+            await_result.display()
+        )),
+        Err(error) => PublishedBootstrap::failed(format!(
+            "the launcher restart for v{version} could not start: {error}"
+        )),
+    }
 }
 
 /// Writes one request for every live dashboard that serves this checkout.
@@ -5500,6 +5758,231 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    struct BootstrapRecorder {
+        calls: Mutex<Vec<CommandInvocation>>,
+        refuse: bool,
+    }
+
+    impl BootstrapRecorder {
+        fn accepting() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                refuse: false,
+            })
+        }
+
+        fn refusing() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                refuse: true,
+            })
+        }
+
+        fn calls(&self) -> Vec<CommandInvocation> {
+            self.calls.lock().expect("calls").clone()
+        }
+    }
+
+    impl BootstrapLauncher for BootstrapRecorder {
+        fn start<'a>(&'a self, invocation: CommandInvocation) -> BoxFuture<'a, Result<(), String>> {
+            self.calls.lock().expect("calls").push(invocation);
+            let refuse = self.refuse;
+            Box::pin(async move {
+                if refuse {
+                    Err("the launcher could not start".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    struct BootstrapFixture {
+        root: PathBuf,
+        repo: PathBuf,
+        harness: PathBuf,
+        instance: DashboardInstance,
+    }
+
+    impl Drop for BootstrapFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn bootstrap_fixture(label: &str, published: bool) -> BootstrapFixture {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("publish-bootstrap-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        let harness = repo.join(".devboard");
+        std::fs::create_dir_all(harness.join("desktop")).expect("a harness tree");
+        std::fs::write(
+            harness.join("desktop/devboard-launcher.py"),
+            "#!/usr/bin/env python3\n",
+        )
+        .expect("a launcher");
+        let harness_dir = if published {
+            harness.join("published/v1.2.3/.devboard")
+        } else {
+            harness.clone()
+        };
+        let instance = DashboardInstance {
+            pid: 42,
+            port: 8080,
+            repo_dir: repo.clone(),
+            harness: harness_dir,
+            state_dir: harness.join(".tmp"),
+        };
+        BootstrapFixture {
+            root,
+            repo,
+            harness,
+            instance,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_publish_bootstrap_hands_one_published_dashboard_to_the_launcher_once() {
+        let fixture = bootstrap_fixture("once", true);
+        let launcher = BootstrapRecorder::accepting();
+        let run_dir = fixture.root.join("run");
+        std::fs::create_dir_all(&run_dir).expect("a run directory");
+        let result = run_dir.join("result.json");
+        let first = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.3.0",
+            "2026-01-01T00:00:00.000Z",
+            Some(&result),
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(first.state, "started", "{}", first.detail);
+        let calls = launcher.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, "python3");
+        assert_eq!(calls[0].cwd, fixture.repo);
+        let expected = vec![
+            fixture
+                .harness
+                .join("desktop/devboard-launcher.py")
+                .to_string_lossy()
+                .into_owned(),
+            "--restart".to_string(),
+            "--bootstrap-version".to_string(),
+            "1.3.0".to_string(),
+            "--bootstrap-record".to_string(),
+            published_bootstrap_marker(&fixture.instance)
+                .to_string_lossy()
+                .into_owned(),
+            "--after".to_string(),
+            result.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(calls[0].args, expected);
+        let marker = published_bootstrap_marker(&fixture.instance);
+        let record: Value =
+            serde_json::from_str(&std::fs::read_to_string(&marker).expect("the bootstrap record"))
+                .expect("a record document");
+        assert_eq!(record["version"], "1.3.0");
+        assert_eq!(record["active"], false, "only the launcher records success");
+
+        let later = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.3.0",
+            "2026-01-01T00:01:00.000Z",
+            Some(&result),
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(later.state, "skipped", "{}", later.detail);
+        assert_eq!(launcher.calls().len(), 1, "the bootstrap never runs twice");
+
+        std::fs::write(
+            &marker,
+            "{\"version\":\"1.3.0\",\"active\":true,\"attemptedAt\":\"now\"}\n",
+        )
+        .expect("the launcher's success record");
+        let active = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.5.0",
+            "2026-01-01T00:02:00.000Z",
+            Some(&result),
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(active.state, "skipped");
+        assert_eq!(launcher.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_publish_bootstrap_never_fails_the_release_and_waits_for_the_next_one() {
+        let fixture = bootstrap_fixture("failed", true);
+        let launcher = BootstrapRecorder::refusing();
+        let result = fixture.root.join("run/result.json");
+        let failed = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.3.0",
+            "2026-01-01T00:00:00.000Z",
+            Some(&result),
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(failed.state, "failed");
+        assert!(failed.detail.contains("could not start"));
+        let again = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.3.0",
+            "2026-01-01T00:01:00.000Z",
+            Some(&result),
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(again.state, "skipped", "one attempt per published version");
+        assert_eq!(launcher.calls().len(), 1);
+        let next = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.4.0",
+            "2026-01-01T00:02:00.000Z",
+            Some(&result),
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(next.state, "failed", "the next release retries it");
+        assert_eq!(launcher.calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn only_a_launcher_published_worktree_dashboard_is_bootstrapped() {
+        let fixture = bootstrap_fixture("other", false);
+        let launcher = BootstrapRecorder::accepting();
+        let outcome = bootstrap_published_dashboard(
+            &fixture.repo,
+            &fixture.harness,
+            "1.3.0",
+            "2026-01-01T00:00:00.000Z",
+            None,
+            std::slice::from_ref(&fixture.instance),
+            launcher.as_ref(),
+        )
+        .await;
+        assert_eq!(outcome.state, "skipped");
+        assert!(launcher.calls().is_empty());
     }
 
     #[tokio::test]

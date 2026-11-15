@@ -26,6 +26,12 @@ pub struct RelaunchSettings {
     /// named for this pid and pruned once it is gone.
     pub static_dir: Option<PathBuf>,
     pub state_dir: PathBuf,
+    /// The executable a published-release replacement must start, when the
+    /// update installs the release artifact itself instead of the host prefix.
+    pub program: Option<PathBuf>,
+    /// The published release that artifact belongs to. The replacement names it
+    /// so the new process reports the release it loaded.
+    pub launched_release: Option<String>,
 }
 
 impl RelaunchSettings {
@@ -48,6 +54,8 @@ impl RelaunchSettings {
                 .as_ref()
                 .map(|source| std::path::absolute(source).unwrap_or_else(|_| source.clone())),
             state_dir: config.state_dir.clone(),
+            program: None,
+            launched_release: None,
         }
     }
 }
@@ -198,6 +206,7 @@ fn instance_environment_names() -> Vec<String> {
         "DEVBOARD_RUNNING_VERSION",
         "DEVBOARD_RUNNING_HARNESS_DIR",
         "DEVBOARD_HARNESS_VERSION",
+        "DEVBOARD_LAUNCHED_RELEASE",
         "DEVBOARD_REPLACEMENT_READY_FILE",
         "DEVBOARD_CREDENTIALS_CLEARED",
     ]
@@ -232,7 +241,10 @@ pub fn spawn_replacement(
     settings: &RelaunchSettings,
     extra_env: &[(&str, String)],
 ) -> std::io::Result<Child> {
-    let program = replacement_program(&settings.repo_dir)?;
+    let program = match settings.program.clone() {
+        Some(program) => program,
+        None => replacement_program(&settings.repo_dir)?,
+    };
     let mut command = Command::new(&program);
     command.arg("serve");
     #[cfg(unix)]
@@ -255,6 +267,9 @@ pub fn spawn_replacement(
     // Inheriting the caller's `DEVBOARD_RUNNING_VERSION` kept a source
     // dashboard reporting the last version a publish had refreshed to.
     drop_instance_variables(&mut command);
+    if let Some(release) = &settings.launched_release {
+        command.env(crate::version::LAUNCHED_RELEASE_VARIABLE, release);
+    }
     // Never start from a replaceable install directory: an update can rename
     // and delete it, and a child cannot start from a missing cwd.
     command

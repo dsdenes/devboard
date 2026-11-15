@@ -13,6 +13,7 @@ the git reads, and the build are all injected.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -134,7 +135,8 @@ class LauncherTest(unittest.TestCase):
                 mock.patch.object(module, "build_release",
                                   side_effect=lambda version: built.append(version)), \
                 mock.patch.object(module, "start",
-                                  side_effect=lambda binary, tokens: started.append(str(binary))), \
+                                  side_effect=lambda binary, tokens, version=None:
+                                  started.append(str(binary))), \
                 mock.patch.object(module, "sweep_dashboards",
                                   side_effect=lambda binary: swept.append(str(binary))), \
                 mock.patch.object(module, "notify", side_effect=notify), \
@@ -456,6 +458,196 @@ class LauncherTest(unittest.TestCase):
             ["devboard"],
             "a failed install leaves no staged file behind",
         )
+
+    def test_start_names_the_published_release_it_launched(self) -> None:
+        module = self.module
+        spawned: dict = {}
+
+        class Spawned:
+            pid = 4242
+
+        def popen(command, **options):
+            spawned["command"] = command
+            spawned["env"] = options["env"]
+            return Spawned()
+
+        with mock.patch.object(module, "REPO", self.fixture / "repo"), \
+                mock.patch.object(module, "STATE", self.fixture / "state"), \
+                mock.patch.object(module, "LOG", self.fixture / "launcher.log"), \
+                mock.patch.object(module.subprocess, "Popen", side_effect=popen):
+            module.start(Path("/bin/true"), {"token": "t", "bootstrap": "b"}, "1.56.0")
+
+        environment = spawned["env"]
+        self.assertEqual(environment["DEVBOARD_LAUNCHED_RELEASE"], "1.56.0")
+        self.assertEqual(environment["DEVBOARD_DASHBOARD_TOKEN"], "t")
+        for name in module.INSTANCE_VARIABLES:
+            if name in (
+                "DEVBOARD_LAUNCHED_RELEASE",
+                "DEVBOARD_DASHBOARD_TOKEN",
+                "DEVBOARD_BOOTSTRAP_TOKEN",
+            ):
+                continue
+            self.assertNotIn(name, environment)
+
+    def test_an_installed_host_start_names_no_published_release(self) -> None:
+        module = self.module
+        spawned: dict = {}
+
+        class Spawned:
+            pid = 4242
+
+        def popen(command, **options):
+            spawned["env"] = options["env"]
+            return Spawned()
+
+        with mock.patch.object(module, "REPO", self.fixture / "repo"), \
+                mock.patch.object(module, "STATE", self.fixture / "state"), \
+                mock.patch.object(module, "LOG", self.fixture / "launcher.log"), \
+                mock.patch.object(module.subprocess, "Popen", side_effect=popen):
+            module.start(Path("/bin/true"), {"token": "t", "bootstrap": "b"})
+
+        self.assertNotIn("DEVBOARD_LAUNCHED_RELEASE", spawned["env"])
+
+    def test_an_upgrade_record_names_both_versions_and_only_a_change(self) -> None:
+        module = self.module
+        control = self.fixture / "state" / "desktop"
+        with mock.patch.object(module, "CONTROL_DIR", control):
+            module.record_upgrade("1.53.0", "1.56.0")
+            written = json.loads((control / "upgrade.json").read_text(encoding="utf-8"))
+            self.assertEqual(written["from"], "1.53.0")
+            self.assertEqual(written["to"], "1.56.0")
+
+            (control / "upgrade.json").unlink()
+            module.record_upgrade("1.56.0", "1.56.0")
+            module.record_upgrade(None, "1.56.0")
+            module.record_upgrade("1.56.0", None)
+            self.assertFalse((control / "upgrade.json").exists())
+
+    def test_a_bootstrap_restart_waits_for_the_run_result_then_records_success(self) -> None:
+        module = self.module
+        result = self.fixture / "run" / "result.json"
+        record = self.fixture / "state" / "desktop" / "published-bootstrap.json"
+        order: list[str] = []
+
+        def wait(path: Path, timeout: float, settle: float = 0.0) -> bool:
+            order.append(f"wait {path}")
+            self.assertEqual(path, result)
+            self.assertEqual(timeout, module.BOOTSTRAP_WAIT_SECONDS)
+            self.assertEqual(settle, module.BOOTSTRAP_SETTLE_SECONDS)
+            return True
+
+        def lifecycle(open_when_started: bool) -> int:
+            order.append("restart")
+            return 0
+
+        def bootstrap(version: str, path: Path) -> None:
+            order.append(f"record {version} {path}")
+
+        argv = [
+            "devboard-launcher",
+            "--restart",
+            "--after", str(result),
+            "--bootstrap-version", "1.56.0",
+            "--bootstrap-record", str(record),
+        ]
+        with mock.patch.object(module.sys, "argv", argv), \
+                mock.patch.object(module, "wait_for_path", side_effect=wait), \
+                mock.patch.object(module, "run_lifecycle", side_effect=lifecycle), \
+                mock.patch.object(module, "record_bootstrap", side_effect=bootstrap):
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(
+            order,
+            [f"wait {result}", "restart", f"record 1.56.0 {record}"],
+        )
+
+    def test_a_bootstrap_that_never_sees_its_result_leaves_the_dashboard_serving(self) -> None:
+        module = self.module
+        argv = [
+            "devboard-launcher",
+            "--restart",
+            "--after", str(self.fixture / "missing.json"),
+            "--bootstrap-version", "1.56.0",
+            "--bootstrap-record", str(self.fixture / "record.json"),
+        ]
+        restarts: list[bool] = []
+        with mock.patch.object(module.sys, "argv", argv), \
+                mock.patch.object(module, "wait_for_path", return_value=False), \
+                mock.patch.object(module, "run_lifecycle",
+                                  side_effect=lambda open_when_started:
+                                  restarts.append(True) or 0), \
+                mock.patch.object(module, "log", lambda message: None):
+            self.assertEqual(module.main(), 1)
+        self.assertEqual(restarts, [])
+
+    def test_wait_for_path_answers_only_when_the_document_exists(self) -> None:
+        module = self.module
+        missing = self.fixture / "run" / "result.json"
+        self.assertFalse(module.wait_for_path(missing, 0))
+        missing.parent.mkdir(parents=True)
+        missing.write_text("{}\n", encoding="utf-8")
+        self.assertTrue(module.wait_for_path(missing, 0))
+
+    def test_wait_for_path_settles_after_the_document_appears(self) -> None:
+        module = self.module
+        document = self.fixture / "run" / "result.json"
+        document.parent.mkdir(parents=True)
+        document.write_text("{}\n", encoding="utf-8")
+        waits: list[float] = []
+        with mock.patch.object(module.time, "sleep", side_effect=waits.append):
+            self.assertTrue(module.wait_for_path(document, 0, 60.0))
+        self.assertEqual(waits, [60.0])
+
+    def test_the_bootstrap_record_names_success_atomically(self) -> None:
+        module = self.module
+        record = self.fixture / "state" / "desktop" / "published-bootstrap.json"
+        module.record_bootstrap("1.56.0", record)
+        written = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(written["version"], "1.56.0")
+        self.assertIs(written["active"], True)
+        self.assertEqual(
+            sorted(path.name for path in record.parent.iterdir()),
+            ["published-bootstrap.json"],
+            "no staged document is left behind",
+        )
+
+    def test_a_restart_records_the_upgrade_before_the_new_process_starts(self) -> None:
+        module = self.module
+        order: list[str] = []
+
+        class Spawned:
+            pid = 222
+
+        markers = [
+            {"pid": 111, "running": "1.53.0"},
+            {"pid": 222, "running": "1.56.0"},
+        ]
+        tokens = {"token": "t", "bootstrap": "b"}
+        with mock.patch.object(module, "REPO", self.fixture / "repo"), \
+                mock.patch.object(module, "HARNESS", self.fixture / "repo" / ".devboard"), \
+                mock.patch.object(module, "STATE", self.fixture / "state"), \
+                mock.patch.object(module, "CONTROL_DIR", self.fixture / "state" / "desktop"), \
+                mock.patch.object(module, "LOG", self.fixture / "launcher.log"), \
+                mock.patch.object(module, "load_dotenv", lambda path: None), \
+                mock.patch.object(module, "acquire_lock", return_value=object()), \
+                mock.patch.object(module, "credentials", return_value=tokens), \
+                mock.patch.object(module, "running_dashboard", return_value=(111, 8080)), \
+                mock.patch.object(module, "version_marker", side_effect=markers), \
+                mock.patch.object(module, "sweep_dashboards", lambda binary: {}), \
+                mock.patch.object(module, "resolve_start",
+                                  return_value=("1.56.0", Path("/bin/true"), "")), \
+                mock.patch.object(module, "adopt_credentials", return_value=tokens), \
+                mock.patch.object(module, "stop_dashboard", return_value=True), \
+                mock.patch.object(module, "record_upgrade",
+                                  side_effect=lambda previous, served:
+                                  order.append(f"record {previous} {served}")), \
+                mock.patch.object(module, "start",
+                                  side_effect=lambda binary, tokens, version=None:
+                                  order.append(f"start {version}") or Spawned()), \
+                mock.patch.object(module, "wait_ready", return_value=222), \
+                mock.patch.object(module, "notify", lambda *args: None), \
+                mock.patch.object(module, "log", lambda message: None):
+            self.assertEqual(module.run_lifecycle(open_when_started=False), 0)
+        self.assertEqual(order, ["record 1.53.0 1.56.0", "start 1.56.0"])
 
     def test_remote_reference_parses_every_remote_form(self) -> None:
         module = self.module

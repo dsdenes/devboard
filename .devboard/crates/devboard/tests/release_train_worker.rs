@@ -17,8 +17,8 @@ use serde_json::json;
 
 use devboard::forge::{gitea_git_credential, GiteaGitCredential};
 use devboard::publish::{
-    PublishArgs, PublishReport, SourceRefreshReport, SourceRefreshRequest, MANIFEST_CHECKSUM_ASSET,
-    RELEASE_INSTALLERS, RELEASE_TARGETS,
+    PublishArgs, PublishReport, PublishedBootstrap, SourceRefreshReport, SourceRefreshRequest,
+    MANIFEST_CHECKSUM_ASSET, RELEASE_INSTALLERS, RELEASE_TARGETS,
 };
 use devboard::release::MANIFEST_ASSET;
 use devboard::workers::release_train::{
@@ -740,6 +740,10 @@ async fn a_pinned_run_hands_its_gate_target_to_publish() {
                         applied: Vec::new(),
                         failed: Vec::new(),
                         skipped: Vec::new(),
+                    },
+                    bootstrap: PublishedBootstrap {
+                        state: "skipped".to_string(),
+                        detail: "no published dashboard".to_string(),
                     },
                     dashboards: Vec::new(),
                 })
@@ -1758,6 +1762,10 @@ async fn a_recovery_verifies_the_release_publish_actually_proved() {
                         applied: Vec::new(),
                         failed: Vec::new(),
                         skipped: Vec::new(),
+                    },
+                    bootstrap: PublishedBootstrap {
+                        state: "skipped".to_string(),
+                        detail: "no published dashboard".to_string(),
                     },
                     dashboards: Vec::new(),
                 })

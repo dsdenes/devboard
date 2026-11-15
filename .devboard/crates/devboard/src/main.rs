@@ -249,10 +249,16 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
     // read that waits out the startup and breaches its budget.
     //
     // The running version is read here because in a source checkout the read
-    // spawns git.
-    let running_version =
-        devboard::version::read_harness_version(&devboard::version::running_harness_dir())
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    // spawns git. A replacement names the version it installed, and that name
+    // wins: the artifact it starts may be newer than the checkout's own tags.
+    let handed_version = std::env::var("DEVBOARD_RUNNING_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let running_version = handed_version
+        .or_else(|| {
+            devboard::version::read_harness_version(&devboard::version::running_harness_dir())
+        })
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     // One orphan-reaping pass before this process serves. It never signals a
     // live recorded child and journals the pass and every kill. The pass scans
     // the process table, which can outlast a client's budget on a busy host.
@@ -1201,6 +1207,10 @@ async fn publish_command(args: &[String]) -> anyhow::Result<()> {
         report.source_refresh.written.len(),
         report.source_refresh.failed.len(),
         report.source_refresh.skipped.len()
+    );
+    println!(
+        "bootstrap: {} — {}",
+        report.bootstrap.state, report.bootstrap.detail
     );
     for skip in &report.source_refresh.skipped {
         println!(

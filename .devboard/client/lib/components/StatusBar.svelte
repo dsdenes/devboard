@@ -77,6 +77,23 @@
       connection.version?.installed ?? "unknown"
     }`,
   );
+
+  /**
+   * A dashboard behind the newest published release says so: the second value
+   * is what a restart would load, and the running version is what this process
+   * actually loaded. A value that differs from `running` is drift the operator
+   * must be able to see without opening a dialog.
+   */
+  const runningVersion = $derived(connection.version?.running ?? null);
+  const latestVersion = $derived(connection.version?.latest ?? null);
+  const drift = $derived(
+    runningVersion !== null && latestVersion !== null && latestVersion !== runningVersion,
+  );
+  const driftTitle = $derived(
+    `Running ${runningVersion ?? "unknown"} is behind the newest published release ${
+      latestVersion ?? "unknown"
+    }`,
+  );
 </script>
 
 <footer class="status-bar" data-testid="status-bar">
@@ -136,7 +153,12 @@
       <span class="status-notifications__dot" aria-hidden="true"></span>
       <span class="status-notifications__label">notifications {osNotifications.state}</span>
     </Button>
-    <span class="status-item status-versions" title={versions}>
+    <span
+      class="status-item status-versions"
+      title={versions}
+      data-stale={connection.version?.stale === true}
+      data-testid="status-versions"
+    >
       <span class="status-versions__entry">
         <span class="status-metric__label">running</span>
         <span class="mono">{connection.version?.running ?? "unknown"}</span>
@@ -146,6 +168,17 @@
         <span class="mono">{connection.version?.installed ?? "unknown"}</span>
       </span>
     </span>
+    {#if drift}
+      <span
+        class="status-item status-versions__drift"
+        data-testid="status-version-drift"
+        data-tone="warning"
+        title={driftTitle}
+      >
+        <span class="status-metric__label">latest</span>
+        <span class="mono">{latestVersion}</span>
+      </span>
+    {/if}
     {#if connection.version?.replacement != null}
       <CommandButton
         bare
