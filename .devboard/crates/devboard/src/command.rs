@@ -29,6 +29,9 @@ pub enum Command {
         name: Option<Value>,
         enabled: Option<Value>,
     },
+    SetDeliveryMode {
+        mode: Option<Value>,
+    },
     GetIssues,
     GetIssuesRun {
         run_id: Option<Value>,
@@ -231,6 +234,7 @@ impl Command {
             Self::GetResources => "getResources",
             Self::SetResources { .. } => "setResources",
             Self::SetInstalledSkillEnabled { .. } => "setInstalledSkillEnabled",
+            Self::SetDeliveryMode { .. } => "setDeliveryMode",
             Self::GetIssues => "getIssues",
             Self::GetIssuesRun { .. } => "getIssuesRun",
             Self::StartIssues => "startIssues",
@@ -359,6 +363,9 @@ pub fn command_from_json(text: &str) -> Option<Command> {
             memory_high_mb: field("memoryHighMb"),
             memory_max_mb: field("memoryMaxMb"),
             memory_reserve_mb: field("memoryReserveMb"),
+        },
+        "setDeliveryMode" => Command::SetDeliveryMode {
+            mode: field("mode"),
         },
         "setInstalledSkillEnabled" => Command::SetInstalledSkillEnabled {
             name: field("name"),

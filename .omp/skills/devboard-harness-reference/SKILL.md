@@ -136,6 +136,49 @@ question, so an answered interview leaves no empty panel behind. The implementat
 moves to the pinned activity bar, so the overview keeps the read-only goal, the pending
 implementation question, widgets, files, blockers, and verification.
 
+### Delivery mode
+
+The Devboard sidebar renders a `Delivery mode` group immediately above `Background agents`. It is
+a per-repository switch with two options: `Merge to main` (the default) and `Open pull request`.
+
+- The value lives in the dashboard's per-repository state file under `STATE_DIR` as
+  `deliveryMode`, one of `merge` or `pull-request`. `PUT /delivery-mode` (command
+  `setDeliveryMode`, body `{"mode": "merge" | "pull-request"}`) persists it and answers the whole
+  `project` payload, which carries `deliveryMode` and `deliveryModeAvailability`
+  (`{state: "enabled" | "disabled", reason: string | null}`). An unknown value changes nothing.
+- The switch is available only on host projects. A harness source checkout stays visible but
+  disabled, reports `Delivery mode applies to host projects; this project is the harness source
+  checkout.`, keeps the effective mode `merge`, and refuses a `pull-request` save. The saved value
+  is never rewritten by the gate.
+- The mode applies to runs started after it changes. `merge` keeps the existing behavior: the
+  Issues implementation lands with `devboard land` and closes its issue; the Design System
+  commits and pushes its documents to the integration branch.
+- `pull-request` never advances the integration branch. The Issues implementation pushes
+  `devboard/issue-<number>-<run>` and opens one ready, non-draft pull request whose body carries
+  `Closes #<number>`; the issue stays open. The Design System pushes `devboard/design-<cycle>` and
+  opens one ready pull request for its two documents. A refused push or creation fails the run
+  and never falls back to a merge.
+- The Issues worker maintains every agent-opened request on a periodic cadence. It keeps a
+  maintenance record per request under `delivery/<repo-key>/maintenance.json` with the request,
+  head commit, last handled review comment id, last observed check state, last mergeable state,
+  state, and the mode it was opened under. A due check starts no agent when nothing changed. A new
+  review comment, a failing required check, a conflicting base, a merge, or a close-unmerged
+  transition starts exactly one maintenance run, which appears in the Issues run history and
+  names the issue or documentation entry and the request.
+- Required checks decide the fix path: a failure starts one run that pushes a new commit to the
+  same branch; a pending check starts none. Every new actionable review comment gets one reply of
+  at most 600 bytes; a thread the agent addressed or explicitly refused is resolved, and an
+  unanswered thread stays unresolved. A conflicting branch integrates its base with a non-force
+  push; nothing force-pushes or rewrites a published commit.
+- Merged closes the issue and settles the record `merged`; closed-unmerged settles it `closed`,
+  returns the issue to the queue, and the next run uses a new branch and a new request. The
+  maintenance path never merges a pull request; the operator merges.
+- Runs carry `pullRequest: {number, url, state}` in the Issues run record and row. A GitHub or
+  Gitea origin is supported; a GitLab origin keeps the Issues console's existing preflight
+  refusal. Flow, Goal, Discover, Release Train, Deploy on main, and `devboard land` keep their
+  behavior; an agent-opened request reaches Deploy on main only after the operator merges it to
+  the served `main`.
+
 ### Workspace page
 
 Each mode shows exactly one page at a time and renders no tab strip. Opening an ADR, a Flow

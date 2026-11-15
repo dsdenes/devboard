@@ -6,8 +6,9 @@ description: Audit the harness interface against DESIGN.md and design/tokens.jso
 
 Your goal is to leave the design system consistent with its documented standard, and the
 observable result is one `design` issue per admissible divergence filed through the Devboard MCP
-issue tool, plus a documentation push request when the documents themselves must change. The
-pushed commit is the completion; you never release and never wait for a release.
+issue tool, plus a documentation delivery request when the documents themselves must change. The
+worker delivers that change through the repository's selected delivery mode, and the delivered
+commit or open pull request is the completion; you never release and never wait for a release.
 
 ## Contract
 
@@ -133,16 +134,24 @@ edit, not unrelated prose. A token addition or correction appears in both the pr
 `design/tokens.json`. Change no other prose. When no admissible decision exists, edit nothing and
 call no documentation-push tool.
 
-## Documentation push
+## Documentation delivery
 
-You edit only your cycle draft and record the documentation push request. The worker pushes it, never you,
-from one isolated worktree under `<REPO_DIR>/.worktree/`. In that worktree the worker commits only
-`DESIGN.md` and `design/tokens.json`, fetches and integrates `origin/main`, pushes `main`
-without force, advances the main checkout by fast-forward, removes the worktree and its branch,
-and reports the pushed commit. It never waits for a workflow, a release, or a deployment, and
-never invokes the publish entry point.
+You edit only your cycle draft and record the documentation delivery request. The worker delivers
+it, never you, from one isolated worktree under `<REPO_DIR>/.worktree/`. In that worktree the
+worker commits only `DESIGN.md` and `design/tokens.json`, fetches and integrates `origin/main`,
+and then follows the repository's selected delivery mode:
 
-You never edit the main checkout and never run git: no branch, worktree, commit, push, or publish.
+- `merge` pushes `main` without force, advances the main checkout by fast-forward, removes the
+  worktree and its branch, and reports the pushed commit.
+- `pull-request` pushes one documentation branch and opens exactly one ready, non-draft pull
+  request against the integration branch, records its number and URL on the documentation entry,
+  leaves the integration branch unchanged, and never pushes `main`. The operator merges it.
+
+Either way the worker never waits for a workflow, a release, or a deployment, and never invokes
+the publish entry point.
+
+You never edit the main checkout and never run git: no branch, worktree, commit, push, merge, or
+publish.
 Never invoke the publish entry point and never request a release. Your write surfaces are
-`<cycle-dir>/draft/`, the MCP issue tool, and the MCP tool that stages this documentation push
-request.
+`<cycle-dir>/draft/`, the MCP issue tool, and the MCP tool that stages this documentation
+delivery request.

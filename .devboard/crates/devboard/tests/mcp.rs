@@ -124,7 +124,7 @@ fn probe_reads_a_bun_database() {
 }
 
 #[test]
-fn the_design_request_describes_a_documentation_push() {
+fn the_design_request_describes_the_selected_delivery() {
     let payload = devboard::mcp::tool_list_payload();
     let tool = payload["tools"]
         .as_array()
@@ -133,7 +133,8 @@ fn the_design_request_describes_a_documentation_push() {
         .find(|tool| tool["name"] == "design_release_request")
         .expect("the design request tool");
     let description = tool["description"].as_str().expect("a description");
-    assert!(description.contains("commits and pushes the documents"));
-    assert!(description.contains("never releases or waits for a release workflow"));
+    assert!(description.contains("delivers through the selected mode"));
+    assert!(description.contains("merging to main or opening one ready pull request"));
+    assert!(description.contains("never releases"));
     assert!(!description.contains("waits for the release workflow, and publishes"));
 }

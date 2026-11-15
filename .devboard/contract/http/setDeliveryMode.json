@@ -1,0 +1,14 @@
+{
+  "name": "setDeliveryMode",
+  "method": "PUT",
+  "path": "/delivery-mode",
+  "status": 200,
+  "body": {
+    "frames": [
+      {
+        "type": "error",
+        "message": "A delivery mode needs `merge` or `pull-request`."
+      }
+    ]
+  }
+}

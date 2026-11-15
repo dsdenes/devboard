@@ -194,6 +194,14 @@ pub static ROUTES: &[Route] = &[
         200,
         false
     ),
+    route!(
+        "setDeliveryMode",
+        PUT,
+        "/delivery-mode",
+        [body_field!("mode", "mode")],
+        200,
+        false
+    ),
     route!("getIssues", GET, "/issues", [], 200, false),
     route!(
         "getIssuesRun",

@@ -314,6 +314,7 @@ async fn documentation_cycle(
                 branch: format!("design/{}", input.cycle_id),
                 files: vec!["DESIGN.md".to_string(), "design/tokens.json".to_string()],
                 diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                pull_request: None,
             })
         })
     }));
@@ -377,6 +378,7 @@ async fn one_cycle_stages_the_documents_and_records_the_release_request() {
                 branch: format!("design/{}", input.cycle_id),
                 files: vec!["DESIGN.md".to_string(), "design/tokens.json".to_string()],
                 diff: "--- a/DESIGN.md\n+++ b/DESIGN.md\n@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                pull_request: None,
             })
         })
     }));
@@ -542,6 +544,7 @@ async fn the_limits_gate_the_cycle_and_a_settings_command_persists() {
                 branch: "b".to_string(),
                 files: Vec::new(),
                 diff: String::new(),
+                pull_request: None,
             })
         })
     }));
@@ -669,6 +672,7 @@ async fn drain_finishes_the_in_flight_cycle_then_releases_the_lock() {
                 branch: "b".to_string(),
                 files: Vec::new(),
                 diff: String::new(),
+                pull_request: None,
             })
         })
     }));
@@ -840,6 +844,9 @@ async fn the_release_planner_commits_only_the_documents_and_cleans_up() {
         ],
         environment,
         activity: activity_sink as Arc<dyn Fn(&str) + Send + Sync>,
+        state_dir: fixture.state.clone(),
+        delivery: devboard::delivery::DeliveryMode::Merge,
+        pull_request_forge: None,
     })
     .await;
     match result {
@@ -1668,4 +1675,214 @@ async fn an_empty_release_list_leaves_the_cycle_synced() {
     assert_eq!(state.issues.len(), 1);
     assert!(state.issues[0].version.is_none());
     worker.stop().await;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Pull-request delivery                                                     */
+/* ------------------------------------------------------------------------ */
+
+struct RecordedDeliveryForge {
+    creates: Mutex<Vec<devboard::delivery::CreatePull>>,
+}
+
+impl devboard::delivery::DeliveryForge for RecordedDeliveryForge {
+    fn create_ready<'a>(
+        &'a self,
+        input: devboard::delivery::CreatePull,
+    ) -> devboard::delivery::DeliveryFuture<'a, Result<devboard::delivery::PullSnapshot, String>>
+    {
+        Box::pin(async move {
+            self.creates
+                .lock()
+                .expect("the creates")
+                .push(input.clone());
+            Ok(devboard::delivery::PullSnapshot {
+                number: 19,
+                url: "https://forge.test/acme/fixture/pulls/19".to_string(),
+                state: "open".to_string(),
+                draft: false,
+                head: input.head,
+                mergeable: "mergeable".to_string(),
+            })
+        })
+    }
+
+    fn view<'a>(
+        &'a self,
+        _number: u64,
+    ) -> devboard::delivery::DeliveryFuture<'a, Result<devboard::delivery::PullSnapshot, String>>
+    {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn checks<'a>(
+        &'a self,
+        _number: u64,
+        _base: &'a str,
+    ) -> devboard::delivery::DeliveryFuture<
+        'a,
+        Result<Vec<devboard::delivery::CheckObservation>, String>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn review_comments<'a>(
+        &'a self,
+        _number: u64,
+    ) -> devboard::delivery::DeliveryFuture<
+        'a,
+        Result<Vec<devboard::delivery::ReviewComment>, String>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn reply<'a>(
+        &'a self,
+        _number: u64,
+        _comment: u64,
+        _body: &'a str,
+    ) -> devboard::delivery::DeliveryFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn resolve_thread<'a>(
+        &'a self,
+        _number: u64,
+        _comment: u64,
+    ) -> devboard::delivery::DeliveryFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn find_open_by_head<'a>(
+        &'a self,
+        _head: &'a str,
+    ) -> devboard::delivery::DeliveryFuture<
+        'a,
+        Result<Option<devboard::delivery::PullSnapshot>, String>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn issue_open<'a>(
+        &'a self,
+        _number: u64,
+    ) -> devboard::delivery::DeliveryFuture<'a, Result<bool, String>> {
+        Box::pin(async { Ok(true) })
+    }
+
+    fn close_issue<'a>(
+        &'a self,
+        _number: u64,
+    ) -> devboard::delivery::DeliveryFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn pull_request_mode_opens_a_documentation_pull_request() {
+    let fixture = Fixture::new("pr");
+    // A host fixture: no harness source manifest.
+    std::fs::remove_file(fixture.repo.join(".devboard/package.json"))
+        .expect("the harness manifest is removed");
+    let origin = fixture.root.join("origin.git");
+    git(
+        &fixture.root,
+        &["init", "--bare", "-q", origin.to_str().expect("a path")],
+    );
+    git(
+        &fixture.repo,
+        &["remote", "add", "origin", origin.to_str().expect("a path")],
+    );
+    git(&fixture.repo, &["push", "-q", "-u", "origin", "main"]);
+    let before = git_stdout(&origin, &["rev-parse", "main"]);
+    let design = std::fs::read_to_string(fixture.repo.join("DESIGN.md")).expect("the prose");
+    let tokens =
+        std::fs::read_to_string(fixture.repo.join("design/tokens.json")).expect("the tokens");
+    let activity = Arc::new(Mutex::new(Vec::<String>::new()));
+    let activity_sink = {
+        let activity = Arc::clone(&activity);
+        Arc::new(move |line: &str| {
+            activity
+                .lock()
+                .expect("the release activity")
+                .push(line.to_string());
+        })
+    };
+    let forge = Arc::new(RecordedDeliveryForge {
+        creates: Mutex::new(Vec::new()),
+    });
+    let environment: HashMap<String, String> = std::env::vars().collect();
+    let result = release_documents(ReleaseInput {
+        repo_dir: fixture.repo.clone(),
+        harness_dir: fixture.repo.join(".devboard"),
+        cycle_id: "cycle-1".to_string(),
+        summary: "Document the accent standard".to_string(),
+        config: design_config(&environment),
+        documents: vec![
+            ReleaseDocument {
+                path: "DESIGN.md".to_string(),
+                text: format!("{design}\n- One accent token.\n"),
+            },
+            ReleaseDocument {
+                path: "design/tokens.json".to_string(),
+                text: format!("{tokens}\n"),
+            },
+        ],
+        environment,
+        activity: activity_sink as Arc<dyn Fn(&str) + Send + Sync>,
+        state_dir: fixture.state.clone(),
+        delivery: devboard::delivery::DeliveryMode::PullRequest,
+        pull_request_forge: Some(forge.clone()),
+    })
+    .await;
+    let released = match result {
+        ReleaseResult::Ok(released) => released,
+        ReleaseResult::Failed(failure) => {
+            panic!(
+                "the delivery failed at {}: {}",
+                failure.step, failure.detail
+            )
+        }
+    };
+    let pull = released
+        .pull_request
+        .as_ref()
+        .expect("the documentation pull request");
+    assert_eq!(pull.number, 19);
+    assert_eq!(pull.url, "https://forge.test/acme/fixture/pulls/19");
+    assert_eq!(pull.base, "main");
+    assert_eq!(pull.branch, "devboard/design-cycle-1");
+    assert_eq!(
+        git_stdout(&origin, &["rev-parse", "main"]),
+        before,
+        "the integration branch never advances"
+    );
+    assert_eq!(
+        git_stdout(&origin, &["rev-parse", "devboard/design-cycle-1"]),
+        released.sha,
+        "the documentation branch was pushed"
+    );
+    let creates = forge.creates.lock().expect("the creates");
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0].head, "devboard/design-cycle-1");
+    assert_eq!(creates[0].base, "main");
+    assert!(creates[0].title.starts_with("docs(design):"));
+    let lines = activity.lock().expect("the activity");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("opened pull request #19")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("pushed to main")),
+        "no direct-to-main push is claimed: {lines:?}"
+    );
+    let records = devboard::delivery::read_maintenance(&fixture.state, &fixture.repo);
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].documentation.as_deref(),
+        Some("Document the accent standard")
+    );
+    assert_eq!(records[0].pull_request.number, 19);
 }

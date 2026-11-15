@@ -457,6 +457,8 @@ pub struct App {
     pub complexity: Arc<crate::complexity::ComplexitySnapshots>,
     /// The resource governor the Resources tab reads and writes.
     pub resources: Arc<crate::resources::Governor>,
+    /// The per-repository delivery mode the sidebar switches.
+    pub delivery: Arc<crate::delivery::DeliverySetting>,
     /// The dashboard's own handle, for modes that hold a shared reference.
     weak_self: std::sync::Weak<App>,
     /// Replaces this process; absent means the dashboard has no launcher.
@@ -541,6 +543,11 @@ impl App {
             ),
         ));
         let resources = crate::resources::for_app(&config_state_dir(&shared));
+        let delivery = crate::delivery::init(
+            &shared,
+            &config_repo_dir(&shared),
+            &config_state_dir(&shared),
+        );
         let app = Arc::new_cyclic(|weak| Self {
             weak_self: weak.clone(),
             shared,
@@ -557,6 +564,7 @@ impl App {
             providers,
             complexity,
             resources,
+            delivery,
             restart_hook: Mutex::new(None),
             source_refresher: Mutex::new(None),
             restart_when_idle: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -855,9 +863,9 @@ impl App {
         }
         match command {
             Command::GetProject => {
-                conn.send(
-                    json!({"type": "project", "path": project_label(&self.config().repo_dir)}),
-                );
+                let mut frame = self.delivery.project_frame();
+                frame["path"] = json!(project_label(&self.config().repo_dir));
+                conn.send(frame);
                 Ok(())
             }
             Command::GetVersion => {
@@ -981,6 +989,9 @@ impl App {
             }
             other => {
                 let app = self.arc_self();
+                if crate::delivery::handle(&app, conn, &other) {
+                    return Ok(());
+                }
                 if crate::goal_authoring::handle(&app, conn, &other).await {
                     return Ok(());
                 }

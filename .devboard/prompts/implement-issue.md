@@ -5,7 +5,9 @@ description: Implement exactly one open issue, integrate it into the canonical l
 ## Manifesto
 
 Your goal is to deliver exactly one open issue end to end, and the observable result is the issue
-implemented, integrated into the canonical line, pushed, and closed after the push is verified.
+implemented and delivered through the repository's selected delivery mode: either integrated into
+the canonical line and closed after the push is verified, or pushed on its own branch with one
+ready pull request that stays open until the operator merges it.
 
 The argument must be exactly one positive integer issue number. If it is missing, non-numeric, or
 carries more than one token, refuse before changing anything: write the refusal to stderr, exit
@@ -354,8 +356,8 @@ the prerequisite in another agent's place.
   nothing either: `devboard land` integrates a moved upstream and rebases the task branch itself,
   and the task branch is unpublished until it lands, so that rebase is safe. Never rebase, merge,
   fetch, or push by hand before the call.
-- Land with exactly one `devboard land <branch>` call, run from the canonical checkout whose
-  working directory is already set: never a `cd` prefix, never a `| tail` or `| head` and no
+- In `merge` mode, land with exactly one `devboard land <branch>` call, run from the canonical
+  checkout whose working directory is already set: never a `cd` prefix, never a `| tail` or `| head` and no
   `2>&1 | tail -5` suffix, never a trailing `; echo "MERGE_EXIT:$?"` or `; echo "..._EXIT:$?"`
   whose status belongs to the filter rather than the call, and never an appended
   `git status --short --branch` or any other probe, because the call prints the merged commit, the
@@ -377,6 +379,28 @@ the prerequisite in another agent's place.
   work.
 - On success, remove only the worktree and branch you created. On failure or block, leave your
   worktree in place and report its path.
+
+## Delivery mode
+
+The dashboard passes the repository's selected mode in `DEVBOARD_DELIVERY_MODE`; read it once
+before the first push. The two modes are exclusive.
+
+- `merge` is today's behavior: cut the task branch from `origin/main`, implement, land with one
+  `devboard land` call, verify the printed `remote ... verified` line, and close the issue. No
+  pull request is created.
+- `pull-request` never advances the integration branch. The dashboard supplies the one branch name
+  in `DEVBOARD_PR_BRANCH`: commit in the worktree, push that branch, and open exactly one ready,
+  non-draft pull request against the integration branch whose body contains `Closes #<number>`.
+  Never run `devboard land`, never push to the integration branch, and never merge the pull
+  request. The issue stays open until the operator merges the request.
+- In `pull-request` mode the maintenance loop is this run's follow-up duty: read the request's
+  required checks, mergeability, and review comments; on a failing required check change the
+  implementation and push a new commit to the same branch; when the request conflicts with its
+  base, integrate the base in the worktree, resolve every conflict, and push one non-force
+  commit. Answer each new review comment exactly once and briefly with at most 600 bytes. Resolve
+  every thread you addressed or explicitly refused, with one concrete safety or correctness
+  reason for a refusal; leave a thread you cannot answer unanswered and unresolved. Never
+  force-push and never rewrite a published commit.
 
 ## Landing
 
@@ -447,8 +471,9 @@ A short hash, when one is needed, comes from one `git rev-parse --short=12 <rev>
 revision: passing two revisions to one `--short` call exits 128 with `fatal: Needed a single
 revision`, and that message never means the branches diverged.
 
-Never create a pull request or merge request, never force-push, and never rewrite published
-history.
+In `merge` mode, never create a pull request or merge request. In `pull-request` mode, never
+create more than the one ready request for `DEVBOARD_PR_BRANCH`. In both modes, never force-push,
+never merge a pull request from the agent, and never rewrite published history.
 
 Never delete the worktree or its branch until `devboard land` printed the `remote ... verified`
 line naming the commit its `merged` line named: a worktree whose branch is unproven on the remote
@@ -481,8 +506,10 @@ tools, never `curl`.
 
 ## Completion
 
-This run ends at the landing proof. Close the issue with `issue_close` after `devboard land` proved
-the push and the required checks pass. The landed and pushed commit is the completion; never invoke
+In `merge` mode this run ends at the landing proof. Close the issue with `issue_close` after
+`devboard land` proved the push and the required checks pass. In `pull-request` mode this run ends
+at the open, ready pull request and its maintenance duties: leave the issue open, and report the
+request number and URL instead of a landing. The landed and pushed commit is the completion; never invoke
 the publish entry point, never dispatch a workflow, never call npm or the Gitea release API, and
 never wait for a release tag or a deployment.
 

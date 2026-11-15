@@ -7,7 +7,12 @@
     "frames": [
       {
         "type": "project",
-        "path": ""
+        "path": "",
+        "deliveryMode": "merge",
+        "deliveryModeAvailability": {
+          "state": "enabled",
+          "reason": null
+        }
       }
     ]
   }

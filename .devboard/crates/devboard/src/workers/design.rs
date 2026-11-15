@@ -465,6 +465,10 @@ pub struct DesignDocumentationEntry {
     /// `pushed` on a host project, where the push is the completion.
     #[serde(default = "released_state")]
     pub state: String,
+    /// The ready pull request a host checkout opened instead of pushing the
+    /// base, when the delivery mode was `pull-request`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<serde_json::Value>,
 }
 
 fn released_state() -> String {
@@ -2185,6 +2189,13 @@ pub struct ReleaseInput {
     pub documents: Vec<ReleaseDocument>,
     pub environment: HashMap<String, String>,
     pub activity: ActivitySink,
+    /// The dashboard's state directory, where an opened pull request's
+    /// maintenance record lives.
+    pub state_dir: PathBuf,
+    /// What this run does with the documentation commit.
+    pub delivery: crate::delivery::DeliveryMode,
+    /// A test's recorded forge; production builds the host forge.
+    pub pull_request_forge: Option<Arc<dyn crate::delivery::DeliveryForge>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2195,6 +2206,8 @@ pub struct ReleaseOk {
     pub branch: String,
     pub files: Vec<String>,
     pub diff: String,
+    /// The ready pull request the run opened instead of pushing the base.
+    pub pull_request: Option<Box<crate::delivery::DeliveredPullRequest>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2532,6 +2545,63 @@ pub async fn release_documents(input: ReleaseInput) -> ReleaseResult {
                 outside.join(", ")
             ));
         }
+        if input.delivery == crate::delivery::DeliveryMode::PullRequest {
+            let sha = must(
+                git(&directory, &["rev-parse", "HEAD"], &environment).await,
+                "could not read the documentation commit",
+            )?;
+            let forge = match &input.pull_request_forge {
+                Some(forge) => Arc::clone(forge),
+                None => crate::delivery::create_forge(&input.repo_dir, &environment)?,
+            };
+            let branch = crate::delivery::design_branch(&input.cycle_id);
+            let title: String = format!("docs(design): {}", input.summary.trim())
+                .chars()
+                .take(72)
+                .collect();
+            let body = format!(
+                "{}\n\nOpened by the Design System cycle {} for the host repository.\n",
+                input.summary.trim(),
+                input.cycle_id
+            );
+            let pull_request = crate::delivery::deliver_branch(
+                &directory,
+                &input.repo_dir,
+                &input.state_dir,
+                forge.as_ref(),
+                &branch,
+                "main",
+                title.trim_end().to_string(),
+                body,
+                &sha,
+                None,
+                Some(input.summary.clone()),
+            )
+            .await
+            .map_err(|detail| format!("could not open the documentation pull request: {detail}"))?;
+            (input.activity)(&format!(
+                "opened pull request #{} ({})",
+                pull_request.number, pull_request.url
+            ));
+            let mut files = changed.clone();
+            files.sort();
+            remove_worktree(
+                &input.repo_dir,
+                worktree.as_ref().expect("the worktree"),
+                &environment,
+            )
+            .await;
+            worktree = None;
+            return Ok(ReleaseOk {
+                version: short_sha(&sha),
+                url: pull_request.url.clone(),
+                sha,
+                branch,
+                files,
+                diff: released_diff,
+                pull_request: Some(Box::new(pull_request)),
+            });
+        }
         for attempt in 1..=PUSH_ATTEMPTS {
             let push = git(&directory, &["push", "origin", "HEAD:main"], &environment).await;
             if push.code == 0 {
@@ -2675,6 +2745,7 @@ pub async fn release_documents(input: ReleaseInput) -> ReleaseResult {
             branch,
             files,
             diff: released_diff,
+            pull_request: None,
         })
     }
     .await;
@@ -4234,12 +4305,19 @@ impl DesignWorkerInner {
                                 ],
                                 environment: self.options.environment.clone(),
                                 activity: callback_signal,
+                                state_dir: self.options.state_dir.clone(),
+                                delivery: crate::delivery::mode_for(
+                                    &self.options.state_dir,
+                                    &self.options.repo_dir,
+                                ),
+                                pull_request_forge: None,
                             };
                             match (self.options.release)(release_input).await {
                                 ReleaseResult::Ok(released) => {
                                     let at = iso_from_millis((self.options.clock)());
                                     let host = crate::project_kind::of(&self.options.repo_dir)
                                         == crate::project_kind::ProjectKind::Host;
+                                    let opened = released.pull_request.clone();
                                     let mut state = lock_unpoisoned(&self.state);
                                     if !host {
                                         state.release = Some(DesignStateRelease {
@@ -4257,15 +4335,23 @@ impl DesignWorkerInner {
                                             summary: request.summary.clone(),
                                             files: released.files.clone(),
                                             diff: released.diff.clone(),
-                                            state: if host {
+                                            state: if opened.is_some() {
+                                                "pull-request".to_string()
+                                            } else if host {
                                                 "pushed".to_string()
                                             } else {
                                                 "released".to_string()
                                             },
+                                            pull_request: opened.as_ref().map(|pull| pull.json()),
                                         },
                                     );
                                     drop(state);
-                                    if host {
+                                    if let Some(pull) = &opened {
+                                        record(&format!(
+                                            "opened pull request #{} ({})",
+                                            pull.number, pull.url
+                                        ));
+                                    } else if host {
                                         record(&format!(
                                             "pushed documentation {}",
                                             short_sha(&released.sha)

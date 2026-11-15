@@ -39,6 +39,7 @@
   import { providers } from "./lib/providers.svelte";
   import { installVisibilityCadence, queryClient } from "./lib/query-client";
   import { resources } from "./lib/resources.svelte";
+  import { delivery } from "./lib/delivery.svelte";
   import { slowUiAction, type SlowUiActionContext } from "./lib/slow-ui-action";
   import type { FeedbackAction, FeedbackPhase, Mode } from "./lib/types";
   import { MINIMUM_VIEWPORT, viewport } from "./lib/viewport.svelte";
@@ -354,6 +355,7 @@
       devboardSkills.handleEvent(record);
       complexity.handleEvent(record);
       resources.handleEvent(record);
+      delivery.handleEvent(record);
       providers.handleEvent(record);
       handleFlowTabEvents(record);
       // The OS channel follows the same frames as the in-app state: every

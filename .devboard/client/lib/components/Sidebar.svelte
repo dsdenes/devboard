@@ -17,6 +17,7 @@
   import { issues } from "../issues.svelte";
   import { queueCounts, queueSummary } from "../issues-queue";
   import { agents } from "../agents.svelte";
+  import { delivery } from "../delivery.svelte";
   import { statusTone, verificationTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
@@ -691,6 +692,52 @@
         </section>
       {/if}
     {:else}
+      <section
+        class="sidebar-group"
+        aria-label="Delivery mode"
+        data-testid="sidebar-delivery-mode"
+        title={delivery.reason ?? undefined}
+      >
+        <div class="sidebar-group__title">Delivery mode</div>
+        <div
+          class="delivery-mode"
+          role="radiogroup"
+          aria-label="Delivery mode"
+          aria-disabled={delivery.disabled ? "true" : undefined}
+        >
+          <Button
+            bare
+            class="sidebar-item delivery-mode__option"
+            role="radio"
+            aria-checked={delivery.mode === "merge" ? "true" : "false"}
+            disabled={delivery.disabled || delivery.pending !== null}
+            data-testid="delivery-mode-merge"
+            onclick={() => delivery.choose("merge")}
+          >
+            <span class="sidebar-item__label">Merge to main</span>
+          </Button>
+          <Button
+            bare
+            class="sidebar-item delivery-mode__option"
+            role="radio"
+            aria-checked={delivery.mode === "pull-request" ? "true" : "false"}
+            disabled={delivery.disabled || delivery.pending !== null}
+            data-testid="delivery-mode-pull-request"
+            onclick={() => delivery.choose("pull-request")}
+          >
+            <span class="sidebar-item__label">Open pull request</span>
+          </Button>
+        </div>
+        {#if delivery.disabled && delivery.reason !== null}
+          <p class="sidebar-empty" data-testid="delivery-mode-reason">{delivery.reason}</p>
+        {/if}
+        {#if delivery.error !== null}
+          <p class="sidebar-empty" role="alert" data-testid="delivery-mode-error">
+            {delivery.error}
+          </p>
+        {/if}
+      </section>
+
       <section
         class="sidebar-group"
         aria-label="Background agents"

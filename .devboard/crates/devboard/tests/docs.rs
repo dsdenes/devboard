@@ -71,10 +71,16 @@ fn the_design_prompt_pushes_without_a_release_train() {
         .expect("the design prompt");
     let normalized = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(!prompt.contains("The Release Train releases the pushed commit later"));
-    assert!(normalized.contains("The pushed commit is the completion; you never release"));
-    assert!(normalized.contains("The worker pushes it, never you"));
+    assert!(normalized.contains("The worker delivers"));
+    assert!(normalized.contains("never you"));
     assert!(normalized.contains("never waits for a workflow, a release, or a deployment"));
+    assert!(normalized.contains("`merge` pushes `main` without force"));
+    assert!(normalized.contains("`pull-request` pushes one documentation branch"));
+    assert!(
+        normalized.contains("never pushes `main`"),
+        "the pull-request mode never pushes the integration branch"
+    );
     let wrapper = std::fs::read_to_string(harness_root().join("omp/commands/design-system.md"))
         .expect("the design command");
-    assert!(wrapper.contains("request a documentation push"));
+    assert!(wrapper.contains("documentation delivery"));
 }

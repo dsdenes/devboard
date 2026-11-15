@@ -1597,6 +1597,33 @@ paths:
           $ref: "#/components/responses/Problem"
         "500":
           $ref: "#/components/responses/Problem"
+  /delivery-mode:
+    put:
+      operationId: "setDeliveryMode"
+      tags: ["Operations"]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/OperationBody"}
+      responses:
+        "200":
+          description: "The operation result."
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Frames"}
+        "400":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "405":
+          $ref: "#/components/responses/Problem"
+        "421":
+          $ref: "#/components/responses/Problem"
+        "500":
+          $ref: "#/components/responses/Problem"
   /issues:
     get:
       operationId: "getIssues"

@@ -18,6 +18,14 @@
       "reason": "whether the installation configured harness reporting"
     },
     {
+      "name": "deliveryMode",
+      "reason": "the delivery mode saved for the served checkout, which differs per installation"
+    },
+    {
+      "name": "deliveryModeAvailability",
+      "reason": "the project kind of the served checkout, which changes whether delivery is available"
+    },
+    {
       "name": "timer",
       "reason": "the host's background timer unit, which exists on some installations and not others"
     },

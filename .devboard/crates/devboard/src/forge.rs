@@ -2248,6 +2248,32 @@ pub async fn gitea_create_pull(
         .ok_or_else(|| GiteaError::new("the created pull request has no number or URL", None))
 }
 
+/// Creates a ready pull request: the title carries no draft prefix, so no
+/// operator has to press Ready before review.
+pub async fn gitea_create_pull_ready(
+    target: &GiteaTarget,
+    input: &CreatePullInput,
+    transport: &Transport,
+    options: &GiteaCallOptions,
+) -> Result<GiteaPullDocument, GiteaError> {
+    let path = format!("{}/pulls", repo_path(target));
+    let document = gitea_json(
+        target,
+        &path,
+        Some(GiteaRequestInit::post(json_body(&json!({
+            "head": input.head,
+            "base": input.base,
+            "title": ready_title(&input.title),
+            "body": input.body,
+        })))),
+        transport,
+        options,
+    )
+    .await?;
+    pull_from_document(&document)
+        .ok_or_else(|| GiteaError::new("the created pull request has no number or URL", None))
+}
+
 pub async fn gitea_edit_pull(
     target: &GiteaTarget,
     number: i64,

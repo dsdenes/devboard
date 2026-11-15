@@ -22,6 +22,7 @@ export const REST_OPERATIONS: Record<string, RestOperation> = {
   "getResources": { method: "GET", path: "/resources", pathParams: [] },
   "setResources": { method: "PUT", path: "/resources", pathParams: [] },
   "setInstalledSkillEnabled": { method: "PATCH", path: "/installed-skills/{name}", pathParams: [["name", "name"]] },
+  "setDeliveryMode": { method: "PUT", path: "/delivery-mode", pathParams: [] },
   "getIssues": { method: "GET", path: "/issues", pathParams: [] },
   "getIssuesRun": { method: "GET", path: "/issues/runs/{run_id}", pathParams: [["run_id", "runId"]] },
   "startIssues": { method: "POST", path: "/issues/workers", pathParams: [] },

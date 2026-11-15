@@ -13,8 +13,10 @@ Autonomy contract:
 - Decide from the issue, the repository, its tests, its documentation, and its ADRs. Where those
   are silent, choose the smallest reversible option, record the assumption in the final report,
   and continue.
-- Continue until every success criterion is verified, the branch is merged, the worktree is
-  removed, and the issue is closed.
+- Continue until every success criterion is verified and the change is delivered: in `merge` mode
+  the branch is merged, the worktree is removed, and the issue is closed; in `pull-request` mode
+  one ready pull request is open against the integration branch, the issue stays open, and the
+  worktree is removed only after its commits are on the pushed branch.
 
 Steps:
 1. Resolve the repository root with `git rev-parse --show-toplevel`. Never edit that checkout;
@@ -37,9 +39,18 @@ Steps:
 7. Never end a turn while a background job you started is still running: when a `wait` returns a
    still-running snapshot, call `wait` again. Leave the turn only once the work is finished or
    the exact blocker is known.
-8. When complete, fetch the latest `main`, integrate it into the branch, merge the branch into
-   `main` from the repository root, push `main` to `origin`, remove the worktree and branch, and
-   close the issue. If a push is rejected, fetch and integrate the new `main` and push again.
-   Never force-push.
+8. Read `DEVBOARD_DELIVERY_MODE` before delivering. In `merge` mode, when complete, fetch the
+   latest `main`, integrate it into the branch, merge the branch into `main` from the repository
+   root, push `main` to `origin`, remove the worktree and branch, and close the issue. If a push
+   is rejected, fetch and integrate the new `main` and push again. Never force-push.
+   In `pull-request` mode, push exactly the branch named by `DEVBOARD_PR_BRANCH` and open exactly
+   one ready, non-draft pull request against the integration branch whose body contains
+   `Closes #<number>`. Never merge the branch into `main`, never push `main`, never run
+   `devboard land`, and never merge the pull request. Keep the issue open until the operator
+   merges. Maintain the request: answer each new review comment once and briefly (at most 600
+   bytes), resolve every thread you addressed or explicitly refused with one concrete safety or
+   correctness reason, leave a thread you cannot answer unresolved, change the implementation and
+   push a new commit when a required check fails, and integrate the base when the request
+   conflicts. Never force-push and never rewrite a published commit.
 9. If a hard blocker makes completion impossible, end the run and report the exact blocker once
    on a line beginning `DEVBOARD-BLOCKED:`. Do not ask for permission or guidance.

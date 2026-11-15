@@ -1371,6 +1371,7 @@ mod tests {
             worker_pid,
             start_ticks,
             harness_version: Some("1.0.0".to_string()),
+            pull_request: None,
         }
     }
 

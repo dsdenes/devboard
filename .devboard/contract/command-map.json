@@ -60,6 +60,12 @@
       "status": 200,
       "creation": false
     },
+    "setDeliveryMode": {
+      "method": "PUT",
+      "path": "/delivery-mode",
+      "status": 200,
+      "creation": false
+    },
     "getIssues": {
       "method": "GET",
       "path": "/issues",

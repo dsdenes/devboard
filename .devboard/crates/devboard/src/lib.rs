@@ -21,6 +21,7 @@ pub mod commit_gate;
 pub mod complexity;
 pub mod config;
 pub mod deadline;
+pub mod delivery;
 pub mod detached_run;
 pub mod discover_mode;
 pub mod feedback;
