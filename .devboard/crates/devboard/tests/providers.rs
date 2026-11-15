@@ -1347,6 +1347,33 @@ async fn startup_repairs_every_credential_file_direction() {
     assert_eq!(loss_count(&audits), 0);
     assert_eq!(activity_count(&audits), 1);
 
+    // Valid primary, differing valid backup: rewrite it quietly.
+    let differing = json!({
+        "version": 1,
+        "subscriptions": [{
+            "id": "other",
+            "provider": "openrouter",
+            "label": "other",
+            "key": "or-different-0002",
+            "enabled": true,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+        }],
+    });
+    std::fs::write(
+        &backup_path,
+        serde_json::to_string_pretty(&differing).expect("differing backup JSON"),
+    )
+    .expect("write a differing backup");
+    let (audit, audits) = collecting_audit();
+    let _service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the repaired backup"),
+        canonical
+    );
+    assert_eq!(loss_count(&audits), 0);
+    assert_eq!(activity_count(&audits), 1);
+
     // Valid primary, unusable backup: preserve it and rewrite quietly.
     std::fs::write(&backup_path, b"{not json").expect("corrupt the backup");
     let (audit, audits) = collecting_audit();
