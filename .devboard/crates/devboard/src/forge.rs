@@ -457,9 +457,20 @@ pub fn is_linked_worktree(root: &Path) -> bool {
     !absolute.stdout.is_empty() && absolute.stdout != common.stdout
 }
 
-/// Repository path from any git remote URL form, or `None`.
+/// An issue link's URL with its trailing issue path removed, or `None`.
+/// GitLab marks the issue path with a leading `-`, so that marker goes too.
+fn without_issue_path(url: &str) -> Option<&str> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let number = issue_number_from_url(trimmed)?;
+    let suffix = format!("/issues/{number}");
+    let base = trimmed.strip_suffix(&suffix)?;
+    Some(base.strip_suffix("/-").unwrap_or(base))
+}
+
+/// Repository path from any git remote URL form or issue link, or `None`.
 pub fn repository_from_url(url: &str, environment: &Environment) -> Option<String> {
-    parse_forge_remote(url, environment).map(|remote| remote.project)
+    let target = without_issue_path(url).unwrap_or(url);
+    parse_forge_remote(target, environment).map(|remote| remote.project)
 }
 
 /// The remote URL of `origin`, if the checkout has one.

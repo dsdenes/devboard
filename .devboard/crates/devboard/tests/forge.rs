@@ -284,6 +284,32 @@ fn origin_parsing_covers_github_gitlab_and_gitea_forms() {
 }
 
 #[test]
+fn issue_links_name_their_repository_not_their_issue_path() {
+    let env = environment(&[]);
+    assert_eq!(
+        repository_from_url("https://github.com/dsdenes/arbinv/issues/264", &env).as_deref(),
+        Some("dsdenes/arbinv")
+    );
+    assert_eq!(
+        repository_from_url("https://github.com/dsdenes/arbinv/issues/264/", &env).as_deref(),
+        Some("dsdenes/arbinv")
+    );
+    assert_eq!(
+        repository_from_url("https://gitea.test/gitea/owner/name/issues/7", &env).as_deref(),
+        Some("owner/name")
+    );
+    assert_eq!(
+        repository_from_url("https://gitlab.com/group/sub/project/-/issues/7", &env).as_deref(),
+        Some("group/sub/project")
+    );
+    // A remote URL keeps the last-two rule for GitHub.
+    assert_eq!(
+        repository_from_url("git@github.com:owner/name.git", &env).as_deref(),
+        Some("owner/name")
+    );
+}
+
+#[test]
 fn configured_gitea_address_and_token_follow_the_documented_order() {
     let env = environment(&[
         ("DEVBOARD_GITEA_URL", " https://configured.test/// "),
