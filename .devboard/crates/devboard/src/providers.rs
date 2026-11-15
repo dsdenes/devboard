@@ -26,6 +26,8 @@ pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 pub type Now = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// Replaces the per-connection state push with the dashboard's broadcast.
 pub type Broadcast = Arc<dyn Fn(Value) + Send + Sync>;
+/// The pause a worker's bounded credential retry waits between reads.
+pub type RetrySleep = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Catalog
@@ -191,12 +193,55 @@ struct CredentialsEnvelope<'a> {
     subscriptions: &'a [StoredSubscription],
 }
 
-/// The subscriptions a load accepted, plus a preserved copy when some bytes
-/// could not be used.
+/// Where a load found the subscription list it answered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialSource {
+    Primary,
+    Backup,
+    /// The running service's in-memory list restored files that were gone.
+    Memory,
+    None,
+}
+
+/// The subscriptions a load accepted, where it read them, plus a preserved
+/// copy when some bytes could not be used.
 #[derive(Debug, Clone)]
 pub struct LoadedCredentials {
     pub subscriptions: Vec<StoredSubscription>,
     pub preserved: Option<PathBuf>,
+    pub source: CredentialSource,
+}
+
+/// One event the credential store reports to its host: a quiet repair belongs
+/// in the activity log, while a loss is the one alarm an operator receives.
+#[derive(Debug, Clone)]
+pub enum ProviderAudit {
+    Activity(String),
+    Loss { message: String, primary: PathBuf },
+}
+
+pub type AuditSink = Arc<dyn Fn(ProviderAudit) + Send + Sync>;
+
+/// One credential-store loss, recorded key-free in the presence marker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialLoss {
+    pub id: String,
+    pub primary: String,
+    pub alarmed: bool,
+    pub at: String,
+}
+
+/// The marker version under `<stateDir>/state/`.
+pub const CREDENTIALS_MARKER_VERSION: u32 = 1;
+
+/// The refusal an unrecoverable loss reports. It names the primary path and
+/// the operator's Providers dialog, and never reads as a fresh store.
+pub fn lost_credentials_message(primary: &Path) -> String {
+    format!(
+        "Provider credentials were lost: {} is missing or unreadable. Restore the file or open \
+         the Providers dialog (settings.providers) to add the keys again.",
+        primary.display()
+    )
 }
 
 pub fn providers_directory(state_dir: &Path) -> PathBuf {
@@ -205,6 +250,16 @@ pub fn providers_directory(state_dir: &Path) -> PathBuf {
 
 pub fn credentials_path(state_dir: &Path) -> PathBuf {
     providers_directory(state_dir).join("credentials.json")
+}
+
+/// The same-directory copy every save and every repair maintains.
+pub fn credentials_backup_path(state_dir: &Path) -> PathBuf {
+    providers_directory(state_dir).join("credentials.backup.json")
+}
+
+/// The key-free presence marker that tells a lost store from a fresh one.
+pub fn credentials_marker_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("state").join("provider-credentials.json")
 }
 
 #[cfg(unix)]
@@ -282,52 +337,133 @@ fn preserve_copy(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn write_subscriptions(
-    directory: &Path,
-    path: &Path,
-    subscriptions: &[StoredSubscription],
-) -> io::Result<()> {
+fn subscriptions_text(subscriptions: &[StoredSubscription]) -> io::Result<String> {
     let envelope = CredentialsEnvelope {
         version: CREDENTIALS_VERSION,
         subscriptions,
     };
     let mut text = serde_json::to_string_pretty(&envelope).map_err(io::Error::other)?;
     text.push('\n');
+    Ok(text)
+}
+
+/// Stages private bytes beside `path`; the caller renames it into place.
+fn stage_bytes(directory: &Path, bytes: &[u8], label: &str) -> io::Result<PathBuf> {
     let temporary = directory.join(format!(
-        "credentials.json.{}.{}.tmp",
+        ".{label}.{}.{}.tmp",
         std::process::id(),
         hex_bytes::<6>()
     ));
     let result = (|| -> io::Result<()> {
         let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
+        file.write_all(bytes)?;
         drop(file);
-        set_mode(&temporary, 0o600)?;
-        std::fs::rename(&temporary, path)?;
-        set_mode(path, 0o600)
+        set_mode(&temporary, 0o600)
     })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return result.map(|()| temporary);
+    }
+    Ok(temporary)
+}
+
+fn replace_staged(temporary: &Path, path: &Path) -> io::Result<()> {
+    std::fs::rename(temporary, path)?;
+    set_mode(path, 0o600)
+}
+
+fn restore_bytes(directory: &Path, path: &Path, previous: Option<&[u8]>) -> io::Result<()> {
+    match previous {
+        Some(bytes) => {
+            let temporary = stage_bytes(directory, bytes, "credentials-restore")?;
+            replace_staged(&temporary, path)
+        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        },
+    }
+}
+
+fn write_credentials_file(
+    state_dir: &Path,
+    path: &Path,
+    subscriptions: &[StoredSubscription],
+) -> io::Result<()> {
+    let directory = providers_directory(state_dir);
+    ensure_directory(&directory)?;
+    let text = subscriptions_text(subscriptions)?;
+    let temporary = stage_bytes(&directory, text.as_bytes(), "credentials")?;
+    let result = replace_staged(&temporary, path);
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }
     result
 }
 
-/// Reads the subscription list. A missing file is an empty list; unusable
-/// bytes are preserved aside so a later save never overwrites them unnoticed.
-pub fn load_subscriptions(state_dir: &Path) -> LoadedCredentials {
-    let path = credentials_path(state_dir);
-    let source = match std::fs::read_to_string(&path) {
-        Ok(source) => source,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return LoadedCredentials {
-                subscriptions: Vec::new(),
-                preserved: None,
-            }
+/// Writes the primary and its backup from one text, and adopts neither when
+/// either rename fails. The backup lands first, so a failed primary rename is
+/// rolled back instead of leaving the pair split.
+fn write_credentials_pair(
+    state_dir: &Path,
+    subscriptions: &[StoredSubscription],
+) -> io::Result<()> {
+    let directory = providers_directory(state_dir);
+    ensure_directory(&directory)?;
+    let primary = credentials_path(state_dir);
+    let backup = credentials_backup_path(state_dir);
+    let text = subscriptions_text(subscriptions)?;
+    let primary_before = std::fs::read(&primary).ok();
+    let backup_before = std::fs::read(&backup).ok();
+    let primary_temporary = stage_bytes(&directory, text.as_bytes(), "credentials")?;
+    let backup_temporary = match stage_bytes(&directory, text.as_bytes(), "credentials-backup") {
+        Ok(temporary) => temporary,
+        Err(error) => {
+            let _ = std::fs::remove_file(&primary_temporary);
+            return Err(error);
         }
+    };
+    if let Err(error) = std::fs::rename(&backup_temporary, &backup) {
+        let _ = std::fs::remove_file(&primary_temporary);
+        let _ = std::fs::remove_file(&backup_temporary);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&primary_temporary, &primary) {
+        let _ = std::fs::remove_file(&primary_temporary);
+        let _ = restore_bytes(&directory, &backup, backup_before.as_deref());
+        return Err(error);
+    }
+    if let Err(error) = set_mode(&primary, 0o600).and_then(|()| set_mode(&backup, 0o600)) {
+        let _ = restore_bytes(&directory, &primary, primary_before.as_deref());
+        let _ = restore_bytes(&directory, &backup, backup_before.as_deref());
+        return Err(error);
+    }
+    Ok(())
+}
+
+enum CredentialFile {
+    Missing,
+    Valid {
+        subscriptions: Vec<StoredSubscription>,
+        rejected: bool,
+        preserved: Option<PathBuf>,
+    },
+    Unusable {
+        preserved: Option<PathBuf>,
+    },
+}
+
+/// Reads one credential file. A missing file is distinct from an unusable one:
+/// unusable bytes are preserved aside so a later save never overwrites them
+/// unnoticed.
+fn read_credentials_file(path: &Path) -> CredentialFile {
+    let source = match std::fs::read_to_string(path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return CredentialFile::Missing,
         Err(_) => {
-            return LoadedCredentials {
-                subscriptions: Vec::new(),
-                preserved: preserve(&path),
+            return CredentialFile::Unusable {
+                preserved: preserve(path),
             }
         }
     };
@@ -335,28 +471,24 @@ pub fn load_subscriptions(state_dir: &Path) -> LoadedCredentials {
     let parsed: Value = match serde_json::from_str(&source) {
         Ok(parsed) => parsed,
         Err(_) => {
-            return LoadedCredentials {
-                subscriptions: Vec::new(),
-                preserved: preserve(&path),
+            return CredentialFile::Unusable {
+                preserved: preserve(path),
             }
         }
     };
     let Some(envelope) = parsed.as_object() else {
-        return LoadedCredentials {
-            subscriptions: Vec::new(),
-            preserved: preserve(&path),
+        return CredentialFile::Unusable {
+            preserved: preserve(path),
         };
     };
     if envelope.get("version").and_then(Value::as_u64) != Some(CREDENTIALS_VERSION as u64) {
-        return LoadedCredentials {
-            subscriptions: Vec::new(),
-            preserved: preserve(&path),
+        return CredentialFile::Unusable {
+            preserved: preserve(path),
         };
     }
     let Some(entries) = envelope.get("subscriptions").and_then(Value::as_array) else {
-        return LoadedCredentials {
-            subscriptions: Vec::new(),
-            preserved: preserve(&path),
+        return CredentialFile::Unusable {
+            preserved: preserve(path),
         };
     };
 
@@ -368,37 +500,157 @@ pub fn load_subscriptions(state_dir: &Path) -> LoadedCredentials {
             None => rejected = true,
         }
     }
-    if !rejected {
-        return LoadedCredentials {
-            subscriptions,
-            preserved: None,
-        };
-    }
-
-    let Some(preserved) = preserve_copy(&path) else {
-        return LoadedCredentials {
-            subscriptions,
-            preserved: None,
-        };
-    };
-    let directory = providers_directory(state_dir);
-    if ensure_directory(&directory).is_ok() {
-        let _ = write_subscriptions(&directory, &path, &subscriptions);
-    }
-    LoadedCredentials {
+    let preserved = if rejected { preserve_copy(path) } else { None };
+    CredentialFile::Valid {
         subscriptions,
-        preserved: Some(preserved),
+        rejected,
+        preserved,
     }
 }
 
-/// Replaces the whole credentials file atomically.
+/// Reads the subscription list, preferring the primary and falling back to
+/// the same-directory backup. A missing file is an empty list; unusable bytes
+/// are preserved aside.
+pub fn load_subscriptions(state_dir: &Path) -> LoadedCredentials {
+    let primary_path = credentials_path(state_dir);
+    let backup_path = credentials_backup_path(state_dir);
+    match read_credentials_file(&primary_path) {
+        CredentialFile::Valid {
+            subscriptions,
+            rejected,
+            preserved,
+        } => {
+            if rejected {
+                let _ = write_credentials_file(state_dir, &primary_path, &subscriptions);
+            }
+            LoadedCredentials {
+                subscriptions,
+                preserved,
+                source: CredentialSource::Primary,
+            }
+        }
+        primary => {
+            let primary_preserved = match primary {
+                CredentialFile::Unusable { preserved } => preserved,
+                _ => None,
+            };
+            match read_credentials_file(&backup_path) {
+                CredentialFile::Valid {
+                    subscriptions,
+                    rejected,
+                    preserved,
+                } => {
+                    if rejected {
+                        let _ = write_credentials_file(state_dir, &backup_path, &subscriptions);
+                    }
+                    LoadedCredentials {
+                        subscriptions,
+                        preserved: primary_preserved.or(preserved),
+                        source: CredentialSource::Backup,
+                    }
+                }
+                backup => {
+                    let backup_preserved = match backup {
+                        CredentialFile::Unusable { preserved } => preserved,
+                        _ => None,
+                    };
+                    LoadedCredentials {
+                        subscriptions: Vec::new(),
+                        preserved: primary_preserved.or(backup_preserved),
+                        source: CredentialSource::None,
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Replaces both credential files atomically and records the store's presence.
 pub fn save_subscriptions(
     state_dir: &Path,
     subscriptions: &[StoredSubscription],
 ) -> io::Result<()> {
-    let directory = providers_directory(state_dir);
-    ensure_directory(&directory)?;
-    write_subscriptions(&directory, &credentials_path(state_dir), subscriptions)
+    write_credentials_pair(state_dir, subscriptions)?;
+    let _ = write_marker(state_dir, None);
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum MarkerState {
+    Absent,
+    Healthy,
+    Loss(CredentialLoss),
+}
+
+/// Reads the presence marker. A marker that exists but cannot be read still
+/// proves the store existed, so it is treated as healthy presence rather than
+/// as a fresh directory.
+fn marker_state(state_dir: &Path) -> MarkerState {
+    let path = credentials_marker_path(state_dir);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return MarkerState::Absent;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return MarkerState::Healthy;
+    };
+    if value.get("version").and_then(Value::as_u64) != Some(CREDENTIALS_MARKER_VERSION as u64) {
+        return MarkerState::Healthy;
+    }
+    let Some(loss) = value.get("loss").filter(|loss| !loss.is_null()) else {
+        return MarkerState::Healthy;
+    };
+    let Some(loss) = loss.as_object() else {
+        return MarkerState::Healthy;
+    };
+    let Some(id) = loss.get("id").and_then(Value::as_str) else {
+        return MarkerState::Healthy;
+    };
+    let Some(primary) = loss.get("primary").and_then(Value::as_str) else {
+        return MarkerState::Healthy;
+    };
+    let Some(alarmed) = loss.get("alarmed").and_then(Value::as_bool) else {
+        return MarkerState::Healthy;
+    };
+    let at = loss.get("at").and_then(Value::as_str).unwrap_or("");
+    MarkerState::Loss(CredentialLoss {
+        id: id.to_string(),
+        primary: primary.to_string(),
+        alarmed,
+        at: at.to_string(),
+    })
+}
+
+/// Writes the presence marker. It carries the loss identity, its primary path,
+/// and whether the alarm was already emitted; it never carries key material.
+fn write_marker(state_dir: &Path, loss: Option<&CredentialLoss>) -> io::Result<()> {
+    let path = credentials_marker_path(state_dir);
+    let value = match loss {
+        Some(loss) => json!({
+            "version": CREDENTIALS_MARKER_VERSION,
+            "loss": {
+                "id": loss.id,
+                "primary": loss.primary,
+                "alarmed": loss.alarmed,
+                "at": loss.at,
+            },
+        }),
+        None => json!({"version": CREDENTIALS_MARKER_VERSION, "loss": Value::Null}),
+    };
+    let mut text = serde_json::to_string_pretty(&value).map_err(io::Error::other)?;
+    text.push('\n');
+    let directory = path.parent().unwrap_or(state_dir);
+    std::fs::create_dir_all(directory)?;
+    let temporary = stage_bytes(directory, text.as_bytes(), "provider-credentials")?;
+    let result = replace_staged(&temporary, &path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Whether the presence marker records an unrecoverable loss.
+pub fn credentials_lost(state_dir: &Path) -> bool {
+    matches!(marker_state(state_dir), MarkerState::Loss(_))
 }
 
 /// A display mask that reveals at most the last four characters.
@@ -1281,6 +1533,10 @@ pub struct ProviderOptions {
     /// When set, a state push goes to every client through this sink rather
     /// than to the requesting connection alone.
     pub broadcast: Option<Broadcast>,
+    /// The host's activity-log and one-alarm sink for credential repairs.
+    pub audit: Option<AuditSink>,
+    /// Test seam: replaces the worker retry pause.
+    pub retry_sleep: Option<RetrySleep>,
 }
 
 #[derive(Debug, Clone)]
@@ -1436,24 +1692,30 @@ type UsageFuture = Shared<BoxFuture<'static, UsageReport>>;
 pub struct CredentialStore {
     state_dir: PathBuf,
     log: Log,
+    audit: AuditSink,
     subscriptions: Mutex<Vec<StoredSubscription>>,
+    marker: Mutex<MarkerState>,
+    gate: Mutex<()>,
 }
 
 impl CredentialStore {
     pub fn new(state_dir: impl AsRef<Path>, log: Log) -> Self {
+        Self::with_audit(state_dir, log, Arc::new(|_| {}))
+    }
+
+    pub fn with_audit(state_dir: impl AsRef<Path>, log: Log, audit: AuditSink) -> Self {
         let state_dir = state_dir.as_ref().to_path_buf();
-        let loaded = load_subscriptions(&state_dir);
-        if let Some(preserved) = &loaded.preserved {
-            log(&format!(
-                "providers: unusable credentials were preserved at {}",
-                preserved.display()
-            ));
-        }
-        Self {
+        let marker = marker_state(&state_dir);
+        let store = Self {
             state_dir,
             log,
-            subscriptions: Mutex::new(loaded.subscriptions),
-        }
+            audit,
+            subscriptions: Mutex::new(Vec::new()),
+            marker: Mutex::new(marker),
+            gate: Mutex::new(()),
+        };
+        store.reconcile();
+        store
     }
 
     pub fn state_dir(&self) -> &Path {
@@ -1476,22 +1738,195 @@ impl CredentialStore {
             .cloned()
     }
 
-    /// Re-reads the credential file for a long-lived worker and answers the
-    /// list it read.
+    /// Whether the presence marker records a loss the store cannot recover.
+    pub fn lost(&self) -> bool {
+        matches!(*lock(&self.marker), MarkerState::Loss(_))
+    }
+
+    pub fn loss_message(&self) -> String {
+        lost_credentials_message(&self.credentials_path())
+    }
+
+    fn audit_activity(&self, detail: String) {
+        (self.audit)(ProviderAudit::Activity(detail));
+    }
+
+    fn audit_loss(&self, primary: &Path) {
+        (self.audit)(ProviderAudit::Loss {
+            message: lost_credentials_message(primary),
+            primary: primary.to_path_buf(),
+        });
+    }
+
+    fn log_preserved(&self, preserved: &Path) {
+        (self.log)(&format!(
+            "providers: unusable credentials were preserved at {}",
+            preserved.display()
+        ));
+    }
+
+    /// Records one loss. Repeated detections of the same loss, including
+    /// across a restart that reads the marker, answer `false`.
+    fn note_loss(&self, primary: &Path) -> bool {
+        let current = lock(&self.marker).clone();
+        if let MarkerState::Loss(loss) = &current {
+            if loss.alarmed {
+                return false;
+            }
+        }
+        let loss = CredentialLoss {
+            id: uuid::Uuid::new_v4().to_string(),
+            primary: primary.display().to_string(),
+            alarmed: true,
+            at: iso_timestamp(now_millis()),
+        };
+        if let Err(error) = write_marker(&self.state_dir, Some(&loss)) {
+            (self.log)(&format!(
+                "providers: the credentials-loss marker could not be written: {error}"
+            ));
+        }
+        *lock(&self.marker) = MarkerState::Loss(loss);
+        true
+    }
+
+    /// Ends the current loss: the primary is valid again and the marker says
+    /// so. A marker that was absent becomes healthy presence.
+    fn clear_loss(&self) {
+        if matches!(*lock(&self.marker), MarkerState::Healthy) {
+            return;
+        }
+        if let Err(error) = write_marker(&self.state_dir, None) {
+            (self.log)(&format!(
+                "providers: the credentials presence marker could not be written: {error}"
+            ));
+        }
+        *lock(&self.marker) = MarkerState::Healthy;
+    }
+
+    /// Repairs the credential files from the backup or the in-memory list and
+    /// raises the one alarm a loss earns. Every startup constructs through
+    /// this, and every provider refresh calls it before publishing state.
+    fn reconcile(&self) {
+        let _gate = lock(&self.gate);
+        let primary_path = credentials_path(&self.state_dir);
+        let backup_path = credentials_backup_path(&self.state_dir);
+        let primary = read_credentials_file(&primary_path);
+        let backup = read_credentials_file(&backup_path);
+        for preserved in [
+            match &primary {
+                CredentialFile::Unusable { preserved } => preserved.clone(),
+                CredentialFile::Valid { preserved, .. } => preserved.clone(),
+                CredentialFile::Missing => None,
+            },
+            match &backup {
+                CredentialFile::Unusable { preserved } => preserved.clone(),
+                CredentialFile::Valid { preserved, .. } => preserved.clone(),
+                CredentialFile::Missing => None,
+            },
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.log_preserved(&preserved);
+        }
+
+        if let CredentialFile::Valid {
+            subscriptions,
+            rejected,
+            ..
+        } = &primary
+        {
+            let list = subscriptions.clone();
+            if *rejected {
+                if let Err(error) = write_credentials_file(&self.state_dir, &primary_path, &list) {
+                    (self.log)(&format!(
+                        "providers: the sanitized credentials could not be written: {error}"
+                    ));
+                }
+            }
+            let backup_differs = match &backup {
+                CredentialFile::Valid {
+                    subscriptions: backup_list,
+                    rejected: backup_rejected,
+                    ..
+                } => *backup_rejected || backup_list != &list,
+                _ => true,
+            };
+            if backup_differs {
+                match write_credentials_file(&self.state_dir, &backup_path, &list) {
+                    Ok(()) => self.audit_activity(format!(
+                        "providers: rewrote the credential backup from the primary at {}",
+                        primary_path.display()
+                    )),
+                    Err(error) => (self.log)(&format!(
+                        "providers: the credential backup could not be written: {error}"
+                    )),
+                }
+            }
+            *lock(&self.subscriptions) = list;
+            self.clear_loss();
+            return;
+        }
+
+        let memory = self.list();
+        if !memory.is_empty() {
+            let alarm = self.note_loss(&primary_path);
+            if alarm {
+                self.audit_loss(&primary_path);
+            }
+            match write_credentials_pair(&self.state_dir, &memory) {
+                Ok(()) => self.clear_loss(),
+                Err(error) => (self.log)(&format!(
+                    "providers: the in-memory credentials could not be restored: {error}"
+                )),
+            }
+            return;
+        }
+
+        if let CredentialFile::Valid { subscriptions, .. } = backup {
+            let alarm = self.note_loss(&primary_path);
+            if alarm {
+                self.audit_loss(&primary_path);
+            }
+            match write_credentials_pair(&self.state_dir, &subscriptions) {
+                Ok(()) => {
+                    *lock(&self.subscriptions) = subscriptions;
+                    self.clear_loss();
+                }
+                Err(error) => (self.log)(&format!(
+                    "providers: the credential backup could not be restored: {error}"
+                )),
+            }
+            return;
+        }
+
+        let files_existed = !matches!(primary, CredentialFile::Missing)
+            || !matches!(backup, CredentialFile::Missing);
+        let marker = lock(&self.marker).clone();
+        if files_existed || !matches!(marker, MarkerState::Absent) {
+            let alarm = self.note_loss(&primary_path);
+            if alarm {
+                self.audit_loss(&primary_path);
+            }
+        }
+    }
+
+    /// Re-reads the credential files for a long-lived worker and answers the
+    /// list it read. It never fabricates a list: an empty store stays empty so
+    /// the worker can apply its bounded retry.
     pub fn reload(&self) -> Vec<StoredSubscription> {
+        let _gate = lock(&self.gate);
         let loaded = load_subscriptions(&self.state_dir);
         *lock(&self.subscriptions) = loaded.subscriptions.clone();
         if let Some(preserved) = &loaded.preserved {
-            (self.log)(&format!(
-                "providers: unusable credentials were preserved at {}",
-                preserved.display()
-            ));
+            self.log_preserved(preserved);
         }
         loaded.subscriptions
     }
 
     /// Adds a subscription, or replaces the record that carries its id.
     pub fn save(&self, subscription: StoredSubscription) -> SaveProviderResult {
+        let _gate = lock(&self.gate);
         let mut current = lock(&self.subscriptions);
         let mut next = current.clone();
         match next.iter().position(|entry| entry.id == subscription.id) {
@@ -1502,6 +1937,7 @@ impl CredentialStore {
     }
 
     pub fn remove(&self, id: &str) -> SaveProviderResult {
+        let _gate = lock(&self.gate);
         let mut current = lock(&self.subscriptions);
         let next: Vec<StoredSubscription> = current
             .iter()
@@ -1515,6 +1951,7 @@ impl CredentialStore {
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool, updated_at: &str) -> SaveProviderResult {
+        let _gate = lock(&self.gate);
         let mut current = lock(&self.subscriptions);
         if !current.iter().any(|subscription| subscription.id == id) {
             return Err("That subscription no longer exists.".to_string().into());
@@ -1536,15 +1973,22 @@ impl CredentialStore {
         self.persist(&mut current, next)
     }
 
-    /// Writes the whole file and adopts the list only once the write landed.
+    /// Writes both files and adopts the list only once the write landed. The
+    /// marker clears here too, so one mutation ends a lost state.
     fn persist(
         &self,
         current: &mut MutexGuard<'_, Vec<StoredSubscription>>,
         next: Vec<StoredSubscription>,
     ) -> SaveProviderResult {
-        if let Err(error) = save_subscriptions(&self.state_dir, &next) {
+        if let Err(error) = write_credentials_pair(&self.state_dir, &next) {
             return Err(format!("The credentials file could not be written: {error}").into());
         }
+        if let Err(error) = write_marker(&self.state_dir, None) {
+            (self.log)(&format!(
+                "providers: the credentials presence marker could not be written: {error}"
+            ));
+        }
+        *lock(&self.marker) = MarkerState::Healthy;
         **current = next;
         Ok(())
     }
@@ -1883,7 +2327,11 @@ impl ProviderService {
             .unwrap_or_else(|| default_transport(timeout_ms));
         let now_ms = options.now_ms.unwrap_or_else(|| Arc::new(now_millis));
         let log = options.log.unwrap_or_else(|| Arc::new(|_: &str| {}));
-        let credentials = CredentialStore::new(&state_dir, Arc::clone(&log));
+        let audit = options
+            .audit
+            .clone()
+            .unwrap_or_else(|| Arc::new(|_: ProviderAudit| {}));
+        let credentials = CredentialStore::with_audit(&state_dir, Arc::clone(&log), audit);
         let usage = UsageCache::new(
             base_env.clone(),
             transport,
@@ -1947,9 +2395,17 @@ impl ProviderService {
     /// Reads every subscription whose cached usage is older than the TTL, or
     /// all of them when the operator forces a refresh.
     pub async fn refresh(&self, force: bool) {
+        self.credentials.reconcile();
         let subscriptions = self.credentials.list();
         self.usage.refresh(&subscriptions, force).await;
         self.publish_selection();
+    }
+
+    /// Repairs a missing or unusable primary from the backup or the in-memory
+    /// list before any provider state is published. The dashboard calls this
+    /// on its existing 60-second tick, including with no client connected.
+    pub fn reconcile_credentials(&self) {
+        self.credentials.reconcile();
     }
 
     fn ranked(&self) -> Vec<RankedSubscription> {
@@ -1987,6 +2443,11 @@ impl ProviderService {
                 &checked_at,
             ),
             ProviderDecision::Refused { .. } => {
+                // A lost store keeps its last selection as evidence until a
+                // successful save replaces it.
+                if self.credentials.lost() {
+                    return;
+                }
                 remove_selection_snapshot(self.credentials.state_dir());
                 Ok(())
             }
@@ -2041,7 +2502,11 @@ impl ProviderService {
             ProviderDecision::Refused { reason } => ProvidersView {
                 subscriptions,
                 selection: None,
-                refusal: Some(reason),
+                refusal: Some(if self.credentials.lost() {
+                    self.credentials.loss_message()
+                } else {
+                    reason
+                }),
                 rule: ROTATION_RULE.to_string(),
             },
             ProviderDecision::Selected {
@@ -2182,7 +2647,14 @@ impl ProviderService {
         let ranked = self.ranked();
         let decision = decide_provider(&ranked, !ranked.is_empty());
         let (subscription, usage, fallback) = match decision {
-            ProviderDecision::Refused { reason } => return Err(ProviderUnavailable::new(reason)),
+            ProviderDecision::Refused { reason } => {
+                let message = if self.credentials.lost() {
+                    self.credentials.loss_message()
+                } else {
+                    reason
+                };
+                return Err(ProviderUnavailable::new(message));
+            }
             ProviderDecision::Selected {
                 subscription,
                 usage,
@@ -2442,6 +2914,19 @@ pub fn provider_error_frame(request_id: Option<&Value>, error: &ProviderChangeEr
 // ---------------------------------------------------------------------------
 // Worker environment
 
+/// A worker that already resolved a provider re-reads an empty store on this
+/// bounded schedule: five pauses totalling 3.35 s, well inside five seconds,
+/// and at least two reads. A file that reappears during the window resolves.
+pub const WORKER_PROVIDER_RETRY_DELAYS_MS: [u64; 5] = [100, 250, 500, 1_000, 1_500];
+
+fn default_retry_sleep() -> RetrySleep {
+    Arc::new(|milliseconds: u64| {
+        Box::pin(tokio::time::sleep(std::time::Duration::from_millis(
+            milliseconds,
+        )))
+    })
+}
+
 /// A worker-scoped resolver: one service keeps usage cached for its TTL,
 /// while every call re-reads the credential file.
 pub struct WorkerProviderEnvironment {
@@ -2449,6 +2934,7 @@ pub struct WorkerProviderEnvironment {
     repo_dir: PathBuf,
     environment: Env,
     options: ProviderOptions,
+    sleep: RetrySleep,
     state: Mutex<WorkerState>,
 }
 
@@ -2465,11 +2951,16 @@ impl WorkerProviderEnvironment {
         mut options: ProviderOptions,
     ) -> Self {
         options.env = Some(environment.clone());
+        let sleep = options
+            .retry_sleep
+            .clone()
+            .unwrap_or_else(default_retry_sleep);
         Self {
             state_dir: state_dir.as_ref().to_path_buf(),
             repo_dir: repo_dir.as_ref().to_path_buf(),
             environment,
             options,
+            sleep,
             state: Mutex::new(WorkerState {
                 service: None,
                 configured: false,
@@ -2490,10 +2981,23 @@ impl WorkerProviderEnvironment {
             Arc::clone(service)
         };
         service.reload();
-        if service.list().is_empty() {
-            let state = lock(&self.state);
-            if state.configured {
-                return Err(ProviderUnavailable::new(NO_PROVIDER_CONFIGURED));
+        let mut loaded = service.list();
+        let configured = lock(&self.state).configured;
+        if loaded.is_empty() && configured {
+            for delay in WORKER_PROVIDER_RETRY_DELAYS_MS {
+                (self.sleep)(delay).await;
+                service.reload();
+                loaded = service.list();
+                if !loaded.is_empty() {
+                    break;
+                }
+            }
+        }
+        if loaded.is_empty() {
+            if configured || credentials_lost(&self.state_dir) {
+                return Err(ProviderUnavailable::new(lost_credentials_message(
+                    &credentials_path(&self.state_dir),
+                )));
             }
             return Ok(self.environment.clone());
         }
@@ -2521,6 +3025,11 @@ pub async fn worker_peer_environment(
     let state_dir = state_dir.as_ref();
     let credentials = CredentialStore::new(state_dir, Arc::new(|_: &str| {}));
     if credentials.list().is_empty() {
+        if credentials.lost() {
+            return Err(ProviderUnavailable::new(lost_credentials_message(
+                &credentials_path(state_dir),
+            )));
+        }
         return Ok(environment);
     }
     options.env = Some(environment);

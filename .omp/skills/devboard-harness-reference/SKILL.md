@@ -965,16 +965,46 @@ the typed key is kept for a retry, and no notification is raised or issue filed,
 operator owns that fix. Every other provider change failure keeps the error notification that
 surfaces a harness or stored-state fault.
 
-Credentials live in `<stateDir>/providers/credentials.json` (directory `0700`, file `0600`,
-atomic replacement). A file whose envelope is unusable is moved aside, and a file with only some
-unusable entries is copied to `credentials.json.damaged-<timestamp>-<random>` before the loadable
-entries are rewritten, so the original bytes stay recoverable. The file survives a dashboard
-restart and is never removed by `devboard cleanup` or the watchdog sweep, however old it is.
-Generated per-peer agent directories live beside it under
+Credentials live in `<stateDir>/providers/credentials.json` and the same-directory backup
+`<stateDir>/providers/credentials.backup.json` (directory `0700`, both files `0600`, atomic
+replacement). Every save writes both from the same envelope and the same subscriptions, and the
+two files are byte-identical after a successful mutation; a mutation whose write fails changes
+neither file and is not adopted. A file whose envelope is unusable is moved aside, and a file with
+only some unusable entries is copied to `credentials.json.damaged-<timestamp>-<random>` before the
+loadable entries are rewritten, so the original bytes stay recoverable.
+
+Every reader prefers the primary and falls back to the backup, so a valid backup is never reported
+as an empty store. At startup and on every existing 60-second provider refresh, before any provider
+state or selection snapshot is published, the dashboard restores a missing or unusable primary from
+the backup or from its non-empty in-memory list; deleting both files in one tick restores both from
+that list. A valid primary with a missing, differing, or unusable backup rewrites the backup and
+journals one `activity` record, with no error frame, issue, or refusal. There is no second file
+guarantee beyond these two paths: a process that holds no list and finds neither file cannot
+recover key material, which is what the loss path reports.
+
+The first detection of a missing or unusable primary is one loss event: one `server-error` journal
+record naming the primary path, one app-wide `{"type":"error"}` frame naming it, and, when
+`DEVBOARD_GITEA_URL` is configured, exactly one issue through the Gitea reporting path with no key
+material. Repeated detections of the same loss add nothing, including across a restart that reads
+the marker; a loss ends when the primary is valid again after repair or a successful mutation, and
+a later loss alarms again. The key-free presence marker `<stateDir>/state/provider-credentials.json`
+distinguishes a lost store from a fresh one and records the loss identity and whether its alarm was
+emitted. When both files are missing and no in-memory list exists, the marker makes `providersState`
+and every worker `ProviderUnavailable` report lost credentials naming the primary path and
+`settings.providers`, never a fresh `No provider is configured`; a directory with neither
+credentials nor the marker keeps the fresh refusal. A worker that previously resolved a provider
+re-reads an empty store on a bounded schedule (five pauses totalling 3.35 s, at least two attempts),
+resolves if either file returns inside that window, and otherwise refuses with the precise loss.
+The selection snapshot stays as evidence until a successful save. Both files, the selection
+snapshot, and the marker survive a dashboard restart and are never removed by `devboard cleanup` or
+the watchdog sweep, however old they are.
+
+Generated per-peer agent directories live beside the credentials under
 `<stateDir>/providers/agents/<selection-id>/`. No key is ever returned by a
-command or event, written to the journal or activity log, or placed in a process's argv; the
-only value the interface receives is a mask ending in at most the last four characters. The
-durable state file under `<stateDir>/state/` carries no key material.
+command or event, written to the journal or activity log, placed in an issue, or placed in a
+process's argv; the only value the interface receives is a mask ending in at most the last four
+characters, and no command or HTTP route exposes the backup file. The durable state file and the
+presence marker under `<stateDir>/state/` carry no key material.
 
 Usage is read from `https://opencode.ai/zen/go/v1/usage` (`rolling`, `weekly`, and `monthly`
 percent used) and `https://openrouter.ai/api/v1/key` (`limit_remaining` and `limit`).
@@ -3477,9 +3507,11 @@ every live dashboard the cycle discovers, de-duplicated by real path. Entries ol
 days are deleted; these are never deleted at any age:
 
 - `.tmp/state/`, `.tmp/journal/`, and `.tmp/worktree-cleanup/`.
-- `.tmp/providers/credentials.json`, `.tmp/providers/selection.json`, and, in every selection
-  directory that is not removed, `agent.db*`, `models.db*`, `skill-descriptions.db*`,
-  `config.yml`, `mcp.json`, and `devboard-mcp.ts`. The transcript tree has its own rule below.
+- `.tmp/providers/credentials.json`, `.tmp/providers/credentials.backup.json`,
+  `.tmp/providers/selection.json`, `.tmp/state/provider-credentials.json` (the credential-loss
+  presence marker), and, in every selection directory that is not removed, `agent.db*`,
+  `models.db*`, `skill-descriptions.db*`, `config.yml`, `mcp.json`, and `devboard-mcp.ts`. The
+  transcript tree has its own rule below.
 - `.tmp/watchdog/state.json`, `latest.json`, `lock`, `worker.json`, `settings.json`,
   `projection.json`, and `control/`.
 - `.tmp/orchestrator/state.json`, `ledger.json`, and `lock`.

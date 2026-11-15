@@ -10,10 +10,11 @@ use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
 use devboard::providers::{
-    load_subscriptions, save_subscriptions, worker_peer_environment, write_selection_snapshot,
-    ProviderChangeError, ProviderId, ProviderOptions, ProviderService, SaveProviderInput,
-    StoredSubscription, Transport, TransportError, TransportFuture, UsageResponse, UsageStatus,
-    PROVIDER_CHANGE_NEEDS_ID,
+    credentials_backup_path, credentials_lost, credentials_marker_path, credentials_path,
+    load_subscriptions, lost_credentials_message, save_subscriptions, worker_peer_environment,
+    write_selection_snapshot, AuditSink, CredentialSource, ProviderAudit, ProviderChangeError,
+    ProviderId, ProviderOptions, ProviderService, SaveProviderInput, StoredSubscription, Transport,
+    TransportError, TransportFuture, UsageResponse, UsageStatus, PROVIDER_CHANGE_NEEDS_ID,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -76,6 +77,82 @@ fn service_at(state: &Path, repo: &Path, calls: Calls) -> ProviderService {
         .usage_base_urls
         .insert(ProviderId::OpenRouter, "http://stub.test/api".to_string());
     ProviderService::with_options(state, repo, options)
+}
+
+type Audits = Arc<Mutex<Vec<ProviderAudit>>>;
+
+fn collecting_audit() -> (AuditSink, Audits) {
+    let audits: Audits = Arc::new(Mutex::new(Vec::new()));
+    let sink: AuditSink = {
+        let audits = Arc::clone(&audits);
+        Arc::new(move |audit| audits.lock().expect("audits").push(audit))
+    };
+    (sink, audits)
+}
+
+fn service_with_audit(
+    state: &Path,
+    repo: &Path,
+    calls: Calls,
+    audit: AuditSink,
+) -> ProviderService {
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(stub_transport(calls)),
+        audit: Some(audit),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    options
+        .usage_base_urls
+        .insert(ProviderId::OpenRouter, "http://stub.test/api".to_string());
+    ProviderService::with_options(state, repo, options)
+}
+
+fn loss_count(audits: &Audits) -> usize {
+    audits
+        .lock()
+        .expect("audits")
+        .iter()
+        .filter(|audit| matches!(audit, ProviderAudit::Loss { .. }))
+        .count()
+}
+
+fn activity_count(audits: &Audits) -> usize {
+    audits
+        .lock()
+        .expect("audits")
+        .iter()
+        .filter(|audit| matches!(audit, ProviderAudit::Activity(_)))
+        .count()
+}
+
+fn assert_credentials_pair(state: &Path) {
+    let primary_path = credentials_path(state);
+    let backup_path = credentials_backup_path(state);
+    let primary = std::fs::read(&primary_path).expect("the primary credentials");
+    let backup = std::fs::read(&backup_path).expect("the backup credentials");
+    assert_eq!(
+        primary, backup,
+        "the two credential files are byte-identical"
+    );
+    assert!(
+        credentials_marker_path(state).exists(),
+        "the presence marker exists"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::fs::metadata(state.join("providers")).expect("the directory");
+        assert_eq!(directory.permissions().mode() & 0o777, 0o700);
+        for path in [&primary_path, &backup_path] {
+            let file = std::fs::metadata(path).expect("a credential file");
+            assert_eq!(file.permissions().mode() & 0o777, 0o600);
+        }
+    }
 }
 
 fn empty_service(label: &str) -> (ProviderService, PathBuf) {
@@ -1134,4 +1211,532 @@ async fn a_worker_follows_a_published_openrouter_selection() {
             .and_then(|value| value.as_deref()),
         None
     );
+}
+
+// ---------------------------------------------------------------------------
+// Credential-store durability
+
+#[tokio::test]
+async fn every_provider_mutation_writes_identical_private_primary_and_backup() {
+    let root = fixture_root("dual-write");
+    let state = root.join("state");
+    let service = service_at(&state, &root.join("repo"), Arc::new(Mutex::new(Vec::new())));
+
+    save(&service, "opencode-go", "main", "sk-dual-1234")
+        .await
+        .expect("the provider saves");
+    assert_credentials_pair(&state);
+
+    let id = service.list()[0].id.clone();
+    service
+        .save(SaveProviderInput {
+            id: Some(id.clone()),
+            provider: Some(json!("opencode-go")),
+            label: Some(json!("renamed")),
+            key: None,
+        })
+        .await
+        .expect("the label edit saves");
+    assert_credentials_pair(&state);
+
+    service.set_enabled(&id, false).expect("disable saves");
+    assert_credentials_pair(&state);
+
+    service.remove(&id).expect("delete saves");
+    assert_credentials_pair(&state);
+    assert!(load_subscriptions(&state).subscriptions.is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_write_changes_neither_file_and_is_not_adopted() {
+    let root = fixture_root("write-failure");
+    let state = root.join("state");
+    let service = service_at(&state, &root.join("repo"), Arc::new(Mutex::new(Vec::new())));
+    save(&service, "opencode-go", "main", "sk-failure-1234")
+        .await
+        .expect("the provider saves");
+    let id = service.list()[0].id.clone();
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let primary_before = std::fs::read(&primary_path).expect("the primary");
+    let backup_before = std::fs::read(&backup_path).expect("the backup");
+
+    // A directory where the primary belongs makes its rename fail after the
+    // backup rename has succeeded, exercising the rollback.
+    std::fs::remove_file(&primary_path).expect("remove the primary");
+    std::fs::create_dir(&primary_path).expect("a directory in its place");
+
+    let error = service
+        .set_enabled(&id, false)
+        .expect_err("the write fails");
+    assert!(error.message.contains("could not be written"), "{error:?}");
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the backup"),
+        backup_before,
+        "the backup is rolled back"
+    );
+    assert!(primary_path.is_dir());
+    assert!(service.list()[0].enabled, "the mutation is not adopted");
+
+    std::fs::remove_dir(&primary_path).expect("remove the obstacle");
+    std::fs::write(&primary_path, &primary_before).expect("restore the primary");
+}
+
+#[tokio::test]
+async fn a_missing_or_unusable_primary_reads_the_valid_backup() {
+    let root = fixture_root("reader-fallback");
+    let state = root.join("state");
+    let stored = [
+        subscription("go", ProviderId::OpenCodeGo, "go-fallback-0001"),
+        subscription("or", ProviderId::OpenRouter, "or-fallback-0002"),
+    ];
+    save_subscriptions(&state, &stored).expect("credentials");
+
+    std::fs::remove_file(credentials_path(&state)).expect("delete the primary");
+    let loaded = load_subscriptions(&state);
+    assert_eq!(loaded.source, CredentialSource::Backup);
+    assert_eq!(loaded.subscriptions, stored);
+    assert!(loaded.preserved.is_none());
+
+    std::fs::write(credentials_path(&state), b"{not json").expect("corrupt the primary");
+    let loaded = load_subscriptions(&state);
+    assert_eq!(loaded.source, CredentialSource::Backup);
+    assert_eq!(loaded.subscriptions, stored);
+    let preserved = loaded.preserved.expect("the damaged primary is preserved");
+    assert!(preserved.exists());
+    assert!(
+        !credentials_path(&state).exists(),
+        "the unusable primary was moved aside"
+    );
+}
+
+#[tokio::test]
+async fn startup_repairs_every_credential_file_direction() {
+    let root = fixture_root("startup-repair");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-repair-0001")],
+    )
+    .expect("credentials");
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let canonical = std::fs::read(&primary_path).expect("the primary");
+
+    // Missing primary, valid backup: restore it and raise one loss.
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    let (audit, audits) = collecting_audit();
+    let _service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    assert_eq!(
+        std::fs::read(&primary_path).expect("the repaired primary"),
+        canonical
+    );
+    assert_credentials_pair(&state);
+    assert_eq!(loss_count(&audits), 1);
+    assert!(!credentials_lost(&state));
+
+    // Valid primary, missing backup: rewrite it quietly.
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+    let (audit, audits) = collecting_audit();
+    let _service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the repaired backup"),
+        canonical
+    );
+    assert_eq!(loss_count(&audits), 0);
+    assert_eq!(activity_count(&audits), 1);
+
+    // Valid primary, unusable backup: preserve it and rewrite quietly.
+    std::fs::write(&backup_path, b"{not json").expect("corrupt the backup");
+    let (audit, audits) = collecting_audit();
+    let _service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the repaired backup"),
+        canonical
+    );
+    assert_eq!(loss_count(&audits), 0);
+    assert_eq!(activity_count(&audits), 1);
+
+    // Unusable primary, valid backup: preserve it, restore from the backup,
+    // and raise one loss.
+    std::fs::write(&primary_path, b"{not json").expect("corrupt the primary");
+    let (audit, audits) = collecting_audit();
+    let _service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    assert_eq!(
+        std::fs::read(&primary_path).expect("the repaired primary"),
+        canonical
+    );
+    assert_credentials_pair(&state);
+    assert_eq!(loss_count(&audits), 1);
+    let damaged = std::fs::read_dir(state.join("providers"))
+        .expect("the providers directory")
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("credentials.json.damaged-")
+        });
+    assert!(damaged, "the unusable primary was preserved aside");
+}
+
+#[tokio::test]
+async fn a_running_refresh_restores_deleted_files_before_publishing() {
+    let root = fixture_root("running-repair");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    let (audit, audits) = collecting_audit();
+    let service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    save(&service, "opencode-go", "main", "sk-running-1234")
+        .await
+        .expect("the provider saves");
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let canonical = std::fs::read(&primary_path).expect("the primary");
+
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    service.refresh(false).await;
+    assert_eq!(
+        std::fs::read(&primary_path).expect("the restored primary"),
+        canonical
+    );
+    assert_credentials_pair(&state);
+    assert_eq!(loss_count(&audits), 1);
+    assert!(service.view().refusal.is_none());
+
+    // Both files gone in the same tick: the in-memory list restores both.
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+    service.refresh(false).await;
+    assert_eq!(
+        std::fs::read(&primary_path).expect("the restored primary"),
+        canonical
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the restored backup"),
+        canonical
+    );
+    assert_eq!(loss_count(&audits), 2, "a later loss alarms again");
+}
+
+#[tokio::test]
+async fn an_unrecoverable_loss_alarms_once_across_restarts_and_keeps_evidence() {
+    let root = fixture_root("loss-dedup");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    let (audit, audits) = collecting_audit();
+    let service = service_with_audit(
+        &state,
+        &repo,
+        Arc::new(Mutex::new(Vec::new())),
+        audit.clone(),
+    );
+    save(&service, "opencode-go", "main", "sk-loss-1234")
+        .await
+        .expect("the provider saves");
+    write_selection_snapshot(
+        &state,
+        ProviderId::OpenCodeGo,
+        &service.list()[0].id,
+        "main",
+        "opencode-go/deepseek-v4.1-flash",
+        Some(0.5),
+        "2026-11-09T09:56:49.003Z",
+    )
+    .expect("a selection");
+    std::fs::remove_file(credentials_path(&state)).expect("delete the primary");
+    std::fs::remove_file(credentials_backup_path(&state)).expect("delete the backup");
+
+    let restarted = service_with_audit(
+        &state,
+        &repo,
+        Arc::new(Mutex::new(Vec::new())),
+        audit.clone(),
+    );
+    assert_eq!(loss_count(&audits), 1, "the first loss alarms once");
+    assert!(credentials_lost(&state));
+    let message = restarted.view().refusal.expect("a refusal");
+    assert_eq!(message, lost_credentials_message(&credentials_path(&state)));
+    assert!(message.contains("settings.providers"));
+    assert!(!message.contains("No provider is configured"));
+
+    // The same loss survives a second restart and a refresh without another
+    // record, frame, or issue.
+    let (audit, audits) = collecting_audit();
+    let third = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    third.refresh(false).await;
+    assert_eq!(loss_count(&audits), 0, "the same loss alarms once");
+    assert!(state.join("providers/selection.json").exists());
+    assert!(third.view().selection.is_none());
+}
+
+#[tokio::test]
+async fn a_backup_only_repair_is_quiet() {
+    let root = fixture_root("backup-only");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-backup-0001")],
+    )
+    .expect("credentials");
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let canonical = std::fs::read(&primary_path).expect("the primary");
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+
+    let (audit, audits) = collecting_audit();
+    let _service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    assert_eq!(std::fs::read(&backup_path).expect("the backup"), canonical);
+    assert_eq!(activity_count(&audits), 1);
+    assert_eq!(loss_count(&audits), 0);
+    assert!(!credentials_lost(&state));
+}
+
+#[tokio::test]
+async fn one_mutation_recovers_an_unrecoverable_store_without_retyping_keys() {
+    let root = fixture_root("operator-recovery");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    let service = service_at(&state, &repo, Arc::new(Mutex::new(Vec::new())));
+    save(&service, "opencode-go", "main", "sk-recover-1234")
+        .await
+        .expect("the provider saves");
+    let id = service.list()[0].id.clone();
+    std::fs::remove_file(credentials_path(&state)).expect("delete the primary");
+    std::fs::remove_file(credentials_backup_path(&state)).expect("delete the backup");
+
+    service.set_enabled(&id, false).expect("the mutation saves");
+    assert_credentials_pair(&state);
+    assert!(!credentials_lost(&state));
+    assert_eq!(service.list()[0].id, id);
+    service.set_enabled(&id, true).expect("the mutation saves");
+
+    let environment =
+        worker_peer_environment(&state, &repo, HashMap::new(), ProviderOptions::default())
+            .await
+            .expect("the recovered store resolves");
+    assert_eq!(
+        environment
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("sk-recover-1234")
+    );
+}
+
+#[tokio::test]
+async fn no_key_reaches_the_audit_view_marker_or_selection() {
+    let root = fixture_root("no-leak");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    let key = "sk-secret-98765432";
+    let (audit, audits) = collecting_audit();
+    let service = service_with_audit(&state, &repo, Arc::new(Mutex::new(Vec::new())), audit);
+    save(&service, "opencode-go", "main", key)
+        .await
+        .expect("the provider saves");
+    std::fs::remove_file(credentials_path(&state)).expect("delete the primary");
+    service.refresh(false).await;
+
+    let audit_text = format!("{:?}", *audits.lock().expect("audits"));
+    assert!(!audit_text.contains(key), "{audit_text}");
+    let frame = devboard::jsjson::stringify(&service.state_frame());
+    assert!(!frame.contains(key), "{frame}");
+    let marker = std::fs::read_to_string(credentials_marker_path(&state)).expect("the marker");
+    assert!(!marker.contains(key), "{marker}");
+    let selection =
+        std::fs::read_to_string(state.join("providers/selection.json")).expect("the selection");
+    assert!(!selection.contains(key), "{selection}");
+    assert_eq!(service.view().subscriptions[0].masked_key, "••••5432");
+}
+
+#[tokio::test]
+async fn a_worker_retries_a_lost_store_then_succeeds_or_refuses() {
+    use std::sync::atomic::AtomicUsize;
+
+    let root = fixture_root("worker-retry");
+    let state = root.join("state");
+    let repo = root.join("repo");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "go-retry-0001")],
+    )
+    .expect("credentials");
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let primary_bytes = std::fs::read(&primary_path).expect("the primary");
+    let backup_bytes = std::fs::read(&backup_path).expect("the backup");
+
+    let restored = Arc::new(AtomicBool::new(false));
+    let sleeps = Arc::new(AtomicUsize::new(0));
+    let sleep: devboard::providers::RetrySleep = {
+        let restored = Arc::clone(&restored);
+        let sleeps = Arc::clone(&sleeps);
+        let primary_path = primary_path.clone();
+        let backup_path = backup_path.clone();
+        let primary_bytes = primary_bytes.clone();
+        let backup_bytes = backup_bytes.clone();
+        Arc::new(move |_milliseconds: u64| {
+            sleeps.fetch_add(1, Ordering::SeqCst);
+            if !restored.swap(true, Ordering::SeqCst) {
+                std::fs::write(&primary_path, &primary_bytes).expect("restore the primary");
+                std::fs::write(&backup_path, &backup_bytes).expect("restore the backup");
+            }
+            Box::pin(async {})
+        })
+    };
+    let options = ProviderOptions {
+        retry_sleep: Some(sleep),
+        ..ProviderOptions::default()
+    };
+    let environment = devboard::providers::create_worker_provider_environment(
+        &state,
+        &repo,
+        HashMap::new(),
+        options,
+    );
+    let first = environment.resolve().await.expect("the first resolve");
+    assert_eq!(
+        first
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("go-retry-0001")
+    );
+
+    // A file that reappears inside the retry window resolves successfully.
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+    let recovered = environment.resolve().await.expect("the retried resolve");
+    assert_eq!(
+        recovered
+            .get("OPENCODE_API_KEY")
+            .and_then(|value| value.as_deref()),
+        Some("go-retry-0001")
+    );
+    assert!(sleeps.load(Ordering::SeqCst) >= 1);
+
+    // A store that never returns refuses with the precise lost-credentials
+    // message after the bounded window.
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+    let error = environment
+        .resolve()
+        .await
+        .expect_err("the store stays lost");
+    assert!(error.message.contains(&primary_path.display().to_string()));
+    assert!(error.message.contains("settings.providers"));
+    assert!(!error.message.contains("No provider is configured"));
+    assert!(
+        devboard::providers::WORKER_PROVIDER_RETRY_DELAYS_MS
+            .iter()
+            .sum::<u64>()
+            <= 5_000
+    );
+    assert!(
+        devboard::providers::WORKER_PROVIDER_RETRY_DELAYS_MS.len() >= 2,
+        "at least two attempts"
+    );
+}
+
+#[tokio::test]
+async fn a_loss_writes_one_server_error_one_frame_and_one_gitea_issue() {
+    use axum::{extract::Json, routing::post, Router};
+
+    let root = fixture_root("loss-alarm");
+    let repo = root.join("repo");
+    let state = root.join("state");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
+    let key = "sk-alarm-13572468";
+    save_subscriptions(&state, &[subscription("go", ProviderId::OpenCodeGo, key)])
+        .expect("credentials");
+
+    let calls: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let base = format!("http://{}", listener.local_addr().expect("an address"));
+    let route_calls = Arc::clone(&calls);
+    let server = tokio::spawn(async move {
+        let app = Router::new().route(
+            "/api/v1/repos/acme/repo/issues",
+            post(move |Json(body): Json<Value>| {
+                let calls = Arc::clone(&route_calls);
+                async move {
+                    calls.lock().expect("calls").push(body.clone());
+                    Json(json!({
+                        "number": 41,
+                        "title": body.get("title").cloned().unwrap_or(Value::Null),
+                        "html_url": "https://gitea.test/acme/repo/issues/41",
+                    }))
+                }
+            }),
+        );
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: "true".to_string(),
+        state_dir: state.clone(),
+        allowed_hosts: Vec::new(),
+        feedback: Some(devboard::config::FeedbackConfig {
+            base_url: base,
+            repo: "acme/repo".to_string(),
+            token: None,
+            timeout_ms: 5_000,
+        }),
+    };
+    let journal = Journal::open(&config.state_dir, &config.repo_dir, 0);
+    let app = App::new(config, journal);
+    let (conn, mut inbox) = connection();
+    app.register(conn.clone()).await;
+
+    let primary_path = credentials_path(&state);
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    std::fs::remove_file(credentials_backup_path(&state)).expect("delete the backup");
+    app.providers.reconcile_credentials();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while calls.lock().expect("calls").is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let calls = calls.lock().expect("calls");
+    assert_eq!(calls.len(), 1, "exactly one issue is filed");
+    let issue = &calls[0];
+    let title = issue["title"].as_str().expect("a title");
+    let body = issue["body"].as_str().expect("a body");
+    assert!(title.contains(&primary_path.display().to_string()));
+    assert!(body.contains(&primary_path.display().to_string()));
+    assert!(body.contains("settings.providers"));
+    assert!(!title.contains(key) && !body.contains(key));
+
+    let frames: Vec<Value> = all_frames(&mut inbox)
+        .iter()
+        .filter_map(|frame| serde_json::from_str::<Value>(frame).ok())
+        .filter(|frame| frame["type"] == "error")
+        .collect();
+    assert_eq!(frames.len(), 1, "exactly one error frame: {frames:?}");
+    let message = frames[0]["message"].as_str().expect("a message");
+    assert!(message.contains(&primary_path.display().to_string()));
+    assert!(!message.contains(key));
+
+    let journal_text = std::fs::read_to_string(devboard::journal::journal_file(&state, &repo))
+        .expect("the journal");
+    let errors: Vec<Value> = journal_text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| record["kind"] == "server-error")
+        .collect();
+    assert_eq!(errors.len(), 1, "exactly one server-error record");
+    let text = errors[0]["text"].as_str().expect("the record text");
+    assert!(text.contains(&primary_path.display().to_string()));
+    assert!(!text.contains(key));
+
+    server.abort();
 }

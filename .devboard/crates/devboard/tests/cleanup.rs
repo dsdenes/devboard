@@ -663,6 +663,8 @@ fn durable_provider_and_worker_state_survives_every_sweep() {
         "runs/run/report.json".to_string(),
     ];
     names.push("providers/selection.json".to_string());
+    names.push("providers/credentials.backup.json".to_string());
+    names.push("state/provider-credentials.json".to_string());
     for name in &names {
         let path = state.join(name);
         write_text(&path, "{}");

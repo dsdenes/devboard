@@ -473,6 +473,65 @@ pub struct App {
     pub run_output: Arc<crate::runs::RunHub>,
 }
 
+/// Routes credential-store repairs to the activity journal and a loss to one
+/// server error, one app-wide error frame, and one Gitea issue when harness
+/// reporting is configured. The message carries the primary path and no key.
+fn provider_audit_sink(shared: &Arc<Shared>) -> crate::providers::AuditSink {
+    let shared = Arc::clone(shared);
+    Arc::new(move |audit: crate::providers::ProviderAudit| match audit {
+        crate::providers::ProviderAudit::Activity(detail) => {
+            shared.journal.write("activity", &detail, None);
+        }
+        crate::providers::ProviderAudit::Loss { message, primary } => {
+            shared.journal.write("server-error", &message, None);
+            shared.broadcast(json!({"type": "error", "message": message}));
+            let Some(feedback) = shared.config.feedback.clone() else {
+                return;
+            };
+            let target = crate::gitea::GiteaTarget {
+                base_url: feedback.base_url.clone(),
+                project: feedback.repo.clone(),
+                token: feedback.token.clone(),
+            };
+            let title = format!("Provider credentials were lost: {}", primary.display());
+            let body = format!(
+                "The provider credential file `{}` is missing or unreadable.\n\n\
+                 The dashboard restores it from the same-directory backup or its in-memory \
+                 subscription list when it can. If the file stays lost, restore it or open the \
+                 Providers dialog (`settings.providers`) to add the keys again. This report \
+                 contains no key material.",
+                primary.display()
+            );
+            let timeout_ms = feedback.timeout_ms;
+            let reporting = Arc::clone(&shared);
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        if let Err(error) =
+                            crate::gitea::create_issue(&target, &title, &body, None, timeout_ms)
+                                .await
+                        {
+                            let line = error.message.lines().next().unwrap_or("unknown error");
+                            reporting.journal.write(
+                                "activity",
+                                &format!(
+                                    "providers: the credentials-loss issue could not be filed: {line}"
+                                ),
+                                None,
+                            );
+                        }
+                    });
+                }
+                Err(_) => reporting.journal.write(
+                    "activity",
+                    "providers: the credentials-loss issue could not be filed: no async runtime",
+                    None,
+                ),
+            }
+        }
+    })
+}
+
 impl App {
     pub fn new(config: Config, journal: Journal) -> Arc<Self> {
         let port = config.port;
@@ -531,10 +590,14 @@ impl App {
         // Resolved once here, so a polled `versionState` read never spawns git
         // or reads a manifest on the request path.
         let version_facts = crate::version::VersionFacts::resolve(&config_repo_dir(&shared));
-        let providers = crate::providers::ProviderService::new(
+        let providers = crate::providers::ProviderService::with_options(
             config_state_dir(&shared),
             config_repo_dir(&shared),
-            |line| eprintln!("{line}"),
+            crate::providers::ProviderOptions {
+                log: Some(Arc::new(|line: &str| eprintln!("{line}"))),
+                audit: Some(provider_audit_sink(&shared)),
+                ..crate::providers::ProviderOptions::default()
+            },
         );
         let complexity = Arc::new(crate::complexity::ComplexitySnapshots::new(
             crate::complexity::ComplexityOptions::production(
@@ -629,8 +692,11 @@ impl App {
                     break;
                 };
                 // A read asked for this one; only the periodic tick waits for
-                // a connected client.
+                // a connected client. Credential repair runs on every tick,
+                // connected or not, so a deleted file heals before the next
+                // view.
                 if !demanded && !app.shared.has_clients() {
+                    app.providers.reconcile_credentials();
                     continue;
                 }
                 app.providers.background_refresh().await;

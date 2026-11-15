@@ -10,6 +10,10 @@ use std::time::Duration;
 
 use devboard::acp::AcpActivity;
 use devboard::forge::{ClientFuture, ClosingCommitClient, GitHubRelease};
+use devboard::providers::{
+    credentials_backup_path, credentials_path, lost_credentials_message, save_subscriptions,
+    ProviderId, StoredSubscription,
+};
 use devboard::resources::{Governor, GovernorOptions, MemoryReader};
 use devboard::workers::scout::{
     activity_path, control_directory, lock_path, read_scan_claim, read_scan_file, read_settings,
@@ -2596,5 +2600,124 @@ async fn an_uncontained_commit_still_retries() {
     let row = worker.current_state().issues[0].clone();
     assert_eq!(row.version.as_deref(), Some("v1.0.0"));
     assert!(row.version_error.is_none());
+    worker.stop().await;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Provider credential durability at the scan boundary                       */
+/* ------------------------------------------------------------------------ */
+
+#[tokio::test]
+async fn a_deleted_credential_store_retries_then_fails_the_scan_precisely() {
+    let repo = scratch("provider-retry");
+    let state_dir = repo.join(".devboard").join("state");
+    save_subscriptions(
+        &state_dir,
+        &[StoredSubscription {
+            id: "go".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "main".to_string(),
+            key: "go-scan-retry-0001".to_string(),
+            enabled: true,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("credentials");
+    let primary_path = credentials_path(&state_dir);
+    let backup_path = credentials_backup_path(&state_dir);
+    let primary_bytes = std::fs::read(&primary_path).expect("the primary");
+    let backup_bytes = std::fs::read(&backup_path).expect("the backup");
+
+    let now = 1_780_000_000_000i64;
+    let clock = Arc::new(AtomicI64::new(now));
+    let runs = Arc::new(AtomicUsize::new(0));
+    let agent: devboard::workers::scout::ScanAgent = {
+        let runs = Arc::clone(&runs);
+        Arc::new(move |context: devboard::workers::scout::ScanAgentContext| {
+            let runs = Arc::clone(&runs);
+            Box::pin(async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                (context.started)();
+                Ok(())
+            })
+        })
+    };
+    let mut options = ScoutWorkerOptions::new(&repo, state_dir.clone());
+    options.harness_version = Some("test-version".to_string());
+    options.forge = Some(Arc::new(FixtureForge::default()));
+    options.agent = Some(agent);
+    options.sync_ms = Some(1000);
+    options.cadence_ms = Some(1000);
+    options.tick_ms = Some(10);
+    options.timeout_ms = Some(10_000);
+    options.now = Some(Arc::new({
+        let clock = Arc::clone(&clock);
+        move || clock.load(Ordering::SeqCst)
+    }));
+    let worker = ScoutWorker::new(options);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+
+    worker.begin_scan().await;
+    worker.settle().await;
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the first scan starts a peer"
+    );
+    assert_eq!(scan_ids(&repo).len(), 1);
+
+    // Both files disappear; the store returns inside the retry window, so the
+    // scan resolves instead of failing.
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+    let restore_primary = primary_path.clone();
+    let restore_backup = backup_path.clone();
+    let restore_primary_bytes = primary_bytes.clone();
+    let restore_backup_bytes = backup_bytes.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(&restore_primary, &restore_primary_bytes).expect("restore the primary");
+        std::fs::write(&restore_backup, &restore_backup_bytes).expect("restore the backup");
+    });
+    clock.fetch_add(120_000, Ordering::SeqCst);
+    worker.begin_scan().await;
+    worker.settle().await;
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        2,
+        "a store that returns during the retry window starts the peer"
+    );
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 2);
+    let recovered = read_scan_file(&scan_directory(&repo, &ids[1])).expect("the second scan");
+    assert_ne!(recovered.status, "failed", "{:?}", recovered.error);
+    assert_eq!(recovered.error, None);
+
+    // The store stays gone: the bounded retry ends with the precise loss and
+    // no peer starts for that scan.
+    std::fs::remove_file(&primary_path).expect("delete the primary");
+    std::fs::remove_file(&backup_path).expect("delete the backup");
+    clock.fetch_add(120_000, Ordering::SeqCst);
+    worker.begin_scan().await;
+    worker.settle().await;
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        2,
+        "the failed scan starts no peer"
+    );
+    let ids = scan_ids(&repo);
+    assert_eq!(ids.len(), 3);
+    let failed = read_scan_file(&scan_directory(&repo, &ids[2])).expect("the failed scan");
+    assert_eq!(failed.status, "failed");
+    let expected = lost_credentials_message(&primary_path);
+    assert_eq!(failed.error.as_deref(), Some(expected.as_str()));
+    assert!(!expected.contains("No provider is configured"));
+    assert!(expected.contains("settings.providers"));
+    assert_eq!(
+        worker.current_state().last_error.as_deref(),
+        Some(expected.as_str())
+    );
     worker.stop().await;
 }
