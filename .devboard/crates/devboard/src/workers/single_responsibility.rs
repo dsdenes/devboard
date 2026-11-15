@@ -1111,18 +1111,28 @@ fn prove_evidence(repo_dir: &Path, entry: &EvidenceEntry) -> Option<String> {
     None
 }
 
-/// Proves one read-back filing against the skill's five directives.
+/// Proves one filing at creation time against the skill's five directives: the
+/// family label is one of the filing's labels, the body names exactly one of
+/// them, the skill path, that category's directive verbatim, one component,
+/// the reason, the concrete refactor, binary acceptance criteria, and at least
+/// one evidence quote copied from the lines it names.
+///
+/// The proof runs once, inside `issue_create`, against the tree as it stands
+/// then. A published row is never re-proved against a later tree, so an issue
+/// keeps its row when an unrelated label is added or a later refactor moves
+/// the evidence.
 pub fn verify_filing(
     repo_dir: &Path,
     skill: &SkillDirectives,
     filing: &FilingProvenance,
 ) -> ProvenanceResult {
-    let mut labels: Vec<String> = filing.labels.clone();
-    labels.sort();
-    labels.dedup();
-    if labels.len() != 1 || labels[0] != SINGLE_RESPONSIBILITY_LABEL {
+    if !filing
+        .labels
+        .iter()
+        .any(|label| label == SINGLE_RESPONSIBILITY_LABEL)
+    {
         return ProvenanceResult::Problem(format!(
-            "the labels are {}, not exactly [\"{SINGLE_RESPONSIBILITY_LABEL}\"]",
+            "the labels {} do not carry \"{SINGLE_RESPONSIBILITY_LABEL}\"",
             serde_json::to_string(&filing.labels).unwrap_or_default()
         ));
     }
@@ -1506,7 +1516,6 @@ pub struct Worker {
     connect: ConnectFn,
     provider_environment: Arc<WorkerProviderEnvironment>,
     harness_version: Option<String>,
-    config: Config,
     manual_cycles: bool,
     log: Arc<dyn Fn(String) + Send + Sync>,
     inner: Mutex<Inner>,
@@ -1556,7 +1565,6 @@ impl Worker {
             connect: options.connect.unwrap_or_else(|| Arc::new(default_connect)),
             provider_environment,
             harness_version: options.harness_version,
-            config: Config::default(),
             manual_cycles: options.manual_cycles,
             log: options.log.unwrap_or_else(|| Arc::new(|_line| {})),
             inner: Mutex::new(Inner {
@@ -1939,7 +1947,7 @@ impl Worker {
         match self.read_forge_within_deadline().await {
             Err(detail) => self.record_sync_failure(&detail),
             Ok(issues) => {
-                self.apply_read(issues, None);
+                self.apply_read(issues);
                 lock(&self.inner).retry.succeed();
                 lock(&self.inner).next_sync_at = self.now() + self.sync_ms as i64;
                 self.publish();
@@ -1948,7 +1956,15 @@ impl Worker {
         lock(&self.inner).syncing = false;
     }
 
-    fn apply_read(&self, issues: Vec<ForgeIssue>, record: Option<&dyn Fn(String)>) {
+    /// One row per labelled issue in the tracker's answer.
+    ///
+    /// The forge selects the set by label membership, so an issue that also
+    /// carries the `processing` label, or any other label, stays in it. The
+    /// category is the body's `## Category` value, or the last known one when
+    /// the body no longer names it. No body is proved here: provenance was
+    /// proved once at creation time, and a later tree change never withdraws
+    /// a row the issue keeps for its whole life.
+    fn apply_read(&self, issues: Vec<ForgeIssue>) {
         let previous: HashMap<i64, IssueRow> = lock(&self.inner)
             .state
             .issues
@@ -1956,8 +1972,6 @@ impl Worker {
             .cloned()
             .map(|row| (row.number, row))
             .collect();
-        let mut skill: Option<SkillDirectives> = None;
-        let mut skill_error: Option<String> = None;
         let mut rows: Vec<IssueRow> = Vec::new();
         for issue in issues {
             let before = previous.get(&issue.number);
@@ -1966,65 +1980,21 @@ impl Worker {
             } else {
                 IssueState::Pending
             };
-            if let Some(before) = before {
-                rows.push(IssueRow {
-                    number: issue.number,
-                    title: issue.title,
-                    url: issue.url,
-                    created_at: issue.created_at,
-                    state,
-                    category: before.category.clone(),
-                    version: if state == IssueState::Implemented {
-                        before.version.clone()
-                    } else {
-                        None
-                    },
-                });
-                continue;
-            }
-            if skill.is_none() && skill_error.is_none() {
-                match read_skill_directives(&self.repo_dir, &self.config.skill_document) {
-                    Ok(found) => skill = Some(found),
-                    Err(error) => skill_error = Some(error),
-                }
-            }
-            let Some(skill) = skill.as_ref() else {
-                if let Some(record) = record {
-                    record(format!(
-                        "verification failure: #{} “{}”: {}",
-                        issue.number,
-                        issue.title,
-                        skill_error
-                            .clone()
-                            .unwrap_or_else(|| "no skill".to_string())
-                    ));
-                }
-                continue;
-            };
-            let filing = FilingProvenance {
-                title: issue.title.clone(),
-                body: issue.body.clone(),
-                labels: issue.labels.clone(),
-            };
-            match verify_filing(&self.repo_dir, skill, &filing) {
-                ProvenanceResult::Problem(detail) => {
-                    if let Some(record) = record {
-                        record(format!(
-                            "verification failure: #{} “{}”: {detail}",
-                            issue.number, issue.title
-                        ));
-                    }
-                }
-                ProvenanceResult::Ok(category) => rows.push(IssueRow {
-                    number: issue.number,
-                    title: issue.title,
-                    url: issue.url,
-                    created_at: issue.created_at,
-                    state,
-                    category: Some(category),
-                    version: None,
-                }),
-            }
+            let category = category_from_body(&issue.body)
+                .or_else(|| before.and_then(|row| row.category.clone()));
+            rows.push(IssueRow {
+                number: issue.number,
+                title: issue.title,
+                url: issue.url,
+                created_at: issue.created_at,
+                state,
+                category,
+                version: if state == IssueState::Implemented {
+                    before.and_then(|row| row.version.clone())
+                } else {
+                    None
+                },
+            });
         }
         rows.sort_by(newest_first);
         {
@@ -2477,7 +2447,7 @@ impl Worker {
         let error = summary.error;
         let record = |text: String| self.record_activity_line(cycle_id, &text);
         match self.read_forge_within_deadline().await {
-            Ok(issues) => self.apply_read(issues, Some(&record)),
+            Ok(issues) => self.apply_read(issues),
             Err(failure) => record(format!("could not re-read the forge: {failure}")),
         }
         if let Some(error) = &error {

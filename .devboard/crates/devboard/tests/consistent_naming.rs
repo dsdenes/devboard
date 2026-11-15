@@ -442,8 +442,8 @@ async fn consistent_naming_reads_open_titles_once_per_cycle_not_on_every_sync() 
 }
 
 #[tokio::test]
-async fn consistent_naming_drops_a_filing_outside_the_seven_categories() {
-    let fixture = Fixture::new("drop");
+async fn consistent_naming_publishes_a_row_for_a_body_outside_the_seven_categories() {
+    let fixture = Fixture::new("publish");
     fixture.naming_inputs();
     let forge = Arc::new(NamingForge::default());
     forge.issues.lock().expect("the fake").push(cn::ForgeIssue {
@@ -459,20 +459,20 @@ async fn consistent_naming_drops_a_filing_outside_the_seven_categories() {
     let worker = naming_worker(&fixture, Arc::clone(&forge), connect);
     assert!(worker.start("acme/fixture"));
     worker.refresh().await;
-    assert!(worker.current_state().issues.is_empty());
+    let state = worker.current_state();
+    assert_eq!(state.issues.len(), 1, "the labelled issue keeps its row");
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("unlisted-category")
+    );
     worker.begin_cycle().await;
     worker.wait_for_cycle().await;
-    let state = worker.current_state();
-    assert!(state.issues.is_empty());
-    let directory = cn::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
-    assert!(api::read_activity(&directory)
-        .join("\n")
-        .contains("verification failure"));
+    assert_eq!(worker.current_state().issues.len(), 1);
     worker.stop().await;
 }
 
 #[tokio::test]
-async fn consistent_naming_requires_the_complete_occurrence_list() {
+async fn consistent_naming_publishes_a_row_whose_occurrence_list_is_incomplete() {
     let fixture = Fixture::new("occurrences");
     fixture.naming_inputs();
     let forge = Arc::new(NamingForge::default());
@@ -513,10 +513,181 @@ async fn consistent_naming_requires_the_complete_occurrence_list() {
     worker.begin_cycle().await;
     worker.wait_for_cycle().await;
     let state = worker.current_state();
-    assert!(state.issues.is_empty());
-    let directory = cn::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
-    let activity = api::read_activity(&directory).join("\n");
-    assert!(activity.contains("the occurrence list omits client/PriceCard.svelte"));
+    assert_eq!(state.issues.len(), 1);
+    assert_eq!(state.issues[0].number, 2);
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("synonymous naming")
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn consistent_naming_publishes_a_row_with_an_unrelated_processing_label() {
+    let fixture = Fixture::new("processing");
+    fixture.naming_inputs();
+    let forge = Arc::new(NamingForge::default());
+    forge.issues.lock().expect("the fake").push(cn::ForgeIssue {
+        number: 1,
+        title: "Rename price to amount".to_string(),
+        url: "https://forge.test/acme/fixture/issues/1".to_string(),
+        state: "open".to_string(),
+        created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        body: naming_body(
+            "synonymous naming",
+            BodyOptions {
+                concept: "item price",
+                name_in_use: "price",
+                proposed: "amount",
+                evidence_path: "src/price.ts",
+                evidence_lines: "4",
+                quote: "export const price = unitPrice;",
+                occurrences: &[("src/price.ts", "1-4"), ("client/PriceCard.svelte", "2-4")],
+                glossary: None,
+            },
+        ),
+        labels: vec![
+            cn::CONSISTENT_NAMING_LABEL.to_string(),
+            devboard::forge::PROCESSING_LABEL.to_string(),
+        ],
+    });
+    let connect = fake_connect(|_prompt| Box::pin(async move { Ok(()) }));
+    let worker = naming_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.issues.len(), 1);
+    assert_eq!(state.issues[0].number, 1);
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("synonymous naming")
+    );
+    worker.refresh().await;
+    assert_eq!(worker.current_state().issues.len(), 1);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn consistent_naming_keeps_a_row_after_the_cited_evidence_moves() {
+    let fixture = Fixture::new("stale-evidence");
+    fixture.naming_inputs();
+    let body = naming_body(
+        "synonymous naming",
+        BodyOptions {
+            concept: "item price",
+            name_in_use: "price",
+            proposed: "amount",
+            evidence_path: "src/price.ts",
+            evidence_lines: "4",
+            quote: "export const price = unitPrice;",
+            occurrences: &[("src/price.ts", "1-4"), ("client/PriceCard.svelte", "2-4")],
+            glossary: None,
+        },
+    );
+    let forge = Arc::new(NamingForge::default());
+    forge.issues.lock().expect("the fake").push(cn::ForgeIssue {
+        number: 1,
+        title: "Rename price to amount".to_string(),
+        url: "https://forge.test/acme/fixture/issues/1".to_string(),
+        state: "open".to_string(),
+        created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        body: body.clone(),
+        labels: vec![cn::CONSISTENT_NAMING_LABEL.to_string()],
+    });
+    let connect = fake_connect(|_prompt| Box::pin(async move { Ok(()) }));
+    let worker = naming_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    assert_eq!(worker.current_state().issues.len(), 1);
+    // A read-only evidence edit: line 4 of the cited file no longer carries
+    // the quoted text. The filing's proof would now fail, but the row is kept.
+    fixture.write(
+        "src/price.ts",
+        "export function unitPrice() {\n  return 2;\n}\nexport const fee = unitPrice;\n",
+    );
+    let config = cn::consistent_naming_config();
+    let skill = cn::read_skill_directives(&fixture.repo, &config.skill_document)
+        .expect("the fixture skill");
+    let mut options = cn::FilingOptions {
+        glossaries: cn::read_glossaries(&fixture.repo, &config),
+        ..Default::default()
+    };
+    let filing = cn::FilingProvenance {
+        title: "Rename price to amount".to_string(),
+        body,
+        labels: vec![cn::CONSISTENT_NAMING_LABEL.to_string()],
+    };
+    match cn::verify_filing(&fixture.repo, &skill, &filing, &mut options) {
+        cn::ProvenanceResult::Problem(detail) => assert!(
+            detail.contains("is not copied from those lines"),
+            "{detail}"
+        ),
+        cn::ProvenanceResult::Ok(category) => {
+            panic!("the moved evidence still proves {category}")
+        }
+    }
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.issues.len(), 1);
+    assert_eq!(state.issues[0].number, 1);
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("synonymous naming")
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn consistent_naming_publishes_a_backlog_it_never_proved() {
+    let fixture = Fixture::new("backlog");
+    fixture.naming_inputs();
+    let forge = Arc::new(NamingForge::default());
+    {
+        let mut issues = forge.issues.lock().expect("the fake");
+        issues.push(cn::ForgeIssue {
+            number: 258,
+            title: "Name the order total consistently".to_string(),
+            url: "https://forge.test/acme/fixture/issues/258".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: "## Category\n\nsynonymous naming\n\n## Concept\n\norder total".to_string(),
+            labels: vec!["consistent-naming".to_string()],
+        });
+        issues.push(cn::ForgeIssue {
+            number: 259,
+            title: "A filing written before the category section existed".to_string(),
+            url: "https://forge.test/acme/fixture/issues/259".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:01.000Z".to_string(),
+            body: "The concept appears under two names.".to_string(),
+            labels: vec!["consistent-naming".to_string()],
+        });
+    }
+    let connect = fake_connect(|_prompt| Box::pin(async move { Ok(()) }));
+    let worker = naming_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    assert!(worker.current_state().issues.is_empty());
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(
+        state.issues.len(),
+        2,
+        "the backlog is visible on the first read"
+    );
+    assert_eq!(state.issues[0].number, 259);
+    assert_eq!(state.issues[0].category, None);
+    assert_eq!(state.issues[1].number, 258);
+    assert_eq!(
+        state.issues[1].category.as_deref(),
+        Some("synonymous naming")
+    );
+    let persisted = cn::read_state(&cn::versioned_state_path(
+        &fixture.state_dir,
+        &fixture.repo,
+        Some(VERSION),
+    ))
+    .expect("the versioned state");
+    assert_eq!(persisted.issues.len(), 2);
     worker.stop().await;
 }
 
@@ -596,12 +767,48 @@ async fn consistent_naming_reports_a_glossary_conflict_and_rejects_a_synonym() {
     worker.begin_cycle().await;
     worker.wait_for_cycle().await;
     let state = worker.current_state();
-    assert_eq!(state.issues.len(), 1);
-    assert_eq!(state.issues[0].number, 3);
-    let directory = cn::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
-    assert!(api::read_activity(&directory)
-        .join("\n")
-        .contains("verification failure"));
+    assert_eq!(state.issues.len(), 2, "every labelled issue keeps its row");
+    let mut numbers: Vec<i64> = state.issues.iter().map(|issue| issue.number).collect();
+    numbers.sort();
+    assert_eq!(numbers, vec![3, 4]);
+    // The glossary rule still separates the preferred label from a synonym at
+    // creation time, even though both issues keep their read-only rows.
+    let config = cn::consistent_naming_config();
+    let skill = cn::read_skill_directives(&fixture.repo, &config.skill_document)
+        .expect("the fixture skill");
+    let filings: Vec<(i64, String)> = forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .iter()
+        .map(|issue| (issue.number, issue.body.clone()))
+        .collect();
+    let mut options = cn::FilingOptions {
+        glossaries: cn::read_glossaries(&fixture.repo, &config),
+        ..Default::default()
+    };
+    for (number, body) in filings {
+        let filing = cn::FilingProvenance {
+            title: "Charge names the item price concept".to_string(),
+            body,
+            labels: vec!["consistent-naming".to_string()],
+        };
+        match cn::verify_filing(&fixture.repo, &skill, &filing, &mut options) {
+            cn::ProvenanceResult::Ok(category) => {
+                assert_eq!(number, 3);
+                assert_eq!(category, "synonymous naming");
+            }
+            cn::ProvenanceResult::Problem(detail) => {
+                assert_eq!(number, 4);
+                assert!(
+                    detail.contains(
+                        "the proposed name must be the glossary's preferred label Amount"
+                    ),
+                    "{detail}"
+                );
+            }
+        }
+    }
     worker.stop().await;
 }
 

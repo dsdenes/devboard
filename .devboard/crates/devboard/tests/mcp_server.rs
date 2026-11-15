@@ -611,6 +611,345 @@ async fn a_dedup_run_records_the_issue_the_turn_files() {
     server.abort();
 }
 
+// ---------------------------------------------------------------------------
+// Filing provenance
+// ---------------------------------------------------------------------------
+
+fn naming_skill() -> String {
+    [
+        "# Consistent Naming",
+        "",
+        "## Architectural Violations",
+        "",
+        "- **Synonymous naming:** The same concept appears under two or more names, so a reader must learn that the names denote one thing.",
+        "- **Semantic ambiguity:** One name denotes more than one concept, or its meaning depends on where it is read.",
+        "- **Inconsistent vocabulary:** The same concept is named differently across layers, modules, tests, or documentation.",
+        "- **Misleading naming:** A name suggests a meaning the concept does not have, such as behavior, ownership, or a scope it lacks.",
+        "- **Unnecessary terminology:** A new term is introduced for a concept that already has a name, adding vocabulary without adding meaning.",
+        "- **Conceptual collision:** Two distinct concepts share one name within a context, so the name no longer identifies either of them.",
+        "- **Implementation-driven naming:** A concept is named after its current implementation detail (a table, a transport, a framework type, or an algorithm) instead of after the domain concept.",
+        "",
+    ]
+    .join("\n")
+}
+
+/// A naming filing whose evidence quotes `quote` from `src/price.ts:1`.
+fn naming_filing_body(quote: &str) -> String {
+    let skill = naming_skill();
+    let directive = skill
+        .split('\n')
+        .find(|line| line.starts_with("- **Synonymous naming:**"))
+        .expect("a directive");
+    [
+        "## Category".to_string(),
+        String::new(),
+        "synonymous naming".to_string(),
+        String::new(),
+        "## Skill".to_string(),
+        String::new(),
+        devboard::workers::consistent_naming::consistent_naming_config().skill_document,
+        String::new(),
+        "## Directive".to_string(),
+        String::new(),
+        format!("> {directive}"),
+        String::new(),
+        "## Concept".to_string(),
+        String::new(),
+        "item price".to_string(),
+        String::new(),
+        "## Name in use".to_string(),
+        String::new(),
+        "price".to_string(),
+        String::new(),
+        "## Proposed name".to_string(),
+        String::new(),
+        "amount".to_string(),
+        String::new(),
+        "## Why the name is inconsistent".to_string(),
+        String::new(),
+        "One concept is named twice.".to_string(),
+        String::new(),
+        "## Rename".to_string(),
+        String::new(),
+        "Rename every occurrence to amount.".to_string(),
+        String::new(),
+        "## Evidence".to_string(),
+        String::new(),
+        "- `src/price.ts:1`".to_string(),
+        format!("  > {quote}"),
+        String::new(),
+        "## Occurrences".to_string(),
+        String::new(),
+        "- `src/price.ts:1`".to_string(),
+        String::new(),
+        "## Acceptance criteria".to_string(),
+        String::new(),
+        "- No occurrence of price remains.".to_string(),
+        String::new(),
+    ]
+    .join("\n")
+}
+
+fn srp_skill() -> String {
+    [
+        "# Single Responsibility Principle",
+        "",
+        "## Architectural Violations",
+        "",
+        "- **Mixed responsibilities:** A function, class, or module performs operations belonging to conceptually unrelated concerns.",
+        "- **Divergent change:** A component requires modifications for multiple independent reasons.",
+        "- **Accidental aggregation:** Unrelated functionality is grouped together for convenience rather than shared responsibility.",
+        "- **Responsibility leakage:** A component implements behavior that belongs to another component's responsibility.",
+        "- **Artificial fragmentation:** A cohesive responsibility is unnecessarily split into trivial components without establishing meaningful separation.",
+        "",
+    ]
+    .join("\n")
+}
+
+/// A single-responsibility filing whose evidence quotes `quote` from
+/// `src/handler.ts:1`.
+fn srp_filing_body(quote: &str) -> String {
+    let skill = srp_skill();
+    let directive = skill
+        .split('\n')
+        .find(|line| line.starts_with("- **Mixed responsibilities:**"))
+        .expect("a directive");
+    [
+        "## Category".to_string(),
+        String::new(),
+        "mixed-responsibilities".to_string(),
+        String::new(),
+        "## Component".to_string(),
+        String::new(),
+        "src/handler.ts — the fixture component".to_string(),
+        String::new(),
+        "## Skill".to_string(),
+        String::new(),
+        devboard::workers::single_responsibility::single_responsibility_config().skill_document,
+        String::new(),
+        "## Directive".to_string(),
+        String::new(),
+        format!("> {directive}"),
+        String::new(),
+        "## Why the responsibilities are mixed".to_string(),
+        String::new(),
+        "The fixture component parses and renders.".to_string(),
+        String::new(),
+        "## Evidence".to_string(),
+        String::new(),
+        "- `src/handler.ts:1-1`".to_string(),
+        format!("  > {quote}"),
+        String::new(),
+        "## Refactor".to_string(),
+        String::new(),
+        "Move the unrelated behavior into its own component.".to_string(),
+        String::new(),
+        "## Acceptance criteria".to_string(),
+        String::new(),
+        "- The component no longer contains the moved behavior.".to_string(),
+        String::new(),
+    ]
+    .join("\n")
+}
+
+/// Answers one filing's identity, label, tracker, and creation requests and
+/// records every request it serves.
+async fn stub_gitea_filing(
+    State(calls): State<StubCalls>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    let host = request
+        .headers()
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    calls
+        .lock()
+        .expect("calls")
+        .push(format!("{method} {path}"));
+    let (status, body) = match (method.as_str(), path.as_str()) {
+        ("GET", "/api/v1/user") => (200, json!({"login": "alice"}).to_string()),
+        ("GET", "/api/v1/repos/owner/name") => (
+            200,
+            json!({"permissions": {"pull": true, "push": true, "admin": false}}).to_string(),
+        ),
+        ("GET", "/api/v1/repos/owner/name/labels") => (
+            200,
+            json!([
+                {"id": 1, "name": "consistent-naming"},
+                {"id": 2, "name": "single-responsibility"},
+            ])
+            .to_string(),
+        ),
+        ("GET", "/api/v1/repos/owner/name/issues") => (200, "[]".to_string()),
+        ("POST", "/api/v1/repos/owner/name/issues") => (
+            201,
+            json!({
+                "number": 101,
+                "title": "a filed issue",
+                "html_url": format!("http://{host}/owner/name/issues/101"),
+                "state": "open",
+                "body": "the body",
+                "labels": [],
+                "created_at": "2026-01-01T00:00:00.000Z",
+            })
+            .to_string(),
+        ),
+        _ => (500, format!("unexpected {method} {path}")),
+    };
+    axum::response::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("a stub response")
+}
+
+#[tokio::test]
+async fn issue_create_proves_a_filing_body_once_at_creation_time() {
+    let calls: StubCalls = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let app = axum::Router::new()
+        .fallback(stub_gitea_filing)
+        .with_state(calls.clone());
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mut context = fixture("filing-provenance");
+    std::fs::create_dir_all(
+        context
+            .repo_dir
+            .join(".omp/skills/devboard-consistent-naming"),
+    )
+    .expect("the naming skill directory");
+    std::fs::create_dir_all(
+        context
+            .repo_dir
+            .join(".omp/skills/devboard-single-responsibility-principle"),
+    )
+    .expect("the single-responsibility skill directory");
+    std::fs::write(
+        context
+            .repo_dir
+            .join(".omp/skills/devboard-consistent-naming/SKILL.md"),
+        naming_skill(),
+    )
+    .expect("the naming skill");
+    std::fs::write(
+        context
+            .repo_dir
+            .join(".omp/skills/devboard-single-responsibility-principle/SKILL.md"),
+        srp_skill(),
+    )
+    .expect("the single-responsibility skill");
+    std::fs::create_dir_all(context.repo_dir.join("src")).expect("the source directory");
+    std::fs::write(
+        context.repo_dir.join("src/price.ts"),
+        "export const price = 1;\n",
+    )
+    .expect("the naming evidence");
+    std::fs::write(
+        context.repo_dir.join("src/handler.ts"),
+        "export const handle = 1;\n",
+    )
+    .expect("the evidence");
+    let remote = format!("http://127.0.0.1:{port}/owner/name.git");
+    let added = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&context.repo_dir)
+        .args(["remote", "add", "origin", &remote])
+        .status()
+        .expect("git runs");
+    assert!(added.success(), "the fixture origin is added");
+    context.environment = HashMap::from([("GITEA_TOKEN".to_string(), "secret".to_string())]);
+
+    let call = |id: i64, label: &str, body: String| {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "issue_create",
+                "arguments": {
+                    "title": "Rename price to amount",
+                    "body": body,
+                    "labels": [label],
+                }
+            }
+        })
+    };
+    let frames = drive(
+        &context,
+        &[
+            call(
+                60,
+                "consistent-naming",
+                naming_filing_body("export const total = 1;"),
+            ),
+            call(
+                61,
+                "single-responsibility",
+                srp_filing_body("export const handleDifferent = 1;"),
+            ),
+            call(
+                62,
+                "consistent-naming",
+                naming_filing_body("export const price = 1;"),
+            ),
+            call(
+                63,
+                "single-responsibility",
+                srp_filing_body("export const handle = 1;"),
+            ),
+        ],
+    )
+    .await;
+
+    let refused_naming = reply(&frames, 60);
+    assert_eq!(refused_naming["result"]["isError"], true);
+    let refused_naming_text = refused_naming["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text");
+    assert!(
+        refused_naming_text.contains("The consistent-naming body fails provenance"),
+        "{refused_naming_text}"
+    );
+    assert!(
+        refused_naming_text.contains("is not copied from those lines"),
+        "{refused_naming_text}"
+    );
+    let refused_srp = reply(&frames, 61);
+    assert_eq!(refused_srp["result"]["isError"], true);
+    let refused_srp_text = refused_srp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text");
+    assert!(
+        refused_srp_text.contains("The single-responsibility body fails provenance"),
+        "{refused_srp_text}"
+    );
+    assert!(
+        refused_srp_text.contains("is not copied from those lines"),
+        "{refused_srp_text}"
+    );
+    assert_eq!(tool_result(&frames, 62)["number"], 101);
+    assert_eq!(tool_result(&frames, 63)["number"], 101);
+
+    let posts = calls
+        .lock()
+        .expect("calls")
+        .iter()
+        .filter(|call| call.as_str() == "POST /api/v1/repos/owner/name/issues")
+        .count();
+    assert_eq!(posts, 2, "each refused body files nothing");
+    server.abort();
+}
+
 /// Answers the two identity requests one Gitea read makes and refuses the
 /// issue read itself the way a rejected credential does.
 async fn stub_gitea_refused_read(request: axum::extract::Request) -> axum::response::Response {

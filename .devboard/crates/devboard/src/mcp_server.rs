@@ -2561,6 +2561,67 @@ fn draft_goal_headings(repo_dir: &Path) -> Vec<String> {
     headings
 }
 
+/// Proves a filing's body once, at creation time, for the families whose
+/// issues carry a proved body.
+///
+/// The proof reads the tree as it stands at creation time and reuses the
+/// family's own `verify_filing` and skill/glossary readers, so a filed body is
+/// proved by the same rules the worker documents. A refused body never reaches
+/// the forge: the error names the concrete problem and the issue is never
+/// created. A published body is never proved again, so a later tree change or
+/// an unrelated label added to the issue never withdraws its row.
+fn prove_filing_body(
+    repo_dir: &Path,
+    title: &str,
+    body: &str,
+    labels: &[String],
+) -> Result<(), String> {
+    use crate::workers::{consistent_naming as naming, single_responsibility as srp};
+    if labels
+        .iter()
+        .any(|label| label == naming::CONSISTENT_NAMING_LABEL)
+    {
+        let config = naming::consistent_naming_config();
+        let skill = naming::read_skill_directives(repo_dir, &config.skill_document)
+            .map_err(|error| format!("The consistent-naming body was not proved: {error}"))?;
+        let mut options = naming::FilingOptions {
+            glossaries: naming::read_glossaries(repo_dir, &config),
+            ..Default::default()
+        };
+        let filing = naming::FilingProvenance {
+            title: title.to_string(),
+            body: body.to_string(),
+            labels: labels.to_vec(),
+        };
+        return match naming::verify_filing(repo_dir, &skill, &filing, &mut options) {
+            naming::ProvenanceResult::Ok(_) => Ok(()),
+            naming::ProvenanceResult::Problem(detail) => Err(format!(
+                "The consistent-naming body fails provenance and nothing was filed: {detail}"
+            )),
+        };
+    }
+    if labels
+        .iter()
+        .any(|label| label == srp::SINGLE_RESPONSIBILITY_LABEL)
+    {
+        let config = srp::single_responsibility_config();
+        let skill = srp::read_skill_directives(repo_dir, &config.skill_document)
+            .map_err(|error| format!("The single-responsibility body was not proved: {error}"))?;
+        let filing = srp::FilingProvenance {
+            title: title.to_string(),
+            body: body.to_string(),
+            labels: labels.to_vec(),
+        };
+        return match srp::verify_filing(repo_dir, &skill, &filing) {
+            srp::ProvenanceResult::Ok(_) => Ok(()),
+            srp::ProvenanceResult::Problem(detail) => Err(format!(
+                "The single-responsibility body fails provenance and nothing was filed: {detail}"
+            )),
+        };
+    }
+    Ok(())
+}
+
 async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result<Value, String> {
     let title = issue_title(args.get("title"))?;
     let body = match args.get("body").and_then(Value::as_str) {
@@ -2573,6 +2634,7 @@ async fn create_issue(context: &McpContext, args: &Map<String, Value>) -> Result
         ));
     }
     let labels = issue_labels(args.get("labels"))?;
+    prove_filing_body(&context.repo_dir, &title, &body, &labels)?;
     // A watchdog deduplication run files through this tool alone, so the
     // candidate fingerprint is what lets the cycle attribute the created
     // issue. Without the record the turn's filing reads as no decision.

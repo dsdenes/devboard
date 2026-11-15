@@ -2071,8 +2071,8 @@ async fn single_responsibility_reads_open_titles_once_per_cycle_not_on_every_syn
 }
 
 #[tokio::test]
-async fn single_responsibility_drops_a_filing_without_provenance() {
-    let fixture = Fixture::new("srp-drop");
+async fn single_responsibility_publishes_a_filing_without_a_proven_body() {
+    let fixture = Fixture::new("srp-publish");
     let skill = fixture.srp_inputs();
     let forge = Arc::new(SrpForge::default());
     forge.issues.lock().expect("the fake").push(srp::ForgeIssue {
@@ -2118,16 +2118,128 @@ async fn single_responsibility_drops_a_filing_without_provenance() {
     let worker = srp_worker(&fixture, Arc::clone(&forge), connect);
     assert!(worker.start("acme/fixture"));
     worker.refresh().await;
-    assert!(worker.current_state().issues.is_empty());
+    let state = worker.current_state();
+    assert_eq!(state.issues.len(), 1, "the labelled issue keeps its row");
+    assert_eq!(state.issues[0].number, 1);
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("unlisted-category")
+    );
     worker.begin_cycle().await;
     worker.wait_for_cycle().await;
     let state = worker.current_state();
+    assert_eq!(state.issues.len(), 2);
+    let categories: Vec<Option<&str>> = state
+        .issues
+        .iter()
+        .map(|issue| issue.category.as_deref())
+        .collect();
+    assert!(categories.contains(&Some("unlisted-category")));
+    assert!(categories.contains(&Some("mixed-responsibilities")));
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn single_responsibility_publishes_a_row_with_an_unrelated_processing_label() {
+    let fixture = Fixture::new("srp-processing");
+    let skill = fixture.srp_inputs();
+    let forge = Arc::new(SrpForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(srp::ForgeIssue {
+            number: 1,
+            title: "Split the fixture handler".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: srp_body(
+                "mixed-responsibilities",
+                "src/handler.ts",
+                1,
+                "export const handle = 1;",
+                &skill,
+            ),
+            labels: vec![
+                srp::SINGLE_RESPONSIBILITY_LABEL.to_string(),
+                devboard::forge::PROCESSING_LABEL.to_string(),
+            ],
+        });
+    let connect = fake_connect(|_prompt| Box::pin(async move { Ok(()) }));
+    let worker = srp_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    let state = worker.current_state();
     assert_eq!(state.issues.len(), 1);
-    assert_eq!(state.issues[0].number, 2);
-    let directory = srp::cycle_directory(&fixture.repo, &state.newest_cycle_id.expect("a cycle"));
-    assert!(api::read_activity(&directory)
-        .join("\n")
-        .contains("verification failure"));
+    assert_eq!(state.issues[0].number, 1);
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("mixed-responsibilities")
+    );
+    worker.refresh().await;
+    assert_eq!(worker.current_state().issues.len(), 1);
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn single_responsibility_keeps_a_row_after_the_cited_evidence_moves() {
+    let fixture = Fixture::new("srp-stale-evidence");
+    let skill = fixture.srp_inputs();
+    let body = srp_body(
+        "mixed-responsibilities",
+        "src/handler.ts",
+        1,
+        "export const handle = 1;",
+        &skill,
+    );
+    let forge = Arc::new(SrpForge::default());
+    forge
+        .issues
+        .lock()
+        .expect("the fake")
+        .push(srp::ForgeIssue {
+            number: 1,
+            title: "Split the fixture handler".to_string(),
+            url: "https://forge.test/acme/fixture/issues/1".to_string(),
+            state: "open".to_string(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            body: body.clone(),
+            labels: vec![srp::SINGLE_RESPONSIBILITY_LABEL.to_string()],
+        });
+    let connect = fake_connect(|_prompt| Box::pin(async move { Ok(()) }));
+    let worker = srp_worker(&fixture, Arc::clone(&forge), connect);
+    assert!(worker.start("acme/fixture"));
+    worker.refresh().await;
+    assert_eq!(worker.current_state().issues.len(), 1);
+    // A read-only evidence edit: the cited line no longer carries the quoted
+    // text. The filing's proof would now fail, but the row is kept.
+    fixture.write("src/handler.ts", "export const handleDifferent = 1;\n");
+    let config = srp::single_responsibility_config();
+    let directives = srp::read_skill_directives(&fixture.repo, &config.skill_document)
+        .expect("the fixture skill");
+    let filing = srp::FilingProvenance {
+        title: "Split the fixture handler".to_string(),
+        body,
+        labels: vec![srp::SINGLE_RESPONSIBILITY_LABEL.to_string()],
+    };
+    match srp::verify_filing(&fixture.repo, &directives, &filing) {
+        srp::ProvenanceResult::Problem(detail) => assert!(
+            detail.contains("is not copied from those lines"),
+            "{detail}"
+        ),
+        srp::ProvenanceResult::Ok(category) => {
+            panic!("the moved evidence still proves {category}")
+        }
+    }
+    worker.refresh().await;
+    let state = worker.current_state();
+    assert_eq!(state.issues.len(), 1);
+    assert_eq!(state.issues[0].number, 1);
+    assert_eq!(
+        state.issues[0].category.as_deref(),
+        Some("mixed-responsibilities")
+    );
     worker.stop().await;
 }
 

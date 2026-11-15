@@ -4,6 +4,16 @@ The harness is the Rust dashboard, its workers, and the browser client. Its
 operating contract lives in `AGENTS.md` and the project skills; this file
 records the host limits a busy workspace build depends on.
 
+## Agent filing rows
+
+Every background-agent family publishes one filed-issues row for every tracker issue carrying its
+family label, and keeps that row for the issue's whole life. The label gate is membership, never
+set equality: an issue that also carries `processing`, written by an Issues run, or any later
+unrelated label stays listed, and a read never proves a body. A filing's body provenance is proved
+once, at write time, inside the Devboard MCP `issue_create` tool, against the tree as it stands at
+creation time: a body that fails proof is refused before the issue exists, and an accepted filing
+is never re-proved against a later tree, so a later rename or code change never withdraws its row.
+
 ## Host write path
 
 `/etc/sysctl.d/99-io-tuning.conf` caps dirty page cache at 1 GiB and starts

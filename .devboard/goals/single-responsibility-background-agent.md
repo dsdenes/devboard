@@ -80,10 +80,14 @@ without bundling unrelated changes.
   and leaves settings and filed rows; a replacement dashboard drains an older live worker of the family
   per the harness rule.
 - The worker needs no answer document: it reads the MCP tool log's `issue_create` records, re-reads each
-  created issue from the forge, and publishes a row only for an issue it read back carrying the
-  `single-responsibility` label; an issue whose body lacks the category, the skill path, or a verbatim
-  evidence quote inside the named file span is recorded in activity as a verification failure and is not
-  published as a filed row; a tool error files nothing and is recorded, never claimed as a filing.
+  created issue from the forge, and publishes a row for every issue carrying the
+  `single-responsibility` label, keeping it for the issue's whole life. The label gate is membership: an
+  unrelated label later added — the Issues `processing` label included — never withdraws the row, and the
+  row keeps the body's `## Category` value. Provenance is proved once, at write time, inside the
+  `issue_create` MCP tool, against the tree as it stands at creation time: a body lacking the category,
+  the skill path, or a verbatim evidence quote inside the named file span is refused before the issue
+  exists, and an accepted filing is never re-proved against a later tree, so a later refactor or code
+  change never removes a filed row; a tool error files nothing and is recorded, never claimed as a filing.
 - Start preflight refuses before spawning a worker or writing state, naming the missing fact, when the
   skill file is missing, unreadable, or resolves outside the repository; the origin is not a supported
   forge; the selected account cannot write; `omp` is missing; the `/single-responsibility` command is not
