@@ -2591,9 +2591,9 @@ path starts a family on the wrong project kind.
 
 ### Periodic forge reads
 
-All seven filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer,
-API Standards, and Single Responsibility — obtain, age, and fail their issue state through one
-shared read
+All eight filed-issues tables — Auto Scout, Watchdog, Design System, Dead Code, MCP optimizer,
+API Standards, Single Responsibility, and Consistent Naming — obtain, age, and fail their issue
+state through one shared read
 (`server/agents/forge-state.ts`) that names, for
 each row it lists, the issue's current forge state and its shipping release. The read runs in
 the dashboard and never depends on the agent's worker: a stopped agent's table reflects a
@@ -2809,7 +2809,8 @@ is not `ok`, and never caps comments. With both caps empty its cycle behaves exa
 
 ### Filed issues
 
-All five pages render one `agent-issues` table with columns Title, Category, Filed, State, Shipped.
+Every background-agent page that files issues renders one `agent-issues` table with columns
+Title, Category, Filed, State, Shipped.
 Rows are `agent-issue` with `data-url`, `data-state`, and `data-version`, sorted by `createdAt`
 descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issue-category`, `agent-issue-filed` (a `<time>`), `agent-issue-state`
@@ -2818,6 +2819,36 @@ descending and then URL ascending. Cells are `agent-issue-title` (an anchor),
 `agent-issues-count` counts the rows. Auto Scout maps its GitHub title and creation time;
 Watchdog keeps `[watchdog] <category>: <line>`; Design System and Dead Code keep their finding
 title with its category.
+
+### Filing rows and label gates
+
+One row is published for every tracker issue carrying the family's label, and the row stays for
+the issue's whole life. A family's read asks the forge for issues carrying its own label and
+publishes a row for every answer; the label gate is membership, never set equality. An issue that
+also carries `processing` — the label an Issues run writes through `forge::PROCESSING_LABEL` —
+or any other unrelated label stays listed. Closure moves the row from `pending` to
+`implemented`; nothing else withdraws it. The row's category is the body's own value (`##
+Category` for the naming and responsibility families, `## Chapter` for API Standards), or the last
+known category when the body no longer states one. No read proves a body.
+
+| Family | Row source | Label gate |
+|---|---|---|
+| Auto Scout | `apply_read_rows` in `crates/devboard/src/workers/scout.rs` publishes one `ScoutIssueRow` per forge issue | the `scout` label, filtered by the forge and checked again for membership |
+| Watchdog | the fingerprint ledger's `filed:<url>` dispositions, resolved by the dashboard's forge projection | no label: an issue is a row once the ledger records it, titled `[watchdog] <category>: <line>` |
+| Design System | `apply_read` in `crates/devboard/src/workers/design.rs` publishes one `DesignIssueRow` per forge issue | the `design` label |
+| Dead Code | `apply_read` in `crates/devboard/src/workers/dead_code.rs` publishes one `IssueRow` per forge issue | the `dead-code` label |
+| MCP optimizer | `snapshot` issue rows in `crates/devboard/src/workers/mcp_optimizer.rs`, resolved through `projection.json` | no label: a title starting `[mcp-optimizer]` or a body line carrying `family:` |
+| API Standards | `read_forge` in `crates/devboard/src/workers/api_standards.rs` publishes one `IssueRow` per forge issue | the `api-standards` label |
+| Single Responsibility | `apply_read` in `crates/devboard/src/workers/single_responsibility.rs` publishes one `IssueRow` per forge issue | the `single-responsibility` label |
+| Consistent Naming | `apply_read` in `crates/devboard/src/workers/consistent_naming.rs` publishes one `IssueRow` per forge issue | the `consistent-naming` label |
+
+A filed body's provenance is proved once, at write time, inside the Devboard MCP `issue_create`
+tool, against the tree as it stands at creation time. The proof reuses the family's own
+`verify_filing`, skill reader, and glossary reader. A body that fails it is refused before the
+issue exists: `issue_create` answers an error naming the concrete problem and the forge receives
+no creation. An accepted filing is never proved again, so a later code change — including the
+rename the issue itself requests — never withdraws its row, and a backlog filed before a rule
+existed is published as it stands on the first read.
 
 ### Detail panels
 
@@ -3144,7 +3175,8 @@ A filed issue carries the category, the affected component, the skill path, the 
 directive bullet quoted verbatim, the reason its responsibilities are mixed, at least one
 repository-relative `path:lines` evidence entry with a quote copied from exactly those lines, the
 concrete refactor, and binary acceptance criteria. The title is one plain line of at most 200
-characters with no prefix, and the labels are exactly `["single-responsibility"]`.
+characters with no prefix, and the issue carries the `single-responsibility` label; the label gate
+is membership, so an unrelated label it gathers later never withdraws its row.
 
 A candidate is a duplicate when its normalized title — lowercased, whitespace runs collapsed,
 trimmed — equals that of any `single-responsibility` issue in any state, any open issue, or any
@@ -3159,12 +3191,15 @@ a failed forge read files nothing while keeping the last known rows. `agent-cade
 worker without a restart, and starts no cycle sooner than that interval after the previous cycle
 start.
 
-The worker files nothing itself. It reads the MCP tool log's `issue_create` records, re-reads
-each created issue from the origin, and publishes a row only for an issue it read back carrying
-the `single-responsibility` label and a body whose category, skill path, directive, component,
-evidence quote, refactor, and acceptance criteria all verify. A filing that fails that proof is
-recorded in activity as a verification failure and is not published as a row; a tool error files
-nothing and is recorded, never claimed as a filing. A tool error that names a forge request bound
+The worker files nothing itself. It reads the MCP tool log's `issue_create` records and re-reads
+the forge's `single-responsibility` labelled set. Provenance is proved once, at write time, inside
+the `issue_create` MCP tool, against the tree as it stands at creation time — the category, skill
+path, directive, component, evidence quote, refactor, and acceptance criteria — so a body that
+fails the proof is refused before the issue exists and recorded as a failed tool call. An
+accepted issue is never re-proved, and every labelled issue it reads back is published as a row
+for the issue's whole life: a later refactor that moves the cited evidence, or any unrelated label
+added later, never withdraws it. A tool error files nothing and is recorded, never claimed as a
+filing. A tool error that names a forge request bound
 that expired — the forge was slow, not broken — is recorded in activity and leaves no reason on
 the card, so the next cycle files again instead of the dashboard raising an error notification
 that returns as a new board issue for the same forge; any other tool error still sets the cycle's
