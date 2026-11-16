@@ -1398,11 +1398,30 @@ pub fn serving_harness(process: &ProcessSnapshot) -> Option<PathBuf> {
 /// server failures prove an assertion. `supervision::is_verification_scratch`
 /// answers the other question — whether an orphan is safe to reap — and
 /// deliberately excludes the test root, so the two predicates stay separate.
+///
+/// The recorded path is folded lexically before it is matched: a crate test
+/// builds its repository from `CARGO_MANIFEST_DIR`'s `../..`, so the path the
+/// fixture hands its child names `.test-tmp` only once `.` and `..` collapse.
+/// The fold reads no directory, because the test that started the dashboard
+/// may already have deleted the fixture when its journal is collected.
 fn is_fixture_repository(repo_dir: &str) -> bool {
-    let segments: Vec<&str> = repo_dir
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in repo_dir
         .split(['/', '\\'])
         .filter(|segment| !segment.is_empty())
-        .collect();
+    {
+        match segment {
+            "." => {}
+            ".." => {
+                if segments.last().is_some_and(|last| *last != "..") {
+                    segments.pop();
+                } else {
+                    segments.push(segment);
+                }
+            }
+            _ => segments.push(segment),
+        }
+    }
     segments.iter().enumerate().any(|(index, segment)| {
         *segment == ".devboard"
             && matches!(
@@ -7508,5 +7527,66 @@ mod tick_bounds {
         // poll.
         let tick = super::CONTROL_POLL_MS;
         assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}
+
+#[cfg(test)]
+mod verification_fixtures {
+    //! A verification fixture is never surveyed, however its repository path
+    //! is spelled. A crate test builds its scratch repository from
+    //! `CARGO_MANIFEST_DIR`'s `../..`, so the path it hands its child names
+    //! `.test-tmp` only once `.` and `..` collapse; the shape that was read
+    //! verbatim let one fixture dashboard file a server-error issue.
+
+    use super::*;
+
+    /// The crate manifest directory, the ancestor every fixture root hangs
+    /// from.
+    fn manifest() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// The harness root this crate is built in, which is a real directory.
+    fn harness() -> PathBuf {
+        manifest().join("../..")
+    }
+
+    /// One `devboard serve` process of `repo_dir`, as `/proc` reports it.
+    fn dashboard(pid: u32, repo_dir: &Path) -> ProcessSnapshot {
+        let program = harness().join("bin/devboard");
+        ProcessSnapshot {
+            pid,
+            cmdline: format!("{} serve", program.display()),
+            env: HashMap::from([
+                (
+                    "REPO_DIR".to_string(),
+                    repo_dir.to_string_lossy().into_owned(),
+                ),
+                ("PORT".to_string(), "4321".to_string()),
+            ]),
+            cwd: Some(repo_dir.to_path_buf()),
+            exe: Some(program),
+            ancestors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_fixture_recorded_through_its_manifest_parent_is_not_an_instance() {
+        let fixture = manifest().join("../../.test-tmp/relaunch-static-root-1/repo");
+        assert!(
+            fixture.to_string_lossy().contains(".."),
+            "the fixture keeps the spelling its test records"
+        );
+        let instances = instances_from_processes(&[dashboard(4_242, &fixture)], &HashSet::new());
+        assert!(
+            instances.is_empty(),
+            "a verification fixture is never surveyed: {instances:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_dashboard_is_still_an_instance() {
+        let instances = instances_from_processes(&[dashboard(4_243, &harness())], &HashSet::new());
+        assert_eq!(instances.len(), 1, "a real host dashboard is surveyed");
     }
 }
