@@ -133,14 +133,28 @@ fn marker_port(state: &Path) -> u16 {
     u16::try_from(marker(state)["port"].as_u64().unwrap_or(0)).unwrap_or(0)
 }
 
-async fn wait_ready(state: &Path) -> u16 {
-    let deadline = Instant::now() + Duration::from_secs(30);
+/// Waits for the dashboard in `state` to answer `/ready`, and reports its log
+/// when it never does.
+///
+/// One start runs every stage before it binds: the fork, the startup reaping
+/// pass over the whole process table, the `systemctl` read of the slice, the
+/// harness version resolved through bounded `git` reads, and the marker this
+/// loop polls. A loaded host starves every one of them by seconds, so the
+/// budget bounds a stall above the slowest stage; it never asserts how fast a
+/// shared core starts a dashboard.
+async fn wait_ready(state: &Path, log: &Path) -> u16 {
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let port = marker_port(state);
         if port > 0 && ready(port).await {
             return port;
         }
-        assert!(Instant::now() < deadline, "the dashboard became ready");
+        assert!(
+            Instant::now() < deadline,
+            "the dashboard became ready; log {}:\n{}",
+            log.display(),
+            std::fs::read_to_string(log).unwrap_or_default()
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -286,8 +300,9 @@ async fn a_second_start_for_the_same_host_dir_is_refused() {
     // write after readiness. The fixture's own empty release directory makes
     // that check fail offline, so the baseline below is taken after the write
     // instead of racing it.
-    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
-    let port = wait_ready(&state).await;
+    let log = scratch.path.join("first.log");
+    let mut first = start_dashboard(&repo, &state, &log, &[]);
+    let port = wait_ready(&state, &log).await;
     let pid = first.id();
     let before_version = version_bytes(&state);
     wait_for_journal(&repo, &state, "update check").await;
@@ -349,8 +364,9 @@ async fn refusal_names_the_live_pid_port_and_repo() {
     let scratch = Scratch::new("named");
     let repo = scratch.host("repo");
     let state = scratch.state("state");
-    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
-    let port = wait_ready(&state).await;
+    let log = scratch.path.join("first.log");
+    let mut first = start_dashboard(&repo, &state, &log, &[]);
+    let port = wait_ready(&state, &log).await;
     let pid = first.id();
     let canonical = repo.canonicalize().expect("a canonical repository");
 
@@ -384,8 +400,9 @@ async fn a_different_port_and_state_dir_do_not_defeat_the_guard() {
     let scratch = Scratch::new("port-state");
     let repo = scratch.host("repo");
     let state = scratch.state("state");
-    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
-    wait_ready(&state).await;
+    let log = scratch.path.join("first.log");
+    let mut first = start_dashboard(&repo, &state, &log, &[]);
+    wait_ready(&state, &log).await;
 
     let mut second = ProcessCommand::new(binary());
     second
@@ -427,8 +444,8 @@ async fn different_host_dirs_each_serve() {
         &scratch.path.join("b.log"),
         &fixture_env(),
     );
-    let port_a = wait_ready(&state_a).await;
-    let port_b = wait_ready(&state_b).await;
+    let port_a = wait_ready(&state_a, &scratch.path.join("a.log")).await;
+    let port_b = wait_ready(&state_b, &scratch.path.join("b.log")).await;
     assert!(ready(port_a).await && ready(port_b).await);
     assert_eq!(status_entries(&repo_a, &state_a).len(), 1);
     assert_eq!(status_entries(&repo_b, &state_b).len(), 1);
@@ -496,8 +513,9 @@ async fn a_killed_dashboard_never_blocks_the_next_start() {
     let scratch = Scratch::new("killed");
     let repo = scratch.host("repo");
     let state = scratch.state("state");
-    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
-    wait_ready(&state).await;
+    let log = scratch.path.join("first.log");
+    let mut first = start_dashboard(&repo, &state, &log, &[]);
+    wait_ready(&state, &log).await;
     let pid = first.id();
     unsafe {
         libc::kill(pid as i32, libc::SIGKILL);
@@ -505,8 +523,9 @@ async fn a_killed_dashboard_never_blocks_the_next_start() {
     first.wait().expect("the killed dashboard is reaped");
 
     let next_state = scratch.state("next-state");
-    let mut next = start_dashboard(&repo, &next_state, &scratch.path.join("next.log"), &[]);
-    wait_ready(&next_state).await;
+    let next_log = scratch.path.join("next.log");
+    let mut next = start_dashboard(&repo, &next_state, &next_log, &[]);
+    wait_ready(&next_state, &next_log).await;
     let entries = status_entries(&repo, &state);
     assert_eq!(entries.len(), 1, "the next start serves alone: {entries:?}");
     assert_ne!(entries[0]["pid"].as_u64(), Some(u64::from(pid)));
@@ -518,8 +537,9 @@ async fn a_confirmed_replacement_transfers_the_guard() {
     let scratch = Scratch::new("replacement");
     let repo = scratch.host("repo");
     let state = scratch.state("state");
-    let mut first = start_dashboard(&repo, &state, &scratch.path.join("first.log"), &[]);
-    let port = wait_ready(&state).await;
+    let log = scratch.path.join("first.log");
+    let mut first = start_dashboard(&repo, &state, &log, &[]);
+    let port = wait_ready(&state, &log).await;
     let old_pid = first.id();
 
     send_restart(port).await;
@@ -558,13 +578,9 @@ async fn sweep_keeps_the_newest_ready_dashboard() {
     let mut children = Vec::new();
     for index in 0..3 {
         let child_state = scratch.state(&format!("state-{index}"));
-        let child = start_dashboard(
-            &repo,
-            &child_state,
-            &scratch.path.join(format!("s{index}.log")),
-            &fixture_env(),
-        );
-        let _ = wait_ready(&child_state).await;
+        let log = scratch.path.join(format!("s{index}.log"));
+        let child = start_dashboard(&repo, &child_state, &log, &fixture_env());
+        let _ = wait_ready(&child_state, &log).await;
         children.push((child_state, child));
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
@@ -603,13 +619,9 @@ async fn sweep_records_the_kept_and_stopped_pids() {
     let mut children = Vec::new();
     for index in 0..2 {
         let child_state = scratch.state(&format!("state-{index}"));
-        let child = start_dashboard(
-            &repo,
-            &child_state,
-            &scratch.path.join(format!("s{index}.log")),
-            &fixture_env(),
-        );
-        let _ = wait_ready(&child_state).await;
+        let log = scratch.path.join(format!("s{index}.log"));
+        let child = start_dashboard(&repo, &child_state, &log, &fixture_env());
+        let _ = wait_ready(&child_state, &log).await;
         children.push((child_state, child));
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
@@ -704,13 +716,10 @@ async fn sweep_stops_an_unresponsive_dashboard_after_the_grace() {
     let scratch = Scratch::new("sweep-hung");
     let repo = scratch.host("repo");
     let state = scratch.state("state");
-    let mut ready_child = start_dashboard(
-        &repo,
-        &scratch.state("ready-state"),
-        &scratch.path.join("ready.log"),
-        &fixture_env(),
-    );
-    let _ = wait_ready(&scratch.state("ready-state")).await;
+    let ready_state = scratch.state("ready-state");
+    let ready_log = scratch.path.join("ready.log");
+    let mut ready_child = start_dashboard(&repo, &ready_state, &ready_log, &fixture_env());
+    let _ = wait_ready(&ready_state, &ready_log).await;
     let mut hung = hung_dashboard(&scratch, &repo, &scratch.state("hung-state"), 47811);
     let hung_pid = hung.id();
     wait_discovered(&repo, &state, hung_pid);
@@ -747,7 +756,7 @@ async fn sweep_never_signals_a_ready_dashboard() {
         &scratch.path.join("ready.log"),
         &fixture_env(),
     );
-    let port = wait_ready(&state).await;
+    let port = wait_ready(&state, &scratch.path.join("ready.log")).await;
     let pid = child.id();
     let report = sweep(&repo, &state);
     assert_eq!(report["keptPid"].as_u64(), Some(u64::from(pid)));
@@ -778,8 +787,8 @@ async fn sweep_leaves_another_host_dirs_dashboard_alone() {
         &scratch.path.join("b.log"),
         &fixture_env(),
     );
-    let port_b = wait_ready(&state_b).await;
-    wait_ready(&state_a).await;
+    let port_b = wait_ready(&state_b, &scratch.path.join("b.log")).await;
+    wait_ready(&state_a, &scratch.path.join("a.log")).await;
     let report = sweep(&repo_a, &state_a);
     assert_eq!(report["keptPid"].as_u64(), Some(u64::from(first.id())));
     assert!(
@@ -967,13 +976,15 @@ async fn sweep_spares_a_verification_fixture() {
     let scratch = Scratch::new("sweep-fixture");
     let repo = scratch.host("repo");
     let state = scratch.state("state");
+    let fixture_state = scratch.state("fixture-state");
+    let fixture_log = scratch.path.join("fixture.log");
     let mut fixture = start_dashboard(
         &repo,
-        &scratch.state("fixture-state"),
-        &scratch.path.join("fixture.log"),
+        &fixture_state,
+        &fixture_log,
         &[("DEVBOARD_DASHBOARD_SINGLETON_FIXTURE", "1")],
     );
-    let port = wait_ready(&scratch.state("fixture-state")).await;
+    let port = wait_ready(&fixture_state, &fixture_log).await;
     let pid = fixture.id();
     let report = sweep(&repo, &state);
     assert!(
