@@ -867,6 +867,9 @@ async fn a_running_draft_refuses_deletion_and_deletes_once_stopped() {
         },
     )
     .await;
+    // A start forks the owner, the owner finishes its ACP handshake, and the
+    // watcher publishes the first activity on its 250 ms tick: a loaded host
+    // starves all three, so the budget bounds a stall above every stage.
     frame_matching(
         &mut inbox,
         |frame| {
@@ -874,7 +877,7 @@ async fn a_running_draft_refuses_deletion_and_deletes_once_stopped() {
                 && frame["draft"]["status"] == "running"
                 && activity_contains(frame, "Reading the draft")
         },
-        15000,
+        60000,
     )
     .await;
 
@@ -903,10 +906,13 @@ async fn a_running_draft_refuses_deletion_and_deletes_once_stopped() {
         },
     )
     .await;
+    // The owner consumes the Stop on its command tick and its exit reaches the
+    // page on the watcher's tick; a loaded host starves both by seconds, so the
+    // budget bounds the transition, not the operator's click.
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "issuesDraftState" && frame["draft"]["status"] == "stopped",
-        15000,
+        60000,
     )
     .await;
 
