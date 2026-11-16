@@ -2280,6 +2280,30 @@ fn a_tracked_host_file_grounds_a_concept() {
     );
 }
 
+#[test]
+fn a_plain_glossary_title_is_read_as_one_label() {
+    let scratch = Scratch::new("glossary-title");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let files = devboard::discover_mode::host_files(&repo);
+    let document = glossary_document("orders", &[("order-total", "Order total")]).replace(
+        "titles:\n  - language: en\n    text: \"orders fixture terms\"",
+        "titles: \"Orders fixture terms\"",
+    );
+    assert!(document.contains("titles: \"Orders fixture terms\""));
+    let glossary = devboard::discover_mode::parse_glossary(
+        &document,
+        "orders.glossary.yaml",
+        &repo,
+        &files,
+        false,
+        true,
+    )
+    .expect("a plain title is read");
+    assert_eq!(glossary.titles.len(), 1);
+    assert_eq!(glossary.titles[0].language, "en");
+    assert_eq!(glossary.titles[0].text, "Orders fixture terms");
+}
+
 /// A memory reader a test can hold below the reserve.
 struct FixedMemory {
     total_mb: u64,

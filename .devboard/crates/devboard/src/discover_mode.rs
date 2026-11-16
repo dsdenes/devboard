@@ -1468,6 +1468,33 @@ fn label_list(value: &Value, path: &str) -> Result<Vec<Label>, String> {
     Ok(labels)
 }
 
+/// Reads a glossary's `titles` block. The document contract is a list of
+/// labels; a single label or one plain title an agent writes instead is read
+/// as the same labels, so a malformed title block never discards a complete
+/// glossary. A block of another shape carries no titles.
+fn glossary_titles(value: Option<&Value>, source: &str) -> Result<Vec<Label>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    match value {
+        Value::Array(items) => {
+            let mut titles = Vec::new();
+            for (index, entry) in items.iter().enumerate() {
+                titles.push(label_value(entry, &format!("{source}:titles[{index}]"))?);
+            }
+            Ok(titles)
+        }
+        Value::String(text) => {
+            let label = json!({"language": "en", "text": text});
+            Ok(vec![label_value(&label, &format!("{source}:titles"))?])
+        }
+        Value::Object(fields) if fields.contains_key("language") && fields.contains_key("text") => {
+            Ok(vec![label_value(value, &format!("{source}:titles"))?])
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
 fn hidden_label_list(value: &Value, path: &str) -> Result<Vec<HiddenLabel>, String> {
     let Some(items) = value.as_array() else {
         return Err(invalid(path, "must be a list of hidden labels"));
@@ -2000,16 +2027,7 @@ pub fn parse_glossary(
             format!("must match the file name {bounded_context}.glossary.yaml"),
         ));
     }
-    let Some(titles_raw) = record.get("titles").and_then(Value::as_array) else {
-        return Err(invalid(
-            &format!("{source}:titles"),
-            "must be a list of labels",
-        ));
-    };
-    let mut titles = Vec::new();
-    for (index, entry) in titles_raw.iter().enumerate() {
-        titles.push(label_value(entry, &format!("{source}:titles[{index}]"))?);
-    }
+    let titles = glossary_titles(record.get("titles"), source)?;
     let Some(concepts_raw) = record.get("concepts").and_then(Value::as_array) else {
         return Err(invalid(&format!("{source}:concepts"), "must be a list"));
     };
