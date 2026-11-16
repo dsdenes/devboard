@@ -2266,9 +2266,9 @@ async fn release_run_at(root: &Path) -> Value {
     release_train_snapshot(&frames(&mut inbox))
 }
 
-/// The release-train shared state one failure record produces, with the runs
-/// the page reads beside it.
-fn write_release_failure(state: &Path, failure: Value) {
+/// The release-train shared state one failure record produces, with the run
+/// that settled it the way that record's cause settles runs.
+fn write_release_failure(state: &Path, failure: Value, run_state: &str, run_detail: &str) {
     let target = "a".repeat(40);
     write_json(
         &state.join("release-train/state.json"),
@@ -2284,12 +2284,12 @@ fn write_release_failure(state: &Path, failure: Value) {
                     "id": "only",
                     "startedAt": "2026-11-12T17:45:38.055Z",
                     "endedAt": "2026-11-12T18:08:03.869Z",
-                    "state": "stopped",
+                    "state": run_state,
                     "range": format!("v1.46.13..{target}"),
                     "target": target,
                     "version": "1.47.0",
                     "url": null,
-                    "detail": "stopped during the release run",
+                    "detail": run_detail,
                     "commits": 5,
                     "peer": null,
                 },
@@ -2319,6 +2319,8 @@ async fn a_stopped_release_record_raises_no_page_error() {
             "version": "1.47.0",
             "stopped": true,
         }),
+        "stopped",
+        "stopped during the release run",
     );
 
     let (conn, mut inbox) = connection_for(&app).await;
@@ -2347,6 +2349,8 @@ async fn a_failed_release_record_still_raises_the_page_error() {
             "version": "1.47.0",
             "stopped": false,
         }),
+        "failed",
+        detail,
     );
 
     let (conn, mut inbox) = connection_for(&app).await;
@@ -2354,6 +2358,44 @@ async fn a_failed_release_record_still_raises_the_page_error() {
     let all = frames(&mut inbox);
     let snapshot = release_train_snapshot(&all);
     assert_eq!(snapshot["error"], json!(detail), "{all:?}");
+}
+
+/// An integration refusal is publish's forward-only repair: the run records
+/// failed to keep the detail, but `main` now carries the release and the next
+/// tick re-gates there, so the page raises no error for it. The error it raised
+/// before was an auto-filed issue for a repaired range.
+#[tokio::test]
+async fn an_integration_refusal_raises_no_page_error() {
+    let root = scratch("release-integration-refusal");
+    let app = app_at(&root);
+    let state = root.join("state");
+    let target = "a".repeat(40);
+    let detail = format!(
+        "v1.47.0 is already released for the range before the pinned target {}; \
+         integrated its release commit {} into main so the next tick re-gates there; \
+         nothing was tagged or dispatched",
+        &target[..7],
+        "b".repeat(7)
+    );
+    write_release_failure(
+        &state,
+        json!({
+            "at": "2026-11-12T18:08:03.869Z",
+            "detail": detail,
+            "sha": target,
+            "range": format!("v1.46.13..{target}"),
+            "version": "1.47.0",
+            "stopped": false,
+        }),
+        "failed",
+        &detail,
+    );
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = frames(&mut inbox);
+    let snapshot = release_train_snapshot(&all);
+    assert_eq!(snapshot["error"], Value::Null, "{all:?}");
 }
 
 /// The snapshot carries the active run first-class: which range, target,

@@ -10380,10 +10380,16 @@ impl ReleaseFamily {
                 if failure.get("stopped").and_then(Value::as_bool) == Some(true) {
                     return None;
                 }
-                failure
-                    .get("detail")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                let detail = failure.get("detail").and_then(Value::as_str)?;
+                // An integration refusal is publish's forward-only repair: the
+                // run failed to ship, but `main` now carries the release and
+                // the next tick re-gates there, so the page raises no error for
+                // it. The worker records the same reading by clearing its own
+                // `last_error`.
+                if crate::publish::is_integration_refusal(detail) {
+                    return None;
+                }
+                Some(detail.to_string())
             });
         let scan_id = format!(
             "{}:{}",
