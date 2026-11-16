@@ -1999,6 +1999,10 @@ fn stage_discover_glossary(
     } else {
         format!("{yaml}\n")
     };
+    let source = format!("glossary/{bounded_context}.glossary.yaml");
+    let files = crate::discover_mode::host_files(&context.repo_dir);
+    crate::discover_mode::parse_glossary(&text, &source, &context.repo_dir, &files, false, true)
+        .map_err(|error| format!("the staged glossary is invalid: {error}"))?;
     std::fs::write(&path, text).map_err(|error| error.to_string())?;
     Ok(json!({"path": path.to_string_lossy(), "context": bounded_context}))
 }
@@ -3985,6 +3989,44 @@ async fn read_pipe<R>(
         if kept < read {
             state.overflowed = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod glossary_stage_tests {
+    use super::*;
+
+    #[test]
+    fn a_malformed_glossary_is_refused_before_it_is_written() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-tmp")
+            .join(format!("discover-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).expect("a host source directory");
+        std::fs::write(root.join("src/order.ts"), "export const order = 1;\n")
+            .expect("a host source file");
+        let staging = root.join(".omp/discover/staging/run-test");
+        std::fs::create_dir_all(&staging).expect("a staging directory");
+        let context = McpContext {
+            repo_dir: root.clone(),
+            harness_dir: root.clone(),
+            state_dir: root.clone(),
+            environment: std::collections::HashMap::new(),
+            dashboards: None,
+        };
+        let args = json!({
+            "stagingDir": staging,
+            "context": "orders",
+            "yaml": "boundedContext: orders\ntitles: Orders\nconcepts: not-a-list\n"
+        });
+        let error = stage_discover_glossary(&context, args.as_object().expect("an object"))
+            .expect_err("a malformed glossary is refused");
+        assert!(error.contains("the staged glossary is invalid"), "{error}");
+        assert!(
+            !staging.join("glossary/orders.glossary.yaml").exists(),
+            "a refused glossary writes nothing"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
