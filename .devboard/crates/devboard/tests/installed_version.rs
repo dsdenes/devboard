@@ -193,7 +193,12 @@ async fn a_version_state_read_answers_the_facts_the_process_resolved_at_startup(
         allowed_hosts: Vec::new(),
         feedback: None,
     };
-    let app = App::new(config, Journal::open(&state_dir, &host, 0));
+    // A launcher-started dashboard exports the release it started, and the
+    // release suite runs this binary as that dashboard's child. The test is
+    // about the facts resolved from the fixture, so it states the launcher fact
+    // instead of inheriting one: `App::new` would read the ambient variable and
+    // name the harness release as this host's installed version.
+    let app = App::with_launched_release(config, Journal::open(&state_dir, &host, 0), None);
 
     let first = app.version_state();
     assert_eq!(first["installed"], "1.2.3");
