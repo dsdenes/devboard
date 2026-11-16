@@ -51,66 +51,106 @@ fn fixture_base() -> PathBuf {
     package_dir().join(".test-tmp")
 }
 
+/// The attempts one probe run makes while the kernel refuses its exec of a
+/// freshly written stub.
+const EXEC_BUSY_ATTEMPTS: usize = 20;
+/// The pause between a refused exec and the rerun.
+const EXEC_BUSY_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Whether a probe's `exec` of its stub was refused because the stub was still
+/// open for writing elsewhere.
+///
+/// A concurrent fork in this test process can inherit a stub's write handle
+/// and keep it across the probe's exec; the kernel answers `Text file busy` and
+/// the shell exits 126 without running the stub.
+fn exec_was_busy(output: &Output) -> bool {
+    output.status.code() == Some(126) && stderr_text(output).contains("Text file busy")
+}
+
+/// Runs a probe, rerunning it while the kernel refuses its exec of the stub.
+///
+/// The exec happens inside the probe's shell, which cannot retry a refused
+/// exec, so the whole run is repeated. Bounded: a probe that keeps failing is
+/// returned for its assertion to report instead of spinning.
+fn retry_exec_busy(mut run: impl FnMut() -> Output) -> Output {
+    let mut output = run();
+    for _ in 1..EXEC_BUSY_ATTEMPTS {
+        if !exec_was_busy(&output) {
+            break;
+        }
+        std::thread::sleep(EXEC_BUSY_PAUSE);
+        output = run();
+    }
+    output
+}
+
 /// Runs the shipped registration probe in `cwd` with a cleared environment and
 /// the given extra variables, feeding `stdin`.
 fn run_probe(cwd: &Path, environment: &[(&str, &str)], stdin: &[u8]) -> Output {
-    let (command, args) = registration();
-    let mut child = Command::new(command)
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .envs(environment.iter().copied())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the shipped probe starts");
-    let mut pipe = child.stdin.take().expect("a stdin pipe");
-    match pipe.write_all(stdin) {
-        Ok(()) => {}
-        // A probe that resolved a stand-in executable exits without reading a
-        // byte, so the pipe can already be closed; the handshake assertions
-        // read the answers a probe that did serve the protocol writes.
-        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
-        Err(error) => panic!("the probe accepts its input: {error}"),
-    }
-    // A probe serving the protocol reads until its input ends, so the write end
-    // closes before the probe is awaited.
-    drop(pipe);
-    child.wait_with_output().expect("the probe finishes")
+    retry_exec_busy(|| {
+        let (command, args) = registration();
+        let mut child = Command::new(command)
+            .args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(environment.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the shipped probe starts");
+        let mut pipe = child.stdin.take().expect("a stdin pipe");
+        match pipe.write_all(stdin) {
+            Ok(()) => {}
+            // A probe that resolved a stand-in executable exits without reading
+            // a byte, so the pipe can already be closed; the handshake
+            // assertions read the answers a probe that did serve the protocol
+            // writes.
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(error) => panic!("the probe accepts its input: {error}"),
+        }
+        // A probe serving the protocol reads until its input ends, so the write
+        // end closes before the probe is awaited.
+        drop(pipe);
+        child.wait_with_output().expect("the probe finishes")
+    })
 }
 
 /// Runs the shipped registration probe under `sh -x` with no input, so its
 /// stderr carries every command the probe expanded.
 fn run_probe_traced(cwd: &Path, environment: &[(&str, &str)]) -> Output {
-    let (command, args) = registration();
-    let mut traced = args;
-    traced.insert(0, "-x".to_string());
-    Command::new(command)
-        .args(traced)
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .envs(environment.iter().copied())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("the shipped probe traces")
+    retry_exec_busy(|| {
+        let (command, args) = registration();
+        let mut traced = args;
+        traced.insert(0, "-x".to_string());
+        Command::new(command)
+            .args(traced)
+            .current_dir(cwd)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(environment.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("the shipped probe traces")
+    })
 }
 
 /// Runs the shipped preflight script in `cwd` with a cleared environment.
 fn run_preflight(cwd: &Path, args: &[&str], environment: &[(&str, &str)]) -> Output {
-    Command::new("sh")
-        .arg(preflight_script())
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .envs(environment.iter().copied())
-        .output()
-        .expect("the shipped preflight runs")
+    retry_exec_busy(|| {
+        Command::new("sh")
+            .arg(preflight_script())
+            .args(args)
+            .current_dir(cwd)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .envs(environment.iter().copied())
+            .output()
+            .expect("the shipped preflight runs")
+    })
 }
 
 const HANDSHAKE: &[u8] =
@@ -400,6 +440,47 @@ fn devboard_bin_wins_over_a_harness_directory() {
         "{}",
         stderr_text(&output)
     );
+}
+
+/// The stderr a probe writes when the kernel refused its exec of the stub.
+const BUSY_EXEC_LINE: &str = "sh: 14: exec: /fixture/explicit/devboard: Text file busy\n";
+
+fn fabricated_output(code: i32, stdout: &str, stderr: &str) -> Output {
+    use std::os::unix::process::ExitStatusExt;
+
+    Output {
+        status: std::process::ExitStatus::from_raw(code << 8),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: stderr.as_bytes().to_vec(),
+    }
+}
+
+#[test]
+fn a_probe_whose_exec_was_busy_is_run_again() {
+    let mut attempts = 0;
+    let output = retry_exec_busy(|| {
+        attempts += 1;
+        if attempts == 1 {
+            fabricated_output(126, "", BUSY_EXEC_LINE)
+        } else {
+            fabricated_output(0, "explicit mcp\n", "")
+        }
+    });
+
+    assert_eq!(attempts, 2, "the refused attempt is rerun");
+    assert_eq!(stub_stdout(&output), "explicit mcp");
+}
+
+#[test]
+fn a_probe_that_failed_for_another_cause_is_not_run_again() {
+    let mut attempts = 0;
+    let output = retry_exec_busy(|| {
+        attempts += 1;
+        fabricated_output(127, "", "devboard-mcp: no devboard\n")
+    });
+
+    assert_eq!(attempts, 1, "only a refused exec is rerun");
+    assert_eq!(output.status.code(), Some(127));
 }
 
 #[test]
