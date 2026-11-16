@@ -420,6 +420,76 @@ kbd {
   color: var(--error);
 }
 
+/* One switch row: the active mode's name and a track whose thumb follows it. */
+.sidebar-delivery {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--foreground);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  min-height: 26px;
+  padding: 3px 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.sidebar-delivery:hover:not(:disabled) {
+  background: var(--secondary);
+}
+
+.sidebar-delivery:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.sidebar-delivery:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.sidebar-delivery__track {
+  background-color: var(--background);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  flex: 0 0 26px;
+  height: 14px;
+  position: relative;
+  transition: background-color 120ms ease, border-color 120ms ease;
+  width: 26px;
+}
+
+.sidebar-delivery__thumb {
+  background-color: var(--muted-foreground);
+  border-radius: 999px;
+  height: 8px;
+  left: 2px;
+  position: absolute;
+  top: 2px;
+  transition: left 120ms ease, background-color 120ms ease;
+  width: 8px;
+}
+
+.sidebar-delivery[data-mode="pull-request"] .sidebar-delivery__track {
+  background-color: var(--accent-surface);
+  border-color: var(--accent);
+}
+
+.sidebar-delivery[data-mode="pull-request"] .sidebar-delivery__thumb {
+  background-color: var(--accent);
+  left: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-delivery__track,
+  .sidebar-delivery__thumb {
+    transition: none;
+  }
+}
+
 .sidebar-group--separated {
   border-top: 1px solid var(--border-subtle);
   margin-top: 10px;

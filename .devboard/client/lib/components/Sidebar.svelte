@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from "./ui/button.svelte";
+  import SaveFeedback from "./SaveFeedback.svelte";
   import { DISCOVER_AGENTS } from "../../../lib/agent-registry.ts";
   import { SECTION_TABS, SKILL_TABS } from "../discover-format";
   import {
@@ -17,7 +18,7 @@
   import { issues } from "../issues.svelte";
   import { queueCounts, queueSummary } from "../issues-queue";
   import { agents } from "../agents.svelte";
-  import { delivery } from "../delivery.svelte";
+  import { DELIVERY_FEEDBACK_SCOPE, DELIVERY_MODE_LABELS, delivery } from "../delivery.svelte";
   import { statusTone, verificationTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
@@ -699,35 +700,27 @@
         title={delivery.reason ?? undefined}
       >
         <div class="sidebar-group__title">Delivery mode</div>
-        <div
-          class="delivery-mode"
-          role="radiogroup"
-          aria-label="Delivery mode"
-          aria-disabled={delivery.disabled ? "true" : undefined}
+        <Button
+          bare
+          class="sidebar-delivery"
+          role="switch"
+          aria-checked={delivery.shown === "pull-request" ? "true" : "false"}
+          data-mode={delivery.shown}
+          data-testid="delivery-mode-toggle"
+          disabled={delivery.disabled}
+          title={`Switch to ${DELIVERY_MODE_LABELS[delivery.other]}`}
+          onclick={() => delivery.choose(delivery.other)}
         >
-          <Button
-            bare
-            class="sidebar-item delivery-mode__option"
-            role="radio"
-            aria-checked={delivery.mode === "merge" ? "true" : "false"}
-            disabled={delivery.disabled || delivery.pending !== null}
-            data-testid="delivery-mode-merge"
-            onclick={() => delivery.choose("merge")}
-          >
-            <span class="sidebar-item__label">Merge to main</span>
-          </Button>
-          <Button
-            bare
-            class="sidebar-item delivery-mode__option"
-            role="radio"
-            aria-checked={delivery.mode === "pull-request" ? "true" : "false"}
-            disabled={delivery.disabled || delivery.pending !== null}
-            data-testid="delivery-mode-pull-request"
-            onclick={() => delivery.choose("pull-request")}
-          >
-            <span class="sidebar-item__label">Open pull request</span>
-          </Button>
-        </div>
+          <span class="sidebar-delivery__track" data-testid="delivery-mode-track" aria-hidden="true">
+            <span class="sidebar-delivery__thumb" data-testid="delivery-mode-thumb"></span>
+          </span>
+          <span class="sidebar-item__label" data-testid="delivery-mode-label">
+            {DELIVERY_MODE_LABELS[delivery.shown]}
+          </span>
+        </Button>
+        {#if delivery.saving}
+          <p class="sidebar-empty" data-testid="delivery-mode-saving">Saving…</p>
+        {/if}
         {#if delivery.disabled && delivery.reason !== null}
           <p class="sidebar-empty" data-testid="delivery-mode-reason">{delivery.reason}</p>
         {/if}
@@ -736,6 +729,7 @@
             {delivery.error}
           </p>
         {/if}
+        <SaveFeedback scope={DELIVERY_FEEDBACK_SCOPE} />
       </section>
 
       <section

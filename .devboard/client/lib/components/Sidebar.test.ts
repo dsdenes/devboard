@@ -24,7 +24,8 @@ const { goalDrafts } = await import("../goal-drafts.svelte");
 const { issues } = await import("../issues.svelte");
 const { flow } = await import("../flow.svelte");
 const { agents } = await import("../agents.svelte");
-const { delivery } = await import("../delivery.svelte");
+const { delivery, DELIVERY_MODE_LABELS } = await import("../delivery.svelte");
+const { saveFeedback } = await import("../save-feedback.svelte");
 const { connection } = await import("../connection.svelte");
 const { SKILL_TABS } = await import("../discover-format");
 const { DISCOVER_AGENTS } = await import("../../../lib/agent-registry.ts");
@@ -136,6 +137,7 @@ function resetStores(): void {
   flow.question = null;
   agents.snapshots = {};
   delivery.reset();
+  saveFeedback.dismiss();
   layout.activeTab = {
     goal: "overview",
     issues: "overview",
@@ -835,7 +837,22 @@ function projectPayload(
   };
 }
 
-test("the delivery switch sits immediately above Background agents and saves", async () => {
+function deliveryToggle(): HTMLButtonElement {
+  const toggle = document.querySelector('[data-testid="delivery-mode-toggle"]');
+  expect(toggle).not.toBeNull();
+  return toggle as HTMLButtonElement;
+}
+
+function stubSend(): unknown[] {
+  const sent: unknown[] = [];
+  connection.send = ((command: unknown) => {
+    sent.push(command);
+    return true;
+  }) as typeof connection.send;
+  return sent;
+}
+
+test("the delivery switch is one row immediately above Background agents", async () => {
   layout.mode = "devboard";
   delivery.handleEvent(projectPayload("merge"));
   mount();
@@ -850,60 +867,97 @@ test("the delivery switch sits immediately above Background agents and saves", a
 
   const group = document.querySelector('[data-testid="sidebar-delivery-mode"]');
   expect(group?.getAttribute("aria-label")).toBe("Delivery mode");
-  const merge = document.querySelector('[data-testid="delivery-mode-merge"]');
-  const pull = document.querySelector('[data-testid="delivery-mode-pull-request"]');
-  expect(merge?.textContent?.trim()).toBe("Merge to main");
-  expect(pull?.textContent?.trim()).toBe("Open pull request");
-  expect(merge?.getAttribute("aria-checked")).toBe("true");
-  expect(pull?.getAttribute("aria-checked")).toBe("false");
+  expect(group?.querySelectorAll('[data-testid="delivery-mode-toggle"]').length).toBe(1);
+  expect(document.querySelector('[data-testid="delivery-mode-merge"]')).toBeNull();
+  expect(document.querySelector('[data-testid="delivery-mode-pull-request"]')).toBeNull();
 
-  const sent: unknown[] = [];
+  const toggle = deliveryToggle();
+  expect(toggle.tagName).toBe("BUTTON");
+  expect(toggle.getAttribute("role")).toBe("switch");
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(toggle.getAttribute("data-mode")).toBe("merge");
+  expect(toggle.textContent?.trim()).toBe(DELIVERY_MODE_LABELS.merge);
+  expect(toggle.getAttribute("title")).toBe(`Switch to ${DELIVERY_MODE_LABELS["pull-request"]}`);
+  expect(toggle.querySelectorAll('[data-testid="delivery-mode-track"]').length).toBe(1);
+  expect(toggle.querySelectorAll('[data-testid="delivery-mode-thumb"]').length).toBe(1);
+
+  // An initial project frame is neither a pending save nor a confirmation.
+  expect(document.querySelector('[data-testid="delivery-mode-saving"]')).toBeNull();
+  expect(document.querySelector('[data-testid="save-feedback"]')).toBeNull();
+});
+
+test("a delivery activation flips optimistically and confirms the save", async () => {
+  layout.mode = "devboard";
+  delivery.handleEvent(projectPayload("merge"));
+  mount();
+  await tick();
+  const toggle = deliveryToggle();
+
   const previous = connection.send;
-  connection.send = ((command: unknown) => {
-    sent.push(command);
-    return true;
-  }) as typeof connection.send;
+  const sent = stubSend();
   try {
-    await fireEvent.click(pull as Element);
-    // The dispatch happens, but the selection waits for the server's frame.
+    await fireEvent.click(toggle);
     expect(sent).toEqual([{ type: "setDeliveryMode", mode: "pull-request" }]);
-    expect(merge?.getAttribute("aria-checked")).toBe("true");
+    // The confirmed mode waits for the server; the switch already shows it.
+    expect(delivery.mode).toBe("merge");
+    expect(toggle.getAttribute("data-mode")).toBe("pull-request");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.textContent?.trim()).toBe(DELIVERY_MODE_LABELS["pull-request"]);
+    expect(
+      document.querySelector('[data-testid="delivery-mode-saving"]')?.textContent?.trim(),
+    ).toBe("Saving…");
+
+    await fireEvent.click(toggle);
+    expect(sent.length).toBe(1);
 
     delivery.handleEvent(projectPayload("pull-request"));
     await tick();
-    expect(merge?.getAttribute("aria-checked")).toBe("false");
-    expect(pull?.getAttribute("aria-checked")).toBe("true");
+    expect(document.querySelector('[data-testid="delivery-mode-saving"]')).toBeNull();
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    const feedback = document.querySelector('[data-testid="save-feedback"]');
+    expect(feedback?.getAttribute("data-scope")).toBe("delivery.mode");
+    expect(feedback?.getAttribute("role")).toBe("status");
+    expect(feedback?.getAttribute("aria-live")).toBe("polite");
+    expect(feedback?.textContent?.trim()).toBe("Delivery mode saved: Open pull request.");
+    expect(feedback?.querySelector("svg")).not.toBeNull();
   } finally {
     connection.send = previous;
   }
 });
 
-test("a refused delivery save shows its error and keeps the previous selection", async () => {
+test("a refused delivery save restores the previous mode and shows the error", async () => {
   layout.mode = "devboard";
   delivery.handleEvent(projectPayload("merge"));
   mount();
   await tick();
+  const toggle = deliveryToggle();
 
-  const sent: unknown[] = [];
   const previous = connection.send;
-  connection.send = ((command: unknown) => {
-    sent.push(command);
-    return true;
-  }) as typeof connection.send;
+  const sent = stubSend();
   try {
-    const pull = document.querySelector('[data-testid="delivery-mode-pull-request"]');
-    await fireEvent.click(pull as Element);
+    await fireEvent.click(toggle);
     expect(sent.length).toBe(1);
     delivery.handleEvent({
       type: "error",
       message: "Unknown delivery mode \"fast-forward\"; use `merge` or `pull-request`.",
     });
     await tick();
-    const merge = document.querySelector('[data-testid="delivery-mode-merge"]');
-    expect(merge?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle.getAttribute("data-mode")).toBe("merge");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.textContent?.trim()).toBe(DELIVERY_MODE_LABELS.merge);
     expect(
       document.querySelector('[data-testid="delivery-mode-error"]')?.textContent?.trim(),
     ).toContain("Unknown delivery mode");
+    expect(document.querySelector('[data-testid="save-feedback"]')).toBeNull();
+    expect(saveFeedback.text).toBeNull();
+
+    // The refusal leaves the next activation free to dispatch again.
+    await fireEvent.click(toggle);
+    expect(sent).toEqual([
+      { type: "setDeliveryMode", mode: "pull-request" },
+      { type: "setDeliveryMode", mode: "pull-request" },
+    ]);
+    expect(document.querySelector('[data-testid="delivery-mode-error"]')).toBeNull();
   } finally {
     connection.send = previous;
   }
@@ -919,23 +973,20 @@ test("the delivery switch is disabled on the harness source checkout", async () 
 
   const group = document.querySelector('[data-testid="sidebar-delivery-mode"]');
   expect(group).not.toBeNull();
-  const radios = group?.querySelector('[role="radiogroup"]');
-  expect(radios?.getAttribute("aria-disabled")).toBe("true");
-  expect(document.querySelector('[data-testid="delivery-mode-merge"]')?.hasAttribute("disabled")).toBe(true);
-  expect(document.querySelector('[data-testid="delivery-mode-pull-request"]')?.hasAttribute("disabled")).toBe(true);
-  expect(
-    group?.querySelector('[data-testid="delivery-mode-reason"]')?.textContent?.trim(),
-  ).toBe(reason);
+  const toggle = deliveryToggle();
+  expect(toggle.hasAttribute("disabled")).toBe(true);
+  expect(group?.querySelector('[data-testid="delivery-mode-reason"]')?.textContent?.trim()).toBe(
+    reason,
+  );
+  expect(document.querySelector('[data-testid="delivery-mode-saving"]')).toBeNull();
+  expect(document.querySelector('[data-testid="save-feedback"]')).toBeNull();
 
   // A disabled switch dispatches nothing.
-  const sent: unknown[] = [];
   const previous = connection.send;
-  connection.send = ((command: unknown) => {
-    sent.push(command);
-    return true;
-  }) as typeof connection.send;
+  const sent = stubSend();
   try {
     delivery.choose("pull-request");
+    await fireEvent.click(toggle);
     expect(sent).toEqual([]);
   } finally {
     connection.send = previous;

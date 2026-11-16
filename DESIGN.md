@@ -559,6 +559,21 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `source-only-badge`, and no tone. It sits in its region header immediately after the region title
   and stays visible while the disclosure that owns it is closed; any trailing count or subtitle
   stays on the header's trailing edge. No source-only surface may use another treatment.
+- **Delivery mode switch** (`.sidebar-delivery` in `Sidebar.svelte`, rules in `app.css`) — the
+  sidebar's one control for the repository's delivery mode, never two mode rows: a bare `Button`
+  row carrying `role="switch"`, one 26×14px track, and one 8px thumb. The active mode is the
+  visible 12px label — `Merge to main` or `Open pull request` — while `title` names the other mode,
+  the one activation switches to, so a single row states the state and the reachable alternative.
+  Merge leaves the track `background` with a `muted-foreground` thumb at its leading 2px;
+  pull request fills the track `accent-surface` with an `accent` border and moves the thumb to 14px
+  in `accent`, over 120ms (none under `prefers-reduced-motion`). Hover takes `secondary`, focus a
+  2px `ring`, and the 300px sidebar keeps the label whole. Activation flips the label,
+  `aria-checked`, and the thumb at once and adds an 11px muted `Saving…` line while the save is
+  pending; the confirming `project` frame replaces it with the shared transient
+  `Delivery mode saved: <mode>.` note scoped to `delivery.mode`. A refusal restores the previous
+  mode and states the server's message in `error`. On a harness source checkout the row is
+  disabled at 45% opacity and the availability reason sits under it, with no saving line and no
+  success note.
 - **Decision record start control** (`.adr-action` in `AdrTable.svelte`) — the only per-row action
   on the Decision records table: the shipped `Button` at `sm` size (24px tall, 11px/500 type, 4px
   radius) centered in the 28px row. The record marked `Next` takes the filled `default` variant
