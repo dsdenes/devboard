@@ -10,10 +10,12 @@
 //! the slice already carries.
 //!
 //! This fixture shadows `systemctl` with a script that records and delays every
-//! invocation, so the save that waited for the manager is timed against a
-//! round trip the operator's budget cannot cover — the defect that filed
-//! issue 1951. The applier is then observed making the one read and the one
-//! write the answer no longer waits on.
+//! invocation, and holds every call at a gate armed for the measured save. A
+//! save that waited for the manager is therefore caught by the order of the two
+//! events, never by a clock: the save cannot answer while its call is held, and
+//! the gate opens only after the answer — the defect that filed issue 1951. The
+//! applier is then observed making the one read and the one write the answer no
+//! longer waits on.
 //!
 //! The storage half is a staged write and a rename. When the filesystem's own
 //! flush is slow enough to exhibit a `sync_all` on the path — the defect this
@@ -75,18 +77,35 @@ fn settings(high: u64) -> Settings {
 }
 
 /// The fake `systemctl`: every call is delayed and then recorded, so a call in
-/// the log has returned. A `show` answers in the format it was asked for —
-/// `Name=Value` lines, or the bare value with `--value` — from the control
-/// group the fixture owns and the description file.
+/// the log has returned. An armed gate records the call in `called.log` and
+/// holds it until the test opens the gate, so a save that waits on the manager
+/// cannot answer while the gate is shut. A `show` answers in the format it was
+/// asked for — `Name=Value` lines, or the bare value with `--value` — from the
+/// control group the fixture owns and the description file.
 fn fake_systemctl(root: &Path) -> PathBuf {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).expect("the fake bin directory");
     let log = root.join("calls.log");
+    let called = root.join("called.log");
+    let armed = root.join("gate-armed");
+    let opened = root.join("gate-open");
     let description = root.join("description");
+    // The gate loop is bounded well above the test's own answer budget, so a
+    // call the fixture holds on a starved host still exits after the test has
+    // settled its verdict.
     let script = format!(
         r#"#!/bin/sh
+printf '%s\n' "$*" >> "{called}"
+if [ -e "{armed}" ]; then
+  waits=0
+  while [ ! -e "{opened}" ]; do
+    sleep 0.05
+    waits=$((waits + 1))
+    if [ "$waits" -ge 2400 ]; then break; fi
+  done
+fi
 sleep "${{FAKE_SYSTEMCTL_DELAY:-0.2}}"
-printf '%s\n' "$*" >> {log}
+printf '%s\n' "$*" >> "{log}"
 values=0
 for arg in "$@"; do
   if [ "$arg" = '--value' ]; then values=1; fi
@@ -109,6 +128,9 @@ done
 exit 0
 "#,
         log = log.display(),
+        called = called.display(),
+        armed = armed.display(),
+        opened = opened.display(),
         description = description.display(),
     );
     let program = bin.join("systemctl");
@@ -206,18 +228,34 @@ fn a_save_answers_before_the_user_manager_is_asked() {
     );
 
     // The slice now carries the marker, so the applier writes limits only. The
-    // save itself must answer first: the operator's budget covers the answer,
-    // not the two round trips a changed budget costs the user manager.
+    // save itself must answer first, and the verdict is the order of the two
+    // events, not a clock: every call the fixture sees is held at the gate
+    // armed below, so a save that waited on the manager could not return until
+    // the gate opened, and the gate opens only after the save has answered. A
+    // loaded host starves a wall-clock budget — a whole-suite attempt measured
+    // 5.86 s on a save that costs 2-4 ms — while this verdict is the same on an
+    // idle host and a saturated one.
     std::fs::write(root.join("description"), format!("{marker}\n")).expect("the description");
     clear_calls(&root);
-    let started = Instant::now();
-    update(&governor, settings(4096)).expect("the save validates");
-    let answered = started.elapsed();
-    assert!(
-        answered < UI_ACTION_BUDGET,
-        "the save answered in {answered:?}: the operator's answer waited on the \
-         {CALL_DELAY:?}-per-call user manager, outside the {UI_ACTION_BUDGET:?} budget"
-    );
+    std::fs::write(root.join("called.log"), "").expect("the call record reset");
+    std::fs::write(root.join("gate-armed"), "").expect("the gate is armed");
+    let saver = Arc::clone(&governor);
+    let (sender, answered) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(update(&saver, settings(4096)));
+    });
+    let answer = answered
+        .recv_timeout(Duration::from_secs(60))
+        .unwrap_or_else(|_| {
+            let asked = std::fs::read_to_string(root.join("called.log")).unwrap_or_default();
+            panic!(
+                "the save did not answer in 60 s while the user manager held its reply: the \
+                 operator's answer is waiting on a {CALL_DELAY:?} round trip. the fixture \
+                 recorded: {asked:?}"
+            )
+        });
+    answer.expect("the save validates");
+    std::fs::write(root.join("gate-open"), "").expect("the gate opens after the answer");
 
     // The applier then spends one read and one write on the changed budget.
     let calls = wait_for_calls(&root, 2);
