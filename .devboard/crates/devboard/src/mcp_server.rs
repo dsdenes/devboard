@@ -2001,8 +2001,17 @@ fn stage_discover_glossary(
     };
     let source = format!("glossary/{bounded_context}.glossary.yaml");
     let files = crate::discover_mode::host_files(&context.repo_dir);
-    crate::discover_mode::parse_glossary(&text, &source, &context.repo_dir, &files, false, true)
-        .map_err(|error| format!("the staged glossary is invalid: {error}"))?;
+    if let Err(error) =
+        crate::discover_mode::parse_glossary(&text, &source, &context.repo_dir, &files, false, true)
+    {
+        // A content error is the agent's to repair in this same turn. Return
+        // it as a result, not a failed call, so the peer keeps its turn and
+        // sees exactly which field to fix; nothing is written.
+        return Ok(json!({
+            "written": false,
+            "error": format!("the staged glossary is invalid: {error}"),
+        }));
+    }
     std::fs::write(&path, text).map_err(|error| error.to_string())?;
     Ok(json!({"path": path.to_string_lossy(), "context": bounded_context}))
 }
@@ -4019,8 +4028,10 @@ mod glossary_stage_tests {
             "context": "orders",
             "yaml": "boundedContext: orders\ntitles: Orders\nconcepts: not-a-list\n"
         });
-        let error = stage_discover_glossary(&context, args.as_object().expect("an object"))
-            .expect_err("a malformed glossary is refused");
+        let refused = stage_discover_glossary(&context, args.as_object().expect("an object"))
+            .expect("a soft refusal is a result");
+        assert_eq!(refused["written"], json!(false));
+        let error = refused["error"].as_str().expect("a refusal error");
         assert!(error.contains("the staged glossary is invalid"), "{error}");
         assert!(
             !staging.join("glossary/orders.glossary.yaml").exists(),
