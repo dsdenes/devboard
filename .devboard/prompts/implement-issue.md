@@ -467,6 +467,23 @@ conflict is resolved in place. A `rebased` line means the branch landed on a bas
 verified against: rerun the checks the change needs once and report their verdict beside the
 landing.
 
+Prove the landed change with exactly one `scripts/desktop/arbstrat-indicator --verdict <sha>`
+call, and pass the full 40-character landed commit itself: it prints `run-main`, `main` and
+`origin/main` HEAD, then `merged` (ancestry against `main` or `origin/main`), `deployed` (ancestry
+against `run-main` HEAD), `serving`, the ui proxy probe as an `observation`, and both recorded
+endpoint URLs. It exits `0` only when that commit is deployed and serving, `2` deployed but not
+serving with the failing check on its `not-serving:` line, `3` merged but not deployed, `4` an
+unknown commit, and `1` a known commit that is not merged. Never pass `run-main`, which is a
+worktree path and not a revision, never a `<a>..<b>` range, never two revisions, and never an
+abbreviated sha: each is refused, and the refusal names the form to pass instead. Never chain
+`scripts/desktop/arbstrat-indicator --status` with `git -C run-main rev-parse HEAD`,
+`git merge-base --is-ancestor`, an echoed `$?`, or a `jq` read of
+`state/runtime-endpoints.json`: `--verdict` reports the running tree's HEAD beside the merged,
+deployed and serving verdict in that one call. A `degraded: ui proxy /api/observation …` line is
+that command's own proxy probe, an `observation` line that never changes the serving verdict and
+is never chased with `curl`, `pm2`, or a second `git` read; a `not-serving:` line and a nonzero
+exit are facts to report, never a reason to re-probe the same commit.
+
 A short hash, when one is needed, comes from one `git rev-parse --short=12 <rev>` call per
 revision: passing two revisions to one `--short` call exits 128 with `fatal: Needed a single
 revision`, and that message never means the branches diverged.
