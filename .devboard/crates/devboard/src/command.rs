@@ -337,6 +337,18 @@ impl Command {
                 | Self::GetProviders
         )
     }
+
+    /// The `requestId` a tracked change carries, so a refusal of that change
+    /// answers under the id the page is waiting on.
+    pub fn request_id(&self) -> Option<&Value> {
+        match self {
+            Self::CreateProvider { request_id, .. }
+            | Self::SaveProvider { request_id, .. }
+            | Self::DeleteProvider { request_id, .. }
+            | Self::SetProviderEnabled { request_id, .. } => request_id.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 /// Parses one JSON object carrying a `type` into a command.

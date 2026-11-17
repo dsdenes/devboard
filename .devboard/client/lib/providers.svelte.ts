@@ -277,6 +277,16 @@ export class ProviderStore {
     return kind;
   }
 
+  /**
+   * The one change still awaiting an answer, when exactly one is pending: an
+   * unnamed refusal is attributed only when no other request could be meant.
+   */
+  #soleRequestId(): number | null {
+    if (this.pending.size !== 1) return null;
+    const first = this.pending.keys().next();
+    return first.done === true ? null : first.value;
+  }
+
   openDialog(): void {
     this.open = true;
     this.error = null;
@@ -330,6 +340,18 @@ export class ProviderStore {
       // and the issue it files exist to surface.
       if (message.keyRefused !== true) notifications.push("Providers", "error", text);
       return true;
+    }
+    if (message.type === "error") {
+      // The dispatcher refuses a non-read-only command outright — an
+      // implementation reset is active, for one — with this plain frame under
+      // the route's success status. It carries the change's own id, so the
+      // refusal settles that change instead of leaving it in flight for the
+      // page's life. The app-wide error notification is unchanged: a harness
+      // fault is still surfaced there.
+      const requestId = numberOrNull(message.requestId) ?? this.#soleRequestId();
+      if (requestId === null) return false;
+      this.error = string(message.message) ?? "The provider change was refused.";
+      return this.#settle(requestId, false) !== null;
     }
     return false;
   }

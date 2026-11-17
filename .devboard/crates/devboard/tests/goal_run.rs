@@ -870,3 +870,56 @@ async fn a_reset_refuses_every_mutating_command_and_answers_reads() {
     }
     assert!(refused, "a mutating command is refused during the reset");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reset_refusal_echoes_a_provider_changes_request_id() {
+    let _serial = serial().lock().await;
+    let scratch = Scratch::new("reset-gate-id");
+    prepare_repository(&scratch, None);
+    let app = App::new(
+        config_at(&scratch, format!("{} --goal", stub_command(&scratch, &[]))),
+        Journal::open(&scratch.path().join("state"), scratch.path(), 0),
+    );
+    let (conn, mut inbox) = connected(&app).await;
+    devboard::goal_run::set_reset_active(&app, true);
+
+    let changes = [
+        Command::CreateProvider {
+            request_id: Some(json!(41)),
+            provider: Some(json!("openrouter")),
+            label: None,
+            key: Some(json!("sk-test")),
+        },
+        Command::SaveProvider {
+            request_id: Some(json!(42)),
+            id: Some(json!("subscription-1")),
+            provider: Some(json!("openrouter")),
+            label: None,
+            key: None,
+        },
+        Command::DeleteProvider {
+            request_id: Some(json!(43)),
+            id: Some(json!("subscription-1")),
+        },
+        Command::SetProviderEnabled {
+            request_id: Some(json!(44)),
+            id: Some(json!("subscription-1")),
+            enabled: Some(json!(false)),
+        },
+    ];
+    for (index, change) in changes.into_iter().enumerate() {
+        let expected = json!(41 + index as u64);
+        app.command(&conn, change).await;
+        let frame = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
+        assert_eq!(frame["message"], "An implementation reset is active.");
+        assert_eq!(
+            frame["requestId"], expected,
+            "the refusal answers under the id the page is waiting on"
+        );
+    }
+
+    // A command that tracks no request answers the same frame without an id.
+    app.command(&conn, Command::StartIssues).await;
+    let frame = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
+    assert!(frame.get("requestId").is_none());
+}

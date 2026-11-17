@@ -265,6 +265,103 @@ test("a change on a closed socket leaves the store idle", () => {
   expect(socket.sent).toEqual([]);
 });
 
+test("a reset refusal settles every provider change it answers", () => {
+  const { store } = connected();
+  const refusal = (requestId: number) => ({
+    type: "error",
+    message: "An implementation reset is active.",
+    requestId,
+  });
+
+  const created = store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  if (created === null) throw new Error("the create was not sent");
+  expect(store.busy).toBe(true);
+  expect(store.handleEvent(refusal(created))).toBe(true);
+  expect(store.error).toBe("An implementation reset is active.");
+  expect(store.saveResult).toEqual({ requestId: created, ok: false });
+  expect(store.busy).toBe(false);
+  expect(saveFeedback.text).toBeNull();
+
+  const edited = store.save({ id: "subscription-1", provider: "openrouter", label: "Home" });
+  if (edited === null) throw new Error("the edit was not sent");
+  expect(store.busy).toBe(true);
+  expect(store.handleEvent(refusal(edited))).toBe(true);
+  expect(store.saveResult).toEqual({ requestId: edited, ok: false });
+  expect(store.busy).toBe(false);
+
+  const removed = store.remove("subscription-1");
+  if (removed === null) throw new Error("the delete was not sent");
+  expect(store.busy).toBe(true);
+  expect(store.handleEvent(refusal(removed))).toBe(true);
+  expect(store.busy).toBe(false);
+
+  const enable = store.setEnabled("subscription-1", false);
+  if (enable === null) throw new Error("the enable was not sent");
+  expect(store.enablePending).toEqual({ "subscription-1": true });
+  expect(store.enabledDraft).toEqual({ "subscription-1": false });
+  expect(store.busy).toBe(true);
+  expect(store.handleEvent(refusal(enable))).toBe(true);
+  // No state frame arrived: the refusal alone puts the row back on the stored
+  // value, and the whole store is idle again.
+  expect(store.enablePending).toEqual({});
+  expect(store.enabledDraft).toEqual({});
+  expect(store.busy).toBe(false);
+});
+
+test("an unnamed refusal settles the one change still waiting", () => {
+  const { store } = connected();
+
+  const only = store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  if (only === null) throw new Error("the save was not sent");
+  expect(store.handleEvent({ type: "error", message: "An implementation reset is active." })).toBe(
+    true,
+  );
+  expect(store.busy).toBe(false);
+  expect(store.saveResult).toEqual({ requestId: only, ok: false });
+
+  // Two changes are in flight, so an unnamed refusal names neither of them.
+  store.save({ provider: "openrouter", label: "Work", key: "sk-one" });
+  store.remove("subscription-1");
+  expect(store.busy).toBe(true);
+  expect(store.handleEvent({ type: "error", message: "An implementation reset is active." })).toBe(
+    false,
+  );
+  expect(store.busy).toBe(true);
+});
+
+test("a save after a reset refusal still shows its wait and confirms on its own answer", async () => {
+  let saves = 0;
+  const store = await httpConnected(({ method, url, body }) => {
+    if (method !== "POST" || url !== "/providers") return null;
+    saves += 1;
+    if (saves === 1) {
+      return jsonFrames([
+        {
+          type: "error",
+          message: "An implementation reset is active.",
+          requestId: body?.requestId,
+        },
+      ]);
+    }
+    return jsonFrames([{ type: "providerChanged", requestId: body?.requestId }]);
+  });
+
+  store.save({ provider: "openrouter", label: "Work", key: "sk-test" });
+  expect(store.busy).toBe(true);
+  await settle();
+  expect(store.busy).toBe(false);
+  expect(store.error).toBe("An implementation reset is active.");
+  expect(saveFeedback.text).toBeNull();
+
+  const confirmed = store.save({ provider: "openrouter", label: "Work", key: "sk-good" });
+  if (confirmed === null) throw new Error("the save was not sent");
+  expect(store.busy).toBe(true);
+  await settle();
+  expect(store.busy).toBe(false);
+  expect(store.saveResult).toEqual({ requestId: confirmed, ok: true });
+  expect(saveFeedback.text).toBe("Provider saved.");
+});
+
 test("a reconnect drops a change the lost socket can never answer", () => {
   const { store } = connected();
 

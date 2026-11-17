@@ -186,6 +186,57 @@ test("a successful disable sticks, and a later refused enable leaves it unchecke
   );
 });
 
+test("a reset refusal settles an enable, and a later save still confirms", async () => {
+  const gate = Promise.withResolvers<void>();
+  const checkbox = await mount(async ({ method, url, body }) => {
+    if (method === "PATCH" && url === "/providers/subscription-1") {
+      return frameResponse([
+        {
+          type: "error",
+          message: "An implementation reset is active.",
+          requestId: body?.requestId,
+        },
+      ]);
+    }
+    if (method === "POST" && url === "/providers") {
+      await gate.promise;
+      return frameResponse([{ type: "providerChanged", requestId: body?.requestId }]);
+    }
+    return null;
+  });
+
+  toggle(checkbox, false);
+  await settle();
+  // The refusal names the enable's own id and no state frame arrives: the row
+  // is back on the stored value and usable again.
+  expect(checkbox.checked).toBe(true);
+  expect(checkbox.disabled).toBe(false);
+  expect(document.body.querySelector('[data-testid="provider-error"]')?.textContent).toBe(
+    "An implementation reset is active.",
+  );
+
+  const label = document.body.querySelector<HTMLInputElement>(
+    '[data-testid="provider-label-input"]',
+  );
+  const key = document.body.querySelector<HTMLInputElement>('[data-testid="provider-key-input"]');
+  const save = document.body.querySelector<HTMLButtonElement>('[data-testid="provider-save"]');
+  if (label === null || key === null || save === null) throw new Error("the form did not render");
+  await fireEvent.input(label, { target: { value: "Work" } });
+  await fireEvent.input(key, { target: { value: "sk-good" } });
+  await fireEvent.click(save);
+  await tick();
+  expect(save.getAttribute("aria-busy")).toBe("true");
+  expect(save.textContent?.trim()).toBe("Adding…");
+
+  gate.resolve();
+  await settle();
+  // The save confirms on its own answer, before the ten-second ceiling.
+  expect(save.getAttribute("aria-busy")).toBeNull();
+  expect(save.textContent?.trim()).toBe("Add key");
+  expect(document.body.querySelector(".command-notice")).toBeNull();
+  expect(saveFeedback.text).toBe("Provider saved.");
+});
+
 /**
  * Stands in for a socket that never opens, so `connection.send` refuses every
  * command before a frame leaves the page: the refusal a dropped connection or a

@@ -964,10 +964,16 @@ impl App {
 
     async fn dispatch(&self, conn: &Conn, command: Command) -> Result<(), String> {
         if !command.is_read_only() && crate::goal_run::reset_is_active(&self.arc_self()) {
-            conn.send(json!({
+            let mut refusal = json!({
                 "type": "error",
                 "message": "An implementation reset is active.",
-            }));
+            });
+            // A tracked change answers under its own id: the page settles the
+            // request it refused instead of waiting on it for the page's life.
+            if let Some(request_id) = command.request_id() {
+                refusal["requestId"] = request_id.clone();
+            }
+            conn.send(refusal);
             return Ok(());
         }
         match command {
