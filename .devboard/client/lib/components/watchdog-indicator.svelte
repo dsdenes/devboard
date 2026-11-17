@@ -3,8 +3,6 @@
   import { pollAge } from "../poll-status";
   import Button from "./ui/button.svelte";
 
-  const MAX_ISSUES = 10;
-
   let open = $state(false);
   let now = $state(Date.now());
 
@@ -15,7 +13,9 @@
   const action = $derived(
     snapshot === null ? "unknown" : (cycle?.action ?? "none"),
   );
-  const issues = $derived(snapshot?.issues.slice(0, MAX_ISSUES) ?? []);
+  // The popover already bounds its own height and scrolls, so it lists every
+  // filed issue: a cap would silently hide the older ones from the audit.
+  const issues = $derived(snapshot?.issues ?? []);
 
   // The status strip keeps the compact age the poll lines already render, so
   // one compact relative-time rule serves both; `now` advances it between

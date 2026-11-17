@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, test } from "bun:test";
-import type { AgentSnapshot } from "../../../lib/agent-registry.ts";
+import type { AgentIssueRow, AgentSnapshot } from "../../../lib/agent-registry.ts";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -14,7 +14,7 @@ afterAll(() => {
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the store load after registration.
-const { cleanup, render } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { default: WatchdogIndicator } = await import("./watchdog-indicator.svelte");
 const { agents } = await import("../agents.svelte");
 
@@ -64,6 +64,18 @@ function snapshot(action: string): AgentSnapshot {
     timer: null,
     workers: [],
     peers: 0,
+  };
+}
+
+/** One filed issue row, named by its index in the filed order. */
+function filed(index: number): AgentIssueRow {
+  return {
+    title: `filed issue ${index}`,
+    category: null,
+    createdAt: "2026-11-11T03:45:00.000Z",
+    url: `http://localhost:3001/dsdenes/devboard/issues/${1000 + index}`,
+    state: "pending",
+    version: null,
   };
 }
 
@@ -130,4 +142,39 @@ test("the age advances with the page clock without a new snapshot", async () => 
   } finally {
     jest.useRealTimers();
   }
+});
+
+/** Mount the indicator with the given filed issues and open its popover. */
+async function openPopover(count: number) {
+  const snap = snapshot("filed");
+  snap.issues = Array.from({ length: count }, (_, index) => filed(index + 1));
+  agents.snapshots = { watchdog: snap };
+  const view = render(WatchdogIndicator);
+  await fireEvent.click(view.getByTestId("status-watchdog"));
+  return view.getByTestId("watchdog-popover");
+}
+
+test("the popover lists every filed issue, not only the newest ten", async () => {
+  const popover = await openPopover(12);
+  const titles = Array.from(
+    popover.querySelectorAll(".watchdog-issues a"),
+    (link) => link.textContent?.trim(),
+  );
+  expect(titles).toEqual(Array.from({ length: 12 }, (_, index) => `filed issue ${index + 1}`));
+});
+
+test("a Watchdog with nothing filed says so", async () => {
+  const popover = await openPopover(0);
+  expect(popover.textContent).toContain("No issues filed.");
+  expect(popover.querySelectorAll(".watchdog-issues a")).toHaveLength(0);
+});
+
+test("a hundred filed issues stay inside the popover's own scroll bound", async () => {
+  const popover = await openPopover(100);
+  expect(popover.querySelectorAll(".watchdog-issues a")).toHaveLength(100);
+  // The popover, not the status strip, is the one scroller: its own rule bounds
+  // the height, so the strip never grows with the list.
+  const style = getComputedStyle(popover);
+  expect(parseFloat(style.maxHeight)).toBe(window.innerHeight / 2);
+  expect(style.overflow).toBe("auto");
 });
