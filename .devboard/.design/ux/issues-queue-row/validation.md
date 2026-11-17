@@ -30,8 +30,9 @@
   - Row hover resolves to `row-hover`; a keyboard `Tab` lands on the number link with
     a 2px `ring` outline and underline.
 - Dependent pages: no shared component or token changed. The row composes the
-  existing `ol`/`li`, anchor, and `.badge` primitives; `bun run verify:interface`
-  covers their other consumers and the whole shell.
+  existing `ol`/`li`, anchor, and `.badge` primitives. No `verify:interface`
+  script exists, so this record cites none; the row's own layout contract is
+  covered by `client/lib/components/IssuesWorkspaceQueueRow.test.ts` (#1999).
 - Console/network: no console entries and no failed requests on the Queue page at
   either viewport.
 - Findings:
@@ -57,7 +58,9 @@
     `DESIGN.md` lint 0 errors.
   - `bun run check`: 0 errors, 0 warnings.
   - `bun test`: 604 pass, 0 fail (46 files).
-  - `bun run verify:interface`: passed, including a new queue-row geometry
-    contract (uniform row height, goal and state badges on one line, state badge on
-    the trailing edge) and a fixture where issue 19 is both a goal and running.
+  - `bun run test:client`: passed, including the queue-row layout contract in
+    `client/lib/components/IssuesWorkspaceQueueRow.test.ts`: one number link, one
+    title, and one trailing meta group; the `goal` badge and exactly one state
+    badge inside that group; and a fixture where issue 19 is both a goal and
+    running. No `verify:interface` script exists, and this record cites none.
 - Verdict: pass.
