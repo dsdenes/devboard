@@ -523,3 +523,44 @@ async fn a_malformed_skills_setting_refuses_without_a_write() {
         "{\"skills\":{\"ignoredSkills\":\"beta\"}}\n"
     );
 }
+
+#[tokio::test]
+async fn an_array_settings_document_refuses_the_exclusion_write() {
+    let repo = scratch("array-document");
+    write_skill(&repo, "alpha", &basic_skill("alpha"));
+    std::fs::write(settings_path(&repo), "[]\n").expect("a settings document");
+
+    let message = format!(
+        "Could not save the skill setting: The project OMP settings {} are not a JSON object, \
+         so no skill exclusion can be stored.",
+        settings_path(&repo).display()
+    );
+    assert_eq!(
+        toggle(&repo, "alpha", false).await.expect_err("a refusal"),
+        message
+    );
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&repo)).expect("the settings"),
+        "[]\n"
+    );
+
+    // The refusal carries the rows the document on disk yields, so a requested
+    // disable never reads back as applied.
+    let name = Value::String("alpha".to_string());
+    let enabled = Value::Bool(false);
+    let ToggleOutcome::Refused(frames) =
+        toggle_installed_skill(&repo, Some(&name), Some(&enabled)).await
+    else {
+        panic!("an array document refuses the exclusion write");
+    };
+    assert_eq!(
+        frames,
+        vec![
+            json!({"type": "error", "message": message}),
+            json!({
+                "type": "installedSkills",
+                "skills": [row("alpha", true, basic_skill("alpha"), false, false)],
+            }),
+        ]
+    );
+}

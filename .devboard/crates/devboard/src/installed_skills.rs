@@ -349,11 +349,16 @@ pub async fn write_skill_exclusion(
         _ => Map::new(),
     };
     object.insert(SKILL_EXCLUSION_SETTING.to_string(), Value::Array(next));
-    // Assigning onto an array keeps the property invisible to
-    // `JSON.stringify`, which prints only the elements.
-    if let Value::Object(document) = &mut document {
-        document.insert("skills".to_string(), Value::Object(object));
-    }
+    // Assigning onto a top-level array keeps the property invisible to
+    // `JSON.stringify`, which prints only its elements, so an array document
+    // refuses rather than report a write that stored no exclusion.
+    let Value::Object(entries) = &mut document else {
+        return Err(format!(
+            "The project OMP settings {} are not a JSON object, so no skill exclusion can be stored.",
+            path.display()
+        ));
+    };
+    entries.insert("skills".to_string(), Value::Object(object));
     let text = format!("{}\n", pretty(&document));
     write_file_atomically(path, &text)
         .await
