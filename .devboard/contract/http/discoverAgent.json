@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "discoverError",
-        "message": "A Discover start needs an agent id."
+        "message": "A Discover start needs an agent id.",
+        "command": "discoverAgent"
       }
     ]
   }
