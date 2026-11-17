@@ -1865,17 +1865,13 @@ async fn delete_skill(app: &Arc<App>, target: &Target, name: Option<&Value>) {
     let settings_path = crate::installed_skills::project_settings_path(&app.config().repo_dir);
     // Read and validate the settings before the directory goes: an unreadable
     // settings file must leave both the skill and its setting.
-    let settings =
-        match crate::installed_skills::skill_exclusion_after_removal(&settings_path, name).await {
-            Ok(settings) => settings,
-            Err(message) => {
-                target.send(error_event(format!(
-                    "Could not read the project skill settings: {message}"
-                )));
-                send_installed_skills(app, target).await;
-                return;
-            }
-        };
+    if let Err(message) = crate::installed_skills::read_project_settings(&settings_path).await {
+        target.send(error_event(format!(
+            "Could not read the project skill settings: {message}"
+        )));
+        send_installed_skills(app, target).await;
+        return;
+    }
 
     if let Err(error) = remove_path(&skills_dir.join(name)).await {
         target.send(error_event(format!("Could not delete \"{name}\": {error}")));
@@ -1883,21 +1879,13 @@ async fn delete_skill(app: &Arc<App>, target: &Target, name: Option<&Value>) {
         return;
     }
 
-    let mut settings_error: Option<String> = None;
-    if let Some(settings) = settings {
-        let text = match serde_json::to_string_pretty(&settings) {
-            Ok(text) => format!("{text}\n"),
-            Err(error) => {
-                settings_error = Some(error.to_string());
-                String::new()
-            }
-        };
-        if settings_error.is_none() {
-            if let Err(error) = crate::state::write_file_atomically(&settings_path, &text).await {
-                settings_error = Some(error.to_string());
-            }
-        }
-    }
+    // The exclusion is computed inside the settings guard and only now that the
+    // directory is gone, so a toggle that landed meanwhile is never dropped by a
+    // document this deletion captured before it.
+    let settings_error: Option<String> =
+        crate::installed_skills::remove_skill_exclusion(&settings_path, name)
+            .await
+            .err();
     // Both tables follow one deletion: Goal reads `skillsState`, the Devboard
     // Skills page reads `installedSkills`.
     send_skills_state(app, &Target::Broadcast(Arc::clone(app))).await;

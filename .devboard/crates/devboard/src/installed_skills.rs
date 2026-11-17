@@ -201,6 +201,18 @@ fn empty_document() -> Value {
     Value::Object(Map::new())
 }
 
+/// The one owner of every read-modify-write of a project settings file.
+///
+/// A toggle and a delete both read the whole document and write it back, with
+/// awaits between the read and the write, so they share this guard: without it
+/// the second writer publishes a document it read before the first one's entry
+/// landed, and that entry disappears while both commands report success.
+fn settings_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+    &LOCK
+}
+
 /// The entries of `skills.ignoredSkills`, or none when the document holds no
 /// such array.
 pub fn project_ignored_skills(document: &Value) -> Vec<Value> {
@@ -248,23 +260,39 @@ pub fn next_ignored_skills(current: &[Value], name: &str, enabled: bool) -> Opti
     Some(next)
 }
 
-/// The settings document after a deleted skill's name leaves
-/// `skills.ignoredSkills`, or `None` when the name is not there. Every other
-/// key and entry is carried through untouched, so deleting an enabled skill
-/// writes nothing at all.
-pub async fn skill_exclusion_after_removal(
+/// Removes a deleted skill's name from `skills.ignoredSkills`, reading the
+/// document inside the settings guard and only after that skill's directory is
+/// gone, so a toggle that landed while the directory was being removed is
+/// never dropped. Every other key and entry is carried through untouched, so
+/// deleting an enabled skill writes nothing at all.
+pub async fn remove_skill_exclusion(
     path: &Path,
     name: &str,
-) -> Result<Option<Value>, String> {
-    let mut document = read_project_settings(path).await?;
+) -> Result<SkillExclusionWrite, String> {
+    let _guard = settings_lock().lock().await;
+    let document = read_project_settings(path).await?;
+    let Some(next) = document_after_removal(&document, name) else {
+        return Ok(SkillExclusionWrite::Unchanged);
+    };
+    let text = format!("{}\n", pretty(&next));
+    write_file_atomically(path, &text)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(SkillExclusionWrite::Written)
+}
+
+/// The settings document after a deleted skill's name leaves
+/// `skills.ignoredSkills`, or `None` when the name is not there.
+fn document_after_removal(document: &Value, name: &str) -> Option<Value> {
+    let mut document = document.clone();
     let Some(Value::Object(skills)) = document.get("skills").cloned() else {
-        return Ok(None);
+        return None;
     };
     let Some(Value::Array(ignored)) = skills.get(SKILL_EXCLUSION_SETTING).cloned() else {
-        return Ok(None);
+        return None;
     };
     if !ignored.iter().any(|value| value.as_str() == Some(name)) {
-        return Ok(None);
+        return None;
     }
     let mut next_skills = skills;
     next_skills.insert(
@@ -279,7 +307,7 @@ pub async fn skill_exclusion_after_removal(
     if let Value::Object(document) = &mut document {
         document.insert("skills".to_string(), Value::Object(next_skills));
     }
-    Ok(Some(document))
+    Some(document)
 }
 
 /// What one exclusion write did to the settings document.
@@ -303,6 +331,7 @@ pub async fn write_skill_exclusion(
     name: &str,
     enabled: bool,
 ) -> Result<SkillExclusionWrite, String> {
+    let _guard = settings_lock().lock().await;
     let mut document = read_project_settings(path).await?;
     let skills = document.get("skills").cloned();
     if let Some(value) = &skills {
@@ -930,4 +959,102 @@ fn case_key(text: &str) -> Vec<u8> {
     text.chars()
         .map(|character| u8::from(character.is_uppercase()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_fixture(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!(
+                "installed-skills-guard-{label}-{}",
+                std::process::id()
+            ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".omp")).expect("a fixture settings root");
+        root.join(".omp").join(PROJECT_SETTINGS_FILE)
+    }
+
+    /// A toggle and a delete both read-modify-write the whole settings document.
+    /// The guard must hold across each pair, so an entry one of them writes
+    /// while the other is between its read and its write is never lost.
+    #[tokio::test]
+    async fn an_overlapping_toggle_and_delete_keep_both_entries() {
+        let path = settings_fixture("both-entries");
+        std::fs::write(
+            &path,
+            r#"{
+  "skills": {
+    "ignoredSkills": [
+      "alpha",
+      "gone"
+    ]
+  }
+}
+"#,
+        )
+        .expect("a settings fixture");
+
+        let guard = settings_lock().lock().await;
+        let toggle = {
+            let path = path.clone();
+            tokio::spawn(async move { write_skill_exclusion(&path, "beta", false).await })
+        };
+        let removal = {
+            let path = path.clone();
+            tokio::spawn(async move { remove_skill_exclusion(&path, "gone").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !toggle.is_finished(),
+            "a toggle must wait for the settings guard"
+        );
+        assert!(
+            !removal.is_finished(),
+            "a delete must wait for the settings guard"
+        );
+        drop(guard);
+
+        assert_eq!(
+            toggle.await.expect("the toggle task"),
+            Ok(SkillExclusionWrite::Written)
+        );
+        assert_eq!(
+            removal.await.expect("the delete task"),
+            Ok(SkillExclusionWrite::Written)
+        );
+        let document = read_project_settings(&path).await.expect("the settings");
+        assert_eq!(
+            project_ignored_skills(&document),
+            vec![Value::String("alpha".into()), Value::String("beta".into())]
+        );
+    }
+
+    /// A deletion whose name the exclusion does not carry writes nothing, so an
+    /// enabled skill's deletion leaves the document byte-identical.
+    #[tokio::test]
+    async fn a_removal_of_an_unlisted_skill_writes_nothing() {
+        let path = settings_fixture("unlisted");
+        let original = r#"{
+  "skills": {
+    "ignoredSkills": [
+      "alpha"
+    ]
+  }
+}
+"#;
+        std::fs::write(&path, original).expect("a settings fixture");
+
+        assert_eq!(
+            remove_skill_exclusion(&path, "gone").await,
+            Ok(SkillExclusionWrite::Unchanged)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the settings file"),
+            original
+        );
+    }
 }
