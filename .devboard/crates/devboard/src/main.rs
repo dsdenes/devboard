@@ -58,7 +58,11 @@ async fn run() -> anyhow::Result<()> {
 /// the environment. The new process ignores it, but `/proc/<pid>/environ` is
 /// the initial block, so only a fresh `execve` can drop it. The marker keeps a
 /// process that already cleaned itself from looping.
-fn clear_inherited_credentials() -> anyhow::Result<()> {
+///
+/// `repo_dir` is the repository this start serves, resolved by the same rule
+/// the serving configuration follows: the replacement is the harness program of
+/// that checkout, never of the launcher's working directory.
+fn clear_inherited_credentials(repo_dir: &std::path::Path) -> anyhow::Result<()> {
     const MARKER: &str = "DEVBOARD_CREDENTIALS_CLEARED";
     if std::env::var_os(MARKER).is_some() {
         return Ok(());
@@ -66,16 +70,7 @@ fn clear_inherited_credentials() -> anyhow::Result<()> {
     if devboard::relaunch::inherited_credential_variables().is_empty() {
         return Ok(());
     }
-    let args: Vec<String> = std::env::args().collect();
-    let repo_dir = args
-        .iter()
-        .position(|arg| arg == "--repo-dir")
-        .and_then(|index| args.get(index + 1))
-        .map(PathBuf::from)
-        .or_else(|| std::env::var("REPO_DIR").ok().map(PathBuf::from))
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_default();
-    let program = devboard::relaunch::harness_program(&repo_dir)
+    let program = devboard::relaunch::harness_program(repo_dir)
         .map_err(|message| anyhow::anyhow!(message))?;
     let mut command = std::process::Command::new(program);
     command.args(std::env::args_os().skip(1)).env(MARKER, "1");
@@ -131,27 +126,38 @@ fn install_signal_shutdown(server: &std::sync::Arc<Server>) {
     }
 }
 
+/// The repository directory a serve start resolves before its flags land in a
+/// configuration.
+///
+/// A `--repo-dir`/`--adrs-dir` flag wins over `REPO_DIR`/`ADRS_DIR`, and the
+/// repository is the ADR directory's parent when neither names one: exactly the
+/// rule `Config::derive_path_defaults` applies to the serving configuration,
+/// shared here so discovery and the credential re-exec cannot follow a
+/// different checkout. The launcher's working directory is never an input.
+fn serve_repo_dir(args: &[String]) -> PathBuf {
+    let flag = |name: &str| -> Option<PathBuf> {
+        args.iter()
+            .position(|arg| arg == name)
+            .and_then(|index| args.get(index + 1))
+            .map(PathBuf::from)
+    };
+    let adrs_dir = flag("--adrs-dir")
+        .or_else(|| std::env::var("ADRS_DIR").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(devboard::config::DEFAULT_ADRS_DIR));
+    let supplied = flag("--repo-dir").or_else(|| std::env::var("REPO_DIR").ok().map(PathBuf::from));
+    devboard::config::derive_repo_dir(&adrs_dir, supplied)
+}
+
 async fn serve_command(args: &[String]) -> anyhow::Result<()> {
-    clear_inherited_credentials()?;
+    // The repository this dashboard will serve, resolved once from the same
+    // inputs and rule `Config::derive_path_defaults` applies to the serving
+    // configuration. The credential re-exec and forge discovery both take this
+    // value, so neither can probe or exec against a checkout the dashboard does
+    // not serve — the launcher's working directory is never one of the inputs.
+    let served_repo_dir = serve_repo_dir(args);
+    clear_inherited_credentials(&served_repo_dir)?;
+    discover_source_gitea(&served_repo_dir).await;
     let harness_dir = devboard::version::running_harness_dir();
-    // Discovery runs for the repository this dashboard will serve, never for
-    // the launcher's working directory.
-    let repo_for_discovery = args
-        .iter()
-        .position(|arg| arg == "--repo-dir")
-        .and_then(|index| args.get(index + 1))
-        .map(PathBuf::from)
-        .or_else(|| std::env::var("REPO_DIR").ok().map(PathBuf::from))
-        .or_else(|| {
-            std::process::Command::new("git")
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
-        })
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    discover_source_gitea(&repo_for_discovery).await;
     let mut config = Config::from_env(&harness_dir);
     let mut repo_dir_supplied = std::env::var_os("REPO_DIR").is_some();
     let mut index = 1;

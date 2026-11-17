@@ -4,6 +4,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+/// The ADR directory a start reads when no input names one.
+pub const DEFAULT_ADRS_DIR: &str = "/repo/adrs";
+
 /// Every input a dashboard process takes from its environment.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -80,7 +83,7 @@ impl Config {
             .unwrap_or(8080);
         let adrs_dir = env::var("ADRS_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/repo/adrs"));
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_ADRS_DIR));
         let repo_dir = env::var("REPO_DIR").ok().map(PathBuf::from);
         let goal_file = env::var("GOAL_FILE").ok().map(PathBuf::from);
         let static_dir = env::var("STATIC_DIR").ok().map(PathBuf::from);
@@ -119,11 +122,7 @@ impl Config {
     /// `GOAL_FILE` stay authoritative: a supplied value is never re-derived.
     pub fn derive_path_defaults(&mut self, repo_dir_supplied: bool, goal_file_supplied: bool) {
         if !repo_dir_supplied {
-            self.repo_dir = self
-                .adrs_dir
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("/repo"));
+            self.repo_dir = derive_repo_dir(&self.adrs_dir, None);
         }
         if !goal_file_supplied {
             self.goal_file = self.repo_dir.join("GOAL.md");
@@ -152,6 +151,21 @@ impl Config {
             )
         })
     }
+}
+
+/// The repository directory a supplied ADR directory implies: its parent.
+///
+/// This is the one rule the serving configuration, forge discovery, and the
+/// inherited-credential re-exec follow, so none of them names a checkout the
+/// dashboard does not serve. A repository supplied by `REPO_DIR` or
+/// `--repo-dir` stays authoritative and is returned unchanged.
+pub fn derive_repo_dir(adrs_dir: &Path, supplied: Option<PathBuf>) -> PathBuf {
+    supplied.unwrap_or_else(|| {
+        adrs_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("/repo"))
+    })
 }
 
 /// The program token of an agent command: its first whitespace-separated word,
