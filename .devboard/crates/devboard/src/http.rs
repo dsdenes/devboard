@@ -714,7 +714,7 @@ fn refusal_answer(headers: &HeaderMap, refusal: RequestRefusal) -> Response {
 /// One written draft, served where `POST /goal-proposals` linked it. The name
 /// arrives decoded: the request path is decoded once before dispatch.
 fn draft_answer(server: &Server, name: &str, method: &Method, headers: &HeaderMap) -> Response {
-    if name.is_empty() || name.contains('/') || !name.ends_with(".md") {
+    if !crate::goal_drafts::is_goal_draft_name(name) {
         return Replies::problem(headers, 404, "The requested draft was not found.", &[]);
     }
     let directory = server

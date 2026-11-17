@@ -840,6 +840,24 @@ pub fn goal_draft_heading(text: &str) -> String {
     String::new()
 }
 
+/// Whether `name` is one draft file name: a single path segment ending in
+/// `.md` that stands for no other entry.
+///
+/// The drafts list publishes only these names, the reader resolves one, the
+/// HTTP draft route serves one, and the client decodes one from a link, so a
+/// name the list publishes is always openable and deletable. A backslash is
+/// refused rather than read as a separator: on this host it is an ordinary
+/// byte of a file name, and a name the reader rewrites into two segments would
+/// otherwise be listed, served, and then refused by the reader.
+pub fn is_goal_draft_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name.ends_with(".md")
+        && !name.contains('/')
+        && !name.contains('\\')
+}
+
 /// Resolves one repository-relative draft path.
 pub fn resolve_goal_draft(
     repo_dir: &Path,
@@ -872,7 +890,7 @@ pub fn resolve_goal_draft(
         ));
     }
     let name = parts[2].to_string();
-    if name.is_empty() || name == "." || name == ".." || !name.ends_with(".md") {
+    if !is_goal_draft_name(&name) {
         return Err(GoalDraftError::new(400, "A draft path must end in .md."));
     }
     let directory = repo_dir.join(GOAL_PROPOSALS_DIRECTORY);
@@ -928,8 +946,12 @@ pub fn list_goal_drafts(repo_dir: &Path) -> Result<Vec<GoalDraftSummary>, String
     for entry in entries {
         let entry =
             entry.map_err(|error| format!("Could not read {GOAL_PROPOSALS_DIRECTORY}: {error}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".md") {
+        let Ok(name) = entry.file_name().into_string() else {
+            // A name this host cannot spell is a name no reader can resolve,
+            // so it is never published as a draft.
+            continue;
+        };
+        if !is_goal_draft_name(&name) {
             continue;
         }
         let is_file = entry

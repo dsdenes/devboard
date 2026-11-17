@@ -445,6 +445,64 @@ async fn mutating_endpoints_enforce_method_and_configuration() {
 }
 
 #[tokio::test]
+async fn one_draft_name_rule_governs_the_list_the_reader_and_the_route() {
+    let instance = start("draft-names").await;
+    let repo = instance.root.join("repo");
+    let directory = repo.join(".devboard/goal-proposals");
+    std::fs::create_dir_all(&directory).expect("a drafts directory");
+    std::fs::write(directory.join("alpha.md"), "# Alpha\n\nBody.\n").expect("a draft");
+    std::fs::write(directory.join("a\\b.md"), "# Backslash\n").expect("a draft");
+
+    let drafts =
+        devboard::goal_drafts::list_goal_drafts(&repo).expect("a readable drafts directory");
+    assert_eq!(
+        drafts
+            .iter()
+            .map(|draft| draft.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha.md"],
+        "the list publishes only the names the reader resolves"
+    );
+    let published = &drafts[0];
+    let resolved =
+        devboard::goal_drafts::resolve_goal_draft(&repo, Some(&serde_json::json!(published.path)))
+            .expect("the published name resolves");
+    assert_eq!(resolved.1, published.name);
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/goal-proposals/{}", instance.base, published.name),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the published name is served");
+    assert_eq!(body, b"# Alpha\n\nBody.\n");
+
+    let refusal = devboard::goal_drafts::resolve_goal_draft(
+        &repo,
+        Some(&serde_json::json!(".devboard/goal-proposals/a\\b.md")),
+    )
+    .expect_err("the reader refuses a backslash name");
+    assert_eq!(refusal.status, 400);
+    assert_eq!(
+        refusal.message,
+        "A draft path must name a file directly under .devboard/goal-proposals/."
+    );
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/goal-proposals/a%5Cb.md", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the route refuses the name the list never published"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert_eq!(parsed["detail"], "The requested draft was not found.");
+}
+
+#[tokio::test]
 async fn unknown_paths_answer_problem_json() {
     let instance = start("unknown").await;
     let (status, headers, body) = send(
