@@ -575,10 +575,12 @@ export class GoalStore {
     const type = message.type;
 
     if (type === "error") {
-      // The generic error frame is a command's refusal. An answer dispatch that
-      // still awaits its reply is refused by it, so its control is released at
-      // once and the prompt and the draft stay for the retry.
-      this.settleAnswer();
+      // The generic error frame is a command's refusal, and the REST layer
+      // names the refused command in it. Only a refused answer releases the
+      // answer controls here; every other control reads its own command's
+      // refusal revision, so another command's refusal leaves it busy. A
+      // refusal that names no command is the server-wide report, not an answer.
+      if (message.command === undefined || message.command === "answer") this.settleAnswer();
       return;
     }
 

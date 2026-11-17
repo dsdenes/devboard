@@ -133,3 +133,64 @@ test("a confirming evidence settles the label without a render-time mutation", a
     console.error = original;
   }
 });
+
+test("a refused command clears the label before the ceiling and shows no notice", async () => {
+  jest.useFakeTimers();
+  try {
+    let refusals = 0;
+    const view = render(CommandButton, {
+      props: {
+        variant: "default",
+        label: "Start this record",
+        evidence: () => 0,
+        refusal: () => refusals,
+        command: () => true,
+        "data-testid": "start",
+      },
+    });
+    const button = view.container.querySelector("button");
+    if (button === null) throw new Error("no button");
+    await fireEvent.click(button);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.textContent?.trim()).toBe("Starting…");
+
+    // The server refused this control's command: the frame names it, so the
+    // control is answered at once instead of waiting out the ceiling.
+    refusals += 1;
+    view.rerender({ refusal: () => refusals });
+    expect(button.getAttribute("aria-busy")).toBeNull();
+    expect(button.textContent?.trim()).toBe("Start this record");
+
+    jest.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    expect(view.container.querySelector(".command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a dispatched command with no refusal revision still reports the ceiling", async () => {
+  jest.useFakeTimers();
+  try {
+    const view = render(CommandButton, {
+      props: {
+        variant: "default",
+        label: "Start this record",
+        evidence: () => 0,
+        command: () => true,
+        "data-testid": "start",
+      },
+    });
+    const button = view.container.querySelector("button");
+    if (button === null) throw new Error("no button");
+    await fireEvent.click(button);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    jest.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    expect(view.container.querySelector(".command-notice")?.textContent).toContain(
+      "Start this record received no answer.",
+    );
+  } finally {
+    jest.useRealTimers();
+  }
+});

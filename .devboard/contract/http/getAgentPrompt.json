@@ -8,7 +8,8 @@
       {
         "type": "agentPromptError",
         "id": "missing",
-        "message": "Unknown background agent: missing."
+        "message": "Unknown background agent: missing.",
+        "command": "getAgentPrompt"
       }
     ]
   }

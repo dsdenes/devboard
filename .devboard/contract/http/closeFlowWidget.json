@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "flowError",
-        "message": "No widget conversation is open."
+        "message": "No widget conversation is open.",
+        "command": "closeFlowWidget"
       }
     ]
   }

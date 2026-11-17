@@ -83,6 +83,13 @@ export class ConnectionStore {
    * serving, so only the frame's arrival distinguishes an answer from silence.
    */
   versionRevision = $state(0);
+  /**
+   * Bumped by every refusal frame that names the command it refused. The REST
+   * layer names the refused command in its `error` frame, so a control reads
+   * the revision of the command it dispatched: its own refusal releases the
+   * latch at once, and a refusal of another command never changes it.
+   */
+  refusals = $state<Record<string, number>>({});
   /** True when the server has a Gitea address for harness-owned reporting. */
   feedbackEnabled = $state(false);
   /** True once a version frame has stated whether reporting is available. */
@@ -120,6 +127,17 @@ export class ConnectionStore {
    */
   onOpen(handler: () => void): void {
     this.openHandlers.push(handler);
+  }
+
+  /**
+   * The refusal revision of the commands one control can dispatch. The sum is
+   * reactive, so a refusal of either command a toggle dispatches releases its
+   * latch, while a refusal of an unrelated command leaves it busy.
+   */
+  refusalRevision(...commands: readonly string[]): number {
+    let revision = 0;
+    for (const command of commands) revision += this.refusals[command] ?? 0;
+    return revision;
   }
 
   /**
@@ -275,6 +293,11 @@ export class ConnectionStore {
   }
 
   private handle(message: Envelope): void {
+    if (typeof message.command === "string") {
+      // Only a refusal frame names the command it refused, so this is the
+      // answer of the control that dispatched it and of no other control.
+      this.refusals[message.command] = (this.refusals[message.command] ?? 0) + 1;
+    }
     if (isVersionState(message)) {
       const replacement = isObject(message.replacement)
         ? {

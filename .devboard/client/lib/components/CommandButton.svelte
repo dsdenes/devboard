@@ -12,6 +12,14 @@
     /** Reactive read of the subject; a reused control never carries another's latch. */
     scope?: () => unknown;
     /**
+     * Reactive read of the server's refusal revision for this control's own
+     * command. A refusal is an answer: the latch ends at once instead of
+     * waiting out the ceiling, and no ceiling notice follows it. A refusal of
+     * another command never changes the revision, so it leaves this control
+     * alone.
+     */
+    refusal?: () => unknown;
+    /**
      * Dispatches the WebSocket command once per activation. Returns false when
      * it refused locally and sent nothing: the control then shows no busy word
      * and no ceiling notice, because no answer was ever asked for.
@@ -21,12 +29,13 @@
     busyLabel?: string;
   }
 
-  let { label, evidence, scope, command, busyLabel, children, ...rest }: Props = $props();
+  let { label, evidence, scope, refusal, command, busyLabel, children, ...rest }: Props = $props();
 
   const pending = createCommandBusy({
     label: () => label,
     evidence: () => evidence(),
     scope: () => scope?.(),
+    refusal: () => refusal?.(),
   });
 
   // The render only reads the latch; the confirming frame settles it here.

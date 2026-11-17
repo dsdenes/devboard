@@ -1118,6 +1118,7 @@ async fn a_keyed_ask_refused_while_busy_is_dispatched_again() {
             "type": "askError",
             "conversationId": "conversation-1",
             "message": "The agent is still answering the previous question.",
+            "command": "ask",
         }])
     );
 

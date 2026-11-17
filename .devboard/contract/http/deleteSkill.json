@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "error",
-        "message": "No prepared skill named \"missing\" is installed."
+        "message": "No prepared skill named \"missing\" is installed.",
+        "command": "deleteSkill"
       },
       {
         "type": "installedSkills",

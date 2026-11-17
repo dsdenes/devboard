@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "providerError",
-        "message": "A provider change needs its request id."
+        "message": "A provider change needs its request id.",
+        "command": "saveProvider"
       }
     ]
   }

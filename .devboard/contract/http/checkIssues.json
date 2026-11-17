@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "error",
-        "message": "No issues worker is running for this checkout."
+        "message": "No issues worker is running for this checkout.",
+        "command": "checkIssues"
       }
     ]
   }

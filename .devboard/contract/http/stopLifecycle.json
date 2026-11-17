@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "error",
-        "message": "No lifecycle run is active."
+        "message": "No lifecycle run is active.",
+        "command": "stopLifecycle"
       }
     ]
   }

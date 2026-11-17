@@ -1311,6 +1311,7 @@ async fn the_flow_refusal_frames_reach_a_fresh_page() {
         json!([{
             "type": "flowError",
             "message": "The Flow implementation is not running.",
+            "command": "stopFlowImplementation",
         }])
     );
 
@@ -1324,7 +1325,11 @@ async fn the_flow_refusal_frames_reach_a_fresh_page() {
     let opened: Value = opened.json().await.expect("JSON");
     assert_eq!(
         opened["frames"],
-        json!([{"type": "flowError", "message": "No Flow session exists."}])
+        json!([{
+            "type": "flowError",
+            "message": "No Flow session exists.",
+            "command": "openFlowWidget",
+        }])
     );
 
     task.abort();

@@ -8,7 +8,8 @@
       {
         "type": "issuesDraftError",
         "path": "",
-        "message": "An answer needs its draft path, question id, and value."
+        "message": "An answer needs its draft path, question id, and value.",
+        "command": "answerGoalDraft"
       }
     ]
   }

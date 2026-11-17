@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "discoverError",
-        "message": "Rejecting a term needs its bounded context, id, and reason."
+        "message": "Rejecting a term needs its bounded context, id, and reason.",
+        "command": "rejectGlossaryTerm"
       }
     ]
   }

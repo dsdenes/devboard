@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "discoverError",
-        "message": "Discover from a repository URL is available only when the dashboard serves a harness source checkout."
+        "message": "Discover from a repository URL is available only when the dashboard serves a harness source checkout.",
+        "command": "removeDiscoverRemote"
       }
     ]
   }

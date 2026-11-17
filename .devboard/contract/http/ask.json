@@ -8,7 +8,8 @@
       {
         "type": "askError",
         "conversationId": "",
-        "message": "The ask has no conversation id."
+        "message": "The ask has no conversation id.",
+        "command": "ask"
       }
     ]
   }

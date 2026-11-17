@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "error",
-        "message": "An answer needs its question id and value."
+        "message": "An answer needs its question id and value.",
+        "command": "answerIssues"
       }
     ]
   }

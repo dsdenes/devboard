@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "discoverError",
-        "message": "No Discover run is active."
+        "message": "No Discover run is active.",
+        "command": "stopDiscover"
       }
     ]
   }

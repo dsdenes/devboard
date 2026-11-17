@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "flowError",
-        "message": "No Flow pull request exists."
+        "message": "No Flow pull request exists.",
+        "command": "markFlowPrReady"
       }
     ]
   }

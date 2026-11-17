@@ -1259,8 +1259,15 @@ pub async fn handle(app: &App, request: axum::extract::Request) -> Option<Respon
     let cached = match app
         .idempotency
         .run(&scope, idempotency_key.as_deref(), || async move {
-            let frames = app.dispatch_captured(command).await;
+            let mut frames = app.dispatch_captured(command).await;
             let refused = frames_refuse(&frames);
+            if refused {
+                // A refusal travels under the route's success status, so the
+                // frame itself names the command it refused. The control that
+                // dispatched that command reads the name and releases its own
+                // latch; no other control settles on this frame.
+                name_refusals(&mut frames, matched.route.command);
+            }
             let mut response_body = envelope(frames);
             if matched.route.command == "listRecords" {
                 let mut records = response_body
@@ -1319,6 +1326,11 @@ const REFUSAL_FRAMES: &[&str] = &[
     "providerError",
 ];
 
+/// Whether a frame type is a refusal of the request's operation.
+fn refusal_kind(kind: &str) -> bool {
+    REFUSAL_FRAMES.contains(&kind)
+}
+
 /// Whether the dispatched frames refuse the request's operation.
 ///
 /// A refused answer is the dispatcher's own verdict: the operation changed
@@ -1328,8 +1340,28 @@ fn frames_refuse(frames: &[Value]) -> bool {
         frame
             .get("type")
             .and_then(Value::as_str)
-            .is_some_and(|kind| REFUSAL_FRAMES.contains(&kind))
+            .is_some_and(refusal_kind)
     })
+}
+
+/// Names the refused command in every refusal frame the answer carries.
+///
+/// The control that dispatched the command reads that name, so it leaves its
+/// own latch at once and a refusal of another command never releases it.
+/// Accepted frames carry no `command` field, so nothing else names one.
+fn name_refusals(frames: &mut [Value], command: &str) {
+    for frame in frames.iter_mut() {
+        let refuses = frame
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(refusal_kind);
+        if !refuses {
+            continue;
+        }
+        if let Some(object) = frame.as_object_mut() {
+            object.insert("command".to_string(), Value::String(command.to_string()));
+        }
+    }
 }
 
 /// The answer one keyed request keeps in the idempotency store.
@@ -1475,6 +1507,21 @@ mod tests {
             "an error field in a state frame is not a refusal"
         );
         assert!(!frames_refuse(&[]));
+    }
+
+    #[test]
+    fn a_refusal_frame_names_the_command_it_refused() {
+        let mut frames = vec![
+            json!({"type": "runStarted", "file": "a.md", "title": "Adopt the fixture"}),
+            json!({"type": "error", "message": "The lifecycle is already resolving that ADR."}),
+        ];
+        name_refusals(&mut frames, "startRun");
+        assert_eq!(frames[1]["command"], "startRun");
+        assert_eq!(
+            frames[0].get("command"),
+            None,
+            "an accepted frame names no command"
+        );
     }
 
     #[test]

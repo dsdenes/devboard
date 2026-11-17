@@ -7,7 +7,8 @@
     "frames": [
       {
         "type": "discoverError",
-        "message": "Confirming a term needs its bounded context and id."
+        "message": "Confirming a term needs its bounded context and id.",
+        "command": "confirmGlossaryTerm"
       }
     ]
   }

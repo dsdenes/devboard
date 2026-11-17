@@ -8,7 +8,8 @@
       {
         "type": "issuesDraftError",
         "path": "",
-        "message": "A draft path must name a file directly under .devboard/goal-proposals/."
+        "message": "A draft path must name a file directly under .devboard/goal-proposals/.",
+        "command": "getGoalDraft"
       }
     ]
   }

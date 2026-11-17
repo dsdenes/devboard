@@ -36,12 +36,14 @@
   const answerPending = createCommandBusy({
     label: "Submit answer",
     // The answering frame confirms it: the `questionCleared` broadcast of an
-    // accepted answer, or the `error` frame of a refused one.
+    // accepted answer, or the refusal of the `answer` command itself.
     evidence: () => goal.answerRevision,
+    refusal: () => connection.refusalRevision("answer"),
   });
   const laneAnswerPending = createCommandBusy({
     label: "Submit answer",
     evidence: () => goal.answerRevision,
+    refusal: () => connection.refusalRevision("answer"),
   });
 
   // The render only reads the latches; the answering frame settles them here.
@@ -202,6 +204,7 @@
           variant="default"
           label="Start this record"
           evidence={() => goal.runState}
+          refusal={() => connection.refusalRevision("startRun")}
           command={() => goal.startRecord(record)}
           data-command={`goal.adr.start.${record.file}`}
           data-testid="start"
@@ -244,6 +247,7 @@
                 label={option.label}
                 busyLabel="Answering…"
                 evidence={() => goal.answerRevision}
+                refusal={() => connection.refusalRevision("answer")}
                 command={() => submitAnswer(option.label)}
                 data-testid="choice"
                 data-command="goal.answer.submit"
@@ -379,6 +383,7 @@
               variant="secondary"
               label={goal.lifecycle.paused ? "Resume" : "Pause"}
               evidence={() => goal.lifecycle.paused}
+              refusal={() => connection.refusalRevision("pauseLifecycle", "resumeLifecycle")}
               command={() =>
                 goal.lifecycle.paused ? goal.resumeLifecycle() : goal.pauseLifecycle()}
               data-command={goal.lifecycle.paused ? "goal.lifecycle.resume" : "goal.lifecycle.pause"}
@@ -390,6 +395,7 @@
             variant="outline"
             label="Resolve next ADR"
             evidence={() => goal.runState}
+            refusal={() => connection.refusalRevision("startRun")}
             command={() => goal.startNext()}
             data-command="goal.adr.start-next"
             data-testid="start-next"
@@ -411,6 +417,7 @@
             variant={goal.lifecycleActive ? "destructive" : "default"}
             label={goal.lifecycleActive ? "Stop implementation" : "Start implementation"}
             evidence={() => goal.lifecycleActive}
+            refusal={() => connection.refusalRevision("startLifecycle", "stopLifecycle")}
             command={() => goal.toggleLifecycle()}
             data-command="goal.lifecycle.toggle"
             data-testid="lifecycle-control"
@@ -1023,6 +1030,7 @@
                       label={option.label}
                       busyLabel="Answering…"
                       evidence={() => goal.answerRevision}
+                      refusal={() => connection.refusalRevision("answer")}
                       command={() => goal.submitLaneAnswer(lane.id, option.label)}
                       data-testid="lane-choice"
                       data-command={`goal.lane.answer.submit.${lane.id}`}
