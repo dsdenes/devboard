@@ -207,14 +207,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-api() {  # api <method> <path> [json]: body in $scratch/body, status on stdout
+api() {  # api <method> <path> [json]: body in $scratch/body.api, status on stdout
   local method=$1 path=$2 body=${3:-} status
   if [ -n "$body" ]; then
-    status=$(curl -sS --max-time "$create_time" -o "$scratch/body" -w '%{http_code}' \
+    status=$(curl -sS --max-time "$create_time" -o "$scratch/body.api" -w '%{http_code}' \
       -X "$method" -H "Authorization: token $token" -H 'Content-Type: application/json' \
       -d "$body" "$gitea_url/api/v1/$path" 2>/dev/null) || status=000
   else
-    status=$(curl -sS --max-time "$create_time" -o "$scratch/body" -w '%{http_code}' \
+    status=$(curl -sS --max-time "$create_time" -o "$scratch/body.api" -w '%{http_code}' \
       -X "$method" -H "Authorization: token $token" \
       "$gitea_url/api/v1/$path" 2>/dev/null) || status=000
   fi
@@ -223,20 +223,23 @@ api() {  # api <method> <path> [json]: body in $scratch/body, status on stdout
 
 probe() {  # probe <surface> <path> <read|write> [method] [json]
   local surface=$1 path=$2 role=$3 method=${4:-GET} body=${5:-} timing status elapsed ms outcome url
+  # One response body per client: a shared path lets a concurrent client
+  # replace the body between this curl and the classification below.
+  local response="$scratch/body.$client"
   if [ "$surface" = gitea ]; then
     url="$gitea_url/api/v1/$path"
     if [ "$method" = GET ]; then
-      timing=$(curl -sS --max-time "$max_time" -o "$scratch/body" \
+      timing=$(curl -sS --max-time "$max_time" -o "$response" \
         -w '%{http_code} %{time_total}' -H "Authorization: token $token" \
         "$url" 2>/dev/null) || timing=""
     else
-      timing=$(curl -sS --max-time "$max_time" -o "$scratch/body" -w '%{http_code} %{time_total}' \
+      timing=$(curl -sS --max-time "$max_time" -o "$response" -w '%{http_code} %{time_total}' \
         -X "$method" -H "Authorization: token $token" -H 'Content-Type: application/json' \
         -d "$body" "$url" 2>/dev/null) || timing=""
     fi
   else
     url="$dashboard_url/$path"
-    timing=$(curl -sS --max-time "$max_time" -o "$scratch/body" \
+    timing=$(curl -sS --max-time "$max_time" -o "$response" \
       -w '%{http_code} %{time_total}' "$url" 2>/dev/null) || timing=""
   fi
   [ -n "$timing" ] || timing="000 0"
@@ -246,7 +249,7 @@ probe() {  # probe <surface> <path> <read|write> [method] [json]
   case "$status" in
     2??) outcome=ok ;;
     *)
-      if grep -q -E 'database is locked|SQLITE_BUSY' "$scratch/body" 2>/dev/null; then
+      if grep -q -E 'database is locked|SQLITE_BUSY' "$response" 2>/dev/null; then
         outcome=lock
       else
         outcome=http
@@ -266,7 +269,7 @@ run_client() {
       title="load $(date +%s%N) $client"
       probe gitea "repos/$load_repo/issues" write POST \
         "{\"title\":\"$title\",\"body\":\"load test\"}"
-      number=$(jq -r '.number // empty' "$scratch/body" 2>/dev/null || true)
+      number=$(jq -r '.number // empty' "$scratch/body.$client" 2>/dev/null || true)
       if [ -n "$number" ]; then
         probe gitea "repos/$load_repo/issues/$number/comments" write POST \
           "{\"body\":\"load test comment\"}"
@@ -284,7 +287,7 @@ status=$(api POST "orgs/$owner/repos" "$repository")
 if [ "$status" != 201 ]; then
   status=$(api POST "admin/users/$owner/repos" "$repository")
 fi
-full_name=$(jq -r '.full_name // empty' "$scratch/body" 2>/dev/null || true)
+full_name=$(jq -r '.full_name // empty' "$scratch/body.api" 2>/dev/null || true)
 if [ "$status" != 201 ] || [ "$full_name" != "$load_repo" ]; then
   die "could not create the disposable repository $load_repo (HTTP $status, created '$full_name')"
 fi
