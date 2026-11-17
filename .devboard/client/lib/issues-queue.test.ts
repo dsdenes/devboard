@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { queueCounts, queueSummary } from "./issues-queue";
+import { queueCounts, queueRowState, queueSummary } from "./issues-queue";
 import type { QueuedIssue } from "./types";
 
 function issue(number: number, labels: string[] = []): QueuedIssue {
@@ -25,13 +25,22 @@ describe("queue counts", () => {
     expect(counts).toEqual({ pending: 1, working: 2 });
   });
 
-  test("a ledger's handled marker changes no count", () => {
+  test("a handled issue waits for no agent", () => {
     const handled: QueuedIssue = {
       ...issue(17),
       handled: true,
       runId: "run-17",
     };
-    expect(queueCounts([handled, issue(18)])).toEqual({ pending: 2, working: 0 });
+    expect(queueCounts([handled, issue(18)])).toEqual({ pending: 1, working: 0 });
+  });
+
+  test("a processing issue still counts as working when handled", () => {
+    const claimed: QueuedIssue = {
+      ...issue(17, ["processing"]),
+      handled: true,
+      runId: "run-17",
+    };
+    expect(queueCounts([claimed, issue(18)])).toEqual({ pending: 1, working: 1 });
   });
 
   test("a stale worker run id changes no count", () => {
@@ -44,6 +53,20 @@ describe("queue counts", () => {
 
   test("an empty queue has no waiting or running work", () => {
     expect(queueCounts([])).toEqual({ pending: 0, working: 0 });
+  });
+});
+
+describe("queue row state", () => {
+  test("a live claim is running even when the ledger remembers it", () => {
+    expect(queueRowState({ ...issue(17, ["processing"]), handled: true })).toBe("running");
+  });
+
+  test("a handled issue with no live claim is handled", () => {
+    expect(queueRowState({ ...issue(17), handled: true })).toBe("handled");
+  });
+
+  test("an unlabelled, unhandled issue is pending", () => {
+    expect(queueRowState(issue(18))).toBe("pending");
   });
 });
 

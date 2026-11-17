@@ -1,7 +1,7 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
   import { versionLabel } from "../issues-label";
-  import { isProcessing, queueCounts, queueSummary } from "../issues-queue";
+  import { isProcessing, queueCounts, queueRowState, queueSummary } from "../issues-queue";
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
@@ -559,6 +559,7 @@
       <div class="panel__body panel__body--flush">
         <ol class="issues-queue" data-testid="issues-queue">
           {#each issues.queue as issue (issue.number)}
+            {@const state = queueRowState(issue)}
             <li
               class="issues-queue__item"
               data-testid="issues-queue-item"
@@ -580,17 +581,13 @@
                 {#if isGoalIssue(issue)}
                   <span class="badge" data-tone="accent" data-testid="issues-goal-badge">goal</span>
                 {/if}
-                {#if isProcessing(issue)}
-                  <span
-                    class="badge"
-                    data-tone={statusTone("running")}
-                    data-testid="issues-running-marker"
-                  >
-                    running
-                  </span>
-                {:else}
-                  <span class="badge" data-tone={statusTone("pending")}>pending</span>
-                {/if}
+                <span
+                  class="badge"
+                  data-tone={statusTone(state)}
+                  data-testid={`issues-${state}-marker`}
+                >
+                  {state}
+                </span>
               </span>
             </li>
           {:else}

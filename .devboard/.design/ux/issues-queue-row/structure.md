@@ -52,8 +52,9 @@ the title is not a second link.
 
 - Empty queue: one muted line in the panel body.
 - Populated: 0–n rows; each row has one state word.
-- Running: accent state badge; goal + running coexist without wrapping.
-- Handled: success state badge.
+- Running: accent state badge; goal + running coexist without wrapping. A live
+  claim wins over the ledger's handled marker.
+- Handled: success state badge; counted as neither pending nor running.
 - Pending: pending state badge (warning tone).
 - Loading / error: the page header and panel retain the last snapshot; the
   issues worker's own banners own those states and are outside this row.
