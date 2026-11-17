@@ -897,14 +897,19 @@ const CATEGORY_TITLES: [(&str, &str); 5] = [
     ("artificial fragmentation", "artificial-fragmentation"),
 ];
 
+/// Whether `candidate` stays inside `root`. The remainder below the root must
+/// be made of ordinary components only: an interior `..` such as
+/// `src/../../outside.txt` survives the lexical `strip_prefix` with `src` in
+/// front and would otherwise pass this test while resolving outside the root.
 fn path_inside(root: &Path, candidate: &Path) -> bool {
     let root = absolute(root);
     let candidate = absolute(candidate);
     candidate
         .strip_prefix(&root)
         .map(|local| {
-            let text = local.to_string_lossy();
-            text.is_empty() || (!text.starts_with("..") && !Path::new(&*text).is_absolute())
+            local
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)))
         })
         .unwrap_or(false)
 }
@@ -3124,5 +3129,56 @@ mod tick_bounds {
         // poll.
         let tick = super::TICK_MS;
         assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}
+
+#[cfg(test)]
+mod evidence_containment {
+    //! A filing proves its evidence against the checkout. An interior `..`
+    //! must not let a quote copied from beside the checkout satisfy that
+    //! proof.
+
+    use super::*;
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("srp-evidence-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo").join("sub")).expect("a test root");
+        root
+    }
+
+    fn entry(path: &str, quote: &str) -> EvidenceEntry {
+        EvidenceEntry {
+            path: path.to_string(),
+            lines: "1-1".to_string(),
+            quote: quote.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_interior_parent_segment_leaves_the_repository() {
+        let root = test_root("escape");
+        let outside = "the quote beside the checkout";
+        std::fs::write(root.join("outside.txt"), format!("{outside}\n")).expect("the outside file");
+        let repo = root.join("repo");
+        let problem = prove_evidence(&repo, &entry("sub/../../outside.txt", outside))
+            .expect("an interior `..` still proves the filing");
+        assert!(
+            problem.contains("leaves the repository"),
+            "the refusal names another cause: {problem}"
+        );
+    }
+
+    #[test]
+    fn a_repository_relative_evidence_path_still_proves() {
+        let root = test_root("inside");
+        let quote = "export const handle = 1;";
+        let repo = root.join("repo");
+        std::fs::write(repo.join("sub").join("handler.ts"), format!("{quote}\n"))
+            .expect("the evidence file");
+        assert_eq!(prove_evidence(&repo, &entry("sub/handler.ts", quote)), None);
     }
 }
