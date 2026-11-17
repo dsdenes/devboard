@@ -1422,7 +1422,6 @@ pub fn write_selection_snapshot(
     std::fs::create_dir_all(&directory)?;
     set_mode(&directory, 0o700)?;
     let target = selection_snapshot_path(state_dir);
-    let temporary = PathBuf::from(format!("{}.{}.tmp", target.display(), std::process::id()));
     let value = json!({
         "version": 1,
         "provider": provider,
@@ -1434,14 +1433,8 @@ pub fn write_selection_snapshot(
     });
     let mut text = crate::jsjson::stringify(&value);
     text.push('\n');
-    let result = (|| -> io::Result<()> {
-        let mut file = std::fs::File::create(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        drop(file);
-        set_mode(&temporary, 0o600)?;
-        std::fs::rename(&temporary, &target)?;
-        set_mode(&target, 0o600)
-    })();
+    let temporary = stage_bytes(&directory, text.as_bytes(), "provider-selection")?;
+    let result = replace_staged(&temporary, &target);
     if result.is_err() {
         let _ = std::fs::remove_file(&temporary);
     }

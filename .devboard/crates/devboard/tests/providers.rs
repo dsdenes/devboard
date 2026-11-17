@@ -1105,6 +1105,52 @@ async fn a_fresh_connection_receives_no_unsolicited_provider_state() {
     );
 }
 
+/// Two publishes in one process target the same file, so each caller must
+/// stage on its own temporary path: a temporary name derived from the target
+/// and the process id alone let one caller truncate the other's staging file
+/// and made the loser's rename fail.
+#[test]
+fn overlapping_selection_publishes_each_rename_their_own_staging_file() {
+    let root = fixture_root("selection-overlap");
+    let state = root.join("state");
+    let writers = [("go-a", "Go A"), ("go-b", "Go B")];
+    for round in 0..64 {
+        let handles: Vec<_> = writers
+            .iter()
+            .map(|(id, label)| {
+                let state = state.clone();
+                let id = (*id).to_string();
+                let label = (*label).to_string();
+                std::thread::spawn(move || {
+                    write_selection_snapshot(
+                        &state,
+                        ProviderId::OpenCodeGo,
+                        &id,
+                        &label,
+                        "opencode-go/deepseek-v4.1-flash",
+                        Some(0.5),
+                        "2026-11-09T09:56:49.003Z",
+                    )
+                })
+            })
+            .collect();
+        for handle in handles {
+            match handle.join().expect("no panic") {
+                Ok(()) => {}
+                Err(error) => panic!("round {round}: a publish failed: {error}"),
+            }
+        }
+        let snapshot = read_selection_snapshot(&state).expect("the published selection");
+        assert!(
+            writers
+                .iter()
+                .any(|(id, _)| *id == snapshot.subscription_id.as_str()),
+            "round {round}: {} names neither writer's selection",
+            snapshot.subscription_id
+        );
+    }
+}
+
 /// A worker resolving its own environment has no cached usage, so every Go
 /// key reports unknown headroom. It must follow the dashboard's published
 /// selection instead of the first key in the credential file: the first key
