@@ -44,7 +44,7 @@ const TAB = {
   title: "#42 Fix the focus stream",
 };
 
-function snapshot(): Record<string, unknown> {
+function snapshot(startedAt = "2026-11-09T10:00:00Z"): Record<string, unknown> {
   return {
     type: "issuesState",
     root: "/repo",
@@ -56,7 +56,7 @@ function snapshot(): Record<string, unknown> {
       {
         runId: "run-42",
         issueNumber: 42,
-        startedAt: "2026-11-09T10:00:00Z",
+        startedAt,
         question: null,
         acp: null,
         harnessVersion: "1.44.10",
@@ -101,6 +101,28 @@ test("the focus page shows the live streamed activity", async () => {
     entries: [{ text: " 2 passed", append: true }],
   });
   await waitFor(() => expect(log.textContent).toContain("running tests 2 passed"));
+});
+
+/** An unparseable start has no age to state, so the identity omits it entirely. */
+function expectNoStartAge(startedAt: string): void {
+  issues.handleEvent(snapshot(startedAt));
+  const view = render(IssuesAgentFocus, {
+    props: { tab: TAB, close: () => {}, openRuns: () => {} },
+  });
+
+  const identity = view.getByTestId("issues-agent-focus-run");
+  expect(view.queryByTestId("issues-agent-focus-run-started")).toBeNull();
+  expect(identity.textContent).not.toContain("Started");
+  // Only the age is missing: the run the header names still renders.
+  expect(view.getByTestId("issues-agent-focus-run-id").textContent?.trim()).toBe("run-42");
+}
+
+test("an empty start renders no start age", () => {
+  expectNoStartAge("");
+});
+
+test("a non-date start renders no start age", () => {
+  expectNoStartAge("not a date");
 });
 
 /** A run that already ended: its snapshot lists it as history, not as a live agent. */

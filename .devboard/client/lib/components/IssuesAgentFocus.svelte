@@ -131,7 +131,7 @@
             >
               {runId}
             </code>
-            {#if startedAt !== null}
+            {#if startedAt !== null && startedLabel !== ""}
               <span
                 class="issues-run-identity__started"
                 title={`Started ${startedAt}`}
