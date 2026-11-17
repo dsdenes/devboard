@@ -1436,26 +1436,14 @@ fn a_backend_denied_codex_account_is_not_a_finding() {
         &instance,
     );
     denied.level = Some("warn".to_string());
-    let mut other = event(
-        now,
-        2,
-        "model discovery failed for provider: HTTP 500",
-        "omp-log",
-        &instance,
-    );
-    other.level = Some("warn".to_string());
 
-    let findings = analyze_evidence(&[denied, other], window, window);
+    let findings = analyze_evidence(&[denied], window, window);
 
-    assert_eq!(findings.len(), 1, "{findings:?}");
-    assert_eq!(findings[0].category, "omp-warn");
-    assert!(findings[0]
-        .quote
-        .starts_with("model discovery failed for provider"));
+    assert!(findings.is_empty(), "{findings:?}");
 }
 
 #[test]
-fn a_denied_account_record_in_the_omp_log_files_nothing() {
+fn a_denied_account_and_a_discovery_record_in_the_omp_log_file_nothing() {
     let root = scratch("codex-account-log");
     let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
     let logs = root.join("omp-logs");
@@ -1480,7 +1468,10 @@ fn a_denied_account_record_in_the_omp_log_files_nothing() {
                 "timestamp": iso_from_ms(now),
                 "level": "warn",
                 "pid": 4242,
-                "message": "model discovery failed for provider: HTTP 404 from http://127.0.0.1:8080/models",
+                "message": "model discovery failed for provider",
+                "provider": "llama.cpp",
+                "url": "http://127.0.0.1:8080/",
+                "error": "HTTP 404 from http://127.0.0.1:8080/models",
             })
         ),
     );
@@ -1500,9 +1491,42 @@ fn a_denied_account_record_in_the_omp_log_files_nothing() {
     assert_eq!(unattributed, 0);
     assert_eq!(events.len(), 2, "{events:?}");
     let findings = analyze_evidence(&events, window, window);
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn a_model_discovery_failure_is_not_a_finding_whatever_its_cause() {
+    let root = production_root("model-discovery");
+    let instance = fixture_instance(&root, &root.join(".devboard").join(".tmp"));
+    let now = epoch_ms();
+    let window = Window {
+        start_ms: now - 10 * 60_000,
+        end_ms: now + 60_000,
+    };
+    let causes = [
+        "model discovery failed for provider: The operation timed out.",
+        "model discovery failed for provider: ECONNREFUSED: Unable to connect. Is the computer able to access the url?",
+        "model discovery failed for provider: HTTP 404 from http://127.0.0.1:8080/models",
+        "model discovery failed for provider: HTTP 500",
+    ];
+    let mut events: Vec<EvidenceEvent> = causes
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let mut discovery = event(now, index as i64, text, "omp-log", &instance);
+            discovery.level = Some("warn".to_string());
+            discovery
+        })
+        .collect();
+    let mut other = event(now, 8, "agent turn failed", "omp-log", &instance);
+    other.level = Some("warn".to_string());
+    events.push(other);
+
+    let findings = analyze_evidence(&events, window, window);
+
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0].category, "omp-warn");
-    assert!(findings[0].quote.contains("HTTP 404"), "{findings:?}");
+    assert_eq!(findings[0].quote, "agent turn failed");
 }
 
 #[test]

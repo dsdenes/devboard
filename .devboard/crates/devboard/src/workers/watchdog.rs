@@ -3607,6 +3607,24 @@ fn denied_codex_account(event: &EvidenceEvent) -> bool {
         && normalize_evidence_line(&event.text).starts_with(CODEX_ACCOUNT_DENIED)
 }
 
+const MODEL_DISCOVERY_FAILED: &str = "model discovery failed for provider";
+
+/// omp probes every configured provider for its model list when a peer starts,
+/// and a provider it cannot list is left out of that peer's model set while the
+/// turn proceeds with the providers it reached. The probe reports the provider's
+/// own state: an optional local server that is not running answers
+/// `ECONNREFUSED`, a probe times out, and a URL that serves something else
+/// answers an HTTP status — llama.cpp's default `http://127.0.0.1:8080/` is the
+/// dashboard's own port, whose `/models` answers `404`. Every cause is provider,
+/// network, or operator configuration on this host, and no repository change
+/// starts a provider or corrects its URL, so the warning is never a finding
+/// whatever cause it names.
+fn model_discovery_failed(event: &EvidenceEvent) -> bool {
+    event.kind == "omp-log"
+        && event.level.as_deref() == Some("warn")
+        && normalize_evidence_line(&event.text).starts_with(MODEL_DISCOVERY_FAILED)
+}
+
 const SESSION_EXIT_RECORDED: &str = "Session exit recorded";
 
 /// omp records the exit of a session it hosted — the signal it received, the
@@ -3770,6 +3788,7 @@ pub fn analyze_evidence(
                     && !host_storage_failure(event)
                     && !locked_agent_storage(event)
                     && !skipped_judgment_candidate(event)
+                    && !model_discovery_failed(event)
                     && !denied_codex_account(event)
                     && !session_exit_recorded(event)
                     && !daemon_broker_list_failed(event)
