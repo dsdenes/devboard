@@ -3416,7 +3416,15 @@ finding; a candidate failure that names no skip is not a recovery and still file
 record. A Codex account the backend denies is the operator's provider configuration, not a
 repository defect: discovery continues for every other account, no repository change grants that
 account access, and the `Codex model discovery skipped an account denied by the backend` warning is
-therefore never a finding; every other model-discovery warning still files its `omp-warn` record.
+therefore never a finding.
+A `model discovery failed for provider` warning is omp probing a configured provider for its model
+list when a peer starts and leaving that provider out of the peer's model set while the turn
+proceeds with the providers it reached. The probe reports the provider's own state: an optional
+local server that is not running answers `ECONNREFUSED`, a probe times out, and a URL that serves
+something else answers an HTTP status — llama.cpp's default `http://127.0.0.1:8080/` is the
+dashboard's own port, whose `/models` answers `404`. Provider, network, and operator configuration
+on the host produce every cause, no repository change starts a provider or corrects its URL, and
+the warning is never a finding whatever cause it names.
 An omp `Session exit recorded` warning is that peer writing down the exit of a session it hosted —
 the signal it received, its session file, and the tool calls still in flight — whenever a
 supervisor stops it, so it is omp's own shutdown bookkeeping rather than a failure and is never a
