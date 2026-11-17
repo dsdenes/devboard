@@ -77,6 +77,14 @@ export class IssuesStore {
    * selection never stands in for that answer.
    */
   private requestedRun: string | null = null;
+  /**
+   * The run the Issues surfaces show: the Focus tab's run, or the Runs page's
+   * selection. A frame answers one run's read, so an answer for any other run
+   * never becomes the history those surfaces show.
+   */
+  shownRun = $state<string | null>(null);
+  /** True once this connection generation asked any run's history. */
+  private askedAnyRun = false;
   /** Issue numbers whose close request is still unanswered. */
   closing = $state<number[]>([]);
   /**
@@ -299,6 +307,7 @@ export class IssuesStore {
   resetActiveOperations(): void {
     this.closing = [];
     this.requestedRun = null;
+    this.askedAnyRun = false;
   }
 
   canClose(number: number): boolean {
@@ -346,19 +355,35 @@ export class IssuesStore {
   }
 
   /**
+   * Names the run the Issues surfaces show. A live agent's Focus tab reads its
+   * run at the live cadence without opening it, so the tab names the run
+   * itself; the run's history frame is then stored only for that run.
+   */
+  showRun(runId: string): void {
+    if (this.shownRun === runId) return;
+    this.shownRun = runId;
+    // The request marker describes the run on screen, so it goes with it: the
+    // new run's answer replaces whatever the detail slot holds, so coming back
+    // to the old run must ask again instead of waiting on a dropped answer.
+    this.requestedRun = null;
+  }
+
+  /**
    * Requests one run's history. The selection and the requested marker move
    * only after the frame reaches the socket, so a rejected send leaves loadRun
    * free to retry instead of claiming a request that never happened.
    */
   openRun(runId: string): void {
     if (!connection.open) return;
-    // Only a reopen asks again. The first request of a connection mounts its
-    // own read — the cache holds no entry for it — and a reconnect invalidates
-    // every query it still shows, so neither forces a second request. A run
-    // opened after another was already requested has a cached entry whose
-    // `staleTime` would serve that copy, so its derived key is invalidated.
-    const reopening = this.requestedRun !== null;
+    // Only the generation's first request mounts its own read — the cache
+    // holds no entry for it — and a reconnect invalidates every query it still
+    // shows, so neither forces a second request. A run opened after another
+    // was already requested has a cached entry whose `staleTime` would serve
+    // that copy, so its derived key is invalidated.
+    const reopening = this.askedAnyRun;
+    this.askedAnyRun = true;
     this.selectedRun = runId;
+    this.showRun(runId);
     this.requestedRun = runId;
     this.run = null;
     this.missingRun = null;
@@ -413,6 +438,9 @@ export class IssuesStore {
     if (message.type === "issuesRun" && isObject(message.run)) {
       const run = message.run as unknown as IssuesRunDetail;
       if (typeof run.runId === "string" && Array.isArray(run.activityLines)) {
+        // A frame answers one run's read, and the operator may have moved on
+        // before it landed: only the run the surfaces show is its answer.
+        if (run.runId !== this.shownRun) return;
         this.run = run;
         this.missingRun = null;
         this.selectedRun = run.runId;

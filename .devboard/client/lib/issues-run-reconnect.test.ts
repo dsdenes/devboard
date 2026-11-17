@@ -222,3 +222,23 @@ test("reopening a finished run reads its stored history again", async () => {
   await settle();
   expect(runReads(reads, "run-42")).toBe(2);
 });
+
+test("a late history answer for the run the operator left never replaces it", async () => {
+  const reads = await openPage();
+
+  issues.openRun("run-42");
+  await settle();
+  issues.openRun("run-43");
+  await settle();
+  expect(runReads(reads, "run-43")).toBe(1);
+
+  // The first answer lands after the switch: it answers run-42, not run-43.
+  applyFrames([{ type: "issuesRun", run: finishedRun() }]);
+  await settle();
+  expect(issues.run).toBeNull();
+  expect(issues.selectedRun).toBe("run-43");
+
+  // The run on screen still answers for itself.
+  applyFrames([{ type: "issuesRun", run: { ...finishedRun(), runId: "run-43" } }]);
+  expect(issues.run?.runId).toBe("run-43");
+});

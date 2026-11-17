@@ -44,6 +44,14 @@
   );
   const barStartedAt = $derived(barState === "running" ? startedAt : null);
 
+  // The tab names the run it shows, so a history answer for any other run is
+  // never stored as this page's history: a quick switch leaves the older
+  // answer in flight, and a live agent's tab reads its run at the live cadence
+  // without ever opening it.
+  $effect(() => {
+    issues.showRun(runId);
+  });
+
   // A finished run's final status and activity come from run history. A reload
   // restores this tab before the socket opens and before the replay names the
   // live agents, so the request waits for both: a send rejected while closed,

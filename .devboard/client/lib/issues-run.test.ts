@@ -10,6 +10,9 @@ const { notifications } = await import("./notifications.svelte");
 
 afterEach(() => {
   connection.dispose();
+  issues.shownRun = null;
+  issues.run = null;
+  issues.missingRun = null;
 });
 
 test("a run whose history is gone reads as unavailable without a server error notification", () => {
@@ -20,6 +23,9 @@ test("a run whose history is gone reads as unavailable without a server error no
     issues.handleEvent(message as Record<string, unknown>);
   });
 
+  // The Focus tab names the run it shows before its history answers: only that
+  // run's own history may fill the detail slot the frame below reaches.
+  issues.shownRun = "run-gone";
   applyFrames([
     { type: "issuesRunMissing", runId: "run-gone", message: "No such issues run." },
   ]);

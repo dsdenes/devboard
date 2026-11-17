@@ -27,6 +27,7 @@ function resetRunState(): void {
   issues.run = null;
   issues.missingRun = null;
   issues.selectedRun = null;
+  issues.shownRun = null;
 }
 
 beforeEach(resetRunState);
@@ -203,4 +204,29 @@ test("a run restored from history keeps its id and start in the header", async (
   const started = view.getByTestId("issues-agent-focus-run-started");
   expect(started.textContent?.trim()).toStartWith("Started ");
   expect(started.getAttribute("title")).toBe("Started 2026-11-09T10:00:00Z");
+});
+
+test("a history answer for another run never replaces the history on screen", async () => {
+  issues.handleEvent(finishedSnapshot());
+
+  const view = render(IssuesAgentFocus, {
+    props: { tab: TAB, close: () => {}, openRuns: () => {} },
+  });
+  issues.handleEvent({ type: "issuesRun", run: finishedRun() });
+  const log = await view.findByTestId("issues-agent-focus-activity");
+  expect(log.textContent).toContain("2 passed");
+
+  // The answer a previous selection left in flight is not this run's history:
+  // the page keeps rendering the history it loaded instead of its loading
+  // panel, which nothing would ever answer.
+  issues.handleEvent({
+    type: "issuesRun",
+    run: { ...finishedRun(), runId: "run-43", activityLines: ["$ other", "1 failed"] },
+  });
+
+  expect(issues.run?.runId).toBe("run-42");
+  expect(view.queryByText("Loading the run from history…")).toBeNull();
+  expect(view.queryByTestId("issues-agent-focus-unavailable")).toBeNull();
+  expect(view.getByTestId("issues-agent-focus-activity").textContent).toContain("2 passed");
+  expect(view.getByTestId("issues-agent-focus-run-id").textContent?.trim()).toBe("run-42");
 });
