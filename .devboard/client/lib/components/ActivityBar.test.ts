@@ -48,3 +48,27 @@ test("a lane question marks Goal as needing attention while the lifecycle is pau
   expect(tab?.getAttribute("aria-label")).toBe("Goal (Alt+1), needs attention");
   expect(tab?.querySelector("[data-state]")?.getAttribute("data-state")).toBe("attention");
 });
+
+test("a finished manual run leaves a resumed lifecycle's Goal tab running", async () => {
+  // The server resumes the lifecycle after a manual sequence it interrupted, so
+  // this is the ordinary end state of `Resolve next ADR` on a live lifecycle.
+  goal.runState = "stopped";
+  goal.lifecycle = { stage: "implementation", pass: 1, work: null, paused: false };
+  goal.lifecycleSeen = true;
+  const view = render(ActivityBar);
+  await tick();
+  const tab = view.container.querySelector('[data-testid="mode-goal"]');
+  expect(tab?.getAttribute("aria-label")).toBe("Goal (Alt+1), work running");
+  expect(tab?.querySelector("[data-state]")?.getAttribute("data-state")).toBe("running");
+});
+
+test("a stopped manual run without a lifecycle still needs attention", async () => {
+  // No lifecycle is live, so the console's run-stopped notice is the surface
+  // that reports the run, and the rail agrees with it.
+  goal.runState = "stopped";
+  const view = render(ActivityBar);
+  await tick();
+  const tab = view.container.querySelector('[data-testid="mode-goal"]');
+  expect(tab?.getAttribute("aria-label")).toBe("Goal (Alt+1), needs attention");
+  expect(goal.lifecycleActive).toBe(false);
+});

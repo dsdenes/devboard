@@ -46,8 +46,11 @@
 
   type ModeState = "running" | "attention" | "idle" | "stale" | null;
 
+  // The rail follows the live mode, never the terminal state of one manual run:
+  // a resumed lifecycle keeps the Goal tab running, and a stopped run is
+  // reported by the console's own notice, exactly while no lifecycle is live.
   const goalState = $derived<ModeState>(
-    goal.questionWaiting || goal.runState === "stopped"
+    goal.questionWaiting || (goal.runState === "stopped" && !goal.lifecycleActive)
       ? "attention"
       : goal.lifecycleActive && goal.lifecycle.paused
         ? "attention"
