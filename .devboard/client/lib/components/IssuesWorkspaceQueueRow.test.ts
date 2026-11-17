@@ -186,6 +186,8 @@ test("a handled row keeps the same three tracks and one meta-group state badge",
   expect(handled.querySelector('[data-testid="issues-goal-badge"]')).toBeNull();
   const states = stateBadges(handled);
   expect(states.length).toBe(1);
-  expect(states[0]?.textContent?.trim()).toBe("pending");
+  expect(states[0]?.getAttribute("data-testid")).toBe("issues-handled-marker");
+  expect(states[0]?.textContent?.trim()).toBe("handled");
+  expect(states[0]?.getAttribute("data-tone")).toBe("success");
   expect(handled.getAttribute("data-goal")).toBe("false");
 });
