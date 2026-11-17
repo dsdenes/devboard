@@ -399,6 +399,69 @@ async fn lifecycle_starts_lanes_relays_activity_and_finishes() {
     );
 }
 
+/// The start gate reads `SKILL.md` through the same frontmatter rule as
+/// `GET /skills`, so the one prepared skill counts even when an editor saved it
+/// with a UTF-8 byte-order mark.
+#[tokio::test]
+async fn a_byte_order_marked_skill_still_starts_the_lifecycle() {
+    let _guard = serial().lock().await;
+    let scratch = Scratch::new("bom-skill");
+    let tracker_file = scratch.path().join("tracker.json");
+    std::fs::write(
+        &tracker_file,
+        serde_json::to_string(&json!([
+            {"number": 17, "title": "Epic seventeen", "url": "https://gitea.test/17"}
+        ]))
+        .expect("tracker JSON"),
+    )
+    .expect("tracker written");
+    let tracker = Tracker::start(tracker_file.clone()).await;
+    std::env::set_var("DEVBOARD_GITEA_URL", &tracker.base);
+    prepare_repository(&scratch, Some(&format!("{}/owner/name", tracker.base)));
+
+    std::fs::remove_dir_all(scratch.path().join(".omp/skills/fixture-skill"))
+        .expect("the fixture skill is replaced");
+    let skill = scratch.path().join(".omp/skills/bom-skill");
+    std::fs::create_dir_all(&skill).expect("skill directory");
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "\u{feff}---\nname: bom-skill\ndescription: A skill saved with a byte-order mark\n\
+metadata:\n  devboard-managed: \"true\"\n  devboard-family: prepare\n---\n\nBody\n",
+    )
+    .expect("skill written");
+
+    let command = stub_command(
+        &scratch,
+        &[&format!("--fixture-tracker={}", tracker_file.display())],
+    );
+    let app = app_with(&scratch, command).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::StartLifecycle).await;
+
+    let refusal = "No skills are prepared. Prepare skills before starting the lifecycle.";
+    let frames = collect_until(
+        &mut inbox,
+        |frame| {
+            (frame["type"] == "lifecycleState" && frame["stage"] == "finished")
+                || (frame["type"] == "error" && frame["message"] == refusal)
+        },
+        25_000,
+    )
+    .await;
+    assert!(
+        !has_frame(&frames, |frame| frame["type"] == "error"
+            && frame["message"] == refusal),
+        "the byte-order-marked skill counts as prepared: {frames:?}"
+    );
+    assert!(
+        has_frame(&frames, |frame| {
+            frame["type"] == "lifecycleState" && frame["stage"] == "finished"
+        }),
+        "the lifecycle runs to its end: {frames:?}"
+    );
+}
+
 #[tokio::test]
 async fn pause_holds_and_resume_continues_the_lifecycle() {
     let _guard = serial().lock().await;

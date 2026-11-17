@@ -8,11 +8,11 @@
 //! frontmatter at all, so the skill left the prepared list and preparation's
 //! contradiction review silently stopped covering it.
 //!
-//! Every reader — installed skills, Goal's inspection, the preparation
-//! contradiction review, and the client's `skillBody` — uses the whitespace
-//! definition below. It is ECMAScript's `String.prototype.trim`, which the
-//! client already implements, so no reader may find a fence with Rust's
-//! `str::trim`.
+//! Every reader — installed skills, Goal's inspection, the lifecycle start
+//! gate, the preparation contradiction review, and the client's `skillBody` —
+//! uses the whitespace definition below. It is ECMAScript's
+//! `String.prototype.trim`, which the client already implements, so no reader
+//! may find a fence with Rust's `str::trim`.
 
 use std::collections::HashMap;
 

@@ -4718,6 +4718,10 @@ async fn connect_peer(
 }
 
 /// Counts the managed skills a lifecycle start requires.
+///
+/// The marker is read through `skill_frontmatter::fields`, the reader
+/// `GET /skills` uses, so this gate counts exactly the rows that page reports
+/// as managed — a document saved with a byte-order mark included.
 async fn prepared_skill_count(app: &Arc<App>) -> Result<usize, String> {
     let root = crate::installed_skills::skills_root(&app.config().repo_dir);
     let mut reader = match tokio::fs::read_dir(&root).await {
@@ -4744,64 +4748,15 @@ async fn prepared_skill_count(app: &Arc<App>) -> Result<usize, String> {
         let Ok(source) = tokio::fs::read_to_string(&path).await else {
             continue;
         };
-        if frontmatter_field(&source, "metadata.devboard-managed").as_deref() == Some("true") {
+        if crate::skill_frontmatter::fields(&source).is_some_and(|fields| {
+            fields
+                .get("metadata.devboard-managed")
+                .is_some_and(|value| value == "true")
+        }) {
             count += 1;
         }
     }
     Ok(count)
-}
-
-fn frontmatter_field(source: &str, key: &str) -> Option<String> {
-    let mut lines = source.split('\n');
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    let mut section: Option<String> = None;
-    for line in lines {
-        if line.trim() == "---" {
-            break;
-        }
-        let indented = line.starts_with(' ') || line.starts_with('\t');
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((name, value)) = trimmed.split_once(':') else {
-            continue;
-        };
-        let name = name.trim();
-        let value = unquote(value.trim());
-        if !indented {
-            section = None;
-            if !name.contains('.') && value.is_empty() {
-                section = Some(name.to_string());
-                continue;
-            }
-            if name == key {
-                return Some(value);
-            }
-            continue;
-        }
-        if let Some(current) = &section {
-            if format!("{current}.{name}") == key {
-                return Some(value);
-            }
-        }
-    }
-    None
-}
-
-fn unquote(value: &str) -> String {
-    let value = value.trim();
-    let value = value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(value);
-    value
-        .strip_prefix('\'')
-        .and_then(|rest| rest.strip_suffix('\''))
-        .unwrap_or(value)
-        .to_string()
 }
 
 fn trim_activity(store: &mut Vec<String>) {
