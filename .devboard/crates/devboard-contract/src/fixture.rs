@@ -291,7 +291,7 @@ pub async fn record(contract: &Path) -> Result<usize, String> {
     for case in http_table::all_cases() {
         let fixture = Fixture::start(case.name, case.hold_flow_restore).await?;
         let observed = http_table::send(&client, &fixture.base, &case).await?;
-        corpus.insert(recording(&case, &observed, &allowlist));
+        corpus.insert(recording(&case, &observed, &allowlist)?);
     }
     corpus.write(&contract.join("http"))?;
     Ok(corpus.len())
@@ -319,26 +319,41 @@ pub async fn replay(
     Ok(results)
 }
 
-/// The corpus entry one observed answer becomes.
-fn recording(case: &Case, observed: &Observed, allowlist: &Allowlist) -> http_table::Recording {
-    let json = observed
+/// The corpus entry one observed answer becomes. A content type that names
+/// JSON makes the body mandatory JSON: a body `serde_json` rejects fails the
+/// recording of that row instead of silently becoming text the comparison
+/// would then match against itself. An answer that drops its content type
+/// still records a JSON document when its body parses as an object or array,
+/// so a handler cannot downgrade a row to text by omitting the header.
+fn recording(
+    case: &Case,
+    observed: &Observed,
+    allowlist: &Allowlist,
+) -> Result<http_table::Recording, String> {
+    let names_json = observed
         .headers
         .get("content-type")
-        .map(|value| value.contains("json"))
-        .unwrap_or(false);
-    let body = if json {
-        serde_json::from_str(&observed.body)
-            .unwrap_or_else(|_| serde_json::Value::String(observed.body.clone()))
-    } else {
-        serde_json::Value::String(observed.body.clone())
+        .map(|value| value.contains("json"));
+    let body = match names_json {
+        Some(true) => serde_json::from_str(&observed.body).map_err(|error| {
+            format!(
+                "{}: the answer names JSON and its body does not parse: {error}",
+                case.name
+            )
+        })?,
+        Some(false) => serde_json::Value::String(observed.body.clone()),
+        None => match serde_json::from_str(&observed.body) {
+            Ok(document @ (Value::Object(_) | Value::Array(_))) => document,
+            Ok(_) | Err(_) => serde_json::Value::String(observed.body.clone()),
+        },
     };
-    http_table::Recording {
+    Ok(http_table::Recording {
         name: case.name.to_string(),
         method: case.method.as_str().to_string(),
         path: case.path.to_string(),
         status: observed.status,
         body: placeholder(&body, None, allowlist),
-    }
+    })
 }
 
 /// Replaces every allowlisted value with a placeholder of its own type. The
@@ -404,6 +419,7 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn allowlist() -> Allowlist {
         Allowlist::load(&allowlist_path()).expect("the nondeterminism allowlist")
@@ -443,5 +459,96 @@ mod tests {
             Value::String(String::new()),
             "the prompt's diagnostic is replaced at its own scope"
         );
+    }
+
+    /// One row named for the probe, holding no route of the real table.
+    fn probe_case(name: &'static str) -> Case {
+        Case {
+            name,
+            method: reqwest::Method::GET,
+            path: "/probe",
+            request_path: "/probe".to_string(),
+            headers: http_table::HeaderSpec::None,
+            expect_status: 200,
+            expect_allow: None,
+            expect_gzip: false,
+            answer: http_table::Answer::Exact,
+            live: http_table::Live::Recorded,
+            hold_flow_restore: false,
+        }
+    }
+
+    /// One observed answer carrying the content type it was given.
+    fn probe_answer(name: &'static str, content_type: Option<&str>, body: &str) -> Observed {
+        let mut headers = BTreeMap::new();
+        if let Some(value) = content_type {
+            headers.insert("content-type".to_string(), value.to_string());
+        }
+        Observed {
+            name,
+            status: 200,
+            headers,
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_json_answer_that_does_not_parse_fails_the_recording_of_its_row() {
+        let error = recording(
+            &probe_case("broken-json"),
+            &probe_answer("broken-json", Some("application/json"), "{\"answer\": "),
+            &allowlist(),
+        )
+        .expect_err("a body the content type names JSON must parse");
+        assert!(
+            error.starts_with("broken-json: the answer names JSON and its body does not parse: "),
+            "the error names the row and the rejected body: {error}"
+        );
+    }
+
+    #[test]
+    fn a_json_answer_without_a_content_type_is_recorded_as_its_document() {
+        let object = recording(
+            &probe_case("json-object-without-content-type"),
+            &probe_answer(
+                "json-object-without-content-type",
+                None,
+                "{\"answer\": true}",
+            ),
+            &allowlist(),
+        )
+        .expect("a JSON object parses without a content type");
+        assert_eq!(object.body, serde_json::json!({"answer": true}));
+
+        let array = recording(
+            &probe_case("json-array-without-content-type"),
+            &probe_answer("json-array-without-content-type", None, "[{\"answer\": 1}]"),
+            &allowlist(),
+        )
+        .expect("a JSON array parses without a content type");
+        assert_eq!(array.body, serde_json::json!([{"answer": 1}]));
+    }
+
+    #[test]
+    fn a_textual_answer_is_recorded_as_text() {
+        let declared = recording(
+            &probe_case("text-declared"),
+            &probe_answer(
+                "text-declared",
+                Some("text/plain; charset=utf-8"),
+                "no such run",
+            ),
+            &allowlist(),
+        )
+        .expect("a non-JSON content type records text");
+        assert_eq!(declared.body, Value::String("no such run".to_string()));
+
+        let undeclared = recording(
+            &probe_case("text-undeclared"),
+            &probe_answer("text-undeclared", None, "no such run"),
+            &allowlist(),
+        )
+        .expect("a body that is not a JSON document records text");
+        assert_eq!(undeclared.body, Value::String("no such run".to_string()));
     }
 }
