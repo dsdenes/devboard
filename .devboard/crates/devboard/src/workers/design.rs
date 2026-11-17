@@ -28,7 +28,7 @@ use crate::acp::{
     session_mcp_servers, AcpActivity, AcpConnection, AcpConnectionOptions, AcpEvent, AcpQuestion,
     PermissionPolicy,
 };
-use crate::workers::startup::{inherited_state_path, versioned_state_files};
+use crate::workers::startup::{inherited_notice, inherited_state_path, versioned_state_files};
 
 /* ------------------------------------------------------------------------ */
 /* Constants and paths                                                       */
@@ -3211,7 +3211,7 @@ impl DesignWorker {
             state.newest_cycle_id = previous.newest_cycle_id.clone();
             state.release = previous.release.clone();
             state.documentation = previous.documentation.clone();
-            state.notice = previous.notice.clone();
+            state.notice = inherited_notice(previous.notice.clone());
         }
         state.last_error = None;
         state.updated_at = now_text;

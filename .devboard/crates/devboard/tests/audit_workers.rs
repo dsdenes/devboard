@@ -12,11 +12,12 @@ use std::pin::Pin;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use devboard::workers::api_standards as api;
+use devboard::workers::consistent_naming as naming;
 use devboard::workers::dead_code as dead;
 use devboard::workers::single_responsibility as srp;
 
@@ -2600,6 +2601,116 @@ fn worker_exits_two_without_an_origin_and_zero_when_already_running() {
         .expect("the worker runs");
     assert_eq!(already_running.status.code(), Some(0));
     runtime.block_on(worker.stop());
+}
+
+/* ------------------------------------------------------------------------ */
+/* Harness version                                                           */
+/* ------------------------------------------------------------------------ */
+
+/// One worker process this test owns; it never outlives the test.
+struct WorkerChild(std::process::Child);
+
+impl Drop for WorkerChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The four prepare-family workers stamp the lock they take with the harness
+/// version they run from. A released binary carries the build runner's
+/// compile-time source path, which does not exist on a host, so a fallback to
+/// it left every one of them registered as an unknown version: the dashboard
+/// then took its own replacement for an older worker, and the drain that
+/// followed ended the family.
+#[test]
+fn every_prepare_worker_stamps_the_harness_version_it_runs_from() {
+    let fixture = Fixture::new("version-stamp");
+    git_init(&fixture);
+    git_command(
+        &fixture,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://forge.test/acme/fixture.git",
+        ],
+    );
+    // An installed host layout: the worker runs from `<repo>/.devboard/bin`,
+    // so the harness directory it belongs to is this checkout's prefix.
+    let harness = fixture.repo.join(".devboard");
+    std::fs::create_dir_all(harness.join("bin")).expect("the installed bin");
+    std::fs::write(
+        harness.join("devboard.json"),
+        "{\"name\":\"@dsdenes/devboard\",\"version\":\"9.9.9\"}\n",
+    )
+    .expect("the harness manifest");
+    let binary = harness.join("bin").join("devboard");
+    std::fs::copy(env!("CARGO_BIN_EXE_devboard"), &binary).expect("the worker binary");
+
+    let families = [
+        (api::API_STANDARDS_DIRECTORY, api::lock_path(&fixture.repo)),
+        (dead::DEAD_CODE_DIRECTORY, dead::lock_path(&fixture.repo)),
+        (
+            srp::SINGLE_RESPONSIBILITY_DIRECTORY,
+            srp::lock_path(&fixture.repo),
+        ),
+        (
+            naming::CONSISTENT_NAMING_DIRECTORY,
+            naming::lock_path(&fixture.repo),
+        ),
+    ];
+    let workers: Vec<WorkerChild> = families
+        .iter()
+        .map(|(family, _)| {
+            WorkerChild(
+                Command::new(&binary)
+                    .args([
+                        "worker",
+                        family,
+                        "--repo",
+                        fixture.repo.to_str().expect("a path"),
+                        "--state-dir",
+                        fixture.state_dir.to_str().expect("a path"),
+                    ])
+                    .env_remove("DEVBOARD_HARNESS_VERSION")
+                    .env_remove("DEVBOARD_RUNNING_HARNESS_DIR")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("the worker starts"),
+            )
+        })
+        .collect();
+
+    let stamped = |lock: &Path| PathBuf::from(format!("{}.9.9.9", lock.display()));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let pending: Vec<&str> = families
+            .iter()
+            .filter(|(_, lock)| !stamped(lock).is_file())
+            .map(|(family, _)| *family)
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "these workers published no versioned lock: {pending:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    for (family, lock) in &families {
+        let text = std::fs::read_to_string(stamped(lock)).expect("the worker lock");
+        let document: Value = serde_json::from_str(&text).expect("a lock document");
+        assert_eq!(
+            document["harnessVersion"],
+            json!("9.9.9"),
+            "{family} recorded a different harness version: {text}"
+        );
+    }
+    drop(workers);
 }
 
 /* ------------------------------------------------------------------------ */

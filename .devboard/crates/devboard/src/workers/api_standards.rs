@@ -33,8 +33,7 @@ use crate::journal::repo_key;
 use crate::providers::{
     create_worker_provider_environment, Env, ProviderOptions, WorkerProviderEnvironment,
 };
-use crate::version::read_harness_version;
-use crate::workers::startup::{inherited_state_path, versioned_state_files};
+use crate::workers::startup::{inherited_notice, inherited_state_path, versioned_state_files};
 
 use super::mcp_optimizer::{iso, now_iso};
 use super::watchdog::{
@@ -3734,7 +3733,7 @@ impl Worker {
             state.issues = previous.issues;
             state.sync = previous.sync;
             state.newest_cycle_id = previous.newest_cycle_id;
-            state.notice = previous.notice;
+            state.notice = inherited_notice(previous.notice);
         }
         {
             let mut inner = lock(&self.inner);
@@ -5026,16 +5025,7 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
         eprintln!("api-standards worker: the checkout's origin does not name a repository");
         std::process::exit(2);
     }
-    let harness_version = std::env::var("DEVBOARD_HARNESS_VERSION")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            let harness = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)?;
-            read_harness_version(&harness)
-        });
+    let harness_version = crate::version::worker_harness_version();
     if live_lock_owner(&versioned_lock_path(
         &lock_path(&repo_dir),
         harness_version.as_deref(),

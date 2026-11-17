@@ -1233,7 +1233,8 @@ state, run directories, and activity readable. A worker of a version that has pu
 of its own inherits the newest published state — the file with the newest `updatedAt` among every
 version's file and the legacy unversioned file — so a fresh version resumes the cadence anchor,
 run id, limits, and sync the last live worker published, and a version that already has its own
-file keeps it. The mode lists every live worker with its version
+file keeps it. The predecessor's drain notice is never inherited: `Draining:` and `Drained:` name
+the worker that ended, never the one now starting. The mode lists every live worker with its version
 and merges every running unit into one view, so no surface reports a worker/dashboard or
 front-end/backend version divergence. While a newer worker takes over, the issues status bar
 reports the family's running work, `issues working (N)` with N summed across every attached

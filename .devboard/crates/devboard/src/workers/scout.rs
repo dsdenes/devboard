@@ -34,7 +34,7 @@ use crate::state::{
 };
 use crate::supervision::{live_process, process_age_ms, process_argv};
 use crate::version::read_harness_version;
-use crate::workers::startup::{inherited_state_path, versioned_state_files};
+use crate::workers::startup::{inherited_notice, inherited_state_path, versioned_state_files};
 use crate::workers::WorkerInvocation;
 
 pub const SCOUT_DIRECTORY: &str = "scout";
@@ -3279,11 +3279,10 @@ impl ScoutWorker {
             .and_then(|state| state.newest_scan_id.clone());
         // A scan failure the previous state recorded is not a status this worker
         // may publish: it started no scan and failed nothing, and the page's
-        // status line follows this process's own scans alone. Any other notice
-        // is inherited as it stands.
-        state.notice = previous
-            .as_ref()
-            .and_then(|state| state.notice.clone())
+        // status line follows this process's own scans alone. A drain notice is
+        // the previous worker's own lifecycle for the same reason. Any other
+        // notice is inherited as it stands.
+        state.notice = inherited_notice(previous.as_ref().and_then(|state| state.notice.clone()))
             .filter(|notice| !notice.starts_with(SCAN_FAILED_PREFIX));
         state.updated_at = iso_from_millis(now);
 

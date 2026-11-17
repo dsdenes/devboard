@@ -14,11 +14,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use devboard::workers::design::{
-    capacity_for, design_config, preflight_design, release_documents, versioned_control_directory,
-    versioned_lock_path, versioned_state_path, write_command, AuditSignal, AuditTurn,
-    DesignCommand, DesignConfig, DesignForge, DesignForgeIssue, DesignLimits,
-    DesignPreflightOptions, DesignPreflightResult, DesignSyncState, DesignWorker,
-    DesignWorkerOptions, ForgeFuture, ForgeIssueState, ForgeRelease, ReleaseDocument,
+    capacity_for, design_config, empty_state, preflight_design, release_documents, state_path,
+    versioned_control_directory, versioned_lock_path, versioned_state_path, write_command,
+    write_state, AuditSignal, AuditTurn, DesignCommand, DesignConfig, DesignForge,
+    DesignForgeIssue, DesignLimits, DesignPreflightOptions, DesignPreflightResult, DesignSyncState,
+    DesignWorker, DesignWorkerOptions, ForgeFuture, ForgeIssueState, ForgeRelease, ReleaseDocument,
     ReleaseFuture, ReleaseInput, ReleaseOk, ReleaseResult,
 };
 use devboard::workers::WorkerInvocation;
@@ -724,6 +724,41 @@ async fn drain_finishes_the_in_flight_cycle_then_releases_the_lock() {
         Some("Drained: exited after its in-flight cycle.")
     );
     assert!(!versioned_lock_path(&fixture.repo, Some("test")).exists());
+}
+
+#[tokio::test]
+async fn a_starting_worker_drops_the_previous_workers_drain_notice() {
+    let fixture = Fixture::new("inherit-drain");
+    let clock = Clock::new(NOW);
+    let mut previous = empty_state("acme/fixture", &fixture.repo, NOW);
+    previous.notice = Some("Draining: this worker exits after its in-flight cycle.".to_string());
+    write_state(&state_path(&fixture.state, &fixture.repo), &previous).expect("a previous state");
+
+    let worker = DesignWorker::new(options(&fixture, &clock));
+    assert!(worker.start("acme/fixture"));
+    assert_eq!(
+        worker.current_state().notice,
+        None,
+        "the replacement inherited the predecessor's drain notice"
+    );
+    worker.stop().await;
+}
+
+#[tokio::test]
+async fn a_starting_worker_inherits_every_other_notice() {
+    let fixture = Fixture::new("inherit-notice");
+    let clock = Clock::new(NOW);
+    let mut previous = empty_state("acme/fixture", &fixture.repo, NOW);
+    previous.notice = Some("Filed 2 issues.".to_string());
+    write_state(&state_path(&fixture.state, &fixture.repo), &previous).expect("a previous state");
+
+    let worker = DesignWorker::new(options(&fixture, &clock));
+    assert!(worker.start("acme/fixture"));
+    assert_eq!(
+        worker.current_state().notice.as_deref(),
+        Some("Filed 2 issues.")
+    );
+    worker.stop().await;
 }
 
 #[tokio::test]

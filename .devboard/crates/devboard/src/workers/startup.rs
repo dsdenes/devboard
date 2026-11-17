@@ -50,6 +50,25 @@ pub fn inherited_state_path(own: &Path, versioned: &[PathBuf], legacy: &Path) ->
     newest.map(|(_, path)| path.to_path_buf())
 }
 
+/// True for the notice a drain leaves on the worker it ends.
+///
+/// Both spellings describe the draining worker's own lifecycle: "Draining:"
+/// while it finishes its in-flight cycle and "Drained:" once it exited. A
+/// starting worker runs a lifecycle of its own, so this text is never its.
+pub fn is_drain_notice(notice: &str) -> bool {
+    notice.starts_with("Draining:") || notice.starts_with("Drained:")
+}
+
+/// The notice a starting worker may inherit from the newest published state.
+///
+/// A drain notice belongs to the predecessor that recorded it; inheriting it
+/// would publish "Draining: this worker exits after its in-flight cycle."
+/// beside a healthy running lifecycle. Every other notice is inherited as it
+/// stands.
+pub fn inherited_notice(notice: Option<String>) -> Option<String> {
+    notice.filter(|notice| !is_drain_notice(notice))
+}
+
 /// One published state's `updatedAt`, in milliseconds.
 fn published_updated_at(path: &Path) -> Option<i64> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -177,5 +196,26 @@ mod tests {
                 > instant_millis("2026-01-01T00:00:00Z").unwrap()
         );
         assert_eq!(instant_millis("not an instant"), None);
+    }
+
+    #[test]
+    fn a_drain_notice_is_never_inherited() {
+        for notice in [
+            "Draining: this worker exits after its in-flight cycle.",
+            "Drained: exited after its in-flight cycle.",
+            "Draining: the in-flight scan finishes on this harness, then the worker exits.",
+            "Drained: the worker finished its work and exited; its records stay readable.",
+        ] {
+            assert_eq!(inherited_notice(Some(notice.to_string())), None, "{notice}");
+        }
+    }
+
+    #[test]
+    fn every_other_notice_is_inherited_as_it_stands() {
+        assert_eq!(inherited_notice(None), None);
+        assert_eq!(
+            inherited_notice(Some("Filed 2 issues.".to_string())),
+            Some("Filed 2 issues.".to_string())
+        );
     }
 }

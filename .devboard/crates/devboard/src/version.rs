@@ -334,6 +334,22 @@ pub fn read_harness_version(directory: &Path) -> Option<String> {
     manifest.version
 }
 
+/// The harness version a detached worker belongs to.
+///
+/// The dashboard that spawns a worker names its own version in
+/// `DEVBOARD_HARNESS_VERSION`; a worker started by an older dashboard or by
+/// hand resolves the harness directory it runs from. The compile-time source
+/// path is never the answer: a released binary carries the build runner's
+/// path, which does not exist on the host, so a worker that fell back to it
+/// registered as an unknown version and could never own the lock its own
+/// replacement claimed.
+pub fn worker_harness_version() -> Option<String> {
+    std::env::var("DEVBOARD_HARNESS_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| read_harness_version(&running_harness_dir()))
+}
+
 /// Runs one git command, bounded, and returns its trimmed stdout.
 fn git(directory: &Path, args: &[&str]) -> Option<String> {
     let mut child = Command::new("git")
