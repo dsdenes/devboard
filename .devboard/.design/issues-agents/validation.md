@@ -15,11 +15,10 @@ bun install --frozen-lockfile
 bun run build                 # vite build, dist rewritten
 bun test                      # 581 pass, 0 fail, 4070 expect() calls, 46 files
 bun run check                 # svelte-check: 1672 files, 0 errors, 0 warnings
-bun run verify:interface      # passed, including the new card geometry assertions
-bun run verify:issues         # passed on the merged tree
+bun run test:client           # passed, including IssuesWorkspaceAgents.test.ts
 ```
 
-The browser contract now checks, on the three-agent fixture:
+The fleet page contract now checks, on the three-agent fixture:
 
 - every card has no `running`/`needs answer` badge in its head;
 - every card labels its activity `Latest activity`;
