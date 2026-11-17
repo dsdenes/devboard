@@ -297,6 +297,7 @@
       context: captureContext(target),
     });
     if (!sent) {
+      askPendingCommand.refuse();
       askPending = false;
       askError = "Not connected to the server.";
       focusComposer();
@@ -457,6 +458,10 @@
     following = false;
     transcript = [];
     askPending = false;
+    // The closed conversation's frames are dropped, so nothing can confirm this
+    // dispatch any more: end it here instead of letting the ceiling accuse the
+    // server of silence for an Ask the operator cancelled.
+    askPendingCommand.refuse();
     askError = null;
     askedQuestion = "";
     if (id === null) return;

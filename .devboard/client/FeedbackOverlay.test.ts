@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -8,6 +8,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: FeedbackOverlay } = await import("./lib/components/FeedbackHarness.svelte");
+const { COMMAND_CEILING_MS } = await import("./lib/command-busy.svelte");
 // The connection store reads `document` as it constructs, so it loads here for
 // the same reason as the component.
 const { connection } = await import("./lib/connection.svelte");
@@ -104,7 +105,7 @@ async function openComposerView() {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await tick();
     const composer = view.container.querySelector("textarea");
-    if (composer !== null) return { view, composer };
+    if (composer !== null) return { view, composer, target };
   }
   throw new Error("the report panel opened no composer");
 }
@@ -117,6 +118,7 @@ function setPageURL(url: string): void {
 
 afterEach(() => {
   cleanup();
+  jest.useRealTimers();
   globalThis.fetch = originalFetch;
   document.elementFromPoint = originalElementFromPoint;
   (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
@@ -268,4 +270,56 @@ test("an Ask renders the answer the page's conversation reports", async () => {
   expect(view.container.textContent).toContain("The tab opens the issues mode.");
   expect(view.container.textContent).not.toContain("Asking…");
   expect(view.container.querySelector('[role="alert"]')).toBeNull();
+});
+
+test("closing the panel during an Ask releases the Ask control", async () => {
+  jest.useFakeTimers();
+  stubFetch();
+  const socket = openTransport();
+  const { view, composer, target } = await openComposerView();
+  composer.value = "What does this tab do?";
+  await fireEvent.input(composer);
+
+  const askControl = () => {
+    const control = view.container.querySelector(
+      '[aria-label="Ask the agent about this element"]',
+    );
+    if (control === null) throw new Error("the panel has no Ask control");
+    return control;
+  };
+
+  await fireEvent.click(askControl());
+  await tick();
+  expect(view.container.textContent).toContain("Asking…");
+
+  // Escape drops the conversation, whose answer frames are dropped from then on.
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  await tick();
+  expect(view.container.querySelector("textarea")).toBeNull();
+
+  // The next panel starts with a released control: the ceiling passes without
+  // accusing the server of silence the operator never waited for.
+  view.component.startPicking();
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+  await tick();
+  const reopened = view.container.querySelector("textarea");
+  if (reopened === null) throw new Error("the panel reopened no composer");
+  reopened.value = "And this element?";
+  await fireEvent.input(reopened);
+  await tick();
+  expect(view.container.textContent).not.toContain("Asking…");
+  expect(askControl().textContent?.trim()).toBe("Ask");
+
+  jest.advanceTimersByTime(COMMAND_CEILING_MS + 1);
+  await tick();
+  expect(view.container.textContent).not.toContain("Ask received no answer.");
+
+  // The released control still dispatches: the click reaches the server.
+  await fireEvent.click(askControl());
+  await tick();
+  const asks = socket.sent
+    .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+    .filter((frame) => frame.type === "ask");
+  expect(asks.length).toBe(2);
+  jest.useRealTimers();
 });
