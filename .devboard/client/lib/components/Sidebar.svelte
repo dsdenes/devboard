@@ -7,6 +7,8 @@
     agentLifecycleRunState,
     discoverAgentRunState,
     discoverSuiteRunState,
+    flowRunState,
+    issuesRunState,
     runStateTone,
     type RunState,
   } from "../run-state";
@@ -111,12 +113,12 @@
     return "idle";
   }
 
-  /** The Issues overview entry: the issues lifecycle and its agents' questions. */
+  /** The Issues overview entry reads the family's one shared state derivation. */
   function issuesOverviewRun(): RunState {
-    if (issues.agents.some((agent) => agent.question !== null)) return "answer";
-    if (issues.lifecycle === "running" || issues.lifecycle === "pausing") return "running";
-    if (issues.lifecycle === "failed") return "failed";
-    return "idle";
+    return issuesRunState(
+      issues.lifecycle,
+      issues.agents.some((agent) => agent.question !== null),
+    );
   }
 
   /** The Draft goals entry: any live elaboration, a waiting question, its last failure. */
@@ -135,8 +137,7 @@
 
   /** The Flow overview and Session status entries read only the Flow session. */
   function flowRun(): RunState {
-    if (flow.question !== null) return "answer";
-    return flow.status === "running" ? "running" : "idle";
+    return flowRunState(flow.status, flow.question !== null);
   }
 
   /** One background-agent entry reads only its own lifecycle. */

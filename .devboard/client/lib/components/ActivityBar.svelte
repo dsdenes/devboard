@@ -18,6 +18,13 @@
   import { goal } from "../goal.svelte";
   import { layout } from "../layout.svelte";
   import { notifications } from "../notifications.svelte";
+  import {
+    discoverModeState,
+    flowRunState,
+    issuesRunState,
+    modeStateOf,
+    type ModeState,
+  } from "../run-state";
   import type { FeedbackAction, FeedbackPhase } from "../types";
   import IconButton from "./ui/icon-button.svelte";
 
@@ -44,8 +51,6 @@
   const tooltipClass =
     "z-50 rounded-[6px] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2 py-1 text-[12px] text-[var(--foreground)] shadow-md";
 
-  type ModeState = "running" | "attention" | "idle" | "stale" | null;
-
   // The rail follows the live mode, never the terminal state of one manual run:
   // a resumed lifecycle keeps the Goal tab running, and a stopped run is
   // reported by the console's own notice, exactly while no lifecycle is live.
@@ -60,26 +65,39 @@
             ? "idle"
             : null,
   );
-  const issuesState = $derived<ModeState>(
-    issues.lifecycle === "running"
-      ? "running"
-      : issues.agents.some((agent) => agent.question !== null) || issues.lifecycle === "failed"
-        ? "attention"
-        : issues.enabled
-          ? "idle"
-          : null,
+  // A waiting question wins over the live phase in every mode, and each mode's
+  // own derivation lives once in run-state.ts beside its sidebar entry's.
+  const issuesRun = $derived(
+    issuesRunState(
+      issues.lifecycle,
+      issues.agents.some((agent) => agent.question !== null),
+    ),
   );
+  const issuesState = $derived<ModeState>(
+    issuesRun === "idle" && !issues.enabled ? null : modeStateOf(issuesRun),
+  );
+  const flowRun = $derived(flowRunState(flow.status, flow.question !== null));
   const flowState = $derived<ModeState>(
-    flow.status === "running"
-      ? "running"
+    flowRun !== "idle"
+      ? modeStateOf(flowRun)
       : flow.status === "none"
         ? null
         : flow.blockers.some((blocker) => !blocker.dismissed)
           ? "attention"
           : "idle",
   );
+  const discoverQuestion = $derived(
+    discover.question !== null ||
+      Object.values(discover.agentQuestions).some((question) => question !== null),
+  );
   const discoverState = $derived<ModeState>(
-    discover.active ? "running" : discover.stale ? "stale" : discover.busy !== null ? "attention" : null,
+    discoverModeState({
+      active: discover.active,
+      stale: discover.stale,
+      busy: discover.busy !== null,
+      hasQuestion: discoverQuestion,
+      hasFailedAgent: discover.errorAgent !== null,
+    }),
   );
 
   const stateWords: Record<Exclude<ModeState, null>, string> = {

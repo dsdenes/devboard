@@ -7,6 +7,62 @@ import type { BadgeTone } from "./record-status";
  */
 export type RunState = "idle" | "running" | "failed" | "answer";
 
+/**
+ * A mode rail dot's state. `stale` is the rail's own degraded word; every other
+ * value is a `RunState`, so the rail and the sidebar read the same precedence.
+ */
+export type ModeState = "running" | "attention" | "idle" | "stale" | null;
+
+/** A run state as the rail shows it: a wait and a failure both need the operator. */
+export function modeStateOf(state: RunState): ModeState {
+  switch (state) {
+    case "running":
+      return "running";
+    case "answer":
+    case "failed":
+      return "attention";
+    default:
+      return "idle";
+  }
+}
+
+/**
+ * The Issues family's state, shared by the mode rail and its sidebar entry: a
+ * waiting question outranks the live lifecycle, whose own failure ranks below.
+ */
+export function issuesRunState(lifecycle: string, hasQuestion: boolean): RunState {
+  if (hasQuestion) return "answer";
+  if (lifecycle === "running" || lifecycle === "pausing") return "running";
+  if (lifecycle === "failed") return "failed";
+  return "idle";
+}
+
+/** The Flow session's state, shared by the mode rail and its sidebar entry. */
+export function flowRunState(status: string, hasQuestion: boolean): RunState {
+  if (hasQuestion) return "answer";
+  return status === "running" ? "running" : "idle";
+}
+
+/**
+ * The Discover rail's dot: any agent's pending question outranks the live run,
+ * and a failed agent or stale artifacts need the operator before the mode
+ * reports idle. `busy` is a transient change the operator started.
+ */
+export function discoverModeState(facts: {
+  active: boolean;
+  stale: boolean;
+  busy: boolean;
+  hasQuestion: boolean;
+  hasFailedAgent: boolean;
+}): ModeState {
+  if (facts.hasQuestion) return "attention";
+  if (facts.active) return "running";
+  if (facts.hasFailedAgent) return "attention";
+  if (facts.stale) return "stale";
+  if (facts.busy) return "attention";
+  return null;
+}
+
 /** The badge tone a run state earns: running is accent, failed error, answer warning. */
 export function runStateTone(state: RunState): BadgeTone | undefined {
   switch (state) {
