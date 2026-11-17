@@ -119,9 +119,11 @@ pub async fn write_goal_proposal(
     origin: Option<&str>,
 ) -> Result<Value, RequestError> {
     let directory = repo_dir.join(GOAL_PROPOSALS_DIRECTORY);
-    std::fs::create_dir_all(&directory).map_err(|error| {
-        RequestError::internal(format!("could not write the goal proposal: {error}"))
-    })?;
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| {
+            RequestError::internal(format!("could not write the goal proposal: {error}"))
+        })?;
     let name = goal_proposal_name(&submission.report);
     let body = goal_proposal_body(submission);
     let filename = create_exclusive(&directory, &name, &body)
@@ -174,7 +176,7 @@ async fn create_exclusive(directory: &Path, name: &str, content: &str) -> std::i
             } else {
                 format!("{name}-{index}.md")
             };
-            match std::fs::hard_link(&temporary, directory.join(&filename)) {
+            match tokio::fs::hard_link(&temporary, directory.join(&filename)).await {
                 Ok(()) => return Ok(filename),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
