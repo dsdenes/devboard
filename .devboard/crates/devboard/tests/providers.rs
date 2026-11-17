@@ -11,10 +11,11 @@ use devboard::config::Config;
 use devboard::journal::Journal;
 use devboard::providers::{
     credentials_backup_path, credentials_lost, credentials_marker_path, credentials_path,
-    load_subscriptions, lost_credentials_message, save_subscriptions, worker_peer_environment,
-    write_selection_snapshot, AuditSink, CredentialSource, ProviderAudit, ProviderChangeError,
-    ProviderId, ProviderOptions, ProviderService, SaveProviderInput, StoredSubscription, Transport,
-    TransportError, TransportFuture, UsageResponse, UsageStatus, PROVIDER_CHANGE_NEEDS_ID,
+    load_subscriptions, lost_credentials_message, read_selection_snapshot, save_subscriptions,
+    worker_peer_environment, write_selection_snapshot, AuditSink, CredentialSource, ProviderAudit,
+    ProviderChangeError, ProviderId, ProviderOptions, ProviderService, SaveProviderInput,
+    StoredSubscription, Transport, TransportError, TransportFuture, UsageResponse, UsageStatus,
+    PROVIDER_CHANGE_NEEDS_ID,
 };
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -342,6 +343,61 @@ async fn enable_and_disable_flip_the_stored_flag() {
             "That subscription no longer exists."
         ))
     );
+}
+
+#[tokio::test]
+async fn a_provider_switch_on_an_edit_is_refused_and_changes_nothing() {
+    let root = fixture_root("provider-switch");
+    let state = root.join("state");
+    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+    let service = service_at(&state, &root.join("repo"), calls.clone());
+    save(&service, "opencode-go", "main", "sk-test-abcd1234")
+        .await
+        .expect("the provider saves");
+    let id = service.list()[0].id.clone();
+    let fetches = calls.lock().expect("calls").len();
+    let credentials = std::fs::read(credentials_path(&state)).expect("the credentials");
+
+    let refused = service
+        .save(SaveProviderInput {
+            id: Some(id.clone()),
+            provider: Some(json!("openrouter")),
+            label: None,
+            key: None,
+        })
+        .await;
+    assert_eq!(
+        refused,
+        Err(ProviderChangeError::new(
+            "A subscription's provider cannot be changed. Remove it and add it again."
+        ))
+    );
+
+    let stored = service.list();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, id);
+    assert_eq!(stored[0].provider, ProviderId::OpenCodeGo);
+    assert_eq!(stored[0].key, "sk-test-abcd1234");
+    assert_eq!(
+        std::fs::read(credentials_path(&state)).expect("the credentials"),
+        credentials,
+        "a refused switch writes no credential file"
+    );
+    assert_eq!(
+        calls.lock().expect("calls").len(),
+        fetches,
+        "the stored key is never validated against the other provider"
+    );
+
+    let selection = service
+        .view()
+        .selection
+        .expect("the stored subscription still serves");
+    assert_eq!(selection.provider, ProviderId::OpenCodeGo);
+    assert_eq!(selection.label, "main");
+    let snapshot = read_selection_snapshot(&state).expect("the published selection");
+    assert_eq!(snapshot.provider, ProviderId::OpenCodeGo);
+    assert_eq!(snapshot.subscription_id, id);
 }
 
 #[tokio::test]

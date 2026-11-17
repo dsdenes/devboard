@@ -2553,7 +2553,9 @@ impl ProviderService {
     }
 
     /// Adds or edits one subscription. A new or changed key is validated
-    /// first; an edit without a key only changes the label and enablement.
+    /// first; an edit without a key only changes the label and enablement. An
+    /// existing subscription never changes provider: its stored key belongs to
+    /// the provider that issued it, and its cached usage belongs to that key.
     pub async fn save(&self, input: SaveProviderInput) -> SaveProviderResult {
         let validated = self.validated(&input)?;
         let existing = match &input.id {
@@ -2562,6 +2564,14 @@ impl ProviderService {
         };
         if input.id.is_some() && existing.is_none() {
             return Err("That subscription no longer exists.".to_string().into());
+        }
+        if existing
+            .as_ref()
+            .is_some_and(|entry| entry.provider != validated.provider)
+        {
+            return Err(ProviderChangeError::new(
+                "A subscription's provider cannot be changed. Remove it and add it again.",
+            ));
         }
 
         let key = validated
