@@ -2706,6 +2706,144 @@ async fn list_labelled_keeps_only_labelled_rows_when_the_filter_is_ignored() {
         .is_none());
 }
 
+/// GitHub answers the labelled read with one filtered listing per state, body
+/// included. The read that walked the whole issue history and then read every
+/// match back cost tens of sequential `gh` processes; on a repository with a
+/// long closed history that outlived the periodic read's deadline.
+#[tokio::test]
+async fn github_labelled_read_asks_the_forge_for_the_label() {
+    let requests: RecordedCommands = Arc::new(Mutex::new(Vec::new()));
+    let exec: Exec = Arc::new(
+        |_command: String, argv: Vec<String>, _options: ExecOptions| {
+            let stdout = if argv.first().map(String::as_str) == Some("auth")
+                && argv.get(1).map(String::as_str) == Some("status")
+            {
+                r#"{"hosts":{"github.com":[{"login":"alice","active":true,"state":"success"}]}}"#
+                    .to_string()
+            } else if argv.first().map(String::as_str) == Some("auth") {
+                "secret\n".to_string()
+            } else {
+                r#"{"pull":true,"push":true}"#.to_string()
+            };
+            Box::pin(async move {
+                ExecResult {
+                    stdout,
+                    stderr: String::new(),
+                    code: 0,
+                    killed: false,
+                }
+            }) as ExecFuture
+        },
+    );
+    let run: ForgeRunner = {
+        let requests = Arc::clone(&requests);
+        Arc::new(
+            move |argv: Vec<String>, _stdin: String, environment: Environment| {
+                requests
+                    .lock()
+                    .expect("requests")
+                    .push((argv.clone(), environment.clone()));
+                let state = argv
+                    .iter()
+                    .position(|value| value == "--state")
+                    .and_then(|index| argv.get(index + 1))
+                    .cloned()
+                    .unwrap_or_default();
+                let rows = if state == "open" {
+                    json!([
+                        {
+                            "number": 2,
+                            "title": "Open labelled",
+                            "state": "OPEN",
+                            "body": "body 2",
+                            "url": "https://github.test/owner/name/issues/2",
+                            "createdAt": "2024-01-03T00:00:00Z",
+                            "closedAt": null,
+                            "labels": [{"name": "dead-code"}],
+                        },
+                        {
+                            "number": 3,
+                            "title": "Open unlabelled",
+                            "state": "OPEN",
+                            "body": "body 3",
+                            "url": "https://github.test/owner/name/issues/3",
+                            "createdAt": "2024-01-04T00:00:00Z",
+                            "closedAt": null,
+                            "labels": [{"name": "scout"}],
+                        },
+                    ])
+                } else {
+                    json!([{
+                        "number": 1,
+                        "title": "Closed labelled",
+                        "state": "CLOSED",
+                        "body": "body 1",
+                        "url": "https://github.test/owner/name/issues/1",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "closedAt": "2024-01-02T00:00:00Z",
+                        "labels": [{"name": "dead-code"}],
+                    }])
+                };
+                Box::pin(async move {
+                    Ok::<_, ForgeTimeoutError>(ForgeCommandOutcome {
+                        code: 0,
+                        stdout: rows.to_string(),
+                        stderr: String::new(),
+                    })
+                })
+            },
+        )
+    };
+    let repo = git_repo("github-labelled", "git@github.com:owner/name.git");
+    let client = ForgeIssuesClient::new(ForgeIssuesOptions {
+        repo_dir: repo,
+        environment: environment(&[]),
+        transport: None,
+        exec: Some(exec),
+        run: Some(run),
+        timeout_ms: Some(5_000),
+    })
+    .expect("client");
+
+    let documents = client
+        .list_labelled(IssueQueryState::All, "dead-code")
+        .await
+        .expect("a labelled read");
+    assert_eq!(
+        documents
+            .iter()
+            .map(|document| document.number)
+            .collect::<Vec<_>>(),
+        vec![2, 1],
+        "only the labelled rows, newest first"
+    );
+    assert_eq!(documents[0].body, "body 2");
+    assert_eq!(documents[1].body, "body 1");
+    assert_eq!(
+        documents[1].closed_at.as_deref(),
+        Some("2024-01-02T00:00:00Z")
+    );
+
+    let recorded = requests.lock().expect("requests");
+    assert_eq!(recorded.len(), 2, "one filtered listing per state");
+    for (argv, _environment) in recorded.iter() {
+        assert_eq!(argv[0], "issue");
+        assert_eq!(argv[1], "list");
+        let label = argv
+            .iter()
+            .position(|value| value == "--label")
+            .expect("--label");
+        assert_eq!(argv.get(label + 1).map(String::as_str), Some("dead-code"));
+        let fields = argv
+            .iter()
+            .position(|value| value == "--json")
+            .expect("--json");
+        let fields = argv.get(fields + 1).expect("fields");
+        assert!(fields.contains("body"), "{fields}");
+        assert!(!argv.iter().any(|value| value == "view"), "{argv:?}");
+    }
+}
+
 /// The Auto Scout read asks the forge for its own label, so one periodic sync
 /// costs one page of matches instead of one page per page of the whole issue
 /// history. Under the dashboard's own load the whole-history walk outlived the

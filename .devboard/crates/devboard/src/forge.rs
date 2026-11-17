@@ -5078,6 +5078,22 @@ fn state_of(value: Option<&Value>) -> IssueState {
     }
 }
 
+fn newest_first_document(
+    left: &ForgeIssueDocument,
+    right: &ForgeIssueDocument,
+) -> std::cmp::Ordering {
+    let left_at = left.created_at.as_deref().and_then(parse_instant);
+    let right_at = right.created_at.as_deref().and_then(parse_instant);
+    let by_created = match (left_at, right_at) {
+        (Some(left_at), Some(right_at)) if right_at != left_at => right_at.cmp(&left_at),
+        _ => std::cmp::Ordering::Equal,
+    };
+    if by_created != std::cmp::Ordering::Equal {
+        return by_created;
+    }
+    right.number.cmp(&left.number)
+}
+
 fn newest_first(left: &ForgeIssueSummary, right: &ForgeIssueSummary) -> std::cmp::Ordering {
     let left_at = left.created_at.as_deref().and_then(parse_instant);
     let right_at = right.created_at.as_deref().and_then(parse_instant);
@@ -5526,12 +5542,80 @@ impl ForgeIssuesClient {
             .await?;
             return Ok(issues.into_iter().map(gitea_document).collect());
         }
+        let states = match state {
+            IssueQueryState::All => vec![IssueState::Open, IssueState::Closed],
+            IssueQueryState::Open => vec![IssueState::Open],
+            IssueQueryState::Closed => vec![IssueState::Closed],
+        };
+        let mut seen = HashSet::new();
+        let mut documents: Vec<ForgeIssueDocument> = Vec::new();
+        for current in states {
+            for document in self.github_labelled_rows(current, label).await? {
+                // The filter runs on the forge, but a forge that ignores
+                // `--label` still must not hand a worker an unlabelled issue.
+                if !document.labels.iter().any(|value| value == label) {
+                    continue;
+                }
+                if seen.insert(document.number) {
+                    documents.push(document);
+                }
+            }
+        }
+        documents.sort_by(newest_first_document);
+        Ok(documents)
+    }
+
+    /// One label-filtered `gh issue list` read for one state, body included.
+    ///
+    /// GitHub's `gh` applies the label server-side and `--json body` carries
+    /// each match's body, so this costs one page of matches. The read that
+    /// walked the whole issue history and then read every match back cost
+    /// hundreds of sequential `gh` processes on a repository with a long
+    /// closed history, which outlived the read deadline.
+    async fn github_labelled_rows(
+        &self,
+        current: IssueState,
+        label: &str,
+    ) -> Result<Vec<ForgeIssueDocument>, ForgeIssueError> {
+        let outcome = self
+            .github(
+                RequiredAccess::Read,
+                vec![
+                    "issue".to_string(),
+                    "list".to_string(),
+                    "--repo".to_string(),
+                    self.remote.project.clone(),
+                    "--state".to_string(),
+                    current.as_str().to_string(),
+                    "--label".to_string(),
+                    label.to_string(),
+                    "--limit".to_string(),
+                    FORGE_ISSUE_ALL_MAX.to_string(),
+                    "--json".to_string(),
+                    "number,title,body,state,labels,url,createdAt,closedAt".to_string(),
+                ],
+                String::new(),
+            )
+            .await?;
+        if outcome.code != 0 {
+            let detail = if outcome.stderr.is_empty() {
+                &outcome.stdout
+            } else {
+                &outcome.stderr
+            };
+            return Err(ForgeIssueError::new(first_line(detail)));
+        }
+        let parsed = serde_json::from_str::<Value>(&outcome.stdout)
+            .map_err(|_| ForgeIssueError::new("gh issue list returned invalid JSON"))?;
+        let Some(entries) = parsed.as_array() else {
+            return Err(ForgeIssueError::new("gh issue list returned no array"));
+        };
         let mut documents = Vec::new();
-        for row in self.list_all(state).await? {
-            if !row.labels.iter().any(|value| value == label) {
+        for entry in entries {
+            if !entry.is_object() {
                 continue;
             }
-            documents.push(self.get(row.number).await?);
+            documents.push(github_document(entry)?);
         }
         Ok(documents)
     }
