@@ -19,6 +19,10 @@ nonzero is recorded as `failed (see <log>)` instead, its log path is printed to 
 script still writes the report but exits nonzero, so a tree that fails to compile is never
 reported like a passing one.
 
+Every command the script runs, including the served side, starts from the `.devboard` package
+root, so `--rust target/debug/devboard` names `.devboard/target/debug/devboard` whatever
+directory the script was invoked from.
+
 ## Idle CPU and read bytes
 
 `devboard bench cpu` measures what one dashboard and its family workers spend while idle:

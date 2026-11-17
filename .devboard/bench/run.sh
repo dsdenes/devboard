@@ -73,11 +73,14 @@ start_side() {
   local name=$1 command=$2 root=$3
   local port
   port=$(free_port)
-  HOST=127.0.0.1 PORT="$port" \
-    ADRS_DIR="$root/repo/adrs" REPO_DIR="$root/repo" \
-    GOAL_FILE="$root/repo/GOAL.md" STATIC_DIR="$work/static" \
-    STATE_DIR="$root/state" DEVBOARD_UPDATE_INTERVAL_MS=3600000 \
-    bash -c "$command" >"$work/$name.log" 2>&1 &
+  (
+    cd -- "$harness" || exit 1
+    exec env HOST=127.0.0.1 PORT="$port" \
+      ADRS_DIR="$root/repo/adrs" REPO_DIR="$root/repo" \
+      GOAL_FILE="$root/repo/GOAL.md" STATIC_DIR="$work/static" \
+      STATE_DIR="$root/state" DEVBOARD_UPDATE_INTERVAL_MS=3600000 \
+      bash -c "$command"
+  ) >"$work/$name.log" 2>&1 &
   local pid=$!
   local started
   started=$(date +%s%N)
