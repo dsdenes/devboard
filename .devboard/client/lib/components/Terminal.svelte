@@ -24,6 +24,7 @@
   let fit: FitAddon | undefined;
   let rendered: string[] = [];
   let stick = true;
+  let pendingWrites = 0;
 
   const MONO_FONT =
     'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
@@ -56,7 +57,43 @@
   }
 
   function write(line: string): void {
-    term?.write(`${line}\r\n`);
+    if (term === undefined) return;
+    pendingWrites += 1;
+    term.write(`${line}\r\n`, () => {
+      pendingWrites -= 1;
+    });
+  }
+
+  // A logical line longer than `term.cols` occupies several buffer rows, and
+  // only the last of them sits above the cursor. Count them back from the
+  // cursor through the rows xterm flagged as wrapped, so a replacement clears
+  // the whole line it replaces instead of just its last row. The count is read
+  // from the buffer after a reflow, so a resize cannot leave it stale.
+  function lastLineRows(): number {
+    const active = term?.buffer.active;
+    if (active === undefined) return 1;
+    let row = active.baseY + active.cursorY - 1;
+    let rows = 0;
+    while (row >= 0) {
+      const line = active.getLine(row);
+      if (line === undefined) break;
+      rows += 1;
+      if (!line.isWrapped) break;
+      row -= 1;
+    }
+    return Math.max(1, rows);
+  }
+
+  // A queued write is drained first so the row count describes a settled
+  // buffer rather than a line that is still being parsed.
+  function replaceTail(rest: string[]): void {
+    if (term === undefined) return;
+    if (pendingWrites > 0) {
+      term.write("", () => replaceTail(rest));
+      return;
+    }
+    term.write(`${"\x1b[1A\x1b[2K".repeat(lastLineRows())}\r`);
+    rest.forEach(write);
   }
 
   function render(next: string[]): void {
@@ -81,8 +118,7 @@
     } else if (shared === previous.length) {
       next.slice(shared).forEach(write);
     } else if (shared === previous.length - 1) {
-      term.write("\x1b[1A\x1b[2K\r");
-      next.slice(shared).forEach(write);
+      replaceTail(next.slice(shared));
     } else {
       term.reset();
       next.forEach(write);
