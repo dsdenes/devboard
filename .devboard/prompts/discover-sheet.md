@@ -228,11 +228,14 @@ Section rules:
 - `testing` reports the observed test levels, an exact test count for each level, representative
   paths, commands, fixtures, and the resulting pyramid. Count the test cases you can see statically
   in the test files; never run the suite. A level with evidence but no test case is `0`; a level
-  with no evidence is omitted. Never write `unknown` as a count.
+  with no evidence is omitted. `tests` is an exact count written as a string of digits —
+  `"12"`, never `"~120"`, `"50%"`, a range, or `unknown` — and publication refuses any
+  other shape.
   `happyPath` is the part of that level's count that exercises the primary success path — the
   expected input reaching the expected outcome with no error or edge branch — judged from test
-  names, fixtures, and assertions. It is an exact count from `0` to `tests`, never a percentage
-  and never `unknown`. A level whose tests are all error, negative, or boundary cases records `0`.
+  names, fixtures, and assertions. It is an exact count from `0` to `tests`, written as a string
+  of digits, never a percentage and never `unknown`. A level whose tests are all error, negative,
+  or boundary cases records `0`.
   `command` is the narrowest declared invocation that runs only that level, such as
   `npm run test:unit`, `pytest tests/unit`, or `cargo test --test contract`; when the level has no
   separate entry point, it is the whole-suite invocation.

@@ -953,6 +953,56 @@ fn level_entry(entry: &Value, path: &str) -> Result<(String, Value), String> {
     Ok((level.to_string(), Value::Object(fields)))
 }
 
+/// One exact count the sheet may carry: digits only, compared as a decimal string so a
+/// count never overflows. An absent or non-string field is left to the schema's own check.
+fn exact_count(value: Option<&Value>, path: &str) -> Result<Option<String>, String> {
+    let Some(text) = value.and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let text = text.trim();
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid(path, "must be an exact non-negative count"));
+    }
+    let trimmed = text.trim_start_matches('0');
+    Ok(Some(if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }))
+}
+
+fn count_above(left: &str, right: &str) -> bool {
+    (left.len(), left) > (right.len(), right)
+}
+
+/// Refuses a staged test level whose counts are not exact non-negative integers.
+/// The published read path stays tolerant, so a sheet already on disk still renders.
+fn staged_level_counts(sheet: &Value) -> Result<(), String> {
+    let Some(entries) = sheet
+        .get("testing")
+        .and_then(|testing| testing.get("levels"))
+        .and_then(|levels| levels.get("value"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let path = format!("testing.levels[{index}]");
+        let Some(tests) = exact_count(entry.get("tests"), &format!("{path}.tests"))? else {
+            continue;
+        };
+        if let Some(happy) = exact_count(entry.get("happyPath"), &format!("{path}.happyPath"))? {
+            if count_above(&happy, &tests) {
+                return Err(invalid(
+                    &format!("{path}.happyPath"),
+                    "must not exceed the level's test count",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------------- sheet
 
 const DISCOVER_SHEET_SECTIONS: &[&str] = &[
@@ -5584,6 +5634,7 @@ pub fn validate_agent_staged(
             .map_err(|error| format!("sheet.json is not valid JSON: {error}"))?;
         let raw: Value = serde_json::from_str(&source)
             .map_err(|error| format!("sheet.json is not valid JSON: {error}"))?;
+        staged_level_counts(&raw)?;
         staged.sheet = Some(normalize_sheet(&raw, freshness)?);
     }
     if ownership.glossary {

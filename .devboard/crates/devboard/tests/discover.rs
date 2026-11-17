@@ -1904,6 +1904,168 @@ fn a_staged_string_quality_gate_is_refused_and_publishes_nothing() {
     );
 }
 
+/// One staged sheet whose single test level carries `tests` and an optional `happyPath`.
+fn staged_sheet_with_counts(tests: Value, happy: Option<Value>) -> Value {
+    let mut sheet = staged_sheet(json!([{
+        "name": "bun test",
+        "checks": "Runs the whole fixture test suite in CI.",
+    }]));
+    let level = sheet["testing"]["levels"]["value"][0]
+        .as_object_mut()
+        .expect("a level record");
+    level.insert("tests".to_string(), tests);
+    match happy {
+        Some(happy) => {
+            level.insert("happyPath".to_string(), happy);
+        }
+        None => {
+            level.remove("happyPath");
+        }
+    }
+    sheet
+}
+
+fn staged_count_error(sheet: &Value) -> String {
+    let scratch = Scratch::new("level-counts");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(sheet).expect("a staged sheet"),
+    );
+    let facts = devboard::discover_mode::host_facts(&repo);
+    let error = match devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-level-counts",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    ) {
+        Ok(_) => panic!("a non-integer count is refused"),
+        Err(error) => error,
+    };
+    assert!(
+        !repo.join(".omp/discover/sheet.json").exists(),
+        "a refused sheet publishes nothing"
+    );
+    error
+}
+
+#[test]
+fn a_staged_non_numeric_test_count_is_refused() {
+    for tests in ["unknown", "~120", "50%", "1-3"] {
+        assert_eq!(
+            staged_count_error(&staged_sheet_with_counts(json!(tests), None)),
+            "testing.levels[0].tests: must be an exact non-negative count",
+            "{tests} is never a count"
+        );
+    }
+}
+
+#[test]
+fn a_staged_non_integer_happy_path_is_refused() {
+    assert_eq!(
+        staged_count_error(&staged_sheet_with_counts(json!("3"), Some(json!("50%")))),
+        "testing.levels[0].happyPath: must be an exact non-negative count"
+    );
+    assert_eq!(
+        staged_count_error(&staged_sheet_with_counts(json!("3"), Some(json!("1-3")))),
+        "testing.levels[0].happyPath: must be an exact non-negative count"
+    );
+}
+
+#[test]
+fn a_staged_happy_path_above_the_test_count_is_refused() {
+    assert_eq!(
+        staged_count_error(&staged_sheet_with_counts(json!("1"), Some(json!("2")))),
+        "testing.levels[0].happyPath: must not exceed the level's test count"
+    );
+}
+
+#[test]
+fn a_staged_zero_count_level_publishes_and_reads_back() {
+    let scratch = Scratch::new("zero-count-level");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet_with_counts(json!("0"), Some(json!("0"))))
+            .expect("a staged sheet"),
+    );
+    let facts = devboard::discover_mode::host_facts(&repo);
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-zero-count",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    )
+    .expect("a zero count publishes");
+
+    let read = devboard::discover_mode::read_artifacts(&repo);
+    assert_eq!(read.error, None, "the published sheet reads back");
+    let sheet = read
+        .artifacts
+        .expect("the publication is readable")
+        .sheet
+        .expect("the published sheet");
+    assert_eq!(sheet["testing"]["levels"]["value"][0]["tests"], json!("0"));
+    assert_eq!(
+        sheet["testing"]["levels"]["value"][0]["happyPath"],
+        json!("0")
+    );
+}
+
+#[test]
+fn a_published_sheet_with_a_non_numeric_count_still_reads_back() {
+    let scratch = Scratch::new("legacy-non-numeric-count");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet_with_counts(json!("4"), Some(json!("2"))))
+            .expect("a staged sheet"),
+    );
+    let facts = devboard::discover_mode::host_facts(&repo);
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-legacy-count",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    )
+    .expect("a valid count publishes");
+
+    let published_path = repo.join(".omp/discover/sheet.json");
+    let mut published: Value = serde_json::from_str(
+        &std::fs::read_to_string(&published_path).expect("the published sheet"),
+    )
+    .expect("a JSON sheet");
+    published["testing"]["levels"]["value"][0]["tests"] = json!("unknown");
+    write(
+        &published_path,
+        &serde_json::to_string(&published).expect("a legacy sheet"),
+    );
+
+    let read = devboard::discover_mode::read_artifacts(&repo);
+    assert_eq!(
+        read.error, None,
+        "a sheet already on disk with a non-numeric count still reads"
+    );
+    let sheet = read
+        .artifacts
+        .expect("the publication is readable")
+        .sheet
+        .expect("the published sheet");
+    assert_eq!(
+        sheet["testing"]["levels"]["value"][0]["tests"],
+        json!("unknown")
+    );
+}
+
 #[test]
 fn usage_examples_order_case_insensitively() {
     let scratch = Scratch::new("usage-order");
