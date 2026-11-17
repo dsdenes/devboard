@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboard::app::{App, Conn};
+use devboard::ask_mode::ASK_TURN_SILENCE_MS;
 use devboard::command::Command;
 use devboard::config::Config;
 use devboard::journal::Journal;
@@ -116,14 +117,25 @@ fn drain(inbox: &mut UnboundedReceiver<String>) -> Vec<Value> {
     frames
 }
 
+/// How long one ask turn may take before the fixture calls it stalled.
+///
+/// A turn's first stage is not the stub: the owner starts its peer only after
+/// the resource governor admits it, and a host at its memory reserve defers
+/// that start until memory frees. The product ends a turn that reports no
+/// progress for [`ASK_TURN_SILENCE_MS`], so the budget waits past that bound
+/// to read the product's own verdict instead of asserting a latency it never
+/// promises; a fixed 30 s missed it and flaked on a shared forge runner.
+const TURN_BUDGET: Duration = Duration::from_millis(ASK_TURN_SILENCE_MS + 30_000);
+
 /// Reads one conversation until its turn settles, returning the last frames.
 async fn settled(
     app: &App,
     conn: &Conn,
     inbox: &mut UnboundedReceiver<String>,
+    log: &Path,
     id: &str,
 ) -> Vec<Value> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + TURN_BUDGET;
     loop {
         app.command(
             conn,
@@ -141,7 +153,8 @@ async fn settled(
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the turn settled: {frames:?}"
+            "the conversation {id} settled: {frames:?}; the agent logged {:?}",
+            log_lines(log)
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -279,9 +292,10 @@ fn log_lines(log: &Path) -> Vec<String> {
 }
 
 /// Waits until the stub logged one line starting with `marker`, so a test acts
-/// on what the peer already received instead of on a sleep.
+/// on what the peer already received instead of on a sleep. The peer's first
+/// stage is its admission, so the wait carries [`TURN_BUDGET`] as well.
 async fn wait_for_log_marker(log: &Path, marker: &str) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + TURN_BUDGET;
     loop {
         if log_lines(log).iter().any(|line| line.starts_with(marker)) {
             return;
@@ -416,7 +430,7 @@ async fn ask_streams_turns_and_keeps_one_transcript() {
         json!([{"role": "developer", "text": question_one}])
     );
 
-    let frames = settled(&app, &conn, &mut inbox, "conversation-1").await;
+    let frames = settled(&app, &conn, &mut inbox, &log, "conversation-1").await;
     let inquiry = frames
         .iter()
         .rev()
@@ -480,7 +494,7 @@ async fn ask_streams_turns_and_keeps_one_transcript() {
         ])
     );
 
-    let frames = settled(&app, &conn, &mut inbox, "conversation-1").await;
+    let frames = settled(&app, &conn, &mut inbox, &log, "conversation-1").await;
     let inquiry = frames
         .iter()
         .rev()
@@ -656,7 +670,7 @@ async fn ask_answers_a_follow_up_requested_by_a_new_handle() {
         frames.iter().all(|frame| frame["type"] != "askError"),
         "the first request answers: {frames:?}"
     );
-    settled(&app, &first, &mut first_inbox, "conversation-1").await;
+    settled(&app, &first, &mut first_inbox, &log, "conversation-1").await;
 
     let (follow_up, mut follow_up_inbox) = request_connection();
     app.command(
@@ -679,7 +693,14 @@ async fn ask_answers_a_follow_up_requested_by_a_new_handle() {
             .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
         "the follow-up answers its accepted conversation: {frames:?}"
     );
-    let frames = settled(&app, &follow_up, &mut follow_up_inbox, "conversation-1").await;
+    let frames = settled(
+        &app,
+        &follow_up,
+        &mut follow_up_inbox,
+        &log,
+        "conversation-1",
+    )
+    .await;
     let inquiry = frames
         .iter()
         .rev()
@@ -748,7 +769,7 @@ async fn ask_restored_conversation_delivers_its_follow_up_to_the_live_owner() {
             },
         )
         .await;
-    settled(&first, &conn, &mut inbox, "conversation-1").await;
+    settled(&first, &conn, &mut inbox, &log, "conversation-1").await;
 
     // The dashboard goes away and hands the owner it leaves behind to the
     // replacement that has not started yet.
@@ -778,7 +799,7 @@ async fn ask_restored_conversation_delivers_its_follow_up_to_the_live_owner() {
         frames.iter().all(|frame| frame["type"] != "askError"),
         "the restored conversation accepts the follow-up: {frames:?}"
     );
-    let frames = settled(&second, &follow, &mut follow_inbox, "conversation-1").await;
+    let frames = settled(&second, &follow, &mut follow_inbox, &log, "conversation-1").await;
     let inquiry = frames
         .iter()
         .rev()
@@ -919,7 +940,7 @@ async fn ask_recovery_settles_the_turn_its_owner_reports() {
 
     let second = app_for(&scratch, command);
     let (poll, mut poll_inbox) = request_connection();
-    let frames = settled(&second, &poll, &mut poll_inbox, "conversation-1").await;
+    let frames = settled(&second, &poll, &mut poll_inbox, &log, "conversation-1").await;
     let inquiry = frames
         .iter()
         .rev()
@@ -1026,7 +1047,7 @@ async fn ask_refuses_a_second_turn_while_one_runs() {
         "one turn in flight refuses a second question"
     );
 
-    settled(&app, &owner, &mut owner_inbox, "conversation-1").await;
+    settled(&app, &owner, &mut owner_inbox, &log, "conversation-1").await;
     app.command(
         &owner,
         Command::CloseAsk {
@@ -1100,7 +1121,7 @@ async fn a_keyed_ask_refused_while_busy_is_dispatched_again() {
         }])
     );
 
-    settled(&app, &conn, &mut inbox, "conversation-1").await;
+    settled(&app, &conn, &mut inbox, &log, "conversation-1").await;
 
     // The identical keyed ask, now that the refusal condition cleared.
     let (status, admitted) = rest_ask(&app, "retry-busy", &body).await;
@@ -1116,7 +1137,7 @@ async fn a_keyed_ask_refused_while_busy_is_dispatched_again() {
         "the refusal was not kept under the key: {admitted}"
     );
 
-    let frames = settled(&app, &conn, &mut inbox, "conversation-1").await;
+    let frames = settled(&app, &conn, &mut inbox, &log, "conversation-1").await;
     let inquiry = frames
         .iter()
         .rev()
