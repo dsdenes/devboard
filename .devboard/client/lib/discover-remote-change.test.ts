@@ -127,6 +127,31 @@ describe("discover remote start", () => {
     expect(socket.sent).toEqual([]);
   });
 
+  test("Run all refuses the remote start without dispatching", () => {
+    const { discover, socket } = recording({
+      active: false,
+      runningAll: true,
+      cloning: null,
+      busy: null,
+    });
+    discover.remoteUrl = "https://github.com/acme/fresh";
+
+    expect(discover.remoteStartTitle).toBe("Run all is running");
+    expect(discover.remoteStartDisabled).toBe(true);
+    expect(discover.startRemote()).toBe(false);
+    expect(socket.sent).toEqual([]);
+  });
+
+  test("the clone-to-first-run handoff refuses the remote start too", () => {
+    const { discover, socket } = recording({ active: false, runningAll: false, starting: true });
+    discover.remoteUrl = "https://github.com/acme/fresh";
+
+    expect(discover.remoteStartTitle).toBe("A Discover run is active");
+    expect(discover.remoteStartDisabled).toBe(true);
+    expect(discover.startRemote()).toBe(false);
+    expect(socket.sent).toEqual([]);
+  });
+
   test("every error frame bumps the refusal revision, the repeated message included", () => {
     const { discover } = recording();
     const before = discover.errorRevision;

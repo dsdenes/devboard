@@ -149,7 +149,7 @@ export class DiscoverStore {
    * The one start refusal: every reason a start or a remote change is refused,
    * in the order the strip reads them. A control with agent-specific wording
    * passes it as `runningTitle`; `starting` names no agent and keeps the
-   * shared phrase.
+   * shared phrase. The remote start reads it first and then requires its URL.
    */
   startRefusal(runningTitle = "A Discover run is active"): string | undefined {
     if (!this.socket.open) return "Not connected";
@@ -188,10 +188,8 @@ export class DiscoverStore {
   }
 
   get remoteStartTitle(): string | undefined {
-    if (!this.socket.open) return "Not connected";
-    if (this.cloning !== null) return "A repository clone is running";
-    if (this.active) return "A Discover run is active";
-    if (this.busy !== null) return this.busy;
+    const refusal = this.startRefusal();
+    if (refusal !== undefined) return refusal;
     if (this.remoteUrl.trim().length === 0) return "Enter a GitHub repository URL";
     return undefined;
   }
