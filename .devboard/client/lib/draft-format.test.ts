@@ -99,6 +99,26 @@ describe("draft proposal", () => {
     ).toBe("Report.");
   });
 
+  test("drops a DOM excerpt that holds a nested fence longer than three backticks", () => {
+    const nested = `# Proposed goal: x
+
+Report.
+
+${CONTRACT.marker}
+
+${heading(1)}
+
+\`\`\`\`\`html
+<pre>
+\`\`\`\`js
+let fence = 1;
+\`\`\`\`
+</pre>
+\`\`\`\`\`
+`;
+    expect(draftProposal(nested)).toBe("Report.");
+  });
+
   test("keeps a report that quotes an evidence-heading section", () => {
     const quoted = `# Proposed goal: keep my quote
 

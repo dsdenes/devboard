@@ -524,7 +524,16 @@ pub fn captured_context(captured: &CapturedFields) -> Vec<String> {
     }
     let dom = captured.dom_excerpt.trim();
     if !dom.is_empty() {
-        let fence = if dom.contains("```") { "````" } else { "```" };
+        // A fence closes only on a run at least as long as its own, so the
+        // excerpt's longest backtick run plus one keeps a nested fence inside
+        // the block. The `max(2)` keeps the fence a legal three-backtick block
+        // when the excerpt holds no backtick run.
+        let longest = dom
+            .split(|character| character != '`')
+            .map(str::len)
+            .max()
+            .unwrap_or(0);
+        let fence = "`".repeat(longest.max(2) + 1);
         context.push(String::new());
         context.push("### DOM excerpt".to_string());
         context.push(String::new());
@@ -681,6 +690,36 @@ mod tests {
             captured: CapturedFields::default(),
         });
         assert_eq!(tail(&goal), format!("{}\n", section(&empty)));
+    }
+
+    /// A fence closes only on a run at least as long as its own, so the writer
+    /// must outlast every backtick run in the excerpt; otherwise a nested fence
+    /// ends the block early and the client fold loses the writer's marker.
+    #[test]
+    fn the_dom_fence_outlasts_every_backtick_run_in_the_excerpt() {
+        let dom = "<pre>\n````js\nlet fence = 1;\n````\n```````\n</pre>";
+        let captured = CapturedFields {
+            dom_excerpt: dom.to_string(),
+            ..CapturedFields::default()
+        };
+        let longest = dom
+            .split(|character| character != '`')
+            .map(str::len)
+            .max()
+            .expect("the excerpt holds a backtick run");
+        let fence = "`".repeat(longest + 1);
+        assert!(fence.len() >= 5, "{fence} closes a four-backtick run");
+        assert_eq!(
+            captured_context(&captured),
+            vec![
+                String::new(),
+                "### DOM excerpt".to_string(),
+                String::new(),
+                format!("{fence}html"),
+                dom.to_string(),
+                fence.clone(),
+            ]
+        );
     }
 }
 
