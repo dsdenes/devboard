@@ -121,10 +121,18 @@ fn parse(text: &str) -> Value {
     serde_json::from_str(text).expect("a JSON frame")
 }
 
+/// Every frame wait below bounds a stall on a host that runs the whole
+/// workspace suite at once, and never a deadline the product proves: a
+/// creation, revision, or preparation frame follows a child spawn, a stub
+/// answer, and a provider probe, and the forge runner admits several suites on
+/// one host. The budget clears the slowest of those stages, and an expiry still
+/// fails the test.
+const FRAME_BUDGET: u64 = 60_000;
+
 async fn next_frame(inbox: &mut UnboundedReceiver<String>, millis: u64) -> Value {
     let text = tokio::time::timeout(Duration::from_millis(millis), inbox.recv())
         .await
-        .expect("a frame before the deadline")
+        .unwrap_or_else(|_| panic!("no frame arrived within {millis} ms"))
         .expect("a live frame channel");
     parse(&text)
 }
@@ -135,17 +143,25 @@ async fn frame_matching(
     millis: u64,
 ) -> Value {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(millis);
+    // A starved host can deliver every other frame before the awaited one; the
+    // frames seen name the stage an expiry leaves the test in.
+    let mut seen = Vec::new();
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        assert!(!remaining.is_zero(), "no frame matched before the deadline");
-        let text = tokio::time::timeout(remaining, inbox.recv())
-            .await
-            .expect("a frame before the deadline")
-            .expect("a live frame channel");
+        assert!(
+            !remaining.is_zero(),
+            "no frame matched within {millis} ms; saw {seen:?}"
+        );
+        let text = match tokio::time::timeout(remaining, inbox.recv()).await {
+            Ok(Some(text)) => text,
+            Ok(None) => panic!("the frame channel closed; saw {seen:?}"),
+            Err(_) => panic!("no frame matched within {millis} ms; saw {seen:?}"),
+        };
         let frame = parse(&text);
         if predicate(&frame) {
             return frame;
         }
+        seen.push(frame);
     }
 }
 
@@ -198,17 +214,22 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
     let started = frame_matching(
         &mut inbox,
         |frame| frame["type"] == "goalCreationStarted",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(started, json!({"type": "goalCreationStarted"}));
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "activity" && frame["text"] == "Creating the goal",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
-    let question = frame_matching(&mut inbox, |frame| frame["type"] == "question", 5_000).await;
+    let question = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
     assert_eq!(question["message"], "Choose an answer");
     assert_eq!(question["options"][0]["label"], "Alpha");
     assert_eq!(question["options"][0]["recommended"], true);
@@ -225,7 +246,7 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
     let replay_started = frame_matching(
         &mut late_inbox,
         |frame| frame["type"] == "goalCreationStarted",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
     // The replayed snapshot carries the question it still holds, so a poll that
@@ -235,11 +256,15 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
     frame_matching(
         &mut late_inbox,
         |frame| frame["type"] == "activity" && frame["text"] == "Creating the goal",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
-    let replayed_question =
-        frame_matching(&mut late_inbox, |frame| frame["type"] == "question", 5_000).await;
+    let replayed_question = frame_matching(
+        &mut late_inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
     assert_eq!(replayed_question["id"], question["id"]);
 
     app.command(
@@ -255,7 +280,7 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
     let (stopped, after_answer) = collect_until(
         &mut inbox,
         |frame| frame["type"] == "goalCreationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(
@@ -284,7 +309,7 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
     };
     let cleared = match after_answer.iter().find(|frame| cleared(frame)).cloned() {
         Some(frame) => frame,
-        None => frame_matching(&mut inbox, cleared, 60_000).await,
+        None => frame_matching(&mut inbox, cleared, FRAME_BUDGET).await,
     };
     assert_eq!(cleared["id"], question["id"]);
 
@@ -327,7 +352,7 @@ async fn revision_carries_guidance_and_reports_the_revised_goal() {
         frame_matching(
             &mut inbox,
             |frame| frame["type"] == "goalRevisionStarted",
-            5_000
+            FRAME_BUDGET
         )
         .await,
         json!({"type": "goalRevisionStarted"})
@@ -335,15 +360,20 @@ async fn revision_carries_guidance_and_reports_the_revised_goal() {
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "activity" && frame["text"] == "Revising the goal",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
-    let question = frame_matching(&mut inbox, |frame| frame["type"] == "question", 5_000).await;
+    let question = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
 
     // A second revision is refused while this one is live.
     app.command(&conn, Command::ReviseGoal { request: None })
         .await;
-    let refusal = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5_000).await;
+    let refusal = frame_matching(&mut inbox, |frame| frame["type"] == "error", FRAME_BUDGET).await;
     assert_eq!(refusal["message"], "A goal revision is already active.");
 
     app.command(
@@ -359,7 +389,7 @@ async fn revision_carries_guidance_and_reports_the_revised_goal() {
     let (stopped, after_answer) = collect_until(
         &mut inbox,
         |frame| frame["type"] == "goalRevisionStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(
@@ -405,7 +435,7 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         frame_matching(
             &mut inbox,
             |frame| frame["type"] == "skillsPreparationStarted",
-            5_000
+            FRAME_BUDGET
         )
         .await,
         json!({"type": "skillsPreparationStarted"})
@@ -418,14 +448,19 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
                     .as_str()
                     .is_some_and(|text| text.contains("Researching public standards"))
         },
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
-    let question = frame_matching(&mut inbox, |frame| frame["type"] == "question", 5_000).await;
+    let question = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
 
     // A creation is refused while the preparation owns the skills tree.
     app.command(&conn, Command::CreateGoal).await;
-    let refusal = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5_000).await;
+    let refusal = frame_matching(&mut inbox, |frame| frame["type"] == "error", FRAME_BUDGET).await;
     assert_eq!(refusal["message"], "A skills preparation is active.");
 
     let (late, mut late_inbox) = connected(&app).await;
@@ -433,11 +468,15 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
     frame_matching(
         &mut late_inbox,
         |frame| frame["type"] == "skillsPreparationStarted",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
-    let replayed =
-        frame_matching(&mut late_inbox, |frame| frame["type"] == "question", 5_000).await;
+    let replayed = frame_matching(
+        &mut late_inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
     assert_eq!(replayed["id"], question["id"]);
 
     app.command(
@@ -453,7 +492,7 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
     let (stopped, after_answer) = collect_until(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(stopped["completed"], true);
@@ -490,7 +529,12 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
     );
 
     app.command(&conn, Command::GetSkills).await;
-    let state = frame_matching(&mut inbox, |frame| frame["type"] == "skillsState", 5_000).await;
+    let state = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "skillsState",
+        FRAME_BUDGET,
+    )
+    .await;
     let live: Vec<String> = state["skills"]
         .as_array()
         .expect("skill rows")
@@ -511,7 +555,12 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         },
     )
     .await;
-    let after = frame_matching(&mut inbox, |frame| frame["type"] == "skillsState", 5_000).await;
+    let after = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "skillsState",
+        FRAME_BUDGET,
+    )
+    .await;
     let remaining: Vec<String> = after["skills"]
         .as_array()
         .expect("skill rows")
@@ -522,7 +571,7 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "installedSkills",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
     assert!(!skills_dir.join("dependency-direction").exists());
@@ -534,12 +583,12 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         },
     )
     .await;
-    let invalid = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5_000).await;
+    let invalid = frame_matching(&mut inbox, |frame| frame["type"] == "error", FRAME_BUDGET).await;
     assert_eq!(invalid["message"], "Choose a prepared skill to delete.");
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "installedSkills",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
 
@@ -550,7 +599,7 @@ async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_ow
         },
     )
     .await;
-    let missing = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5_000).await;
+    let missing = frame_matching(&mut inbox, |frame| frame["type"] == "error", FRAME_BUDGET).await;
     assert_eq!(
         missing["message"],
         "No prepared skill named \"missing-skill\" is installed."
@@ -581,13 +630,13 @@ async fn preparation_reads_the_configured_goal_file() {
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStarted",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
     let stopped = frame_matching(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(stopped["completed"], true);
@@ -611,7 +660,7 @@ async fn preparation_refuses_when_the_configured_goal_is_absent() {
 
     app.command(&conn, Command::PrepareSkills).await;
 
-    let error = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5_000).await;
+    let error = frame_matching(&mut inbox, |frame| frame["type"] == "error", FRAME_BUDGET).await;
     assert_eq!(
         error["message"],
         "The goal is not set. Save a non-empty goal before preparing skills."
@@ -639,10 +688,15 @@ async fn creation_writes_and_reads_the_configured_goal_file() {
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "goalCreationStarted",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
-    let question = frame_matching(&mut inbox, |frame| frame["type"] == "question", 5_000).await;
+    let question = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
     app.command(
         &conn,
         Command::Answer {
@@ -656,7 +710,7 @@ async fn creation_writes_and_reads_the_configured_goal_file() {
     let stopped = frame_matching(
         &mut inbox,
         |frame| frame["type"] == "goalCreationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(stopped["completed"], true);
@@ -667,7 +721,7 @@ async fn creation_writes_and_reads_the_configured_goal_file() {
     assert!(!scratch.path().join("GOAL.md").exists());
 
     app.command(&conn, Command::GetGoal).await;
-    let state = frame_matching(&mut inbox, |frame| frame["type"] == "goal", 5_000).await;
+    let state = frame_matching(&mut inbox, |frame| frame["type"] == "goal", FRAME_BUDGET).await;
     assert_eq!(state["text"], "# Created goal\n\nThe agent wrote this.");
 }
 
@@ -714,14 +768,14 @@ async fn assert_preparation_refused(
     frame_matching(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStarted",
-        5_000,
+        FRAME_BUDGET,
     )
     .await;
 
     let (stopped, frames) = collect_until(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(
@@ -903,7 +957,7 @@ async fn a_discover_metadata_fault_never_fails_preparation() {
     let (stopped, frames) = collect_until(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(stopped["completed"], true);
@@ -988,7 +1042,7 @@ async fn a_prepare_metadata_fault_fails_preparation_and_rolls_back() {
 
     app.command(&conn, Command::PrepareSkills).await;
 
-    let failure = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
+    let failure = frame_matching(&mut inbox, |frame| frame["type"] == "error", FRAME_BUDGET).await;
     let message = failure["message"].as_str().unwrap_or_default();
     assert!(
         message.starts_with("Skills preparation failed: "),
@@ -1001,7 +1055,7 @@ async fn a_prepare_metadata_fault_fails_preparation_and_rolls_back() {
     let (stopped, _frames) = collect_until(
         &mut inbox,
         |frame| frame["type"] == "skillsPreparationStopped",
-        10_000,
+        FRAME_BUDGET,
     )
     .await;
     assert_eq!(stopped["completed"], false);
