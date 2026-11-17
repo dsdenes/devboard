@@ -280,10 +280,10 @@ impl Drop for Fixture {
 }
 
 /// Records every row the table names into `contract/http`, one recording per
-/// row. Each row runs against its own fixture dashboard, so no row's answer
-/// depends on the work an earlier row started, and every allowlisted value is
-/// written as a placeholder of its type, so a re-recording names only a real
-/// answer change.
+/// row, and removes every recording the table no longer names. Each row runs
+/// against its own fixture dashboard, so no row's answer depends on the work
+/// an earlier row started, and every allowlisted value is written as a
+/// placeholder of its type, so a re-recording names only a real answer change.
 pub async fn record(contract: &Path) -> Result<usize, String> {
     let allowlist = Allowlist::load(&contract.join("allowlist.json"))?;
     let client = http_table::client();

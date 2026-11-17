@@ -615,7 +615,10 @@ impl Corpus {
         Ok(Self { recordings })
     }
 
-    /// Writes every recording, one file per row.
+    /// Writes every recording, one file per row, and removes every other
+    /// recording the directory holds: after this call the directory names
+    /// exactly the rows this corpus carries, so a renamed or removed row
+    /// leaves no stale file behind for a later load to read back.
     pub fn write(&self, directory: &Path) -> Result<(), String> {
         std::fs::create_dir_all(directory)
             .map_err(|error| format!("{}: {error}", directory.display()))?;
@@ -625,6 +628,29 @@ impl Corpus {
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             text.push('\n');
             std::fs::write(&path, text).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        self.remove_unheld(directory)
+    }
+
+    /// Removes every `*.json` file in `directory` whose file stem names no
+    /// recording. Another file the directory holds is left alone: the corpus
+    /// owns the recordings, not the directory's whole contents.
+    fn remove_unheld(&self, directory: &Path) -> Result<(), String> {
+        let entries = std::fs::read_dir(directory)
+            .map_err(|error| format!("{}: {error}", directory.display()))?;
+        for entry in entries {
+            let path = entry.map_err(|error| error.to_string())?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            if !path.is_file() {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|value| value.to_str());
+            if stem.is_some_and(|stem| self.recordings.contains_key(stem)) {
+                continue;
+            }
+            std::fs::remove_file(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         }
         Ok(())
     }
@@ -1239,6 +1265,33 @@ mod tests {
             status: 200,
             body,
         }
+    }
+
+    #[test]
+    fn a_write_removes_a_recording_the_corpus_no_longer_names() {
+        let directory = crate::fixture::harness_root()
+            .join(".test-tmp")
+            .join(format!("corpus-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a scratch directory");
+        std::fs::write(directory.join("old-row.json"), "{}\n").expect("a stale recording");
+        std::fs::write(directory.join("notes.txt"), "kept\n").expect("a non-recording file");
+        let mut corpus = Corpus::default();
+        corpus.insert(recording(serde_json::json!({ "ok": true })));
+        corpus.write(&directory).expect("the corpus writes");
+        let mut names: Vec<String> = std::fs::read_dir(&directory)
+            .expect("the scratch directory")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names, ["notes.txt", "synthetic.json"]);
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     fn observed(body: &str) -> Observed {
