@@ -188,7 +188,7 @@
           onclick={() => open("goal", "skills", "skills", "skills", "Skills")}
         >
           <span class="sidebar-item__label">Skills</span>
-          <span class="sidebar-item__meta">{goal.skills.length}</span>
+          <span class="sidebar-item__meta">{goal.preparedSkills.length}</span>
           {#if goal.skillsPrepActive}
             <span class="badge" data-tone={runStateTone("running")} data-testid="run-state-badge">
               running

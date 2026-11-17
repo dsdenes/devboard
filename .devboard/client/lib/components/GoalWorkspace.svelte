@@ -580,14 +580,14 @@
           {/if}
         {/snippet}
         {#snippet actions()}
-          {#if goal.skills.length > 0}
+          {#if goal.preparedSkills.length > 0}
             <Button
               variant="outline"
               data-command="goal.skills.open"
               data-testid="show-skills"
               onclick={openSkills}
             >
-              Show skills ({goal.skills.length})
+              Show skills ({goal.preparedSkills.length})
             </Button>
           {:else}
             <CommandButton
@@ -686,7 +686,7 @@
       <section class="panel goal-skills" data-testid="skills-overlay">
         <div class="panel__header">
           <h2 class="panel__title">
-            Prepared skills <span class="mono" data-testid="skills-count">{goal.skills.length}</span>
+            Prepared skills <span class="mono" data-testid="skills-count">{goal.preparedSkills.length}</span>
           </h2>
           <span class="muted">Read by implementing agents</span>
         </div>

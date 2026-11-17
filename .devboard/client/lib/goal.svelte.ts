@@ -277,8 +277,18 @@ export class GoalStore {
     );
   }
 
+  /**
+   * The rows whose `SKILL.md` is installed. A Discover row the manifest names
+   * while its file is absent carries `state: "missing"` and empty content, so
+   * it is a placeholder; it stays listed but never counts as prepared. An older
+   * server sends neither field for a skill it has on disk.
+   */
+  get preparedSkills(): SkillSummary[] {
+    return this.skills.filter((skill) => skill.state !== "missing");
+  }
+
   get skillsPrepared(): boolean {
-    return this.skills.length > 0;
+    return this.preparedSkills.length > 0;
   }
 
   get prepareDisabled(): boolean {
