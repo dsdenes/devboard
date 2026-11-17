@@ -7590,7 +7590,15 @@ mod verification_fixtures {
 
     #[test]
     fn a_host_dashboard_is_still_an_instance() {
-        let instances = instances_from_processes(&[dashboard(4_243, &harness())], &HashSet::new());
+        // A surveyed host is its own repository root, which names no harness
+        // scratch component. The shape is spelled here instead of read from
+        // `CARGO_MANIFEST_DIR`: a harness built under `.devboard/.test-tmp` —
+        // the root a crate test builds its scratch repositories in — makes
+        // this checkout's own path a fixture by the module's own rule, and
+        // the host case must still prove the predicate leaves a plain host
+        // alone there.
+        let host = Path::new("/srv/host");
+        let instances = instances_from_processes(&[dashboard(4_243, host)], &HashSet::new());
         assert_eq!(instances.len(), 1, "a real host dashboard is surveyed");
     }
 }
