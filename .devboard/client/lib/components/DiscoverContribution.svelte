@@ -6,7 +6,7 @@
 
   const contribution = $derived(discover.contribution);
   const sections = $derived(contribution?.sections ?? []);
-  const freshness = $derived(contribution?.freshness ?? discover.freshness);
+  const freshness = $derived(contribution?.freshness ?? null);
   const discoveredLabel = $derived(
     freshness === null ? "" : relativeTime(freshness.discoveredAt),
   );

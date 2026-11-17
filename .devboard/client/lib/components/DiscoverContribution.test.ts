@@ -123,6 +123,38 @@ test("a percent-shaped record fact renders its rows and a numeric one renders a 
   expect(factValue(view.container, "testsShare")).toBe("40%");
 });
 
+test("an unpublished contribution shows the empty state and no page-level freshness stamp", () => {
+  const payload = state();
+  payload.contribution = null;
+  payload.freshness = {
+    project: "checkout",
+    commit: "fedcba9876543210",
+    dirty: false,
+    discoveredAt: "2026-11-17T09:00:00.000Z",
+  };
+  discover.state = payload;
+  const view = render(DiscoverContribution);
+
+  expect(view.queryByTestId("discover-contribution-empty")).not.toBeNull();
+  expect(view.queryByTestId("discover-freshness")).toBeNull();
+});
+
+test("a published contribution stamps its own discovery time, not the page-level crawl", () => {
+  const payload = state();
+  payload.freshness = {
+    project: "checkout",
+    commit: "fedcba9876543210",
+    dirty: false,
+    discoveredAt: "2026-11-17T09:00:00.000Z",
+  };
+  discover.state = payload;
+  const view = render(DiscoverContribution);
+
+  expect(view.getByTestId("discover-freshness").getAttribute("title")).toBe(
+    "2026-11-02T15:20:23.238Z",
+  );
+});
+
 test("an unknown fact renders its reason and keeps the bare wording when absent", () => {
   const payload = state();
   payload.contribution = unknownContribution();
