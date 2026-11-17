@@ -832,13 +832,20 @@ fn stat_fields(pid: u32) -> Option<(i64, i64)> {
     Some((start_ticks, pgid))
 }
 
+/// The command line every sleeping child runs.
+const SLEEP_ARGV: [&str; 2] = ["/bin/sleep", "300"];
+
 fn record_child(state: &Path, pid: u32, repo: &Path) {
     // The reaper compares the record with the kernel's own argv and start
-    // tick. A child reports no cmdline between the fork and the exec, and a
-    // record written in that gap carries an empty argv that never matches the
-    // exec'd child: the reaper then drops the record as a recycled pid, spares
-    // the child, and this test's sweep proves nothing. Record the child only
-    // once it has run.
+    // tick, and drops a record whose argv does not match the live process.
+    // Between the fork and the exec `/proc/<pid>/cmdline` is not yet the
+    // child's own command line: it reads empty, or the parent's while the
+    // child still shares the parent's address space. A record written in that
+    // gap names a command the child never runs, so the sweep drops it as a
+    // recycled pid and silently spares the child. Wait for the child's own
+    // command line, then write the record and prove the same values read back
+    // before the sweep.
+    let expected: Vec<String> = SLEEP_ARGV.iter().map(|part| part.to_string()).collect();
     let path = devboard::supervision::supervision_record_path(state, pid);
     std::fs::create_dir_all(path.parent().expect("a supervision directory"))
         .expect("the supervision directory");
@@ -847,17 +854,17 @@ fn record_child(state: &Path, pid: u32, repo: &Path) {
         let Some(argv) = devboard::supervision::process_argv(pid) else {
             panic!("the child's argv is readable");
         };
-        if argv.is_empty() {
+        let Some((start_ticks, pgid)) = stat_fields(pid) else {
+            panic!("the child's stat is readable");
+        };
+        if argv != expected {
             assert!(
                 started.elapsed() < Duration::from_secs(5),
-                "the child execs before it is recorded"
+                "the child runs its own command before it is recorded"
             );
             std::thread::sleep(Duration::from_millis(10));
             continue;
         }
-        let Some((start_ticks, pgid)) = stat_fields(pid) else {
-            panic!("the child's stat is readable");
-        };
         let record = json!({
             "version": 1,
             "pid": pid,
