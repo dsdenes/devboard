@@ -1606,11 +1606,53 @@ fn checkpoint_files(value: Option<&Value>) -> u64 {
         .unwrap_or(0)
 }
 
+/// One checkpoint identity rule: the seven-character short commit the live
+/// tick writes into the session and the client keys its list by.
+fn short_commit(commit: &str) -> String {
+    commit.chars().take(7).collect()
+}
+
+/// The id a checkpoint keeps: its own recorded id only while no other
+/// checkpoint of the session holds it, otherwise one derived from the commit,
+/// so the client's keyed list never sees a duplicate.
+fn checkpoint_id(recorded: Option<&str>, short: &str, taken: impl Fn(&str) -> bool) -> String {
+    let derived = format!("checkpoint-{short}");
+    let wanted = recorded.unwrap_or(&derived);
+    if !taken(wanted) {
+        return wanted.to_string();
+    }
+    let mut candidate = derived;
+    let mut suffix = 2u32;
+    while taken(&candidate) {
+        candidate = format!("checkpoint-{short}-{suffix}");
+        suffix += 1;
+    }
+    candidate
+}
+
+/// One checkpoint list with the session's identity applied: one entry per
+/// commit, each naming the short commit, and an id no other entry holds.
+fn normalize_checkpoints(entries: Vec<FlowCheckpoint>) -> Vec<FlowCheckpoint> {
+    let mut kept: Vec<FlowCheckpoint> = Vec::with_capacity(entries.len());
+    for mut entry in entries {
+        let short = short_commit(&entry.commit);
+        if kept.iter().any(|candidate| candidate.commit == short) {
+            continue;
+        }
+        entry.id = checkpoint_id(Some(&entry.id), &short, |id| {
+            kept.iter().any(|candidate| candidate.id == id)
+        });
+        entry.commit = short;
+        kept.push(entry);
+    }
+    kept
+}
+
 /// One stored checkpoint, with the defaults the reference applies to a record
 /// that names only its commit.
 fn checkpoint_from_value(entry: &Value) -> Option<FlowCheckpoint> {
     let commit = entry.get("commit").and_then(Value::as_str)?;
-    let short: String = commit.chars().take(7).collect();
+    let short = short_commit(commit);
     Some(FlowCheckpoint {
         id: entry
             .get("id")
@@ -1628,7 +1670,7 @@ fn checkpoint_from_value(entry: &Value) -> Option<FlowCheckpoint> {
             .unwrap_or("")
             .to_string(),
         files: checkpoint_files(entry.get("files")),
-        commit: commit.to_string(),
+        commit: short,
         verification: verification_status(entry.get("verification")),
     })
 }
@@ -2880,21 +2922,15 @@ impl FlowMode {
                 }
             }
         }
+        let mut stored = std::mem::take(&mut session.checkpoints);
         for entry in read_json_lines(&directory.join("checkpoints.jsonl")) {
             // The agent's own record is authoritative for its commit; only the
             // commit itself is required, exactly as the reference decides.
-            let Some(checkpoint) = checkpoint_from_value(&entry) else {
-                continue;
-            };
-            if session
-                .checkpoints
-                .iter()
-                .any(|candidate| candidate.commit == checkpoint.commit)
-            {
-                continue;
+            if let Some(checkpoint) = checkpoint_from_value(&entry) {
+                stored.push(checkpoint);
             }
-            session.checkpoints.push(checkpoint);
         }
+        session.checkpoints = normalize_checkpoints(stored);
 
         let was_running = session.status == "running";
         // A detached implementation owner outlives the dashboard. Attaching to
@@ -4398,7 +4434,7 @@ impl FlowMode {
         // lock, because each one is a child process.
         let mut file_counts: HashMap<String, u64> = HashMap::new();
         for (hash, _, _) in commits.iter() {
-            let short: String = hash.chars().take(7).collect();
+            let short = short_commit(hash);
             let has_record = recorded.iter().any(|entry| {
                 entry
                     .get("commit")
@@ -4408,7 +4444,7 @@ impl FlowMode {
             let already = session
                 .checkpoints
                 .iter()
-                .any(|entry| entry.commit == short);
+                .any(|entry| short_commit(&entry.commit) == short);
             if has_record || already {
                 continue;
             }
@@ -4437,25 +4473,34 @@ impl FlowMode {
             };
             let mut changed = false;
             for (hash, subject, timestamp) in commits.iter() {
-                let short: String = hash.chars().take(7).collect();
+                let short = short_commit(hash);
                 let index = current
                     .checkpoints
                     .iter()
-                    .position(|entry| entry.commit == short);
+                    .position(|entry| short_commit(&entry.commit) == short);
                 let record = recorded.iter().find(|entry| {
                     entry
                         .get("commit")
                         .and_then(Value::as_str)
                         .is_some_and(|commit| hash.starts_with(commit))
                 });
+                let id = checkpoint_id(
+                    record
+                        .and_then(|record| record.get("id"))
+                        .and_then(Value::as_str),
+                    &short,
+                    |id| {
+                        current
+                            .checkpoints
+                            .iter()
+                            .enumerate()
+                            .any(|(position, entry)| Some(position) != index && entry.id == id)
+                    },
+                );
                 match record {
                     Some(record) => {
                         let entry = FlowCheckpoint {
-                            id: record
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| format!("checkpoint-{short}")),
+                            id,
                             timestamp: record
                                 .get("timestamp")
                                 .and_then(Value::as_str)
@@ -4497,7 +4542,7 @@ impl FlowMode {
                             .map(|verification| verification.status.clone())
                             .unwrap_or_else(|| STALE_VERIFICATION.to_string());
                         current.checkpoints.push(FlowCheckpoint {
-                            id: format!("checkpoint-{short}"),
+                            id,
                             timestamp: timestamp.clone(),
                             summary: subject.clone(),
                             files: file_counts.get(hash).copied().unwrap_or(0),
@@ -6347,7 +6392,7 @@ fn parse_session(stored: &Value, id: &str, started_at: &str) -> Option<Session> 
         accepted: strings("accepted"),
         widgets,
         files,
-        checkpoints,
+        checkpoints: normalize_checkpoints(checkpoints),
         verification: stored
             .get("verification")
             .filter(|value| value.is_object())
@@ -6455,6 +6500,40 @@ mod tests {
         assert_eq!(restored.files, 2);
         assert_eq!(checkpoint_files(None), 0);
         assert_eq!(checkpoint_files(Some(&json!("2"))), 0);
+    }
+
+    #[test]
+    fn one_commit_holds_one_checkpoint_however_long_its_record_names_it() {
+        // The prompt asks for at least seven characters, so an eight-character
+        // record is legal input and must name the entry the live tick wrote.
+        let live = checkpoint_from_value(&json!({
+            "id": "checkpoint-0123456",
+            "commit": "0123456",
+            "summary": "the live entry",
+        }))
+        .expect("the live entry");
+        let record = checkpoint_from_value(&json!({
+            "id": "checkpoint-0123456",
+            "commit": "01234567",
+            "summary": "the agent's record",
+        }))
+        .expect("the record");
+        assert_eq!(record.commit, "0123456");
+        let kept = normalize_checkpoints(vec![live, record]);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept[0].commit, "0123456");
+        assert_eq!(kept[0].summary, "the live entry");
+
+        // A record id another checkpoint already holds never reaches the client
+        // twice: the second commit keeps the id its commit derives.
+        let first = checkpoint_from_value(&json!({"id": "shared", "commit": "1111111"}))
+            .expect("the first checkpoint");
+        let second = checkpoint_from_value(&json!({"id": "shared", "commit": "2222222"}))
+            .expect("the second checkpoint");
+        let kept = normalize_checkpoints(vec![first, second]);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert_eq!(kept[0].id, "shared");
+        assert_eq!(kept[1].id, "checkpoint-2222222");
     }
 
     #[test]

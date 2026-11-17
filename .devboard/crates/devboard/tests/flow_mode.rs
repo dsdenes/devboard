@@ -191,6 +191,12 @@ struct Fixture {
 }
 
 fn fixture(label: &str) -> Fixture {
+    fixture_with(label, |_, _| {})
+}
+
+/// Builds a fixture after `seed` writes the repository and state roots, so the
+/// restore reads exactly what a stopped dashboard left behind.
+fn fixture_with(label: &str, seed: impl FnOnce(&Path, &Path)) -> Fixture {
     let scratch = Scratch::new(label);
     let repo = scratch.path().join("repo");
     std::fs::create_dir_all(repo.join("src")).expect("a repository");
@@ -214,6 +220,7 @@ fn fixture(label: &str) -> Fixture {
     let state = scratch.path().join("state");
     std::fs::create_dir_all(state.join("repo/adrs")).expect("a state root");
     write_credentials(&state);
+    seed(&repo, &state);
 
     let forge_log = scratch.path().join("forge.log");
     // The recorded corpus enables the deterministic forge with the same
@@ -262,6 +269,100 @@ fn session_directory(fixture: &Fixture, session_id: &str) -> PathBuf {
         .join("flow")
         .join(devboard::journal::repo_key(&fixture.repo))
         .join(session_id)
+}
+
+/// A record whose commit is longer than seven characters — the flow prompt asks
+/// for at least seven — names the same checkpoint the live tick already wrote,
+/// so a restart adds no second entry and the client's keyed list stays unique.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_commit_longer_than_seven_characters_restores_one_checkpoint() {
+    let _env = ENV_LOCK.lock().await;
+    const SESSION: &str = "seeded-checkpoints";
+    let mut recorded = None;
+    let fixture = fixture_with("long-commit-checkpoint", |repo, state| {
+        let base = git(repo, &["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(repo.join("src/recorded.txt"), "one\n").expect("a change");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-m", "feat: the recorded unit"]);
+        let hash = git(repo, &["rev-parse", "HEAD"]).trim().to_string();
+        let short: String = hash.chars().take(7).collect();
+        let long: String = hash.chars().take(8).collect();
+        let directory = state
+            .join("flow")
+            .join(devboard::journal::repo_key(repo))
+            .join(SESSION);
+        std::fs::create_dir_all(&directory).expect("a Flow session directory");
+        let stamp = "2026-01-01T00:00:00.000Z";
+        // The live tick wrote the seven-character entry the view keys by; the
+        // agent's own record beside it names eight characters.
+        let session = json!({
+            "id": SESSION,
+            "version": 1,
+            "worktree": repo.to_string_lossy(),
+            "branch": "main",
+            "status": "stopped",
+            "goal": "The stored goal",
+            "baseRevision": base,
+            "checkpoints": [{
+                "id": format!("checkpoint-{short}"),
+                "timestamp": stamp,
+                "summary": "feat: the recorded unit",
+                "files": 1,
+                "commit": short,
+                "verification": "passed",
+            }],
+        });
+        std::fs::write(directory.join("session.json"), session.to_string()).expect("session.json");
+        let record = json!({
+            "id": format!("checkpoint-{short}"),
+            "timestamp": stamp,
+            "summary": "the agent's own record",
+            "files": 1,
+            "commit": long,
+            "verification": "passed",
+        });
+        std::fs::write(directory.join("checkpoints.jsonl"), format!("{record}\n"))
+            .expect("checkpoints.jsonl");
+        recorded = Some(short);
+    });
+    let short = recorded.expect("the seeded commit");
+    let app = fixture.app.clone();
+    let mut client = Client::connect(&app).await;
+    send(&app, &client.conn, Command::GetFlow).await;
+    let restored = client
+        .wait_for("the restored checkpoints", |frame| {
+            frame["type"] == "flowCheckpoints"
+                && frame["checkpoints"]
+                    .as_array()
+                    .is_some_and(|checkpoints| !checkpoints.is_empty())
+        })
+        .await;
+    let checkpoints = restored["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(checkpoints.len(), 1, "{checkpoints:?}");
+    assert_eq!(checkpoints[0]["commit"], short.as_str());
+    assert_eq!(checkpoints[0]["id"], format!("checkpoint-{short}").as_str());
+
+    // Ticks run every 100 ms: the commit the restored entry already names adds
+    // no second checkpoint and changes no id.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    client.seen.clear();
+    send(&app, &client.conn, Command::GetFlow).await;
+    let after = client
+        .wait_for("the checkpoints after a tick", |frame| {
+            frame["type"] == "flowCheckpoints"
+        })
+        .await;
+    let checkpoints = after["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(checkpoints.len(), 1, "{checkpoints:?}");
+    let ids: Vec<&str> = checkpoints
+        .iter()
+        .filter_map(|checkpoint| checkpoint["id"].as_str())
+        .collect();
+    assert_eq!(ids.len(), checkpoints.len(), "every checkpoint names an id");
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "checkpoint ids are unique");
 }
 
 /// The answer one widget acceptance request receives at the REST surface.
