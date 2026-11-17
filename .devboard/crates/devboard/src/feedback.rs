@@ -22,9 +22,11 @@ pub const MAX_CONVERSATION_TURNS: usize = 40;
 pub const MAX_CONVERSATION_TURN: usize = 4000;
 pub const MAX_CONVERSATION_TEXT: usize = 12_000;
 
-/// The worst-case UTF-8 width of one UTF-16 code unit. A BMP character takes at
-/// most three bytes; an astral code point takes four bytes over two units.
-pub const MAX_BYTES_PER_JS_UNIT: usize = 3;
+/// The worst-case serialized width of one UTF-16 code unit inside a JSON
+/// string. A control character takes a six-byte `\u00XX` escape, wider than the
+/// three bytes of a BMP character or the four bytes an astral code point takes
+/// over two units.
+pub const MAX_BYTES_PER_JS_UNIT: usize = 6;
 
 /// Every field at its documented maximum, in UTF-16 code units. The four
 /// context fields are `route`, `url`, `selector`, and `captured_at`.
@@ -36,11 +38,10 @@ pub const MAX_BODY_JS_UNITS: usize = MAX_REPORT
     + MAX_VIEWPORT;
 
 /// The largest body either mutating endpoint reads, derived from the per-field
-/// maxima above so raising one cannot reintroduce a contradiction. Four times
-/// the unit sum leaves room for the widest UTF-8 encoding of every unit plus
-/// the JSON syntax around the fields, so no request inside its field bounds is
-/// ever refused for its size.
-pub const MAX_REPORT_BYTES: usize = 4 * MAX_BODY_JS_UNITS;
+/// maxima above so raising one cannot reintroduce a contradiction. Every unit
+/// is budgeted at the six-byte worst-case escape width plus one byte of JSON
+/// syntax, so no request inside its field bounds is ever refused for its size.
+pub const MAX_REPORT_BYTES: usize = (MAX_BYTES_PER_JS_UNIT + 1) * MAX_BODY_JS_UNITS;
 
 pub const REMOVAL_INSTRUCTION: &str = "Remove the selected UI element from the interface.";
 pub const REDESIGN_INSTRUCTION: &str =
@@ -558,6 +559,16 @@ mod tests {
 
     #[test]
     fn the_body_bound_covers_every_field_at_its_widest_encoding() {
+        // The width the cap relies on: one control character below U+0020
+        // serializes to a six-byte escape inside two quotes. A JSON writer that
+        // widens it must fail here before the bound silently reopens the gap.
+        let escape = serde_json::to_string("\u{1}").expect("JSON");
+        assert_eq!(
+            escape.len(),
+            MAX_BYTES_PER_JS_UNIT + 2,
+            "a control character escapes to {MAX_BYTES_PER_JS_UNIT} bytes, not {escape}"
+        );
+
         // The per-field maxima, restated independently of `MAX_BODY_JS_UNITS`
         // so a field added to the derivation without its bound here fails.
         let units = MAX_REPORT

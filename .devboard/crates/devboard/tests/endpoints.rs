@@ -1118,6 +1118,66 @@ async fn a_cjk_payload_at_every_field_maximum_is_accepted() {
     fixture.stub.abort();
 }
 
+/// One submission whose report, DOM excerpt, visible text, and turns are all at
+/// their maximum in control characters: 36,000 UTF-16 units that each serialize
+/// to a six-byte `\u00XX` escape, so the body is 216,000 bytes of fields.
+fn max_control_body() -> Value {
+    let control = |units: usize| "\u{1}".repeat(units);
+    json!({
+        "report": control(devboard::feedback::MAX_REPORT),
+        "turns": [
+            {"role": "DEVELOPER", "text": control(devboard::feedback::MAX_CONVERSATION_TURN)},
+            {"role": "AGENT", "text": control(devboard::feedback::MAX_CONVERSATION_TURN)},
+            {"role": "DEVELOPER", "text": control(devboard::feedback::MAX_CONVERSATION_TURN)},
+        ],
+        "dom_excerpt": control(devboard::feedback::MAX_DOM_EXCERPT),
+        "visible_text": control(devboard::feedback::MAX_VISIBLE_TEXT),
+        "captured_at": "2026-11-10T12:00:00Z",
+    })
+}
+
+/// Every field is inside its unit bound, but the escapes are wider than the
+/// four-bytes-per-unit cap this bound used to assume, so only a cap derived
+/// from the six-byte escape width accepts the body.
+#[tokio::test]
+async fn a_control_character_payload_at_every_named_field_maximum_is_accepted() {
+    let fixture = start("control-maximum").await;
+    let body = max_control_body();
+    let bytes = serde_json::to_vec(&body).expect("JSON").len();
+    assert!(
+        bytes > 4 * devboard::feedback::MAX_BODY_JS_UNITS,
+        "the escapes exceed the retired four-bytes-per-unit cap: {bytes} bytes"
+    );
+    assert!(
+        bytes <= devboard::feedback::MAX_REPORT_BYTES,
+        "the payload is inside the byte cap: {bytes} bytes"
+    );
+
+    let response = client()
+        .post(format!("{}/goal-proposals", fixture.base))
+        .headers(bearer())
+        .json(&body)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 201);
+    assert!(fixture
+        .repo
+        .join(".devboard/goal-proposals/ui-goal.md")
+        .exists());
+
+    let response = client()
+        .post(format!("{}/reports", fixture.base))
+        .headers(bearer())
+        .json(&body)
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 202);
+    fixture.handle.abort();
+    fixture.stub.abort();
+}
+
 #[tokio::test]
 async fn a_report_that_is_not_utf8_answers_400() {
     let fixture = start("not-utf8").await;
