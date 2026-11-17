@@ -597,6 +597,7 @@
 
   /** Files a removal or redesign issue for one element and stays armed. */
   async function fileShortcut(kind: "REMOVE" | "REDESIGN", element: Element): Promise<void> {
+    const attempt = generation;
     selector = describeTarget(element);
     marker = null;
     dismissToast();
@@ -615,6 +616,10 @@
     } else {
       showToast({ ok: false, text: `${noun} issue failed: ${filing.error}` });
     }
+    // A reset or a new arm while the filing was out owns a newer panel: the
+    // late answer reports only the filing the operator made, and never hides
+    // the panel opened since nor blanks its selector.
+    if (attempt !== generation) return;
     // The shortcut stays armed so the next element is one click away.
     phase = "picking";
     selector = "";

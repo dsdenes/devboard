@@ -30,6 +30,11 @@ interface CapturedBody {
   viewport: string;
 }
 
+/** The action a removal or redesign shortcut files. */
+interface ShortcutBody {
+  action: string;
+}
+
 /** Records every mutation the panel posts and answers it with a filed issue. */
 function stubFetch(): Posted[] {
   const posted: Posted[] = [];
@@ -108,6 +113,15 @@ async function openComposerView() {
     if (composer !== null) return { view, composer, target };
   }
   throw new Error("the report panel opened no composer");
+}
+
+/** Yields to the page until `ready` holds, so a filing's answer can land. */
+async function until(ready: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (ready()) return;
+    await tick();
+  }
+  throw new Error("the page never reached the awaited state");
 }
 
 /** Replaces the document URL; `about:blank` refuses a relative history push. */
@@ -322,4 +336,77 @@ test("closing the panel during an Ask releases the Ask control", async () => {
     .filter((frame) => frame.type === "ask");
   expect(asks.length).toBe(2);
   jest.useRealTimers();
+});
+
+test("a removal filing that answers after a re-arm keeps the panel opened since", async () => {
+  const posted: Posted[] = [];
+  const first = Promise.withResolvers<Response>();
+  const filed = () =>
+    new Response(JSON.stringify({ links: { issue: { href: "http://forge.test/issues/2" } } }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    posted.push({ url: String(input), body: String(init?.body ?? "") });
+    return posted.length === 1 ? first.promise : filed();
+  }) as typeof fetch;
+
+  const removed = document.createElement("div");
+  removed.textContent = "the element to remove";
+  const reported = document.createElement("span");
+  reported.textContent = "the element to report";
+  document.body.append(removed, reported);
+  let underPointer: Element = removed;
+  document.elementFromPoint = () => underPointer;
+
+  const view = render(FeedbackOverlay, { props: { phase: "idle", action: null } });
+  view.component.startRemoving();
+  removed.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+  await tick();
+  expect(posted.length).toBe(1);
+  const shortcut = JSON.parse(posted[0]?.body ?? "{}") as ShortcutBody;
+  expect(shortcut.action).toBe("REMOVE");
+
+  // The activity bar's Report command re-arms while that POST is still out,
+  // and the element picked since opens its own composer.
+  underPointer = reported;
+  view.component.startPicking();
+  reported.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 20, clientY: 20 }));
+  await tick();
+  const composer = view.container.querySelector("textarea");
+  if (composer === null) throw new Error("the report panel opened no composer");
+  const selector = view.container.querySelector(".feedback-selector")?.textContent ?? "";
+  expect(selector.length).toBeGreaterThan(0);
+  composer.value = "Typed while the removal was still filing.";
+  await fireEvent.input(composer);
+
+  // The removal's late answer reports its own filing and never hides the panel
+  // opened since, blanks its selector, or discards the typed text.
+  first.resolve(filed());
+  await until(() => view.container.querySelector('[data-testid="feedback-result"]') !== null);
+
+  const kept = view.container.querySelector("textarea");
+  if (kept === null) throw new Error("the late answer hid the panel opened since");
+  expect(kept.value).toBe("Typed while the removal was still filing.");
+  expect(view.container.querySelector(".feedback-selector")?.textContent).toBe(selector);
+});
+
+test("a removal filing with no intervening re-arm stays armed and shows its toast", async () => {
+  const posted = stubFetch();
+  const removed = document.createElement("div");
+  removed.textContent = "the element to remove";
+  document.body.append(removed);
+  document.elementFromPoint = () => removed;
+
+  const view = render(FeedbackOverlay, { props: { phase: "idle", action: null } });
+  view.component.startRemoving();
+  removed.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+  await until(() => view.container.querySelector('[data-testid="feedback-result"]') !== null);
+
+  expect(posted.length).toBe(1);
+  expect(document.body.style.cursor).toBe("crosshair");
+  expect(view.container.querySelector(".feedback-panel")).toBeNull();
+  expect(
+    view.container.querySelector('[data-testid="feedback-result"]')?.textContent,
+  ).toContain("Removal");
 });
