@@ -118,10 +118,10 @@ pub async fn cpu(options: &CpuOptions) -> anyhow::Result<Value> {
     let dashboard = Scratch::start(&repo, &state, &root)?;
     let base = format!("http://127.0.0.1:{}", dashboard.port);
     wait_ready(&base, Duration::from_secs(30)).await?;
-    let workers = if scenario == "all-workers" {
+    let (workers, skipped) = if scenario == "all-workers" {
         start_workers(&repo, &state, &root)?
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     tokio::time::sleep(WARMUP).await;
@@ -171,6 +171,7 @@ pub async fn cpu(options: &CpuOptions) -> anyhow::Result<Value> {
             "readBytesPerSecond": dashboard_sample.read_bytes_per_second,
         },
         "workers": worker_rows,
+        "skipped": skipped,
         "cpuPercent": if is_runs_view { dashboard_sample.cpu_percent } else { worker_cpu },
         "readBytesPerSecond": if is_runs_view {
             dashboard_sample.read_bytes_per_second
@@ -231,8 +232,9 @@ fn write(path: &Path, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A scratch host every background family accepts: a checkout with an origin
-/// and a harness directory, a goal file, and an ADR directory.
+/// A scratch host every background family accepts: a checkout with an origin,
+/// one commit on `main`, and a harness directory, a goal file, and an ADR
+/// directory.
 fn fixture(repo: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(repo.join(".devboard/prompts"))?;
     std::fs::create_dir_all(repo.join("adrs"))?;
@@ -276,6 +278,23 @@ fn fixture(repo: &Path) -> anyhow::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _ = remote.status();
+    // Deploy on main refuses a checkout whose `main` names no commit, so the
+    // fixture records one and the worker watches a branch instead of exiting.
+    let mut commit = Command::new("git");
+    commit
+        .arg("-C")
+        .arg(repo)
+        .args(["-c", "user.name=Bench"])
+        .args(["-c", "user.email=bench@example.invalid"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(["commit", "--allow-empty", "--quiet", "-m", "fixture"]);
+    commit
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if !commit.status()?.success() {
+        anyhow::bail!("the fixture checkout could not record its main commit");
+    }
     Ok(())
 }
 
@@ -460,12 +479,41 @@ impl Drop for WorkerProcess {
     }
 }
 
-fn start_workers(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Vec<WorkerProcess>> {
+/// The families `all-workers` starts on one checkout, and the gated-off families
+/// it reports instead.
+///
+/// No fixture shape starts every family: the Release Train runs only in the
+/// harness source checkout and Deploy on main only on a host project, so the
+/// scenario selects by the same verdict the `worker` command refuses with. A
+/// refused family would exit 2 before its measurement window, so it is reported
+/// with that refusal line and never started.
+fn select_families(repo: &Path) -> (Vec<&'static str>, Vec<(&'static str, String)>) {
+    let mut selected = Vec::new();
+    let mut skipped = Vec::new();
+    for family in crate::workers::FAMILIES {
+        match crate::project_kind::refusal(
+            family,
+            crate::project_kind::gate_for_family(family),
+            repo,
+        ) {
+            None => selected.push(family),
+            Some(refusal) => skipped.push((family, refusal)),
+        }
+    }
+    (selected, skipped)
+}
+
+fn start_workers(
+    repo: &Path,
+    state: &Path,
+    root: &Path,
+) -> anyhow::Result<(Vec<WorkerProcess>, Vec<Value>)> {
     let binary = std::env::current_exe()?;
     let watchdog = repo.join(".devboard/.tmp/watchdog");
     seed_idle_watchdog(&watchdog)?;
+    let (families, skipped) = select_families(repo);
     let mut workers = Vec::new();
-    for family in crate::workers::FAMILIES {
+    for family in families {
         let log = std::fs::File::create(root.join(format!("worker-{family}.log")))?;
         let mut command = Command::new(&binary);
         command
@@ -504,7 +552,11 @@ fn start_workers(repo: &Path, state: &Path, root: &Path) -> anyhow::Result<Vec<W
             .spawn()?;
         workers.push(WorkerProcess { family, child });
     }
-    Ok(workers)
+    let skipped = skipped
+        .into_iter()
+        .map(|(family, refusal)| json!({ "family": family, "refusal": refusal }))
+        .collect();
+    Ok((workers, skipped))
 }
 
 /// A watchdog that is idle from its first tick: the previous run is now and
@@ -690,6 +742,15 @@ pub fn print(result: &Value, json: bool) {
             );
         }
     }
+    if let Some(skipped) = result["skipped"].as_array() {
+        for entry in skipped {
+            let _ = writeln!(
+                out,
+                "  skipped: {}",
+                entry["refusal"].as_str().unwrap_or("")
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -784,6 +845,74 @@ mod tests {
         }
         assert_eq!(total, 201, "150 finished, 50 orphaned, and one live run");
         assert_eq!(live, vec!["live-run".to_string()], "one seeded live run");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// No fixture shape starts every family: `all-workers` starts what the
+    /// fixture's project kind accepts and reports the gated-off family with the
+    /// refusal line the `worker` command answers instead of starting it.
+    #[test]
+    fn all_workers_selects_the_families_its_fixture_shape_accepts() {
+        let root = fixture("family-selection");
+        let repo = root.join("repo");
+
+        let (selected, skipped) = select_families(&repo);
+        for family in &selected {
+            assert!(
+                crate::project_kind::refusal(
+                    family,
+                    crate::project_kind::gate_for_family(family),
+                    &repo
+                )
+                .is_none(),
+                "{family} was selected on a fixture that refuses it"
+            );
+        }
+        assert!(
+            selected.contains(&"deploy-on-main"),
+            "a host fixture starts the host-only family"
+        );
+        assert!(
+            !selected.contains(&"release-train"),
+            "a refused family is never started"
+        );
+        let release_train = skipped
+            .iter()
+            .find(|(family, _)| *family == "release-train")
+            .expect("release-train is reported as skipped");
+        assert!(
+            release_train
+                .1
+                .starts_with("release-train: Release Train runs only in a harness source checkout"),
+            "{}",
+            release_train.1
+        );
+
+        write(
+            &repo.join(".devboard/package.json"),
+            &format!(
+                "{{\"name\":\"{}\",\"version\":\"1.0.0\"}}\n",
+                crate::version::HARNESS_NAME
+            ),
+        )
+        .expect("a harness source marker");
+        let (selected, skipped) = select_families(&repo);
+        assert!(
+            selected.contains(&"release-train"),
+            "a harness source fixture starts the harness-only family"
+        );
+        let deploy = skipped
+            .iter()
+            .find(|(family, _)| *family == "deploy-on-main")
+            .expect("deploy-on-main is reported as skipped");
+        assert!(
+            deploy
+                .1
+                .starts_with("deploy-on-main: Deploy on main runs only on host projects"),
+            "{}",
+            deploy.1
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
