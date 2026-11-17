@@ -600,6 +600,51 @@ impl Default for Inner {
     }
 }
 
+/// The lane-admission seam. Production passes every lane straight through; a
+/// test arms it so the first lane waits before `add_lane`, which is the window
+/// between a pause's own decision and the insert that admits the lane.
+#[derive(Default)]
+struct AdmissionGate {
+    armed: AtomicBool,
+    open: AtomicBool,
+    waiting: AtomicBool,
+    reached: Notify,
+    released: Notify,
+}
+
+impl AdmissionGate {
+    /// Passes at once unless a test holds admission, then waits for `open`.
+    async fn hold(&self) {
+        if !self.armed.load(Ordering::SeqCst) || self.open.load(Ordering::SeqCst) {
+            return;
+        }
+        self.waiting.store(true, Ordering::SeqCst);
+        self.reached.notify_one();
+        loop {
+            let released = self.released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            if self.open.load(Ordering::SeqCst) {
+                return;
+            }
+            released.await;
+        }
+    }
+
+    /// Waits until an admission is actually held.
+    async fn held(&self) {
+        loop {
+            let reached = self.reached.notified();
+            tokio::pin!(reached);
+            reached.as_mut().enable();
+            if self.waiting.load(Ordering::SeqCst) && !self.open.load(Ordering::SeqCst) {
+                return;
+            }
+            reached.await;
+        }
+    }
+}
+
 /// The mode itself, reached from every durable section and command.
 struct GoalRun {
     app: OnceLock<Weak<App>>,
@@ -610,6 +655,7 @@ struct GoalRun {
     unwound: Notify,
     generation_gate: tokio::sync::Mutex<()>,
     resume_scheduled: AtomicBool,
+    admission: AdmissionGate,
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +673,7 @@ pub fn init(app: &Arc<App>) {
         unwound: Notify::new(),
         generation_gate: tokio::sync::Mutex::new(()),
         resume_scheduled: AtomicBool::new(false),
+        admission: AdmissionGate::default(),
     });
     let _ = owner.app.set(Arc::downgrade(app));
     for (key, field) in [
@@ -735,6 +782,32 @@ pub fn reset_is_active(app: &Arc<App>) -> bool {
     state_for(app)
         .map(|owner| lock(&owner.inner).reset_active)
         .unwrap_or(false)
+}
+
+/// Test seam: holds the next lane admission, so a test can land a pause between
+/// the pause's own decision and the insert that admits the lane.
+#[doc(hidden)]
+pub fn hold_admission(app: &Arc<App>) {
+    if let Some(owner) = state_for(app) {
+        owner.admission.armed.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Test seam: waits until a held lane admission is waiting to be released.
+#[doc(hidden)]
+pub async fn await_admission(app: &Arc<App>) {
+    if let Some(owner) = state_for(app) {
+        owner.admission.held().await;
+    }
+}
+
+/// Test seam: releases a held lane admission and every later one.
+#[doc(hidden)]
+pub fn release_admission(app: &Arc<App>) {
+    if let Some(owner) = state_for(app) {
+        owner.admission.open.store(true, Ordering::SeqCst);
+        owner.admission.released.notify_waiters();
+    }
 }
 
 /// Replays the frames a connecting client owes before its own replies.
@@ -1617,18 +1690,22 @@ impl GoalRun {
             target.send(error_event("The lifecycle run is already paused."));
             return;
         }
+        // The pause flag, the lanes it covers, and their peers are one decision:
+        // a lane admitted under this lock after it reads `paused` is inserted
+        // paused, and a lane already here is stopped before the lock is released,
+        // so no lane can be missed by the snapshot and left running.
         {
-            let live: Vec<Arc<Lane>> = lock(&self.inner).live.values().cloned().collect();
-            for lane in live {
+            let mut inner = lock(&self.inner);
+            inner.lifecycle.paused = true;
+            for lane in inner.live.values() {
                 if lane.status() != LaneStatus::Running {
                     continue;
                 }
+                lane.set_status(LaneStatus::Paused);
                 if let Some(agent) = lock(&lane.agent).as_ref() {
                     agent.pause();
                 }
-                lane.set_status(LaneStatus::Paused);
             }
-            lock(&self.inner).lifecycle.paused = true;
         }
         let app = app_of(self);
         self.publish_lifecycle(&app, false);
@@ -1667,22 +1744,23 @@ impl GoalRun {
             target.send(error_event("The lifecycle run is not paused."));
             return;
         }
-        {
+        // Clearing the flag and selecting the lanes it continues is one
+        // decision, the mirror of the pause: a lane admitted under this lock
+        // reads the cleared flag and is inserted running.
+        let live: Vec<Arc<Lane>> = {
             let mut inner = lock(&self.inner);
             inner.lifecycle.paused = false;
-        }
+            inner.live.values().cloned().collect()
+        };
         self.publish_lifecycle(app, false);
-        {
-            let live: Vec<Arc<Lane>> = lock(&self.inner).live.values().cloned().collect();
-            for lane in live {
-                if lane.status() != LaneStatus::Paused {
-                    continue;
-                }
-                if let Some(agent) = lock(&lane.agent).as_ref() {
-                    agent.resume();
-                }
-                lane.set_status(LaneStatus::Running);
+        for lane in live {
+            if lane.status() != LaneStatus::Paused {
+                continue;
             }
+            if let Some(agent) = lock(&lane.agent).as_ref() {
+                agent.resume();
+            }
+            lane.set_status(LaneStatus::Running);
         }
         self.publish_lanes(app);
         self.notify_resume();
@@ -2083,6 +2161,13 @@ impl GoalRun {
     fn add_lane(self: &Arc<Self>, app: &Arc<App>, lane: Arc<Lane>) {
         {
             let mut inner = lock(&self.inner);
+            // Derive the status from the pause flag under the same lock that
+            // inserts the lane: a pause holding this lock has already stopped
+            // and marked every lane in `live`, and one that takes it later
+            // finds this lane there.
+            if inner.lifecycle_running && inner.lifecycle.paused {
+                lane.set_status(LaneStatus::Paused);
+            }
             inner.lanes.push(Arc::clone(&lane));
             inner.live.insert(lane.id.clone(), Arc::clone(&lane));
         }
@@ -2439,6 +2524,7 @@ impl GoalRun {
             1,
             LaneStatus::Running,
         ));
+        self.admission.hold().await;
         self.add_lane(app, Arc::clone(&lane));
         self.publish_stage(app);
         self.continue_generation_lane(app, &lane, before).await;
@@ -2557,6 +2643,7 @@ impl GoalRun {
             1,
             LaneStatus::Running,
         ));
+        self.admission.hold().await;
         self.add_lane(app, Arc::clone(&lane));
         self.set_lifecycle(
             app,
@@ -2655,8 +2742,22 @@ impl GoalRun {
         }
         let connection = Arc::new(connection);
         *lock(&lane.agent) = Some(Arc::clone(&connection));
-        if lock(&self.inner).lifecycle.paused {
-            connection.pause();
+        {
+            // The pause flag and the lane's status are decided under the lock
+            // the pause and resume paths hold: a stopped peer never sits behind
+            // a running lane, and a lane admitted while the run was paused is
+            // marked paused here when its peer connects late.
+            let inner = lock(&self.inner);
+            if inner.lifecycle.paused {
+                lane.set_status(LaneStatus::Paused);
+                connection.pause();
+            } else if lane.status() == LaneStatus::Paused {
+                // The pause that marked this lane ended before its peer
+                // connected, so this pass continues it: resume's own pass has
+                // already run and would not find it again.
+                connection.resume();
+                lane.set_status(LaneStatus::Running);
+            }
         }
         self.drive_lane_events(app, lane, events, &connection, prompt)
             .await

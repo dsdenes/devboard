@@ -548,6 +548,99 @@ async fn pause_holds_and_resume_continues_the_lifecycle() {
     until(|| state_value(&scratch)["lifecycleRunning"] == false, 5_000).await;
 }
 
+/// A pause accepted between the pause decision and the insert that admits a lane
+/// must not leave that lane `Running` behind a SIGSTOPped peer: the lane is
+/// inserted paused, resume continues it, and the run finishes. The admission
+/// seam parks the generation lane before `add_lane`, so that ordering is
+/// exercised rather than described.
+#[tokio::test]
+async fn a_lane_admitted_during_a_pause_is_resumed_with_the_run() {
+    let _guard = serial().lock().await;
+    let scratch = Scratch::new("admit-paused");
+    let tracker_file = scratch.path().join("tracker.json");
+    std::fs::write(&tracker_file, "[]").expect("tracker written");
+    let tracker = Tracker::start(tracker_file.clone()).await;
+    std::env::set_var("DEVBOARD_GITEA_URL", &tracker.base);
+    prepare_repository(&scratch, Some(&format!("{}/owner/name", tracker.base)));
+    std::fs::write(
+        scratch.path().join("adrs/a.md"),
+        "---\ntitle: Adopt the fixture decision\nstatus: proposed\n---\n\n## Decision\n\nUse it.\n",
+    )
+    .expect("record written");
+
+    let command = stub_command(
+        &scratch,
+        &[
+            &format!("--fixture-tracker={}", tracker_file.display()),
+            "--questions=0",
+        ],
+    );
+    let app = app_with(&scratch, command).await;
+    devboard::goal_run::hold_admission(&app);
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::StartLifecycle).await;
+    devboard::goal_run::await_admission(&app).await;
+
+    // The pause lands while the generation lane waits before `add_lane`, so its
+    // own decision sees no lane at all.
+    app.command(&conn, Command::PauseLifecycle).await;
+    let paused = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "lifecycleState" && frame["paused"] == true,
+        5_000,
+    )
+    .await;
+    assert_eq!(
+        paused["stage"], "epic",
+        "the pause lands before the lane is admitted: {paused:?}"
+    );
+
+    devboard::goal_run::release_admission(&app);
+    let admitted = frame_matching(
+        &mut inbox,
+        |frame| {
+            frame["type"] == "laneState"
+                && frame["lanes"]
+                    .as_array()
+                    .is_some_and(|lanes| lanes.iter().any(|lane| lane["kind"] == "generation"))
+        },
+        5_000,
+    )
+    .await;
+    let lane = admitted["lanes"]
+        .as_array()
+        .and_then(|lanes| lanes.iter().find(|lane| lane["kind"] == "generation"))
+        .unwrap_or_else(|| panic!("the generation lane is published: {admitted:?}"));
+    assert_eq!(
+        lane["status"], "paused",
+        "a lane admitted while the run is paused is inserted paused: {admitted:?}"
+    );
+
+    app.command(&conn, Command::ResumeLifecycle).await;
+    frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "lifecycleState" && frame["paused"] == false,
+        5_000,
+    )
+    .await;
+    collect_until(
+        &mut inbox,
+        |frame| frame["type"] == "lifecycleState" && frame["stage"] == "finished",
+        30_000,
+    )
+    .await;
+    until(|| state_value(&scratch)["lifecycleRunning"] == false, 5_000).await;
+    let state = state_value(&scratch);
+    assert!(
+        state["lanes"].as_array().is_some_and(|lanes| {
+            lanes.iter().any(|lane| lane["kind"] == "generation")
+                && lanes.iter().all(|lane| lane["status"] == "closed")
+        }),
+        "the admitted lane was continued and ran to its end: {state:?}"
+    );
+}
+
 #[tokio::test]
 async fn stop_refuses_while_idle_and_ends_a_running_lifecycle() {
     let _guard = serial().lock().await;
