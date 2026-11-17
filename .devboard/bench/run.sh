@@ -112,6 +112,24 @@ rss() {
   awk '/VmRSS/ {print $2}' "/proc/$1/status" 2>/dev/null || echo 0
 }
 
+# Record one measurement command: its wall time when it exits 0, a marker naming
+# its log when it does not. The report cell is left in $measurement, and the
+# counter makes the script exit nonzero after the report is carried by hand.
+measurements_failed=0
+measure() {
+  local log=$1 command=$2 started status=0 elapsed
+  started=$(date +%s%N)
+  (cd "$harness" && bash -c "$command" >"$log" 2>&1) || status=$?
+  elapsed=$((($(date +%s%N) - started) / 1000000))
+  if [ "$status" -ne 0 ]; then
+    measurements_failed=$((measurements_failed + 1))
+    measurement="failed (see $(basename -- "$log"))"
+    printf 'bench: %s exited %s; see %s\n' "$command" "$status" "$log" >&2
+    return 0
+  fi
+  measurement="$elapsed ms"
+}
+
 ts_latency='{"p95Ms":0,"p50Ms":0}'
 rust_idle=$(rss "$rust_pid")
 rust_latency=$(cd "$harness" && "$rust" bench --port "$rust_port" --iterations "$iterations")
@@ -128,24 +146,20 @@ ts_suite_line="not run"
 rust_suite_line="not run"
 if [ "$skip_suites" -eq 0 ]; then
   if [ -n "$typescript" ]; then
-    ts_start=$(date +%s%N)
-    (cd "$harness" && bash -c "$ts_suite" >"$work/typescript-suite.log" 2>&1) || true
-    ts_suite_line="$((($(date +%s%N) - ts_start) / 1000000)) ms"
+    measure "$work/typescript-suite.log" "$ts_suite"
+    ts_suite_line=$measurement
   fi
-  rust_start=$(date +%s%N)
-  (cd "$harness" && bash -c "$rust_suite" >"$work/rust-suite.log" 2>&1) || true
-  rust_suite_line="$((($(date +%s%N) - rust_start) / 1000000)) ms"
+  measure "$work/rust-suite.log" "$rust_suite"
+  rust_suite_line=$measurement
 fi
 
 ts_release_line="not run"
 if [ -n "$typescript" ]; then
-  ts_release_start=$(date +%s%N)
-  (cd "$harness" && bash -c "$ts_release" >"$work/typescript-release.log" 2>&1) || true
-  ts_release_line="$((($(date +%s%N) - ts_release_start) / 1000000)) ms"
+  measure "$work/typescript-release.log" "$ts_release"
+  ts_release_line=$measurement
 fi
-rust_release_start=$(date +%s%N)
-(cd "$harness" && bash -c "$rust_release" >"$work/rust-release.log" 2>&1) || true
-rust_release_line="$((($(date +%s%N) - rust_release_start) / 1000000)) ms"
+measure "$work/rust-release.log" "$rust_release"
+rust_release_line=$measurement
 
 python3 - "$out" "$typescript" "$rust" "$ts_latency" "$rust_latency" \
   "$ts_idle" "$rust_idle" "$ts_loaded" "$rust_loaded" \
@@ -218,3 +232,9 @@ lines.extend(["", "No threshold is a pass/fail condition; the report is the deli
 Path(out).write_text("\n".join(lines), encoding="utf-8")
 print("\n".join(lines))
 PY
+
+if [ "$measurements_failed" -ne 0 ]; then
+  printf 'bench: %s measurement(s) failed; %s names each failure\n' \
+    "$measurements_failed" "$out" >&2
+  exit 1
+fi

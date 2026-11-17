@@ -14,6 +14,11 @@ available; otherwise the report is the Rust column.
 
 The benchmark measures one REST read per iteration and names the HTTP method and path it used.
 
+A row carries a wall time only when its command exited 0. A suite or release command that exits
+nonzero is recorded as `failed (see <log>)` instead, its log path is printed to stderr, and the
+script still writes the report but exits nonzero, so a tree that fails to compile is never
+reported like a passing one.
+
 ## Idle CPU and read bytes
 
 `devboard bench cpu` measures what one dashboard and its family workers spend while idle:
