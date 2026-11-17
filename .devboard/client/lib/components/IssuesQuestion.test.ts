@@ -173,6 +173,24 @@ test("a closed transport keeps the typed answer and never arms the busy word", a
   expect(view.container.textContent).not.toContain("Answer received no answer.");
 });
 
+test("two options sharing a label render two choices and never throw", async () => {
+  const question: RunQuestion = {
+    id: 9,
+    message: "Which draft should the agent keep?",
+    options: [
+      { label: "Yes", description: "Keep the draft.", recommended: false },
+      { label: "Yes", description: "Discard the draft.", recommended: false },
+    ],
+  };
+
+  const { view } = await mount("run-a", question);
+
+  const choices = view.getAllByTestId("issues-agent-choice");
+  expect(choices).toHaveLength(2);
+  expect(choices[0]?.textContent).toContain("Keep the draft.");
+  expect(choices[1]?.textContent).toContain("Discard the draft.");
+});
+
 test("a server refusal frame releases the Answer control and keeps the typed answer", async () => {
   const { view, input, submit } = await mount("run-a", QUESTION_A, () =>
     issues.answerRevision("run-a"),

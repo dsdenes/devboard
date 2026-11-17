@@ -103,7 +103,10 @@
   <h3 class="issues-question__message">{question.message}</h3>
   {#if question.options.length > 0}
     <div class="choice-list">
-      {#each question.options as option (option.label)}
+      <!-- The answer carries the label text, so two options may legitimately
+           share one; the option order is the presentation order, and only its
+           position is unique. -->
+      {#each question.options as option, position (position)}
         <CommandButton
           bare
           class="choice"
