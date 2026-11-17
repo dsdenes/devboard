@@ -251,7 +251,6 @@
   <div class="activity-bar__actions" aria-label="Application actions">
     <IconButton
       label="Commands (Ctrl+K)"
-      command="app.palette.open"
       data-testid="activity-commands"
       onclick={onopenpalette}
     >

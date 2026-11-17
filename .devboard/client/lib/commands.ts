@@ -209,13 +209,6 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     disabled: () => disabledWhen(notifications.items.length === 0, "No notifications are waiting."),
     run: () => notifications.clear(),
   });
-  add({
-    id: "app.palette.open",
-    title: "Show all commands",
-    group: "Application",
-    shortcut: "Ctrl+K",
-    run: () => {},
-  });
 
   // Open workspace tabs, so the palette can reach every surface.
   const tabCommands: Array<[Mode, WorkspaceTab]> = [

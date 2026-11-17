@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { TABS } from "./discover-format";
 import { buildCommands, type CommandContext } from "./commands";
+import { providers } from "./providers.svelte";
 
 /**
  * The fewest store fields `buildCommands` reads at build time: no open pages,
@@ -120,4 +121,60 @@ test("a restoring Flow session disables the steering command despite a typed not
   const command = buildCommands(restoring).find((entry) => entry.id === "flow.steering.send");
 
   expect(command?.disabled?.()).toBe("Wait for the stored Flow session to finish restoring.");
+});
+
+/**
+ * The same minimal context, with every store and callback turned into one
+ * counted effect: a field the stub does not model answers a recording no-op, so
+ * an unmodelled store method still counts as a real action.
+ */
+function recordingContext(effect: () => void): CommandContext {
+  const store = <T extends object>(base: T): T =>
+    new Proxy(base, {
+      get: (target, key) => (key in target ? Reflect.get(target, key) : effect),
+    }) as T;
+
+  return {
+    ...context,
+    goal: store({ ...context.goal }),
+    flow: store({ ...context.flow }),
+    discover: store({ ...context.discover }),
+    issues: store({ ...context.issues }),
+    goalDrafts: store({}),
+    layout: store({ theme: context.layout.theme, tabs: context.layout.tabs }),
+    connection: store({ ...context.connection }),
+    notifications: store({ live: [], items: [] }),
+    openTab: effect,
+    closeTab: effect,
+    focusLater: effect,
+    resetLayout: effect,
+    reportIssue: effect,
+    removeElement: effect,
+    redesignElement: effect,
+    cancelReport: effect,
+  } as unknown as CommandContext;
+}
+
+test("every command the palette offers to run reaches an effect", () => {
+  let effects = 0;
+  const effect = (): void => {
+    effects += 1;
+  };
+  const openDialog = providers.openDialog;
+  providers.openDialog = effect;
+
+  try {
+    const idle = buildCommands(recordingContext(effect))
+      .filter((command) => command.disabled?.() == null)
+      .filter((command) => {
+        const before = effects;
+        void command.run();
+        return effects === before;
+      })
+      .map((command) => command.id);
+
+    expect(idle).toEqual([]);
+  } finally {
+    providers.openDialog = openDialog;
+  }
 });
