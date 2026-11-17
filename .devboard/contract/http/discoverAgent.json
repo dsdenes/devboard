@@ -4,6 +4,11 @@
   "path": "/discoveries/agent-scans",
   "status": 201,
   "body": {
-    "frames": []
+    "frames": [
+      {
+        "type": "discoverError",
+        "message": "A Discover start needs an agent id."
+      }
+    ]
   }
 }

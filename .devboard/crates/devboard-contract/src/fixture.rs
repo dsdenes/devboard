@@ -319,12 +319,15 @@ pub async fn replay(
     Ok(results)
 }
 
-/// The corpus entry one observed answer becomes. A content type that names
-/// JSON makes the body mandatory JSON: a body `serde_json` rejects fails the
-/// recording of that row instead of silently becoming text the comparison
-/// would then match against itself. An answer that drops its content type
-/// still records a JSON document when its body parses as an object or array,
-/// so a handler cannot downgrade a row to text by omitting the header.
+/// The corpus entry one observed answer becomes. A zero-byte answer records
+/// the empty text whatever its content type names, because a HEAD answer
+/// carries the headers of the GET it strips and no payload at all. A content
+/// type that names JSON makes a non-empty body mandatory JSON: a body
+/// `serde_json` rejects fails the recording of that row instead of silently
+/// becoming text the comparison would then match against itself. An answer
+/// that drops its content type still records a JSON document when its body
+/// parses as an object or array, so a handler cannot downgrade a row to text
+/// by omitting the header.
 fn recording(
     case: &Case,
     observed: &Observed,
@@ -334,18 +337,22 @@ fn recording(
         .headers
         .get("content-type")
         .map(|value| value.contains("json"));
-    let body = match names_json {
-        Some(true) => serde_json::from_str(&observed.body).map_err(|error| {
-            format!(
-                "{}: the answer names JSON and its body does not parse: {error}",
-                case.name
-            )
-        })?,
-        Some(false) => serde_json::Value::String(observed.body.clone()),
-        None => match serde_json::from_str(&observed.body) {
-            Ok(document @ (Value::Object(_) | Value::Array(_))) => document,
-            Ok(_) | Err(_) => serde_json::Value::String(observed.body.clone()),
-        },
+    let body = if observed.body.is_empty() {
+        serde_json::Value::String(String::new())
+    } else {
+        match names_json {
+            Some(true) => serde_json::from_str(&observed.body).map_err(|error| {
+                format!(
+                    "{}: the answer names JSON and its body does not parse: {error}",
+                    case.name
+                )
+            })?,
+            Some(false) => serde_json::Value::String(observed.body.clone()),
+            None => match serde_json::from_str(&observed.body) {
+                Ok(document @ (Value::Object(_) | Value::Array(_))) => document,
+                Ok(_) | Err(_) => serde_json::Value::String(observed.body.clone()),
+            },
+        }
     };
     Ok(http_table::Recording {
         name: case.name.to_string(),
@@ -503,6 +510,22 @@ mod tests {
         assert!(
             error.starts_with("broken-json: the answer names JSON and its body does not parse: "),
             "the error names the row and the rejected body: {error}"
+        );
+    }
+
+    #[test]
+    fn a_zero_byte_json_answer_is_recorded_as_the_empty_text() {
+        let recorded = recording(
+            &probe_case("ready-head"),
+            &probe_answer("ready-head", Some("application/json;charset=utf-8"), ""),
+            &allowlist(),
+        )
+        .expect("a HEAD answer carries the GET's content type and no payload");
+
+        assert_eq!(
+            recorded.body,
+            Value::String(String::new()),
+            "a zero-byte answer records the empty text its corpus row holds"
         );
     }
 

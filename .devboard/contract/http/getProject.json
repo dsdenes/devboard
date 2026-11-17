@@ -8,11 +8,8 @@
       {
         "type": "project",
         "path": "",
-        "deliveryMode": "merge",
-        "deliveryModeAvailability": {
-          "state": "enabled",
-          "reason": null
-        }
+        "deliveryMode": "",
+        "deliveryModeAvailability": {}
       }
     ]
   }
