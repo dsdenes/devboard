@@ -133,8 +133,7 @@ fn marker_port(state: &Path) -> u16 {
     u16::try_from(marker(state)["port"].as_u64().unwrap_or(0)).unwrap_or(0)
 }
 
-/// Waits for the dashboard in `state` to answer `/ready`, and reports its log
-/// when it never does.
+/// The budget one dashboard start gets on a shared host.
 ///
 /// One start runs every stage before it binds: the fork, the startup reaping
 /// pass over the whole process table, the `systemctl` read of the slice, the
@@ -142,8 +141,12 @@ fn marker_port(state: &Path) -> u16 {
 /// loop polls. A loaded host starves every one of them by seconds, so the
 /// budget bounds a stall above the slowest stage; it never asserts how fast a
 /// shared core starts a dashboard.
+const START_BUDGET: Duration = Duration::from_secs(120);
+
+/// Waits for the dashboard in `state` to answer `/ready`, and reports its log
+/// when it never does.
 async fn wait_ready(state: &Path, log: &Path) -> u16 {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + START_BUDGET;
     loop {
         let port = marker_port(state);
         if port > 0 && ready(port).await {
@@ -464,7 +467,7 @@ async fn concurrent_starts_leave_exactly_one_dashboard() {
         let child = start_dashboard(&repo, &state, &log, &[]);
         children.push((state, child, log));
     }
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = Instant::now() + START_BUDGET;
     loop {
         let mut exited = 0;
         for (_, child, _) in children.iter_mut() {
@@ -492,17 +495,29 @@ async fn concurrent_starts_leave_exactly_one_dashboard() {
         refusals += 1;
     }
     assert_eq!(refusals, 3, "three starts were refused");
-    let entries = status_entries(&repo, &scratch.state("state-0"));
+    // The winner holds the guard as soon as it refuses the siblings, but its
+    // port bind and ready marker follow; a loaded host delays them behind the
+    // other starts, so the readiness the page reads is waited for.
+    let entries = loop {
+        let entries = status_entries(&repo, &scratch.state("state-0"));
+        let ready_count = entries
+            .iter()
+            .filter(|entry| entry["ready"] == json!(true))
+            .count();
+        if entries.len() == 1 && ready_count == 1 {
+            break entries;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "exactly one dashboard serves the host ready: {entries:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(
         entries.len(),
         1,
         "exactly one dashboard serves the host: {entries:?}"
     );
-    let ready_count = entries
-        .iter()
-        .filter(|entry| entry["ready"] == json!(true))
-        .count();
-    assert_eq!(ready_count, 1);
     for (_, child, _) in children.iter_mut() {
         stop(child);
     }

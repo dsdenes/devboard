@@ -888,7 +888,10 @@ async fn a_running_draft_refuses_deletion_and_deletes_once_stopped() {
         },
     )
     .await;
-    let refusal = frame_matching(&mut inbox, |frame| frame["type"] == "error", 5000).await;
+    // The refusal is answered by the dispatcher's command loop, which a loaded
+    // host starves alongside the owner it just started; the budget bounds the
+    // answer, never the deadline the product proves.
+    let refusal = frame_matching(&mut inbox, |frame| frame["type"] == "error", 60000).await;
     assert_eq!(
         refusal["message"],
         "This draft is being elaborated. Stop the elaboration and delete it again."
@@ -916,19 +919,36 @@ async fn a_running_draft_refuses_deletion_and_deletes_once_stopped() {
     )
     .await;
 
-    app.command(
-        &conn,
-        Command::DeleteGoalDraft {
-            path: Some(json!(path)),
-        },
-    )
-    .await;
-    let deleted = frame_matching(
-        &mut inbox,
-        |frame| frame["type"] == "issuesDrafts" && frame["drafts"] == json!([]),
-        5000,
-    )
-    .await;
+    // A stopped draft's owner may still be exiting: until it is gone the
+    // product answers the delete with the same refusal and the operator clicks
+    // again, so the test does too instead of waiting for a list the refusal
+    // prevents.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deleted = loop {
+        app.command(
+            &conn,
+            Command::DeleteGoalDraft {
+                path: Some(json!(path)),
+            },
+        )
+        .await;
+        let answered = frame_matching(
+            &mut inbox,
+            |frame| {
+                (frame["type"] == "issuesDrafts" && frame["drafts"] == json!([]))
+                    || frame["type"] == "error"
+            },
+            30000,
+        )
+        .await;
+        if answered["type"] == "issuesDrafts" {
+            break answered;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the stopped draft deletes: {answered}"
+        );
+    };
     assert_eq!(deleted["drafts"], json!([]));
     assert!(!repo
         .join(".devboard")

@@ -57,3 +57,30 @@ fn the_check_job_still_runs_the_workspace_gates() {
         assert!(names.contains(&gate), "the {gate} step survives: {names:?}");
     }
 }
+
+/// The runner admits several jobs at once on one host, so the suite names the
+/// share of the cores it may take; without it every suite runs one binary per
+/// core and starves the wall-clock waits in the suites beside it.
+#[test]
+fn the_test_step_bounds_the_suite_to_a_share_of_the_host() {
+    let workflow = workflow();
+    let steps = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("check"))
+        .and_then(|job| job.get("steps"))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("the check job has steps");
+    let test = steps
+        .iter()
+        .find(|step| step.get("name").and_then(serde_yaml::Value::as_str) == Some("Test"))
+        .expect("the Test step exists");
+    let declared = test
+        .get("env")
+        .and_then(|env| env.get("DEVBOARD_TEST_CONCURRENCY"))
+        .and_then(serde_yaml::Value::as_str)
+        .expect("the Test step caps the suite's concurrency");
+    let count: u32 = declared
+        .parse()
+        .unwrap_or_else(|error| panic!("DEVBOARD_TEST_CONCURRENCY is an integer: {error}"));
+    assert!(count >= 1, "the cap admits at least one binary: {count}");
+}

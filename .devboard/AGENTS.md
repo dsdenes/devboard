@@ -162,6 +162,10 @@ bun run test:client   # the client suite, one file per available core
 bun run build   # builds the client and refreshes crates/devboard/assets when it changed
 ```
 
+`DEVBOARD_TEST_CONCURRENCY` caps the workspace runner below the core count. A forge runner
+admits several jobs at once on one host, so the CI job names the share of the cores its suite
+may take; an unset value keeps the host-derived count.
+
 A client change is verified with `cd .devboard && bun run test:client`.
 `.gitea/workflows/devboard-ci.yml` runs the Rust checks and the embedded-client build, not the
 client suite, so a client change must pass `bun run test:client` locally before it lands.

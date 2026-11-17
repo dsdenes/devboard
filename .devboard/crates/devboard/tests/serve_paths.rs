@@ -130,7 +130,11 @@ impl Dashboard {
     }
 
     async fn port(&self) -> u16 {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // One start forks, reaps over the whole process table, reads the slice
+        // with systemctl, and resolves the harness version through bounded git
+        // reads before it binds; a loaded host starves every stage by seconds,
+        // so the budget bounds a stall above the slowest stage.
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let port = std::fs::read_to_string(self.state.join("version.json"))
                 .ok()

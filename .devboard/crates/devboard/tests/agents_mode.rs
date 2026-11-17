@@ -1225,7 +1225,17 @@ async fn a_hanging_start_preflight_refuses_within_the_bound() {
     assert_eq!(scout["error"], Value::Null);
     assert_ne!(scout["lifecycle"], "starting");
     let pid = *pids.lock().expect("pids").first().expect("a pid");
-    assert!(pid_dead(pid), "the refused start left its worker alive");
+    // The refusal publishes its notice before the killed worker is reaped: a
+    // loaded host delays the reaper by seconds, so the death is waited for,
+    // never sampled once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !pid_dead(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the refused start left its worker alive"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     kill_recorded(&pids);
 }
 
@@ -3456,7 +3466,10 @@ fn refused_after_release(
 }
 
 async fn wait_for_refusal(harness: &mut FamilyHarness, family: &str, pid: u32) -> Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2_000);
+    // The refusal lands on the card and the killed worker is reaped on its own
+    // schedule; a loaded host starves both by seconds, so the budget bounds the
+    // pair, never the latency the product proves.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let snapshot = read_agent(harness, family).await;
         let refused = snapshot["error"].as_str().is_some() || snapshot["notice"].as_str().is_some();

@@ -7,13 +7,23 @@
  * summary for the whole suite. The concurrency is derived from the host on
  * every run, so the same entry point is correct on any machine.
  *
+ * `DEVBOARD_TEST_CONCURRENCY` caps that number. A forge runner that admits
+ * several jobs at once shares one host, and a suite that takes every core
+ * starves the wall-clock waits in every other suite, so the CI job names the
+ * share it may take. An unset or unusable value keeps the host-derived count.
+ *
  * The doc tests keep their own cargo invocation; they are not test binaries
  * and produce no per-binary concurrency to raise.
  */
 import { spawn } from "node:child_process";
 import { availableParallelism } from "node:os";
 
-const concurrency = Math.max(1, availableParallelism());
+const cores = Math.max(1, availableParallelism());
+const declared = Number.parseInt(process.env.DEVBOARD_TEST_CONCURRENCY ?? "", 10);
+const concurrency =
+  Number.isFinite(declared) && declared > 0
+    ? Math.min(cores, declared)
+    : cores;
 const cargo = process.env.CARGO ?? "cargo";
 
 function run(command, args) {

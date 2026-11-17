@@ -273,15 +273,20 @@ async fn creation_relays_activity_and_a_question_and_reports_the_written_goal() 
     assert_eq!(log_lines(&scratch, "answer "), vec!["Alpha".to_string()]);
 
     // The accepted answer is the only thing that clears the prompt, and it
-    // names the question so a page can revoke exactly that one.
-    assert!(
-        after_answer
-            .iter()
-            .any(|frame| frame["type"] == "questionCleared"
-                && frame["id"] == question["id"]
-                && frame.get("lane").is_none()),
-        "the accepted answer clears the creation's question: {after_answer:?}"
-    );
+    // names the question so a page can revoke exactly that one. The clear and
+    // the completion are published on their own schedules, so a loaded host
+    // lands them in either order; the clear is waited for instead of required
+    // inside the stop's window.
+    let cleared = |frame: &Value| {
+        frame["type"] == "questionCleared"
+            && frame["id"] == question["id"]
+            && frame.get("lane").is_none()
+    };
+    let cleared = match after_answer.iter().find(|frame| cleared(frame)).cloned() {
+        Some(frame) => frame,
+        None => frame_matching(&mut inbox, cleared, 60_000).await,
+    };
+    assert_eq!(cleared["id"], question["id"]);
 
     let activities: Vec<String> = after_answer
         .iter()

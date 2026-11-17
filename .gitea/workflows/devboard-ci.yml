@@ -39,7 +39,13 @@ jobs:
       - name: Test
         working-directory: .devboard
         # The workspace runner builds every test binary, runs up to one per
-        # available core, and prints the host-derived concurrency.
+        # available core, and prints the concurrency it used. The runner admits
+        # several jobs at once on one host, so a suite that took every core
+        # starved the wall-clock waits in the suites beside it and the Test step
+        # failed on tests that pass alone; the cap keeps four concurrent jobs
+        # inside the host's cores.
+        env:
+          DEVBOARD_TEST_CONCURRENCY: "8"
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           bun run test

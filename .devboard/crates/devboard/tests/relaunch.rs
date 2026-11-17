@@ -68,18 +68,81 @@ fn startup_passes(state: &Path) -> usize {
         .count()
 }
 
+/// The budget one replacement's start gets on a shared host.
+///
+/// A start forks, binds its readiness listener, holds the dashboard port until
+/// the caller releases it, writes its version, and then scans the whole process
+/// table for its startup reaping pass. A host running several suites at once
+/// starves every one of those stages by seconds, so the budget bounds a stall
+/// above the slowest stage; it never asserts how fast a shared core starts a
+/// dashboard. CI run 1291 for 2640f09 failed its Test step after one re-run
+/// because these waits were ten seconds.
+const START_BUDGET: Duration = Duration::from_secs(120);
+
+/// Waits for the replacement to bind the dashboard port and publish its pid.
+fn wait_for_pid(state: &Path) -> u32 {
+    let deadline = Instant::now() + START_BUDGET;
+    loop {
+        if let Some(pid) = serve_pid(state) {
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the replacement binds the dashboard port; state {}",
+            state.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Waits for the replacement's startup reaping pass, and proves it ran once.
+fn wait_for_startup_pass(state: &Path) {
+    let deadline = Instant::now() + START_BUDGET;
+    while startup_passes(state) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the startup reaping pass runs; state {}",
+            state.display()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        startup_passes(state),
+        1,
+        "the startup reaping pass still runs once the port is bound"
+    );
+}
+
 /// The spawned replacement is this test's child, so SIGTERM plus `waitpid`
-/// reaps it instead of leaving a zombie that `kill(pid, 0)` still reports.
+/// reaps it instead of leaving a zombie that `kill(pid, 0)` still reports. A
+/// starved shutdown keeps serving past the graceful budget, so it is killed:
+/// a dashboard left behind outlives the job and starves every later suite.
 fn stop(pid: u32) {
     unsafe {
         libc::kill(pid as i32, libc::SIGTERM);
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    if reaped(pid, Duration::from_secs(10)) {
+        return;
+    }
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+    let _ = reaped(pid, Duration::from_secs(10));
+}
+
+fn reaped(pid: u32, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
     loop {
         let mut status = 0;
         let reaped = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
-        if reaped == pid as i32 || Instant::now() >= deadline {
-            return;
+        if reaped == pid as i32 {
+            return true;
+        }
+        if reaped == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -114,20 +177,14 @@ async fn a_confirmed_replacement_becomes_ready_before_the_caller_releases_the_po
     let result = relaunch_confirmed(
         &settings(&scratch.root, port),
         &ready_file,
-        15_000,
+        START_BUDGET.as_millis() as u64,
         Some("9.9.9"),
     )
     .await;
     assert!(result.is_ok(), "{}", result.unwrap_err());
 
     drop(held);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut pid = serve_pid(&state);
-    while pid.is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        pid = serve_pid(&state);
-    }
-    let pid = pid.expect("the replacement binds the dashboard port");
+    let pid = wait_for_pid(&state);
     assert_ne!(pid, std::process::id(), "the replacement serves");
     stop(pid);
 }
@@ -146,7 +203,7 @@ async fn a_confirmed_replacement_is_ready_before_its_startup_reaping_pass() {
     let result = relaunch_confirmed(
         &settings(&scratch.root, port),
         &ready_file,
-        10_000,
+        START_BUDGET.as_millis() as u64,
         Some("9.9.9"),
     )
     .await;
@@ -158,22 +215,8 @@ async fn a_confirmed_replacement_is_ready_before_its_startup_reaping_pass() {
     );
 
     drop(held);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut pid = serve_pid(&state);
-    while pid.is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        pid = serve_pid(&state);
-    }
-    let pid = pid.expect("the replacement binds the dashboard port");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while startup_passes(&state) == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    assert_eq!(
-        startup_passes(&state),
-        1,
-        "the startup reaping pass still runs once the port is bound"
-    );
+    let pid = wait_for_pid(&state);
+    wait_for_startup_pass(&state);
     stop(pid);
 }
 
@@ -201,19 +244,18 @@ async fn a_replacement_does_not_inherit_the_version_its_caller_ran() {
     let held = TcpListener::bind(("127.0.0.1", 0)).expect("a held dashboard port");
     let port = held.local_addr().expect("an address").port();
     let ready_file = state.join("replacement").join("ready.json");
-    let result =
-        relaunch_confirmed(&settings(&scratch.root, port), &ready_file, 15_000, None).await;
+    let result = relaunch_confirmed(
+        &settings(&scratch.root, port),
+        &ready_file,
+        START_BUDGET.as_millis() as u64,
+        None,
+    )
+    .await;
     std::env::remove_var("DEVBOARD_RUNNING_VERSION");
     assert!(result.is_ok(), "{}", result.unwrap_err());
 
     drop(held);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut pid = serve_pid(&state);
-    while pid.is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        pid = serve_pid(&state);
-    }
-    let pid = pid.expect("the replacement binds the dashboard port");
+    let pid = wait_for_pid(&state);
     let environment = process_environment(pid);
     stop(pid);
     assert_ne!(
@@ -245,17 +287,17 @@ async fn a_replacement_serves_the_static_root_its_caller_configured() {
     let ready_file = state.join("replacement").join("ready.json");
     let mut settings = settings(&scratch.root, port);
     settings.static_dir = Some(static_root.clone());
-    let result = relaunch_confirmed(&settings, &ready_file, 15_000, None).await;
+    let result = relaunch_confirmed(
+        &settings,
+        &ready_file,
+        START_BUDGET.as_millis() as u64,
+        None,
+    )
+    .await;
     assert!(result.is_ok(), "{}", result.unwrap_err());
 
     drop(held);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut pid = serve_pid(&state);
-    while pid.is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        pid = serve_pid(&state);
-    }
-    let pid = pid.expect("the replacement binds the dashboard port");
+    let pid = wait_for_pid(&state);
     let environment = process_environment(pid);
 
     let client = reqwest::Client::builder()
@@ -264,7 +306,7 @@ async fn a_replacement_serves_the_static_root_its_caller_configured() {
         .build()
         .expect("a client");
     let url = format!("http://127.0.0.1:{port}/issue-1671-marker.txt");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + START_BUDGET;
     let mut answer = None;
     while answer.is_none() && Instant::now() < deadline {
         if let Ok(response) = client.get(&url).send().await {

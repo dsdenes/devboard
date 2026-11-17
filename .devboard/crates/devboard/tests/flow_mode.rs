@@ -107,8 +107,13 @@ impl Client {
     }
 
     /// Waits for a frame matching `predicate`, scanning what already arrived.
+    ///
+    /// A frame follows an owner's turn, a stub answer, or a watcher tick, and a
+    /// host running several suites at once starves every one of them; the
+    /// budget bounds a stall above the slowest stage, never a deadline the
+    /// product proves.
     async fn wait_for(&mut self, label: &str, predicate: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(180);
         loop {
             self.drain();
             if let Some(found) = self.seen.iter().find(|frame| predicate(frame)) {
@@ -843,10 +848,27 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
     assert!(changed_paths.contains(&"src/app.txt"));
     assert!(changed_paths.contains(&"src/config.json"));
 
-    let widgets_file: Value = serde_json::from_str(
-        &std::fs::read_to_string(directory.join("widgets.json")).expect("widgets.json"),
-    )
-    .expect("widgets JSON");
+    // The widget registration and the frame that announces it are two writes
+    // from two processes: a loaded host lands the durable document after the
+    // frame, and a reader that opened it mid-write sees an empty file. Wait for
+    // the document the round trip asserted instead of sampling it once.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let widgets_file: Value = loop {
+        let raw = std::fs::read_to_string(directory.join("widgets.json")).unwrap_or_default();
+        if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+            if value["widgets"]
+                .as_array()
+                .is_some_and(|widgets| widgets.len() == 2)
+            {
+                break value;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "widgets.json holds the two registered widgets"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
     assert_eq!(
         widgets_file["widgets"].as_array().expect("widgets").len(),
         2

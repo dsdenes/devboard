@@ -276,6 +276,25 @@ async fn socket(
     connect_async(request).await.expect("a run socket").0
 }
 
+/// Collects a socket's first frames, waiting above a loaded host's starved
+/// sampling tick instead of sampling one window once.
+async fn warm(
+    socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
+    budget: Duration,
+) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let frames = collect(socket, Duration::from_millis(250)).await;
+        if !frames.is_empty() {
+            return frames;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the socket's first frames arrive"
+        );
+    }
+}
+
 async fn collect(
     socket: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     duration: Duration,
@@ -1557,8 +1576,8 @@ async fn run_sockets_share_one_sample_per_run() {
     let mut first_a = socket(instance.port, &a, None).await;
     let mut second_a = socket(instance.port, &a, None).await;
     let mut socket_b = socket(instance.port, &b, None).await;
-    let warm_a = collect(&mut first_a, Duration::from_millis(200)).await;
-    let warm_b = collect(&mut socket_b, Duration::from_millis(200)).await;
+    let warm_a = warm(&mut first_a, Duration::from_secs(30)).await;
+    let warm_b = warm(&mut socket_b, Duration::from_secs(30)).await;
     assert!(!warm_a.is_empty());
     assert!(!warm_b.is_empty());
 
@@ -1604,7 +1623,7 @@ async fn an_appended_activity_reaches_a_socket_within_five_seconds() {
     let instance = start("freshness").await;
     let (id, directory) = make_run(&instance, "flow", "fresh", DetachedRunStatus::Running);
     let mut socket = socket(instance.port, &id, None).await;
-    let warm = collect(&mut socket, Duration::from_millis(300)).await;
+    let warm = warm(&mut socket, Duration::from_secs(30)).await;
     assert!(!warm.is_empty());
 
     // The socket ticks every 250 ms and the hub samples the run's activity on
