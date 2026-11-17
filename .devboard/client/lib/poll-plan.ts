@@ -91,7 +91,7 @@ export function pollClaims(): PollClaim[] {
 function issuesClaims(kind: string, resourceId: string): PollClaim[] {
   if (kind === "drafts") return [{ command: { type: "getGoalDrafts" }, scope: "body" }];
   const claims: PollClaim[] = [{ command: { type: "getIssues" }, scope: "body" }];
-  if (kind === "agent" && runLive(resourceId)) {
+  if (kind === "agent" && issues.isRunLive(resourceId)) {
     claims.push({ command: { type: "getIssuesRun", runId: resourceId }, scope: "live" });
   }
   return claims;
@@ -127,13 +127,6 @@ function devboardClaims(kind: string): PollClaim[] {
   const claims: PollClaim[] = [{ command: { type: "getAgents" }, scope: "body" }];
   if (agentLive(kind)) claims.push({ command: { type: "getAgents" }, scope: "live" });
   return claims;
-}
-
-/** True while this Issues run reports itself running. */
-function runLive(runId: string): boolean {
-  if (issues.agentFor(runId) !== null) return true;
-  const run = (issues.snapshot?.runs ?? []).find((entry) => entry.runId === runId);
-  return run?.status === "running";
 }
 
 /** True while the Flow body shows a run of its own. */

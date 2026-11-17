@@ -187,6 +187,19 @@ export class IssuesStore {
   }
 
   /**
+   * True while the run the page follows is still live: a live agent owns it,
+   * or its record reports it running. A detail read while this holds is the
+   * live read, which stops when the run ends, so it never carries the final
+   * status or the lines the run wrote after it.
+   */
+  isRunLive(runId: string): boolean {
+    if (this.agentFor(runId) !== null) return true;
+    return (this.snapshot?.runs ?? []).some(
+      (run) => run.runId === runId && run.status === "running",
+    );
+  }
+
+  /**
    * The harness version of the worker that owns a run. The run record's own
    * value is authoritative; a live agent carries it for a run record an older
    * server did not annotate.
@@ -381,13 +394,29 @@ export class IssuesStore {
     // was already requested has a cached entry whose `staleTime` would serve
     // that copy, so its derived key is invalidated.
     const reopening = this.askedAnyRun;
+    this.requestRun(runId);
+    this.run = null;
+    this.missingRun = null;
+    if (reopening) invalidateRead({ type: "getIssuesRun", runId });
+  }
+
+  /**
+   * Requests one run's history again while its detail stays on screen: that
+   * detail answers an earlier read of the same run, so the answer replaces it
+   * in place instead of flashing the page's loading panel.
+   */
+  private reloadRun(runId: string): void {
+    if (!connection.open) return;
+    this.requestRun(runId);
+    invalidateRead({ type: "getIssuesRun", runId });
+  }
+
+  /** Selects one run and records that this generation asked for its history. */
+  private requestRun(runId: string): void {
     this.askedAnyRun = true;
     this.selectedRun = runId;
     this.showRun(runId);
     this.requestedRun = runId;
-    this.run = null;
-    this.missingRun = null;
-    if (reopening) invalidateRead({ type: "getIssuesRun", runId });
   }
 
   /**
@@ -397,10 +426,29 @@ export class IssuesStore {
    * lands, so a frame lost to a closed socket would otherwise latch for the
    * tab's whole life. One cleared marker per reconnect yields exactly one
    * request per open transition.
+   *
+   * A detail that still reports the run running while the run itself is no
+   * longer live is the live read's last answer, not its history: that read
+   * stopped with the run, so the final status and the closing lines never
+   * arrived in it. It is asked for once more instead of being kept as final.
    */
   loadRun(runId: string): void {
+    if (this.liveDetail(runId)) {
+      if (this.requestedRun !== runId) this.reloadRun(runId);
+      return;
+    }
     if (this.run?.runId === runId || this.requestedRun === runId) return;
     this.openRun(runId);
+  }
+
+  /** True while the stored detail answers a read taken while the run was live. */
+  private liveDetail(runId: string): boolean {
+    return (
+      this.run !== null &&
+      this.run.runId === runId &&
+      this.run.status === "running" &&
+      !this.isRunLive(runId)
+    );
   }
 
   handleEvent(message: Record<string, unknown>): void {
@@ -441,6 +489,16 @@ export class IssuesStore {
         // A frame answers one run's read, and the operator may have moved on
         // before it landed: only the run the surfaces show is its answer.
         if (run.runId !== this.shownRun) return;
+        // A run's status only advances. A live read that answers after the
+        // run ended never replaces the terminal status its history holds.
+        if (
+          run.status === "running" &&
+          !this.isRunLive(run.runId) &&
+          this.run?.runId === run.runId &&
+          this.run.status !== "running"
+        ) {
+          return;
+        }
         this.run = run;
         this.missingRun = null;
         this.selectedRun = run.runId;

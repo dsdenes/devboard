@@ -21,6 +21,7 @@
 
   const runId = $derived(tab.resourceId);
   const agent = $derived(issues.agentFor(runId));
+  const live = $derived(issues.isRunLive(runId));
   const detail = $derived(issues.run?.runId === runId ? issues.run : null);
   // The run's own read carries its whole log. The Issues state read carries
   // only the newest lines of each running agent, so a live agent's page shows
@@ -55,9 +56,11 @@
   // A finished run's final status and activity come from run history. A reload
   // restores this tab before the socket opens and before the replay names the
   // live agents, so the request waits for both: a send rejected while closed,
-  // or one made before the replay, would strand or stale the run detail.
+  // or one made before the replay, would strand or stale the run detail. The
+  // wait follows the run's own liveness, so the pass that sees it end reads the
+  // history the live read stopped short of.
   $effect(() => {
-    if (agent !== null || !connection.open || !issues.ready) return;
+    if (live || !connection.open || !issues.ready) return;
     issues.loadRun(runId);
   });
 
