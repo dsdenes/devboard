@@ -521,6 +521,181 @@ test("Save limits dispatches one settings command and waits for its answer", asy
   }
 });
 
+/** The timer-gated family's page frame, with a live legacy timer. */
+function watchdogSnapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return releaseSnapshot({
+    id: "watchdog",
+    label: "Watchdog",
+    detail: { panel: "cycles", cycles: [] },
+    timer: { unit: "devboard-watchdog.timer", state: "enabled", blocked: true, error: null },
+    ...overrides,
+  });
+}
+
+test("a pushed frame that repeats the saved settings leaves Save cadence waiting", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const cadenceField = within(view.container).getByTestId("agent-cadence") as HTMLInputElement;
+    await fireEvent.input(cadenceField, { target: { value: "20" } });
+    const cadence = within(view.container).getByTestId("agent-save-cadence");
+    await fireEvent.click(cadence);
+    expect(settingsFrames(socket.sent)).toEqual([
+      {
+        type: "setAgentSettings",
+        id: "release-train",
+        minutes: 20,
+        maxPerHour: null,
+        maxPending: null,
+      },
+    ]);
+
+    // Every accepted frame rebuilds `detail`; neither of these echoes the saved
+    // minutes, so the server has confirmed nothing and the control still waits.
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({ attached: true, owned: true, notice: null }),
+    });
+    agents.handleEvent({ type: "agentState", agent: watchdogSnapshot() });
+    await tick();
+    expect(cadence.getAttribute("aria-busy")).toBe("true");
+    expect(cadence.textContent?.trim()).toBe("Saving…");
+
+    // Frames kept arriving, so only the ceiling can answer this dispatch.
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+    jest.advanceTimersByTime(10_000);
+    await tick();
+    expect(within(view.container).getByTestId("command-notice").textContent).toContain(
+      "Save cadence received no answer.",
+    );
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
+test("a frame echoing the saved settings ends Save cadence with no ceiling notice", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const cadenceField = within(view.container).getByTestId("agent-cadence") as HTMLInputElement;
+    await fireEvent.input(cadenceField, { target: { value: "20" } });
+    const cadence = within(view.container).getByTestId("agent-save-cadence");
+    await fireEvent.click(cadence);
+    expect(cadence.getAttribute("aria-busy")).toBe("true");
+
+    agents.handleEvent({
+      type: "agentState",
+      agent: releaseSnapshot({
+        attached: true,
+        owned: true,
+        notice: null,
+        cadence: { minutes: 20, defaultMinutes: 10, lastRunAt: null, nextRunAt: null },
+      }),
+    });
+    await tick();
+    expect(cadence.getAttribute("aria-busy")).toBeNull();
+    expect(cadence.textContent?.trim()).toBe("Save cadence");
+    jest.advanceTimersByTime(10_000);
+    await tick();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
+test("a Save latch armed on one agent's page does not follow the reused control", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const released = within(view.container).getByTestId("agent-save-cadence");
+    await fireEvent.click(released);
+    expect(released.getAttribute("aria-busy")).toBe("true");
+
+    // One page instance serves every background-agent tab, so the Save control
+    // is reused for Watchdog; the Release Train's pending save is not its own.
+    agents.handleEvent({ type: "agentState", agent: watchdogSnapshot() });
+    await view.rerender({ agentId: "watchdog" });
+    await tick();
+    const switched = within(view.container).getByTestId("agent-save-cadence");
+    expect(switched.getAttribute("aria-busy")).toBeNull();
+    expect(switched.textContent?.trim()).toBe("Save cadence");
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
+test("the legacy timer control waits for a frame that clears the block", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = presentAgent("watchdog", watchdogSnapshot());
+    const disable = within(view.container).getByTestId("agent-disable-timer");
+    await fireEvent.click(disable);
+    expect(socket.sent).toContainEqual({ type: "disableAgentTimer", id: "watchdog" });
+    expect(disable.getAttribute("aria-busy")).toBe("true");
+    expect(disable.textContent?.trim()).toBe("Disabling…");
+
+    // A cycle write rebuilds the snapshot while the timer stays in the way: it
+    // confirms nothing, so the control keeps its busy word.
+    agents.handleEvent({
+      type: "agentState",
+      agent: watchdogSnapshot({
+        detail: {
+          panel: "cycles",
+          cycles: [
+            {
+              at: "2026-11-17T12:00:00.000Z",
+              action: "cycle",
+              window: { start: null, end: null },
+              findings: 0,
+              issues: [],
+            },
+          ],
+        },
+      }),
+    });
+    await tick();
+    expect(disable.getAttribute("aria-busy")).toBe("true");
+    expect(disable.textContent?.trim()).toBe("Disabling…");
+
+    // The frame that unblocks the family is the answer, and it takes the whole
+    // block with it, so no ceiling notice follows.
+    agents.handleEvent({
+      type: "agentState",
+      agent: watchdogSnapshot({
+        timer: { unit: "devboard-watchdog.timer", state: "disabled", blocked: false, error: null },
+      }),
+    });
+    await tick();
+    expect(within(view.container).queryByTestId("agent-disable-timer")).toBeNull();
+    jest.advanceTimersByTime(10_000);
+    await tick();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
 test("a non-numeric limit entry is refused instead of being saved as unlimited", async () => {
   const previous = connection.state;
   connection.state = "open";

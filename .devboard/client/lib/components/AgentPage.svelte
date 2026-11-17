@@ -381,7 +381,8 @@
                 variant="secondary"
                 label="Save cadence"
                 busyLabel="Saving…"
-                evidence={() => agents.snapshot(agentId)?.detail}
+                scope={() => agentId}
+                evidence={() => agents.settingsEcho(agentId)}
                 command={() => saveSettings(`agent.cadence.${agentId}`)}
                 data-testid="agent-save-cadence"
                 data-command={`issues.${agentId}.settings.cadence`}
@@ -396,7 +397,8 @@
                 variant="secondary"
                 label="Save limits"
                 busyLabel="Saving…"
-                evidence={() => agents.snapshot(agentId)?.detail}
+                scope={() => agentId}
+                evidence={() => agents.settingsEcho(agentId)}
                 command={() => saveSettings(`agent.limits.${agentId}`)}
                 data-testid="agent-save-limits"
                 data-command={`issues.${agentId}.settings.limits`}
@@ -432,7 +434,8 @@
           variant="secondary"
           label="Disable legacy timer"
           busyLabel="Disabling…"
-          evidence={() => agents.snapshot(agentId)?.detail}
+          scope={() => agentId}
+          evidence={() => agents.snapshot(agentId)?.timer?.blocked}
           command={() => agents.disableTimer(agentId)}
           data-testid="agent-disable-timer"
           data-agent={agentId}

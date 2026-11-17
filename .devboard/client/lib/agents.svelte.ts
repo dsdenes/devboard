@@ -93,6 +93,13 @@ export class AgentsStore {
    * so every answering frame releases its busy word.
    */
   private readonly revisions = $state<Record<string, number>>({});
+  /**
+   * Increments only on the accepted snapshot that echoes a pending settings
+   * save for that agent. A Save control latches this counter, so a routine
+   * pushed frame — whose `detail` is a fresh object every time — never reads
+   * as the answer the server has not sent yet.
+   */
+  private readonly settingsEchoes = $state<Record<string, number>>({});
   /** Settings sent per agent, kept until a snapshot echoes them. */
   private readonly pendingSettings = new Map<
     string,
@@ -139,6 +146,15 @@ export class AgentsStore {
    */
   revision(id: string): number {
     return this.revisions[id] ?? 0;
+  }
+
+  /**
+   * The number of settings echoes this agent received. It changes only when a
+   * snapshot carries the values a pending save asked for, so a Save control
+   * reads it as the confirmation and keeps waiting through every other frame.
+   */
+  settingsEcho(id: string): number {
+    return this.settingsEchoes[id] ?? 0;
   }
 
   /**
@@ -340,6 +356,7 @@ export class AgentsStore {
       ) === pending.signature
     ) {
       this.pendingSettings.delete(snapshot.id);
+      this.settingsEchoes[snapshot.id] = (this.settingsEchoes[snapshot.id] ?? 0) + 1;
       saveFeedback.saved(pending.scope, `${snapshot.label} settings saved.`);
     }
     const previousNotice = this.lastNotice.get(snapshot.id) ?? null;
