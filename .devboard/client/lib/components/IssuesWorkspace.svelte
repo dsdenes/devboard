@@ -1,6 +1,6 @@
 <script lang="ts">
   import { issues, isGoalIssue } from "../issues.svelte";
-  import { versionLabel } from "../issues-label";
+  import { askingLabel, versionLabel } from "../issues-label";
   import { isProcessing, queueCounts, queueRowState, queueSummary } from "../issues-queue";
   import type { WorkspaceTab } from "../layout.svelte";
   import { statusTone } from "../status-tone";
@@ -278,9 +278,9 @@
               class="badge"
               data-tone="warning"
               data-testid="issues-overview-asking"
-              title={`${asking} ${asking === 1 ? "agent needs" : "agents need"} an answer`}
+              title={askingLabel(asking)}
             >
-              {asking} {asking === 1 ? "needs answer" : "need answers"}
+              {askingLabel(asking)}
             </span>
           {/if}
         </div>
@@ -425,7 +425,7 @@
         </span>
         {#if asking > 0}
           <span class="badge" data-tone="warning" data-testid="issues-agents-asking">
-            {asking} {asking === 1 ? "needs an answer" : "need answers"}
+            {askingLabel(asking)}
           </span>
         {/if}
         {#if (issues.snapshot?.workers ?? []).length > 0}

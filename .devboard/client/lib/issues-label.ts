@@ -12,6 +12,15 @@ export function versionLabel(version: string | null | undefined): string {
 }
 
 /**
+ * The wait on the operator, worded once: the Agents header and the Overview
+ * panel both read this so one waiting state never carries two phrasings. The
+ * design fixes `N need an answer`, with the singular verb for one agent.
+ */
+export function askingLabel(count: number): string {
+  return `${count} ${count === 1 ? "needs an answer" : "need an answer"}`;
+}
+
+/**
  * The status bar's issues indicator. `running` is the family's running work,
  * so a newer worker keeps the label on `working` while an older member drains.
  * An operator's Pause remains `pausing`.

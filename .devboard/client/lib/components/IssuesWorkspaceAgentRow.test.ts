@@ -12,6 +12,9 @@ const { issues } = await import("../issues.svelte");
 /** The overview tab, which holds the running-agent rows. */
 const OVERVIEW = { id: "overview", kind: "overview", resourceId: "overview", title: "Overview" };
 
+/** The agents page, whose header carries the fleet's waiting count. */
+const AGENTS = { id: "agents", kind: "agents", resourceId: "agents", title: "Agents" };
+
 /** The page's clock while the row is on screen: five seconds into the run. */
 const NOW = new Date("2026-11-01T00:00:05Z");
 
@@ -50,6 +53,21 @@ function state(question: unknown): Record<string, unknown> {
         acp: null,
       },
     ],
+  };
+}
+
+/** A snapshot whose `count` agents all wait on the same question. */
+function waiting(count: number): Record<string, unknown> {
+  const snapshot = state(QUESTION);
+  return {
+    ...snapshot,
+    agents: Array.from({ length: count }, (_, index) => ({
+      runId: `run-${index + 1}`,
+      issueNumber: index + 1,
+      startedAt: "2026-11-01T00:00:00Z",
+      question: QUESTION,
+      acp: null,
+    })),
   };
 }
 
@@ -102,5 +120,32 @@ test("the row badges an open question and keeps its elapsed value ticking once a
     expect(elapsed(view.container)).toBe("1m");
   } finally {
     jest.useRealTimers();
+  }
+});
+
+test("the Agents header and the Overview badge word the waiting count identically", async () => {
+  for (const [count, wording] of [
+    [1, "1 needs an answer"],
+    [3, "3 need an answer"],
+  ] as const) {
+    issues.handleEvent(waiting(count));
+
+    const overview = render(IssuesWorkspace, { props: { tab: OVERVIEW } });
+    await Promise.resolve();
+    const overviewBadge = within(overview.container).getByTestId("issues-overview-asking");
+    const overviewText = overviewBadge.textContent?.trim();
+    const overviewTitle = overviewBadge.getAttribute("title");
+    cleanup();
+
+    const header = render(IssuesWorkspace, { props: { tab: AGENTS } });
+    await Promise.resolve();
+    const headerText = within(header.container)
+      .getByTestId("issues-agents-asking")
+      .textContent?.trim();
+    cleanup();
+
+    expect(overviewText).toBe(wording);
+    expect(overviewTitle).toBe(wording);
+    expect(headerText).toBe(overviewText);
   }
 });
