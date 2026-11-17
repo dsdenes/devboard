@@ -1376,10 +1376,16 @@ struct IssuesQuestion {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AcpChild {
     pid: u32,
     argv: Vec<String>,
     cwd: String,
+    /// The pid's kernel start tick: every peer on the host runs the same
+    /// `omp acp` argv, so without it a recycled pid cannot be told from the
+    /// peer this record names. Absent on records written before it was kept.
+    #[serde(default)]
+    start_ticks: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1582,6 +1588,10 @@ fn is_acp_child(value: &Value) -> bool {
             .map(|entries| entries.iter().all(Value::is_string))
             .unwrap_or(false)
         && object.get("cwd").and_then(Value::as_str).is_some()
+        && object
+            .get("startTicks")
+            .map(|value| value.is_null() || value.as_i64().is_some())
+            .unwrap_or(true)
 }
 
 fn is_agent(value: &Value) -> bool {
@@ -7280,6 +7290,7 @@ impl IssuesWorker {
             pid,
             argv: peer.argv(),
             cwd: self.repo_dir.display().to_string(),
+            start_ticks: crate::supervision::start_ticks(pid),
         });
         let number = issue.number;
         let events = self.events.clone();
@@ -8369,19 +8380,33 @@ async fn write_processing(
 }
 
 /// A child recorded by a previous worker, as the process table sees it.
+///
+/// A bare pid plus a matching argv is never proof: every Issues peer on the
+/// host runs the same `omp acp` command, so a pid the kernel recycled for
+/// another family's or another checkout's peer would otherwise be SIGKILLed by
+/// this worker's startup reap. The kernel start tick recorded beside the pid is
+/// the identity a recycled pid cannot pass; a record written before the tick
+/// was kept proves itself through the cwd it also recorded, so a legacy record
+/// is never signalled on the shared argv alone.
 fn recorded_child_alive(child: &AcpChild) -> bool {
-    if !pid_alive(child.pid) {
+    if !crate::supervision::live_process(child.pid) {
         return false;
     }
-    let Ok(text) = std::fs::read_to_string(format!("/proc/{}/cmdline", child.pid)) else {
+    if child.start_ticks.is_some()
+        && !crate::supervision::live_identity(child.pid, child.start_ticks)
+    {
+        return false;
+    }
+    let Some(argv) = crate::supervision::process_argv(child.pid) else {
         return false;
     };
-    let argv: Vec<String> = text
-        .split('\u{0}')
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_string)
-        .collect();
-    argv == child.argv
+    if argv != child.argv {
+        return false;
+    }
+    let Ok(cwd) = std::fs::read_link(format!("/proc/{}/cwd", child.pid)) else {
+        return false;
+    };
+    cwd == crate::detached_run::canonical_process_path(std::path::Path::new(&child.cwd))
 }
 
 fn previous_records(text: Option<&str>) -> (Vec<AcpChild>, Vec<String>) {
@@ -9040,6 +9065,167 @@ mod tests {
         assert!(
             written["finishedAt"].is_null(),
             "a run still owned carries no finish time: {written}"
+        );
+    }
+
+    /// A stand-in that shares the recorded command but runs in `cwd`, which is
+    /// what a pid the kernel handed to another peer looks like.
+    fn peer_in(cwd: &Path) -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        std::process::Command::new("sleep")
+            .arg0("omp")
+            .arg("120")
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in peer")
+    }
+
+    /// The state document a previous worker left, carrying one recorded peer.
+    fn record_peer(repo: &Path, state: &Path, peer: AcpChild) {
+        let mut document = empty_state("acme/app", &repo.display().to_string(), 100, "stopped");
+        document.agents.push(Agent {
+            run_id: "orphan".to_string(),
+            issue_number: 7,
+            started_at: iso_now(),
+            question: None,
+            acp: Some(peer),
+        });
+        write_state(&versioned_state_path(state, repo, Some("1.2.3")), &document)
+            .expect("a recorded peer");
+    }
+
+    /// A pid the kernel has handed to another peer is never signalled: the
+    /// recorded start tick proves that process is not the peer the record
+    /// names, even though every peer on the host shares its command.
+    #[tokio::test]
+    async fn start_leaves_a_peer_whose_recorded_tick_names_another_process_alone() {
+        let (repo, state) = unit_root("orphan-recycled-tick");
+        let mut live = peer_in(&repo);
+        let pid = live.id();
+        let ticks = crate::supervision::start_ticks(pid).expect("the stand-in's start tick");
+        record_peer(
+            &repo,
+            &state,
+            AcpChild {
+                pid,
+                argv: crate::supervision::process_argv(pid).expect("the stand-in's argv"),
+                cwd: repo.display().to_string(),
+                start_ticks: Some(ticks + 1),
+            },
+        );
+
+        let mut worker = worker(&repo, &state);
+        assert!(worker.start("acme/app"), "the worker starts");
+        let alive = crate::supervision::live_process(pid);
+        let _ = live.kill();
+        let _ = live.wait();
+        assert!(alive, "a recycled pid names no peer this record wrote");
+    }
+
+    /// The cwd the record already carries is proof for a record written before
+    /// the start tick was kept: a pid that now runs the recorded command in
+    /// another cwd is another peer and survives this worker's startup.
+    #[tokio::test]
+    async fn start_leaves_a_legacy_peer_record_whose_pid_runs_elsewhere_alone() {
+        let (repo, state) = unit_root("orphan-legacy-cwd");
+        let elsewhere = repo.join("another-checkout");
+        std::fs::create_dir_all(&elsewhere).expect("another cwd");
+        let mut live = peer_in(&elsewhere);
+        let pid = live.id();
+        record_peer(
+            &repo,
+            &state,
+            AcpChild {
+                pid,
+                argv: crate::supervision::process_argv(pid).expect("the stand-in's argv"),
+                cwd: repo.display().to_string(),
+                start_ticks: None,
+            },
+        );
+
+        let mut worker = worker(&repo, &state);
+        assert!(worker.start("acme/app"), "the worker starts");
+        let alive = crate::supervision::live_process(pid);
+        let _ = live.kill();
+        let _ = live.wait();
+        assert!(alive, "a peer recorded in another cwd is not this one");
+    }
+
+    /// The control: the record whose start tick, command, and cwd all name the
+    /// live stand-in is still reaped.
+    #[tokio::test]
+    async fn start_reaps_the_peer_its_recorded_start_tick_still_names() {
+        let (repo, state) = unit_root("orphan-live-tick");
+        let mut live = peer_in(&repo);
+        let pid = live.id();
+        let ticks = crate::supervision::start_ticks(pid).expect("the stand-in's start tick");
+        record_peer(
+            &repo,
+            &state,
+            AcpChild {
+                pid,
+                argv: crate::supervision::process_argv(pid).expect("the stand-in's argv"),
+                cwd: repo.display().to_string(),
+                start_ticks: Some(ticks),
+            },
+        );
+
+        let mut worker = worker(&repo, &state);
+        assert!(worker.start("acme/app"), "the worker starts");
+        // The signal is asynchronous, so the test waits for the stand-in's own
+        // exit rather than reading the table the instant the kill returns.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline {
+            if matches!(live.try_wait(), Ok(Some(_))) {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = live.kill();
+        let _ = live.wait();
+        assert!(exited, "the recorded peer is reaped");
+    }
+
+    /// A state document whose recorded peer carries its start tick parses, and
+    /// a document written before the tick existed still parses without one.
+    #[test]
+    fn a_recorded_peer_start_tick_is_optional_in_the_state_document() {
+        let mut document = empty_state("acme/app", "/repo", 100, "stopped");
+        document.agents.push(Agent {
+            run_id: "orphan".to_string(),
+            issue_number: 7,
+            started_at: iso_now(),
+            question: None,
+            acp: Some(AcpChild {
+                pid: 4242,
+                argv: vec!["omp".to_string(), "acp".to_string()],
+                cwd: "/repo".to_string(),
+                start_ticks: Some(77),
+            }),
+        });
+        let mut value = serde_json::to_value(&document).expect("a document");
+        assert_eq!(value["agents"][0]["acp"]["startTicks"], json!(77));
+        let parsed =
+            parse_state(&crate::jsjson::stringify(&value)).expect("a document with a tick");
+        assert_eq!(
+            parsed.agents[0].acp.as_ref().expect("the peer").start_ticks,
+            Some(77)
+        );
+
+        value["agents"][0]["acp"]
+            .as_object_mut()
+            .expect("the peer")
+            .remove("startTicks");
+        let parsed =
+            parse_state(&crate::jsjson::stringify(&value)).expect("a document without a tick");
+        assert_eq!(
+            parsed.agents[0].acp.as_ref().expect("the peer").start_ticks,
+            None
         );
     }
 
