@@ -38,6 +38,14 @@
     activeIndex = 0;
   }
 
+  function scrollActiveIntoView(): void {
+    queueMicrotask(() => {
+      document
+        .getElementById(`palette-item-${activeIndex}`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
   function move(delta: number): void {
     if (filtered.length === 0) return;
     let index = activeIndex;
@@ -46,11 +54,7 @@
       if (!isDisabled(filtered[index])) break;
     }
     activeIndex = index;
-    queueMicrotask(() => {
-      document
-        .getElementById(`palette-item-${activeIndex}`)
-        ?.scrollIntoView({ block: "nearest" });
-    });
+    scrollActiveIntoView();
   }
 
   function edge(end: "start" | "end"): void {
@@ -59,6 +63,7 @@
       .filter((entry) => !isDisabled(entry.command));
     if (enabled.length === 0) return;
     activeIndex = edgeIndex(enabled, end);
+    scrollActiveIntoView();
   }
 
   function edgeIndex(
