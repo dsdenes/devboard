@@ -382,6 +382,35 @@ async fn a_delivery_save_answers_under_the_request_id_it_carries() {
 }
 
 #[tokio::test]
+async fn a_delivery_save_answers_the_project_path_get_project_answers() {
+    let instance = start("delivery-project-path").await;
+    let (status, _headers, body) =
+        send(&instance.base, Method::GET, "/project", HeaderMap::new()).await;
+    assert_eq!(status.as_u16(), 200);
+    let read = frames(&body);
+    let read_path = read[0]["path"].as_str().expect("a project path");
+    assert!(
+        !read_path.is_empty(),
+        "the project frame names the checkout"
+    );
+
+    let (status, _headers, body) = send_json(
+        &instance.base,
+        Method::PUT,
+        "/delivery-mode",
+        json!({"requestId": 13, "mode": "pull-request"}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200);
+    let saved = frames(&body);
+    assert_eq!(saved[0]["type"], "project");
+    assert_eq!(
+        saved[0]["path"], read[0]["path"],
+        "one checkout answers one project path"
+    );
+}
+
+#[tokio::test]
 async fn a_retry_answers_no_location_and_its_get_is_still_refused() {
     let instance = start("retry-no-location").await;
     let (status, headers, _body) = send_json(

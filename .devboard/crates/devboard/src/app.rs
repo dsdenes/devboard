@@ -978,9 +978,7 @@ impl App {
         }
         match command {
             Command::GetProject => {
-                let mut frame = self.delivery.project_frame();
-                frame["path"] = json!(project_label(&self.config().repo_dir));
-                conn.send(frame);
+                conn.send(self.delivery.project_frame());
                 Ok(())
             }
             Command::GetVersion => {
@@ -1921,22 +1919,6 @@ impl Responses {
             "Harness reporting is disabled. Set DEVBOARD_GITEA_URL and GITEA_TOKEN to file issues.",
             &[],
         )
-    }
-}
-
-/// The label the client shows for the served project: its path relative to
-/// the user's home, or the absolute path outside it.
-pub fn project_label(repo_dir: &Path) -> String {
-    let root = repo_dir
-        .canonicalize()
-        .unwrap_or_else(|_| repo_dir.to_path_buf());
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return root.to_string_lossy().into_owned();
-    };
-    let home = home.canonicalize().unwrap_or(home);
-    match root.strip_prefix(&home) {
-        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_string_lossy().into_owned(),
-        _ => root.to_string_lossy().into_owned(),
     }
 }
 

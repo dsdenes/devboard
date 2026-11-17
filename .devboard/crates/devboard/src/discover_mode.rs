@@ -7940,7 +7940,7 @@ fn same_remote_target(left: Option<&RemoteRepository>, right: Option<&RemoteRepo
 fn project_name(repo_dir: &Path, remote: Option<&RemoteRepository>) -> String {
     match remote {
         Some(remote) => format!("{}/{}", remote.owner, remote.repo),
-        None => crate::app::project_label(repo_dir),
+        None => crate::delivery::project_label(repo_dir),
     }
 }
 

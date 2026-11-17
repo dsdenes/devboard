@@ -209,9 +209,21 @@ impl StateSection for DeliverySetting {
 }
 
 /// The label the project frame carries; the client's status bar derives the
-/// project name from it.
+/// project name from it: its path relative to the user's home, or the absolute
+/// path outside it. This is the only `path` rule a project frame has, so
+/// `getProject` and a delivery-mode save answer the same string.
 pub fn project_label(repo_dir: &Path) -> String {
-    repo_dir.display().to_string()
+    let root = repo_dir
+        .canonicalize()
+        .unwrap_or_else(|_| repo_dir.to_path_buf());
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return root.to_string_lossy().into_owned();
+    };
+    let home = home.canonicalize().unwrap_or(home);
+    match root.strip_prefix(&home) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_string_lossy().into_owned(),
+        _ => root.to_string_lossy().into_owned(),
+    }
 }
 
 /// Registers the setting on one dashboard and returns it.
