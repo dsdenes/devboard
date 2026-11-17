@@ -457,6 +457,17 @@ async fn latest_github_manifest(source: &ManifestSource) -> Result<ReleaseInfo, 
     )
     .await?;
     let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        // The release workflow publishes the GitHub release before `publish`
+        // uploads the manifest asset, so a check in that window reads the
+        // newest release without a `devboard-manifest.json`. That is the
+        // release still being written, exactly as the Gitea and local reads
+        // name it; the next interval reads the uploaded manifest.
+        return Err(format!(
+            "the public release at {url} {RELEASE_STILL_BEING_WRITTEN}: it carries no \
+             {MANIFEST_ASSET} yet (HTTP 404)"
+        ));
+    }
     if !status.is_success() {
         return Err(format!("GET {url} failed (HTTP {})", status.as_u16()));
     }

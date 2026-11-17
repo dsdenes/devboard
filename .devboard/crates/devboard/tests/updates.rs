@@ -258,6 +258,57 @@ async fn a_release_that_precedes_its_assets_is_a_transient_failure() {
     assert_eq!(requests.len(), 1, "no manifest is downloaded: {requests:?}");
 }
 
+/// The release workflow publishes the GitHub release before `publish` uploads
+/// the manifest asset into it. A host that updates from the public GitHub
+/// release reads the latest release's download address, which answers 404
+/// during that window. The newest release is still being written, so the next
+/// interval retries it and the journal records activity instead of the
+/// update error the watchdog files an issue for.
+#[tokio::test]
+async fn a_github_manifest_that_is_not_uploaded_yet_is_a_transient_failure() {
+    async fn missing_entry() -> axum::response::Response {
+        axum::response::Response::builder()
+            .status(404)
+            .body(axum::body::Body::empty())
+            .expect("a stub response")
+    }
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let base = format!("http://127.0.0.1:{port}");
+    let handle = tokio::spawn(async move {
+        let app = axum::Router::new().fallback(missing_entry);
+        let _ = axum::serve(listener, app).await;
+    });
+    let source = devboard::release::ManifestSource {
+        base_url: String::new(),
+        repository: "dsdenes/devboard".to_string(),
+        token: None,
+        timeout_ms: 5_000,
+        local_dir: None,
+        forge: devboard::release::ReleaseForge::GitHub,
+        download_base: base,
+    };
+    let error = devboard::release::latest_manifest_for(&source, Some("1.2.4"))
+        .await
+        .expect_err("the latest release carries no manifest yet");
+    handle.abort();
+    assert!(
+        error.contains("/releases/latest/download/devboard-manifest.json"),
+        "the failure names the download address: {error}"
+    );
+    assert!(
+        error.contains("HTTP 404"),
+        "the failure names the status: {error}"
+    );
+    assert!(
+        devboard::updates::is_transient_update_failure(&error),
+        "the next interval retries an unwritten manifest: {error}"
+    );
+}
+
 fn local_source(directory: &std::path::Path) -> devboard::release::ManifestSource {
     devboard::release::ManifestSource {
         base_url: String::new(),
