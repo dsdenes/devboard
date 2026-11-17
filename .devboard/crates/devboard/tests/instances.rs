@@ -834,7 +834,11 @@ fn stat_fields(pid: u32) -> Option<(i64, i64)> {
 
 fn record_child(state: &Path, pid: u32, repo: &Path) {
     // The reaper compares the record with the kernel's own argv and start
-    // tick. Write it and prove the same values read back before the sweep.
+    // tick. A child reports no cmdline between the fork and the exec, and a
+    // record written in that gap carries an empty argv that never matches the
+    // exec'd child: the reaper then drops the record as a recycled pid, spares
+    // the child, and this test's sweep proves nothing. Record the child only
+    // once it has run.
     let path = devboard::supervision::supervision_record_path(state, pid);
     std::fs::create_dir_all(path.parent().expect("a supervision directory"))
         .expect("the supervision directory");
@@ -843,6 +847,14 @@ fn record_child(state: &Path, pid: u32, repo: &Path) {
         let Some(argv) = devboard::supervision::process_argv(pid) else {
             panic!("the child's argv is readable");
         };
+        if argv.is_empty() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the child execs before it is recorded"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
         let Some((start_ticks, pgid)) = stat_fields(pid) else {
             panic!("the child's stat is readable");
         };
