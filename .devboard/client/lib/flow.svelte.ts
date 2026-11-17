@@ -81,6 +81,12 @@ export class FlowStore {
    *  refused send never discards the operator's words. */
   pendingSteering: string | null = null;
 
+  /** The answer this dashboard sent and the server has not confirmed yet. The
+   *  draft and its question survive until a frame shows the server no longer
+   *  holds that question, so a closed transport or a `flowError` refusal never
+   *  discards the operator's words. */
+  pendingAnswer: { target: AnswerTarget; id: string } | null = null;
+
   /** A stored session this dashboard is still restoring: its state is not
    *  settled yet, so no control that edits it is offered. */
   get restoring(): boolean {
@@ -178,6 +184,7 @@ export class FlowStore {
     this.activity = message.activity;
     this.notice = message.notice;
     this.history = message.history;
+    this.#settleAnswer();
   }
 
   createGoal(): void {
@@ -235,18 +242,37 @@ export class FlowStore {
     connection.send({ type: "dismissFlowBlocker", id: blocker.id });
   }
 
-  answerQuestion(pending: RunQuestion, value: string, target: AnswerTarget): void {
+  /** Dispatches one answer; false when nothing left the page. The draft and
+   *  its question stay until a frame shows the server took the answer, exactly
+   *  as `sendSteering` keeps its note until the confirming `flowSteering`
+   *  frame, so a refusal never discards the operator's words. */
+  answerQuestion(pending: RunQuestion, value: string, target: AnswerTarget): boolean {
     const trimmed = value.trim();
-    if (trimmed.length === 0) return;
-    connection.send({ type: "flowAnswer", id: pending.id, value: trimmed, target });
-    this.answers[target] = "";
-    if (target === "goal" && this.goalCreation !== null) {
-      this.goalCreation = { ...this.goalCreation, question: null };
-    } else if (target === "conversation" && this.conversation !== null) {
-      this.conversation = { ...this.conversation, question: null };
-    } else if (target === "implementation") {
-      this.question = null;
+    if (trimmed.length === 0) return false;
+    if (!connection.send({ type: "flowAnswer", id: pending.id, value: trimmed, target })) {
+      return false;
     }
+    this.pendingAnswer = { target, id: String(pending.id) };
+    return true;
+  }
+
+  /** The question a target still shows, as its own frame last reported it. */
+  #pendingQuestion(target: AnswerTarget): RunQuestion | null {
+    if (target === "goal") return this.goalCreation?.question ?? null;
+    if (target === "conversation") return this.conversation?.question ?? null;
+    return this.question;
+  }
+
+  /** Settles a dispatched answer once the server no longer reports its
+   *  question: the draft belongs to an answer the server took. A refused
+   *  `flowAnswer` leaves the question in place, so the draft survives it. */
+  #settleAnswer(): void {
+    const sent = this.pendingAnswer;
+    if (sent === null) return;
+    const question = this.#pendingQuestion(sent.target);
+    if (question !== null && String(question.id) === sent.id) return;
+    this.pendingAnswer = null;
+    this.answers[sent.target] = "";
   }
 
   sendConversation(): void {
@@ -297,6 +323,7 @@ export class FlowStore {
       this.goalCreation = { activity: [], question: null };
       this.goalCreationStartedAt = new Date().toISOString();
       this.errorMessage = null;
+      this.#settleAnswer();
       return;
     }
     if (type === "flowGoalStopped") {
@@ -305,6 +332,7 @@ export class FlowStore {
       if (message.completed === true && typeof message.text === "string") {
         this.goal = message.text;
       }
+      this.#settleAnswer();
       return;
     }
     if (type === "flowActivity" && typeof message.text === "string") {
@@ -340,6 +368,7 @@ export class FlowStore {
       } else {
         this.question = pending;
       }
+      this.#settleAnswer();
       return;
     }
     if (type === "flowNotice" && typeof message.message === "string") {
@@ -362,6 +391,7 @@ export class FlowStore {
       if (this.status !== "merged") this.status = "stopped";
       this.question = null;
       this.implementationStartedAt = null;
+      this.#settleAnswer();
       return;
     }
     if (type === "flowError" && typeof message.message === "string") {
@@ -416,6 +446,7 @@ export class FlowStore {
       };
       this.conversationDraft = "";
       this.conclusionDraft = "";
+      this.#settleAnswer();
       return;
     }
     if (
@@ -425,6 +456,7 @@ export class FlowStore {
     ) {
       this.conversation = null;
       this.conversationStartedAt = null;
+      this.#settleAnswer();
       return;
     }
     if (
@@ -465,6 +497,7 @@ export class FlowStore {
           options: message.options,
         } as RunQuestion,
       };
+      this.#settleAnswer();
     }
   }
 }

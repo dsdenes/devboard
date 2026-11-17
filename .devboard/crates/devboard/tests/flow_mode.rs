@@ -488,6 +488,17 @@ async fn flow_goal_widgets_steering_and_conversation_round_trip() {
     )
     .await;
 
+    // The answered question is confirmed by a snapshot that no longer carries
+    // it: the client's answer path reads exactly that frame before it drops the
+    // operator's draft.
+    client
+        .wait_for("the answered goal question", |frame| {
+            frame["type"] == "flowSnapshot"
+                && frame["goalCreation"].is_object()
+                && frame["goalCreation"]["question"].is_null()
+        })
+        .await;
+
     let goal_stopped = client
         .wait_for("flowGoalStopped", |frame| {
             frame["type"] == "flowGoalStopped"

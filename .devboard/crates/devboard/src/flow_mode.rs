@@ -6102,6 +6102,11 @@ impl FlowMode {
             if let Some(creation) = inner.goal_creation.as_mut().filter(|c| c.token == token) {
                 creation.question = None;
             }
+            drop(inner);
+            // The answered question is the confirming frame the client reads:
+            // its snapshot no longer carries that goal question, so the
+            // operator's draft leaves only once the server took the answer.
+            self.publish();
             return;
         }
 

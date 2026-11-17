@@ -72,8 +72,11 @@
     });
   }
 
-  function submitAnswer(pending: RunQuestion, target: "goal" | "implementation" | "conversation"): void {
-    flow.answerQuestion(pending, flow.answers[target], target);
+  function submitAnswer(
+    pending: RunQuestion,
+    target: "goal" | "implementation" | "conversation",
+  ): boolean {
+    return flow.answerQuestion(pending, flow.answers[target], target);
   }
 
   const answerPending = {
@@ -159,7 +162,7 @@
         event.preventDefault();
         if (flow.answers[target].trim().length === 0) return;
         answerPending[target].start();
-        submitAnswer(pending, target);
+        if (!submitAnswer(pending, target)) answerPending[target].refuse();
       }}
     >
       <input
