@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -7,13 +7,26 @@ beforeAll(() => {
   if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 });
 
+beforeEach(() => {
+  // Moving focus onto a mode tab opens its tooltip, and the tooltip's presence
+  // manager waits on a frame the test runtime's native-runtime restore leaves
+  // behind. The runner resets the frame callbacks between tests, so the shim is
+  // installed for each of them.
+  const globals = globalThis as unknown as Record<string, unknown>;
+  globals.requestAnimationFrame = (callback: (time: number) => void) => {
+    queueMicrotask(() => callback(0));
+    return 0;
+  };
+  globals.cancelAnimationFrame = () => undefined;
+});
+
 afterAll(() => {
   if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
 });
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the stores load after registration.
-const { cleanup, render } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { tick } = await import("svelte");
 const { default: ActivityBar } = await import("./ActivityBarHarness.svelte");
 const { goal } = await import("../goal.svelte");
@@ -45,8 +58,17 @@ function issuesSnapshot(lifecycle: IssuesLifecycle, agents: IssuesAgent[] = []):
   };
 }
 
+const { layout } = await import("../layout.svelte");
+
+function modeTab(container: HTMLElement, mode: string): HTMLElement {
+  const element = container.querySelector(`[data-testid="mode-${mode}"]`);
+  if (!(element instanceof HTMLElement)) throw new Error(`no ${mode} tab`);
+  return element;
+}
+
 afterEach(() => {
   cleanup();
+  layout.reset();
   goal.runState = "idle";
   goal.question = null;
   goal.lanes = [];
@@ -196,4 +218,52 @@ test("a failed Discover agent needs attention when no run is live", async () => 
   const tab = view.container.querySelector('[data-testid="mode-discover"]');
   expect(tab?.getAttribute("aria-label")).toBe("Discover (Alt+4), needs attention");
   expect(tab?.querySelector("[data-state]")?.getAttribute("data-state")).toBe("attention");
+});
+test("the tablist holds one Tab stop, carried by the selected mode's tab", async () => {
+  const view = render(ActivityBar);
+  await tick();
+  const stops = (): (string | null)[] =>
+    [...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.getAttribute("tabindex"));
+  expect(stops()).toEqual(["0", "-1", "-1", "-1", "-1"]);
+
+  layout.setMode("flow");
+  await tick();
+  expect(stops()).toEqual(["-1", "-1", "0", "-1", "-1"]);
+});
+
+test("arrow keys move focus and selection, wrapping at both ends", async () => {
+  const view = render(ActivityBar);
+  await tick();
+
+  modeTab(view.container, "goal").focus();
+  await fireEvent.keyDown(modeTab(view.container, "goal"), { key: "ArrowDown" });
+  expect(layout.mode).toBe("issues");
+  expect(document.activeElement?.id).toBe("mode-issues-tab");
+
+  await fireEvent.keyDown(modeTab(view.container, "issues"), { key: "ArrowRight" });
+  expect(layout.mode).toBe("flow");
+  expect(document.activeElement?.id).toBe("mode-flow-tab");
+
+  await fireEvent.keyDown(modeTab(view.container, "goal"), { key: "ArrowUp" });
+  expect(layout.mode).toBe("devboard");
+  expect(document.activeElement?.id).toBe("mode-devboard-tab");
+
+  await fireEvent.keyDown(modeTab(view.container, "devboard"), { key: "ArrowLeft" });
+  expect(layout.mode).toBe("discover");
+  expect(document.activeElement?.id).toBe("mode-discover-tab");
+});
+
+test("Home and End move focus and selection to the first and last tabs", async () => {
+  const view = render(ActivityBar);
+  await tick();
+  layout.setMode("flow");
+  await tick();
+
+  await fireEvent.keyDown(modeTab(view.container, "flow"), { key: "Home" });
+  expect(layout.mode).toBe("goal");
+  expect(document.activeElement?.id).toBe("mode-goal-tab");
+
+  await fireEvent.keyDown(modeTab(view.container, "goal"), { key: "End" });
+  expect(layout.mode).toBe("devboard");
+  expect(document.activeElement?.id).toBe("mode-devboard-tab");
 });

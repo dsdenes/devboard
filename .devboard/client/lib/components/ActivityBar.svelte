@@ -25,7 +25,7 @@
     modeStateOf,
     type ModeState,
   } from "../run-state";
-  import type { FeedbackAction, FeedbackPhase } from "../types";
+  import type { FeedbackAction, FeedbackPhase, Mode } from "../types";
   import IconButton from "./ui/icon-button.svelte";
 
   interface Props {
@@ -144,16 +144,63 @@
   const quickDisabled = $derived(
     reportphase === "sending" || reportphase === "composing" || reportphase === "failed",
   );
+
+  // The rail declares the tabs pattern, so it owns that pattern's inputs: one
+  // Tab stop, carried by the selected tab, plus arrows, Home, and End that move
+  // focus and selection together.
+  const modes: Mode[] = ["goal", "issues", "flow", "discover", "devboard"];
+
+  function focusMode(mode: Mode): void {
+    layout.setMode(mode);
+    document.getElementById(`mode-${mode}-tab`)?.focus();
+  }
+
+  function handleModesKeydown(event: KeyboardEvent): void {
+    const focusedTab =
+      event.target instanceof HTMLElement ? event.target.closest('[role="tab"]') : null;
+    const focused = modes.findIndex((mode) => `mode-${mode}-tab` === focusedTab?.id);
+    const index = focused === -1 ? modes.indexOf(layout.mode) : focused;
+    if (index === -1) return;
+    const last = modes.length - 1;
+    const next =
+      event.key === "ArrowDown" || event.key === "ArrowRight"
+        ? index === last
+          ? 0
+          : index + 1
+        : event.key === "ArrowUp" || event.key === "ArrowLeft"
+          ? index === 0
+            ? last
+            : index - 1
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : null;
+    if (next === null) return;
+    const nextMode = modes[next];
+    if (nextMode === undefined) return;
+    event.preventDefault();
+    focusMode(nextMode);
+  }
 </script>
 
 <div class="activity-bar" data-testid="activity-bar" aria-label="Devboard application menu">
-  <div class="activity-bar__modes" role="tablist" aria-label="Devboard modes">
+  <!-- The tabs carry the roving tabindex, so the tablist itself is not a focus target. -->
+  <!-- svelte-ignore a11y_interactive_supports_focus -->
+  <div
+    class="activity-bar__modes"
+    role="tablist"
+    aria-label="Devboard modes"
+    aria-orientation="vertical"
+    onkeydown={handleModesKeydown}
+  >
     <Tooltip.Root>
       <Tooltip.Trigger
         role="tab"
         id="mode-goal-tab"
         aria-controls="workspace-goal"
         aria-selected={layout.mode === "goal"}
+        tabindex={layout.mode === "goal" ? 0 : -1}
         aria-label={modeLabel("Goal (Alt+1)", goalState)}
         title={modeLabel("Goal — Alt+1", goalState)}
         data-testid="mode-goal"
@@ -178,6 +225,7 @@
         id="mode-issues-tab"
         aria-controls="workspace-issues"
         aria-selected={layout.mode === "issues"}
+        tabindex={layout.mode === "issues" ? 0 : -1}
         aria-label={modeLabel("Issues (Alt+2)", issuesState)}
         title={modeLabel("Issues — Alt+2", issuesState)}
         data-testid="mode-issues"
@@ -202,6 +250,7 @@
         id="mode-flow-tab"
         aria-controls="workspace-flow"
         aria-selected={layout.mode === "flow"}
+        tabindex={layout.mode === "flow" ? 0 : -1}
         aria-label={modeLabel("Flow (Alt+3)", flowState)}
         title={modeLabel("Flow — Alt+3", flowState)}
         data-testid="mode-flow"
@@ -226,6 +275,7 @@
         id="mode-discover-tab"
         aria-controls="workspace-discover"
         aria-selected={layout.mode === "discover"}
+        tabindex={layout.mode === "discover" ? 0 : -1}
         aria-label={modeLabel("Discover (Alt+4)", discoverState)}
         title={modeLabel("Discover — Alt+4", discoverState)}
         data-testid="mode-discover"
@@ -250,6 +300,7 @@
         id="mode-devboard-tab"
         aria-controls="workspace-devboard"
         aria-selected={layout.mode === "devboard"}
+        tabindex={layout.mode === "devboard" ? 0 : -1}
         aria-label="Devboard (Alt+5)"
         title="Devboard — Alt+5"
         data-testid="mode-devboard"
