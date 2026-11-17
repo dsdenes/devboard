@@ -753,7 +753,7 @@
 
           {#if goal.contradictions.length > 0}
             <ul class="history-list goal-contradictions" data-testid="skills-contradictions">
-              {#each goal.contradictions as contradiction (`${contradiction.skills[0]}:${contradiction.skills[1]}`)}
+              {#each goal.contradictions as contradiction}
                 <li class="message" data-severity="warning">
                   <strong>{contradiction.skills[0]}</strong> and
                   <strong>{contradiction.skills[1]}</strong> state opposite policies:
