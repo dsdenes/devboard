@@ -176,6 +176,21 @@ export class GoalDraftsStore {
     this.openDraft(saved);
   }
 
+  /**
+   * A draft read that produced no frame: the transport could not reach the
+   * server or its answer was unreadable. The failure answers that read, so the
+   * next restore asks again, and the message is shown for the path instead of
+   * leaving the selected row beside an unanswered placeholder.
+   */
+  draftReadFailed(path: string, error: unknown): void {
+    if (this.draftReading === path) this.draftReading = null;
+    const message =
+      error instanceof Error && error.message.length > 0
+        ? error.message
+        : "The draft could not be read.";
+    this.draftErrors = { ...this.draftErrors, [path]: message };
+  }
+
   /** A reconnect retries a read the lost connection never answered. */
   resetActiveOperations(): void {
     this.draftReading = null;

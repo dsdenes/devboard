@@ -208,6 +208,19 @@ export interface PlannedQuery {
   enabled: boolean;
   /** True when the resource is a document read once, not a cadence. */
   once: boolean;
+  /**
+   * Reports a read that never answered as a frame, for the store whose surface
+   * shows it. Only a one-shot document can fail with nothing to display: its
+   * read has no later cadence and no pushed frame to repair it.
+   */
+  onFailure?: (error: unknown) => void;
+}
+
+/** A failed draft read is reported to the drafts store that shows it. */
+function readFailure(command: PollClaim["command"]): ((error: unknown) => void) | undefined {
+  if (command.type !== "getGoalDraft" || typeof command.path !== "string") return undefined;
+  const path = command.path;
+  return (error: unknown) => goalDrafts.draftReadFailed(path, error);
 }
 
 /**
@@ -253,6 +266,7 @@ export function plannedQueries(): PlannedQuery[] {
       interval,
       enabled: open && (interval > 0 || entry.once),
       once: entry.once,
+      onFailure: readFailure(entry.command),
     });
   }
   return queries;

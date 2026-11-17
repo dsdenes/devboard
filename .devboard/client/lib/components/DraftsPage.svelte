@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import CircleAlert from "lucide-svelte/icons/circle-alert";
   import MousePointerClick from "lucide-svelte/icons/mouse-pointer-click";
   import NotebookPen from "lucide-svelte/icons/notebook-pen";
   import Trash2 from "lucide-svelte/icons/trash-2";
@@ -43,7 +44,10 @@
   const status = $derived(run?.status ?? "idle");
   const running = $derived(run?.status === "running");
   const question = $derived(run?.question ?? null);
-  const error = $derived(goalDrafts.draftErrorFor(goalDrafts.draft?.path ?? null));
+  // The selected path outlives a detail read that never answered, so the
+  // failure is reported for it even while no document is loaded.
+  const selectedPath = $derived(goalDrafts.draft?.path ?? goalDrafts.draftPath);
+  const error = $derived(goalDrafts.draftErrorFor(selectedPath));
 
   let instructions = $state("");
   let input = $state<HTMLTextAreaElement | undefined>(undefined);
@@ -349,17 +353,38 @@
       </section>
     {:else if hasDrafts}
       <section class="panel">
-        <div class="panel__body issues-drafts__placeholder" data-testid="issues-drafts-selection">
-          <div class="issues-drafts__placeholder-body">
-            <span class="issues-drafts__placeholder-icon" aria-hidden="true">
-              <MousePointerClick size={20} strokeWidth={1.5} />
-            </span>
-            <p class="issues-drafts__placeholder-title">No draft selected</p>
-            <p class="issues-drafts__placeholder-copy">
-              Choose a draft from Proposed goals to read its proposal and elaborate it.
-            </p>
+        {#if error !== null}
+          <div class="panel__body issues-drafts__placeholder" data-testid="issues-drafts-selection">
+            <div class="issues-drafts__placeholder-body">
+              <span class="issues-drafts__placeholder-icon" aria-hidden="true">
+                <CircleAlert size={20} strokeWidth={1.5} />
+              </span>
+              <p
+                class="issues-drafts__placeholder-title"
+                data-testid="issues-draft-error"
+                role="alert"
+              >
+                {error}
+              </p>
+              <p class="issues-drafts__placeholder-copy">
+                The selected draft could not be read. Choose it again from Proposed goals to
+                retry.
+              </p>
+            </div>
           </div>
-        </div>
+        {:else}
+          <div class="panel__body issues-drafts__placeholder" data-testid="issues-drafts-selection">
+            <div class="issues-drafts__placeholder-body">
+              <span class="issues-drafts__placeholder-icon" aria-hidden="true">
+                <MousePointerClick size={20} strokeWidth={1.5} />
+              </span>
+              <p class="issues-drafts__placeholder-title">No draft selected</p>
+              <p class="issues-drafts__placeholder-copy">
+                Choose a draft from Proposed goals to read its proposal and elaborate it.
+              </p>
+            </div>
+          </div>
+        {/if}
       </section>
     {/if}
   </div>

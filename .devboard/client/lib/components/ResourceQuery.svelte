@@ -21,9 +21,17 @@
     return {
       queryKey: key ?? ["unplanned", resource.command.type],
       queryFn: async () => {
-        const frames = await readResource(resource.command);
-        applyFrames(frames);
-        return frames;
+        try {
+          const frames = await readResource(resource.command);
+          applyFrames(frames);
+          return frames;
+        } catch (error) {
+          // A read that never answered carries no frame for the store that
+          // shows it, so the plan's own failure report is the only thing its
+          // surface can display and its only way to stop waiting.
+          resource.onFailure?.(error);
+          throw error;
+        }
       },
       enabled: key !== null && resource.enabled,
       refetchInterval: resource.interval > 0 ? resource.interval : false,
