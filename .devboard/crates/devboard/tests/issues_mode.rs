@@ -221,6 +221,7 @@ fn options(repo: &Path, state: &Path, hooks: IssuesHooks, sink: Sink) -> IssuesO
         poll_ms: 50,
         sync_ms: 30_000,
         preflight_timeout_ms: 2_000,
+        start_ticks: Arc::new(devboard::supervision::start_ticks),
         on_open_issues: Arc::new(|_issues| {}),
     }
 }
@@ -1177,6 +1178,216 @@ async fn a_stop_supersedes_an_accepted_start() {
         "the Stop supersedes the start; it starts no second worker"
     );
     assert_eq!(bridge.snapshot()["startError"], Value::Null);
+}
+
+/// A bridge whose accepted Start spawned `pid`, recorded beside `tick`.
+///
+/// The tick read is the spawn's own record: a test that passes a tick the
+/// live process does not report makes that pid name another process for every
+/// decision the bridge later takes about the spawned worker.
+fn spawning_bridge(
+    repo: &Path,
+    state: &Path,
+    pid: u32,
+    tick: Option<i64>,
+    preflight: Arc<dyn Fn() -> PreflightResult + Send + Sync>,
+) -> Arc<IssuesBridge> {
+    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
+    let mut options = options(
+        repo,
+        state,
+        hooks(
+            preflight,
+            Arc::new(move |_argv, _env| Some(pid)),
+            Arc::new(|_request| Ok(())),
+        ),
+        sink,
+    );
+    options.start_ticks = Arc::new(move |candidate| {
+        if candidate == pid {
+            tick
+        } else {
+            devboard::supervision::start_ticks(candidate)
+        }
+    });
+    IssuesBridge::new(options)
+}
+
+/// The pid of a live `sleep`, with the start tick the kernel reports for it.
+fn stand_in(repo: &Path) -> (WorkerProcess, i64) {
+    let worker = spawn_worker_process(repo);
+    let tick = devboard::supervision::start_ticks(worker.pid).expect("a stand-in's start tick");
+    (worker, tick)
+}
+
+/// A Stop never signals a pid whose recorded start tick has moved on.
+///
+/// The kernel reuses a dead pid. A Stop that decided the spawned worker was
+/// still starting from a bare pid check sent SIGTERM to whatever process held
+/// that pid by then, which on a busy host is another agent peer or an editor.
+/// The spawn's own start tick proves which process holds the pid, so a record
+/// whose tick no longer matches ends the Stop's bookkeeping and signals
+/// nothing.
+#[tokio::test]
+async fn a_stop_never_signals_a_pid_whose_recorded_start_tick_moved() {
+    let (repo, state) = scratch("start-tick-stop");
+    let (mut worker, tick) = stand_in(&repo);
+    let bridge = spawning_bridge(
+        &repo,
+        &state,
+        worker.pid,
+        Some(tick + 1),
+        Arc::new(|| PreflightResult::Ok {
+            repository: "acme/app".into(),
+        }),
+    );
+
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: false }
+    );
+    assert_eq!(bridge.snapshot()["starting"], json!(true));
+    bridge.command(&IssuesCommand::Stop).expect("the stop");
+    assert_eq!(bridge.snapshot()["starting"], json!(false));
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        worker
+            .child
+            .try_wait()
+            .expect("the stand-in's status")
+            .is_none(),
+        "the Stop signalled a pid whose recorded start tick is not the spawned worker's"
+    );
+}
+
+/// A refused preflight never signals a pid whose recorded start tick moved.
+///
+/// The preflight ends the worker it spawned before any lock exists. It decides
+/// from the record the spawn wrote, so a pid the kernel handed to another
+/// process is left alone, and the page still learns the refusal.
+#[tokio::test]
+async fn a_refused_preflight_never_signals_a_pid_whose_recorded_start_tick_moved() {
+    let (repo, state) = scratch("start-tick-refused");
+    let (mut worker, tick) = stand_in(&repo);
+    let bridge = spawning_bridge(
+        &repo,
+        &state,
+        worker.pid,
+        Some(tick + 1),
+        Arc::new(|| PreflightResult::Refused {
+            message: "missing prerequisite: gh is not on PATH".into(),
+        }),
+    );
+
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: false }
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while bridge.snapshot()["startError"] == Value::Null {
+        assert!(
+            Instant::now() < deadline,
+            "the refusal was never published: {}",
+            bridge.snapshot()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        bridge.snapshot()["startError"],
+        "missing prerequisite: gh is not on PATH"
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        worker
+            .child
+            .try_wait()
+            .expect("the stand-in's status")
+            .is_none(),
+        "the refused preflight signalled a pid whose recorded start tick is not its worker's"
+    );
+}
+
+/// A Start whose spawned worker's pid names another process is vanished.
+///
+/// A bare pid check found the recycled pid alive and kept the card busy
+/// forever, offering no Start it could press again. The recorded tick no
+/// longer matching is the worker's exit, and the page gets the refusal it
+/// already knows.
+#[tokio::test]
+async fn a_start_settles_as_vanished_when_its_worker_pid_names_another_process() {
+    let (repo, state) = scratch("start-tick-vanished");
+    let (mut worker, tick) = stand_in(&repo);
+    let bridge = spawning_bridge(
+        &repo,
+        &state,
+        worker.pid,
+        Some(tick + 1),
+        Arc::new(|| PreflightResult::Ok {
+            repository: "acme/app".into(),
+        }),
+    );
+
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: false }
+    );
+    bridge.refresh();
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["starting"], json!(false), "{snapshot}");
+    let message = snapshot["startError"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("exited before it published its state"),
+        "the recycled pid settled nothing: {snapshot}"
+    );
+    assert!(message.contains(&worker.pid.to_string()), "{snapshot}");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        worker
+            .child
+            .try_wait()
+            .expect("the stand-in's status")
+            .is_none(),
+        "settling the start signalled a pid that is not the spawned worker's"
+    );
+}
+
+/// A spawned worker that really exits still settles with the refusal.
+///
+/// The identity proof must not make a genuine early exit invisible: the record
+/// names the process that exited, so no ticket is left busy.
+#[tokio::test]
+async fn a_start_whose_spawned_worker_really_exits_settles_as_vanished() {
+    let (repo, state) = scratch("start-tick-exit");
+    let (mut worker, tick) = stand_in(&repo);
+    let bridge = spawning_bridge(
+        &repo,
+        &state,
+        worker.pid,
+        Some(tick),
+        Arc::new(|| PreflightResult::Ok {
+            repository: "acme/app".into(),
+        }),
+    );
+
+    assert_eq!(
+        bridge.start().await,
+        StartOutcome::Started { attached: false }
+    );
+    worker.child.kill().expect("the worker exits");
+    worker.child.wait().expect("the worker is reaped");
+    bridge.refresh();
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["starting"], json!(false), "{snapshot}");
+    assert!(
+        snapshot["startError"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exited before it published its state"),
+        "{snapshot}"
+    );
 }
 
 #[tokio::test]

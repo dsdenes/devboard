@@ -3336,6 +3336,11 @@ pub struct IssuesOptions {
     pub poll_ms: u64,
     pub sync_ms: u64,
     pub preflight_timeout_ms: u64,
+    /// The kernel start tick a spawned worker's pid is recorded with, and the
+    /// tick every later decision about that worker compares. It is the
+    /// platform read in production; a test substitutes one to record a
+    /// stand-in process as a worker whose identity no longer matches.
+    pub start_ticks: Arc<dyn Fn(u32) -> Option<i64> + Send + Sync>,
     /// Called after each fresh open-issue read, never on a failure.
     pub on_open_issues: Arc<dyn Fn(Vec<Issue>) + Send + Sync>,
 }
@@ -3456,6 +3461,11 @@ pub struct IssuesBridge {
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
     poll_ms: u64,
     preflight_timeout_ms: u64,
+    /// The kernel start tick a spawned worker is recorded with: the identity
+    /// every later decision about that worker proves through
+    /// [`crate::supervision::live_identity`], so no recycled pid is taken for
+    /// the worker or signalled as one.
+    start_ticks: Arc<dyn Fn(u32) -> Option<i64> + Send + Sync>,
     /// Monotonic millis since process start at which a page last read the
     /// Issues resource, or -1 before any read. The REST transport keeps no
     /// persistent command socket, so a page's polls are what make it a
@@ -3557,6 +3567,7 @@ impl IssuesBridge {
             has_clients: options.has_clients,
             poll_ms: options.poll_ms.max(50),
             preflight_timeout_ms: options.preflight_timeout_ms.max(1),
+            start_ticks: options.start_ticks,
             demand_at: AtomicI64::new(-1),
             read_at: AtomicI64::new(-1),
             on_open_issues: options.on_open_issues,
@@ -4647,13 +4658,13 @@ impl IssuesBridge {
             inner.start_worker.clone()
         };
         if let Some(worker) = worker {
-            self.begin_start_preflight(worker.pid);
+            self.begin_start_preflight(worker);
         }
         StartOutcome::Started { attached: false }
     }
 
     /// Runs one accepted Start's preflight beside the worker it spawned.
-    fn begin_start_preflight(self: &Arc<Self>, pid: u32) {
+    fn begin_start_preflight(self: &Arc<Self>, worker: WorkerRecord) {
         let generation = self.start_generation.load(Ordering::SeqCst);
         let bridge = Arc::clone(self);
         tokio::spawn(async move {
@@ -4664,7 +4675,7 @@ impl IssuesBridge {
             if bridge.start_superseded(generation) {
                 return;
             }
-            bridge.terminate_spawned(pid).await;
+            bridge.terminate_spawned(&worker).await;
             bridge.finish_start(generation, StartOutcome::Refused { message });
         });
     }
@@ -4719,24 +4730,43 @@ impl IssuesBridge {
         self.reply(conn);
     }
 
+    /// True when the pid still names the worker an accepted Start spawned.
+    ///
+    /// The spawn's recorded start tick is the proof: a pid the kernel recycled
+    /// cannot carry it. A record whose tick could not be read keeps the
+    /// argv-and-cwd proof a Stop already applies to a locked worker. The read
+    /// is always fresh, never a memoized one: the platform caches a `/proc`
+    /// stat for half a tick, and a pid that exited inside that window would
+    /// otherwise still be reported alive long enough to be signalled.
+    fn spawned_alive(&self, worker: &WorkerRecord) -> bool {
+        crate::supervision::forget_process(worker.pid);
+        crate::supervision::live_identity(worker.pid, worker.start_ticks)
+            || (worker.start_ticks.is_none() && self.proves_worker(worker.pid))
+    }
+
     /// Refuses a Start whose worker process exited before publishing the state
     /// that would answer it. Without this the page would keep the busy word
     /// and a Start it can never press again, which is not an answer.
+    ///
+    /// A pid whose recorded start tick no longer matches belongs to another
+    /// process the kernel handed it to: the worker this Start spawned is gone,
+    /// so the page settles with the refusal instead of staying busy forever.
     fn settle_vanished_start(&self) {
         let generation = self.start_generation.load(Ordering::SeqCst);
-        let pid = {
+        let worker = {
             let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             if !inner.starting {
                 return;
             }
-            inner.start_worker.as_ref().map(|worker| worker.pid)
+            inner.start_worker.clone()
         };
-        let Some(pid) = pid else {
+        let Some(worker) = worker else {
             return;
         };
-        if pid_alive(pid) || !self.owners().is_empty() {
+        if self.spawned_alive(&worker) || !self.owners().is_empty() {
             return;
         }
+        let pid = worker.pid;
         self.finish_start(
             generation,
             StartOutcome::Refused {
@@ -4760,9 +4790,13 @@ impl IssuesBridge {
         if let Some(worker) = spawned {
             // A Stop ends the worker an accepted Start spawned before it
             // published a lock: no control file can reach an owner that does
-            // not exist yet.
-            unsafe {
-                libc::kill(worker.pid as libc::pid_t, libc::SIGTERM);
+            // not exist yet. The signal needs the identity the spawn recorded,
+            // so a pid the kernel recycled after that worker exited names
+            // another process and is never signalled.
+            if self.spawned_alive(&worker) {
+                unsafe {
+                    libc::kill(worker.pid as libc::pid_t, libc::SIGTERM);
+                }
             }
         }
         if pending {
@@ -4863,18 +4897,23 @@ impl IssuesBridge {
 
     /// Ends a worker this dashboard spawned, for a preflight that refused it
     /// before any lock existed for a control file to reach.
-    async fn terminate_spawned(&self, pid: u32) {
-        if !pid_alive(pid) {
+    ///
+    /// Every signal and every wait is gated on the identity the spawn
+    /// recorded: once the kernel recycles that pid, the process holding it is
+    /// someone else's and is neither signalled nor waited for.
+    async fn terminate_spawned(&self, worker: &WorkerRecord) {
+        let pid = worker.pid;
+        if !self.spawned_alive(worker) {
             return;
         }
         unsafe {
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
         }
         let deadline = std::time::Instant::now() + Duration::from_millis(500);
-        while pid_alive(pid) && std::time::Instant::now() < deadline {
+        while self.spawned_alive(worker) && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        if pid_alive(pid) {
+        if self.spawned_alive(worker) {
             unsafe {
                 libc::kill(pid as libc::pid_t, libc::SIGKILL);
             }
@@ -4919,7 +4958,7 @@ impl IssuesBridge {
             let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             inner.start_worker = spawned.map(|pid| WorkerRecord {
                 pid,
-                start_ticks: crate::supervision::start_ticks(pid),
+                start_ticks: (self.start_ticks)(pid),
                 started_at: crate::journal::now_iso8601(),
                 state_dir: self.state_dir.display().to_string(),
                 harness_version: self.running_version.clone(),
@@ -5651,6 +5690,7 @@ pub fn init(app: &Arc<App>) {
         poll_ms: DASHBOARD_POLL_MS,
         sync_ms,
         preflight_timeout_ms: ISSUES_PREFLIGHT_TIMEOUT_MS,
+        start_ticks: Arc::new(crate::supervision::start_ticks),
         on_open_issues: {
             let weak_app = Arc::downgrade(app);
             Arc::new(move |issues: Vec<Issue>| {
