@@ -340,7 +340,7 @@
               <IssuesAgentLog
                 lines={run.activity}
                 testid="issues-draft-activity"
-                identity={goalDrafts.draft.path}
+                identity={`${goalDrafts.draft.path}:${run.startedAt ?? ""}`}
               />
             </section>
           {/if}
