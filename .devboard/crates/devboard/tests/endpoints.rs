@@ -739,6 +739,62 @@ async fn a_forge_that_answers_nothing_delays_the_report_without_a_server_error()
 }
 
 #[tokio::test]
+async fn a_forge_that_resets_the_connection_delays_the_report_without_a_server_error() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a resetting listener");
+    let forge = format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().expect("an address").port()
+    );
+    let resetting = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            // Accepting and closing with the request unread resets the
+            // connection, so the client reads no HTTP response at all.
+            drop(stream);
+        }
+    });
+    let fixture = start_against("feedback-reset", None, Some(&forge), 5_000, "true", 0).await;
+    let response = client()
+        .post(format!("{}/reports", fixture.base))
+        .headers(bearer())
+        .json(&json!({"report": "Fix the header"}))
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(response.status(), 202);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let record = settled_report(&location).await;
+    assert_eq!(record["status"], "FAILED");
+    assert_eq!(record["detail"], "The issue could not be filed.");
+
+    let journal = devboard::journal::journal_file(&fixture.root.join("state"), &fixture.repo);
+    let text = std::fs::read_to_string(&journal).expect("the journal");
+    assert!(
+        text.contains("\"kind\":\"activity\""),
+        "a reset connection is an upstream failure: {text}"
+    );
+    assert!(
+        text.contains(
+            "feedback delivery delayed: POST /reports: Issue creation failed: error sending request for url"
+        ),
+        "the journal names the transport failure: {text}"
+    );
+    assert!(
+        !text.contains("\"kind\":\"server-error\""),
+        "the endpoint served, so its failure is no server error: {text}"
+    );
+    fixture.handle.abort();
+    fixture.stub.abort();
+    resetting.abort();
+}
+
+#[tokio::test]
 async fn a_forge_that_never_answers_times_out_as_a_delayed_delivery() {
     let silent = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await

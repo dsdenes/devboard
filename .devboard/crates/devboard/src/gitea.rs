@@ -24,13 +24,13 @@ pub enum TransportFailure {
 }
 
 impl TransportFailure {
-    /// True when the forge answered nothing at all — an unreachable or slow
-    /// upstream, never a failure this server produced.
+    /// True when the forge answered nothing at all: every variant means the
+    /// request read no HTTP response, so the failure is a socket condition and
+    /// never one this server produced. Whether a retry is safe is a separate
+    /// question, answered by the `Self::Connect` equality in
+    /// `feedback::file_feedback_issue`.
     pub fn answered_nothing(self) -> bool {
-        match self {
-            Self::Connect | Self::Timeout => true,
-            Self::Other => false,
-        }
+        true
     }
 }
 

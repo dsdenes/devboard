@@ -567,6 +567,24 @@ mod tests {
     }
 
     #[test]
+    fn a_transport_failure_that_read_no_response_is_transient() {
+        let error = crate::gitea::GiteaError {
+            status: None,
+            message: "error sending request: connection reset by peer".to_string(),
+            transport: Some(crate::gitea::TransportFailure::Other),
+        };
+        let delivery = delivery_error(error, 60_000);
+        assert!(
+            delivery.transient,
+            "a reset request read no HTTP response, so the forge answered nothing"
+        );
+        assert_eq!(delivery.status, 502);
+        assert_eq!(delivery.message, DELIVERY_ERROR_DETAIL);
+        assert!(!delivery.forge_failed);
+        assert!(!delivery.rejected_credential);
+    }
+
+    #[test]
     fn the_body_bound_covers_every_field_at_its_widest_encoding() {
         // The width the cap relies on: one control character below U+0020
         // serializes to a six-byte escape inside two quotes. A JSON writer that
@@ -856,8 +874,9 @@ pub struct DeliveryError {
     pub status: u16,
     pub message: String,
     pub diagnostic: String,
-    /// True when the forge answered nothing at all — an unreachable or slow
-    /// upstream, never a failure this server produced.
+    /// True when the request read no HTTP response at all — an unreachable
+    /// upstream, a missed deadline, or a reset connection — so the failure is a
+    /// socket condition, never one this server produced.
     pub transient: bool,
     /// True when the forge answered its own transient refusal — a rate limit or
     /// a server-side failure such as its busy database — so the failure is
