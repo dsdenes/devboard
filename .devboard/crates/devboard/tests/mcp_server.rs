@@ -269,6 +269,33 @@ async fn the_stdio_server_answers_initialize_list_and_the_core_tools() {
     assert_eq!(counts["verification_run"], 1);
 }
 
+/// The kinds the server validates are the kinds the reader keeps: a
+/// `resource-kill` record the governor writes is findable by `journal_search`.
+#[tokio::test]
+async fn journal_search_finds_a_resource_kill_record() {
+    let context = fixture("journal-resource-kill");
+    write_journal(&context);
+    let path = devboard::journal::journal_file(&context.state_dir, &context.repo_dir);
+    let mut text = std::fs::read_to_string(&path).expect("the journal");
+    text.push_str(
+        r#"{"ts":"2026-01-01T00:00:01.000Z","kind":"resource-kill","text":"oom killed run-b","scope":"run-b"}"#,
+    );
+    text.push('\n');
+    std::fs::write(&path, text).expect("the journal");
+    let requests = vec![json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "journal_search", "arguments": {"kind": "resource-kill"}}
+    })];
+    let frames = drive(&context, &requests).await;
+    let journal = tool_result(&frames, 1);
+    assert_eq!(journal["total"], 1, "{journal}");
+    assert_eq!(journal["records"][0]["kind"], "resource-kill");
+    assert_eq!(journal["records"][0]["text"], "oom killed run-b");
+    assert_eq!(journal["records"][0]["scope"], "run-b");
+}
+
 /// Four peer loops write one counter at the same time: every `tools/call`
 /// lands, so the shared table totals exactly the calls they sent. One lost
 /// increment fails this test instead of silently under-reporting the count the

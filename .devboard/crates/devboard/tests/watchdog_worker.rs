@@ -759,6 +759,32 @@ fn projection_round_trips_and_drops_unreadable_rows() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn journal_evidence_keeps_the_resource_kinds_the_journal_writes() {
+    let root = scratch("journal-resource-kill");
+    let state = root.join(".tmp");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let instance = fixture_instance(&root, &state);
+    let now = epoch_ms();
+    let ts = iso_from_ms(now - 1000);
+    write(
+        Path::new(&instance.journal),
+        &format!(
+            "{{\"ts\":\"{ts}\",\"kind\":\"resource-kill\",\"text\":\"oom killed run-b\",\"scope\":\"run-b\"}}\n"
+        ),
+    );
+    let window = Window {
+        start_ms: now - 60_000,
+        end_ms: now,
+    };
+    let (events, malformed) = read_journal_evidence(&instance, window, &root);
+    assert_eq!(malformed, 0);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].kind, "resource-kill");
+    assert_eq!(events[0].text, "oom killed run-b");
+    assert_eq!(events[0].scope.as_deref(), Some("run-b"));
+}
+
+#[test]
 fn journal_pruning_respects_retention_and_the_total_bound() {
     let key = "a".repeat(24);
     let now = epoch_ms();

@@ -3076,21 +3076,6 @@ pub fn prune_journals(state_dir: &Path, now_ms: i64, window_start_ms: i64) -> Ve
 // Evidence collection
 // ---------------------------------------------------------------------------
 
-/// The journal record kinds the debugger and watchdog distinguish.
-pub const JOURNAL_KINDS: &[&str] = &[
-    "activity",
-    "question",
-    "run-start",
-    "run-stop",
-    "lane-start",
-    "lane-stop",
-    "lifecycle",
-    "acp-stderr",
-    "server-error",
-    "update",
-    "update-error",
-];
-
 /// An inclusive evidence window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
@@ -3209,7 +3194,7 @@ fn read_journal_file(
         let Some(kind) = record.get("kind").and_then(Value::as_str) else {
             continue;
         };
-        if !JOURNAL_KINDS.contains(&kind) {
+        if !crate::journal::JOURNAL_KINDS.contains(&kind) {
             continue;
         }
         let Some(text) = record.get("text").and_then(Value::as_str) else {
