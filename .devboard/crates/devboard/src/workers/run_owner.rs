@@ -137,6 +137,7 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
         cwd: crate::detached_run::canonical_process_path(&repo_dir)
             .display()
             .to_string(),
+        start_ticks: crate::supervision::start_ticks(pid),
     });
     owner.peer = Some(Arc::clone(&peer));
     owner.state.status = DetachedRunStatus::Running;

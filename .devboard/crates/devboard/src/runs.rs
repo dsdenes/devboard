@@ -1375,8 +1375,8 @@ mod tests {
         }
     }
 
-    /// A detached run record that still says `running`, owned by `owner_pid`.
-    fn detached_record(owner_pid: u32) -> Value {
+    /// A detached run record that still says `running`, owned by `owner`.
+    fn detached_record(owner: Value) -> Value {
         json!({
             "version": crate::detached_run::DETACHED_RUN_VERSION,
             "kind": "discover",
@@ -1395,7 +1395,7 @@ mod tests {
             "finishedAt": null,
             "error": null,
             "question": null,
-            "owner": {"pid": owner_pid, "argv": ["omp", "acp"], "cwd": "/repo"},
+            "owner": owner,
             "peer": null,
             "updatedAt": "2026-11-10T12:00:01.000Z"
         })
@@ -2038,7 +2038,11 @@ mod tests {
         let root = scratch("detached-owner-gone");
         let repo_dir = root.join("repo");
         let state_dir = root.join("state");
-        write_detached_run(&state_dir, &repo_dir, &detached_record(reaped_pid()));
+        write_detached_run(
+            &state_dir,
+            &repo_dir,
+            &detached_record(json!({"pid": reaped_pid(), "argv": ["omp", "acp"], "cwd": "/repo"})),
+        );
 
         let app = dashboard(&state_dir, &repo_dir);
         let run = discover(&app)
@@ -2074,7 +2078,12 @@ mod tests {
         let root = scratch("detached-owner-live");
         let repo_dir = root.join("repo");
         let state_dir = root.join("state");
-        write_detached_run(&state_dir, &repo_dir, &detached_record(std::process::id()));
+        let cwd = std::env::current_dir().expect("a cwd");
+        write_detached_run(
+            &state_dir,
+            &repo_dir,
+            &detached_record(crate::detached_run::self_child(&cwd).to_json()),
+        );
 
         let app = dashboard(&state_dir, &repo_dir);
         let run = discover(&app)

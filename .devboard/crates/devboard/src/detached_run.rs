@@ -125,11 +125,21 @@ pub struct RecordedChild {
     pub pid: u32,
     pub argv: Vec<String>,
     pub cwd: String,
+    /// The kernel start tick that proves the pid still names this process; a
+    /// record written before the tick existed carries none.
+    pub start_ticks: Option<i64>,
 }
 
 impl RecordedChild {
     pub fn to_json(&self) -> Value {
-        json!({"pid": self.pid, "argv": self.argv, "cwd": self.cwd})
+        let mut record = Map::new();
+        record.insert("pid".into(), self.pid.into());
+        record.insert("argv".into(), json!(self.argv));
+        record.insert("cwd".into(), Value::String(self.cwd.clone()));
+        if let Some(ticks) = self.start_ticks {
+            record.insert("startTicks".into(), ticks.into());
+        }
+        Value::Object(record)
     }
 
     pub fn parse(value: Option<&Value>) -> Option<Self> {
@@ -145,10 +155,15 @@ impl RecordedChild {
             .map(|entry| entry.as_str().map(str::to_string))
             .collect::<Option<Vec<String>>>()?;
         let cwd = record.get("cwd")?.as_str()?.to_string();
+        let start_ticks = match record.get("startTicks") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64()?),
+        };
         Some(Self {
             pid: pid as u32,
             argv,
             cwd,
+            start_ticks,
         })
     }
 }
@@ -504,11 +519,12 @@ pub async fn reap_closed_run(directory: &Path, owner: Option<u32>) {
         return;
     };
     let generation = state.generation;
-    let Some(owner) = state.owner.map(|record| record.pid).or(owner) else {
+    let recorded = state.owner;
+    if recorded.is_none() && owner.is_none() {
         return;
-    };
+    }
     let deadline = Instant::now() + Duration::from_millis(CLOSED_RUN_EXIT_WAIT_MS);
-    while crate::supervision::live_process(owner) {
+    while closed_run_owner_alive(recorded.as_ref(), owner) {
         if Instant::now() >= deadline {
             return;
         }
@@ -521,6 +537,16 @@ pub async fn reap_closed_run(directory: &Path, owner: Option<u32>) {
         }
     }
     reset_detached_run(directory);
+}
+
+/// True while the owner that writes a closed run's directory is still there.
+/// The recorded child proves which process holds its pid; the pid the
+/// dashboard spawned is the fallback only before an owner has recorded itself.
+fn closed_run_owner_alive(recorded: Option<&RecordedChild>, spawned: Option<u32>) -> bool {
+    match recorded {
+        Some(child) => owner_alive(child),
+        None => spawned.is_some_and(crate::supervision::live_process),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,9 +1065,9 @@ pub struct DetachedRunLiveness {
 /// The recorded `status` alone proves nothing: an owner killed without writing
 /// a terminal status (SIGKILL, an OOM kill, power loss) leaves `running` in
 /// `state.json` forever, because nothing rewrites it. The owner process is the
-/// authority, so a terminal status keeps its own word, a live owner keeps the
-/// recorded word, and a running record whose owner is gone reports `stopped`
-/// and is not live.
+/// authority, so a terminal status keeps its own word, a proven owner keeps the
+/// recorded word, and a running record whose owner is gone — or whose pid now
+/// names another process — reports `stopped` and is not live.
 pub fn detached_run_liveness(state: &DetachedRunState) -> DetachedRunLiveness {
     if state.status.terminal() {
         return DetachedRunLiveness {
@@ -1049,10 +1075,7 @@ pub fn detached_run_liveness(state: &DetachedRunState) -> DetachedRunLiveness {
             live: false,
         };
     }
-    let owner_live = state
-        .owner
-        .as_ref()
-        .is_some_and(|owner| crate::supervision::live_process(owner.pid));
+    let owner_live = state.owner.as_ref().is_some_and(owner_alive);
     if owner_live {
         DetachedRunLiveness {
             lifecycle: state.status.as_str().to_string(),
@@ -1117,7 +1140,7 @@ fn adoptable(
     let Some(owner) = state.owner.as_ref() else {
         return false;
     };
-    if !crate::supervision::live_process(owner.pid) || state.status.terminal() {
+    if !owner_alive(owner) || state.status.terminal() {
         return false;
     }
     // A live owner is adopted whether the replacement already recorded its own
@@ -1475,17 +1498,10 @@ impl DetachedPeer {
                 }
                 return self.wait_outcome().await;
             }
-            if existing
-                .owner
-                .as_ref()
-                .is_some_and(|owner| crate::supervision::live_process(owner.pid))
-            {
+            if existing.owner.as_ref().is_some_and(owner_alive) {
                 write_detached_run_command(&self.inner.control, &DetachedRunCommand::Stop);
                 let deadline = std::time::Instant::now() + Duration::from_millis(2_000);
-                while existing
-                    .owner
-                    .as_ref()
-                    .is_some_and(|owner| crate::supervision::live_process(owner.pid))
+                while existing.owner.as_ref().is_some_and(owner_alive)
                     && std::time::Instant::now() < deadline
                 {
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1996,9 +2012,7 @@ impl DetachedPeer {
                 }
             }
             if let Some(owner) = &state.owner {
-                if !crate::supervision::live_process(owner.pid)
-                    && state.status != DetachedRunStatus::Starting
-                {
+                if !owner_alive(owner) && state.status != DetachedRunStatus::Starting {
                     self.fail(state.error.clone().unwrap_or_else(|| {
                         "The run owner exited before the run finished.".to_string()
                     }));
@@ -2140,12 +2154,29 @@ pub fn self_child(cwd: &Path) -> RecordedChild {
         pid: std::process::id(),
         argv,
         cwd: canonical_process_path(cwd).display().to_string(),
+        start_ticks: crate::supervision::start_ticks(std::process::id()),
     }
 }
 
 /// The canonical form a process table entry reports for a directory.
 pub fn canonical_process_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// True while the process a record names is still the process that recorded
+/// it, which is what a live detached run is.
+///
+/// A bare pid is never that proof: the kernel hands a dead pid out again, so
+/// an owner killed without writing a terminal status would keep a `running`
+/// record alive forever. The kernel start tick recorded beside the pid is the
+/// identity a recycled pid cannot pass; a record that predates the tick falls
+/// back to the argv and cwd it holds, and a kernel that exposes neither keeps
+/// the existence check [`crate::supervision::live_identity`] documents.
+pub fn owner_alive(owner: &RecordedChild) -> bool {
+    if crate::supervision::live_identity(owner.pid, owner.start_ticks) {
+        return true;
+    }
+    owner.start_ticks.is_none() && recorded_child_alive(owner)
 }
 
 /// True only when the pid still runs exactly the recorded command in the
@@ -2238,6 +2269,7 @@ mod adopt_tests {
                 pid: std::process::id(),
                 argv: Vec::new(),
                 cwd: repo.display().to_string(),
+                start_ticks: None,
             }),
             peer: None,
             updated_at: "2026-01-01T00:00:00.000Z".to_string(),
@@ -2275,6 +2307,184 @@ mod adopt_tests {
             "the adopted question reaches the callback once"
         );
         peer.close();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn scratch_root(name: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo")).expect("a repo directory");
+        std::fs::create_dir_all(root.join("state")).expect("a state directory");
+        root
+    }
+
+    /// One detached run state whose `owner` is the record under test.
+    fn seed_run(
+        repo: &Path,
+        state_dir: &Path,
+        key: &str,
+        owner: RecordedChild,
+    ) -> (PathBuf, DetachedRunState) {
+        let directory = detached_run_directory(state_dir, repo, "discover", key);
+        let state = DetachedRunState {
+            version: DETACHED_RUN_VERSION,
+            kind: "discover".to_string(),
+            key: key.to_string(),
+            repo: repo.display().to_string(),
+            state_dir: state_dir.display().to_string(),
+            harness_version: None,
+            instance: "replacement".to_string(),
+            launcher_pid: None,
+            generation: "generation".to_string(),
+            multi: false,
+            turn_seq: None,
+            turn_status: None,
+            turn_error: None,
+            status: DetachedRunStatus::Running,
+            started_at: "2026-01-01T00:00:00.000Z".to_string(),
+            finished_at: None,
+            error: None,
+            question: None,
+            owner: Some(owner),
+            peer: None,
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        };
+        write_detached_run_state(&directory, &state).expect("a state");
+        (directory, state)
+    }
+
+    /// A pid the kernel handed to another process never proves a dead owner
+    /// live: the run reports stopped, holds no live key, and a replacement
+    /// starts fresh instead of adopting a state nothing will write.
+    #[test]
+    fn a_foreign_owner_process_reports_stopped_and_is_not_adoptable() {
+        let root = scratch_root("detached-recycled");
+        let repo = root.join("repo");
+        let state_dir = root.join("state");
+        let pid = std::process::id();
+        let actual = crate::supervision::start_ticks(pid).expect("the owner's start tick");
+        let cases = [
+            // A record written before the start tick existed: its argv and cwd
+            // name another command, so it cannot prove the live pid its own.
+            RecordedChild {
+                pid,
+                argv: vec!["omp".to_string(), "another-run".to_string()],
+                cwd: root.display().to_string(),
+                start_ticks: None,
+            },
+            // The same live pid with a start tick the kernel never gave it.
+            RecordedChild {
+                pid,
+                argv: std::env::args().collect(),
+                cwd: std::env::current_dir()
+                    .expect("a cwd")
+                    .display()
+                    .to_string(),
+                start_ticks: Some(actual + 1),
+            },
+        ];
+        for (index, owner) in cases.into_iter().enumerate() {
+            let key = format!("recycled-{index}");
+            let (directory, state) = seed_run(&repo, &state_dir, &key, owner);
+            assert_eq!(
+                detached_run_liveness(&state),
+                DetachedRunLiveness {
+                    lifecycle: "stopped".to_string(),
+                    live: false,
+                },
+                "case {index}"
+            );
+            assert!(
+                !adoptable(&directory, &state_dir, &repo, "replacement", &state),
+                "case {index}"
+            );
+            assert!(
+                !detached_run_adoptable(&state_dir, &repo, "discover", &key, "replacement"),
+                "case {index}"
+            );
+            assert!(
+                !detached_run_live(&state_dir, &repo, "discover", &key, "replacement"),
+                "case {index}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A record whose pid, start tick, argv, and cwd still name the live owner
+    /// keeps reporting live and is adoptable for its own instance.
+    #[test]
+    fn a_recorded_live_owner_reports_live_and_is_adoptable() {
+        let root = scratch_root("detached-owned");
+        let repo = root.join("repo");
+        let state_dir = root.join("state");
+        let cwd = std::env::current_dir().expect("a cwd");
+        let owner = self_child(&cwd);
+        let (directory, state) = seed_run(&repo, &state_dir, "owned", owner.clone());
+        assert_eq!(
+            detached_run_liveness(&state),
+            DetachedRunLiveness {
+                lifecycle: "running".to_string(),
+                live: true,
+            }
+        );
+        assert!(adoptable(
+            &directory,
+            &state_dir,
+            &repo,
+            "replacement",
+            &state
+        ));
+        assert!(detached_run_adoptable(
+            &state_dir,
+            &repo,
+            "discover",
+            "owned",
+            "replacement"
+        ));
+        assert!(detached_run_live(
+            &state_dir,
+            &repo,
+            "discover",
+            "owned",
+            "replacement"
+        ));
+
+        // A record that predates the start tick is still proven by the argv
+        // and cwd it carries, so an upgrade never abandons its live owner.
+        let mut legacy = owner;
+        legacy.start_ticks = None;
+        let (_directory, state) = seed_run(&repo, &state_dir, "legacy", legacy);
+        assert_eq!(
+            detached_run_liveness(&state),
+            DetachedRunLiveness {
+                lifecycle: "running".to_string(),
+                live: true,
+            }
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A closed run whose recorded pid now names another process is reaped at
+    /// once instead of waiting out the exit bound for an owner that is gone.
+    #[tokio::test]
+    async fn a_foreign_owner_process_does_not_hold_a_closed_run() {
+        let root = scratch_root("detached-reap");
+        let repo = root.join("repo");
+        let state_dir = root.join("state");
+        let owner = RecordedChild {
+            pid: std::process::id(),
+            argv: vec!["omp".to_string(), "another-run".to_string()],
+            cwd: root.display().to_string(),
+            start_ticks: None,
+        };
+        let (directory, _state) = seed_run(&repo, &state_dir, "closed", owner);
+        reap_closed_run(&directory, None).await;
+        assert!(
+            !directory.exists(),
+            "a closed run no owner holds is reaped at once"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

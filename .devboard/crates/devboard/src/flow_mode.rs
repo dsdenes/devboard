@@ -1925,6 +1925,7 @@ pub fn capture_children(app: Arc<App>) -> Vec<crate::detached_run::RecordedChild
             pid,
             argv: agent.argv(),
             cwd: mode.repo_dir().display().to_string(),
+            start_ticks: crate::supervision::start_ticks(pid),
         });
     }
     children
