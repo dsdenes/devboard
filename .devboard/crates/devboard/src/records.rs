@@ -59,6 +59,10 @@ pub fn read_records(directory: &Path) -> Result<(Vec<Value>, Value), String> {
 }
 
 /// Projects one Markdown record onto the interface contract.
+///
+/// ADR 0005 makes the frontmatter the only source of status: a record is pending when its
+/// status is `draft` or `proposed` in any case, and every other value — including an absent or
+/// empty one — is resolved.
 fn record_from_document(path: &Path, source: &str) -> Option<AdrRecord> {
     let (frontmatter, body) = split_frontmatter(source)?;
     let title = frontmatter_value(frontmatter, "title")?;
@@ -69,7 +73,7 @@ fn record_from_document(path: &Path, source: &str) -> Option<AdrRecord> {
         file,
         title,
         status: capitalize(&status),
-        pending: normalized.is_empty() || normalized == "draft" || normalized == "proposed",
+        pending: normalized == "draft" || normalized == "proposed",
         summary: read_decision(body),
     })
 }
@@ -289,15 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn a_record_without_a_status_is_listed_as_pending() {
+    fn a_record_without_a_status_is_listed_as_resolved() {
         let root = records_fixture_dir("no-status");
         write_record(&root, "0001-unset.md", "Unset record", None);
+        write_record(&root, "0002-empty.md", "Empty record", Some(""));
+        write_record(&root, "0003-draft.md", "Draft record", Some("Draft"));
         let (records, next) = read_records(&root).expect("records");
         let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 3);
         assert_eq!(records[0]["status"], "");
-        assert_eq!(records[0]["pending"], true);
-        assert_eq!(next, Value::String("0001-unset.md".to_string()));
+        assert_eq!(records[0]["pending"], false);
+        assert_eq!(records[1]["status"], "");
+        assert_eq!(records[1]["pending"], false);
+        assert_eq!(records[2]["status"], "Draft");
+        assert_eq!(records[2]["pending"], true);
+        assert_eq!(next, Value::String("0003-draft.md".to_string()));
     }
 
     fn records_fixture_dir(label: &str) -> std::path::PathBuf {
