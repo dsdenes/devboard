@@ -1520,6 +1520,58 @@ async fn a_fresh_open_issue_read_publishes_the_issue_hook() {
     assert_eq!(*seen.lock().expect("seen"), vec![vec![4]]);
 }
 
+/// A worker's fresh read with an empty queue is a result, not an absence: it
+/// says every open issue is closed, so the hook receives the empty list and
+/// the generated templates stop naming the closed issue. Dropping that read
+/// left the last non-empty list in the hook for the worker's whole lifetime.
+#[tokio::test]
+async fn an_attached_worker_empty_read_publishes_the_issue_hook_once() {
+    let (repo, state) = scratch("attached-empty-hook");
+    let owner = spawn_owner(&repo, &state);
+    let mut document = state_document(&repo, "running", json!([]));
+    document["worker"] = attached_worker(&owner.pid, &state);
+    document["poll"]["lastPollAt"] = json!("2026-01-01T00:00:05.000Z");
+    write_state(&repo, &state, &document);
+
+    let seen: Arc<Mutex<Vec<Vec<u64>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_hook = Arc::clone(&seen);
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    settings.on_open_issues = Arc::new(move |issues| {
+        seen_for_hook
+            .lock()
+            .expect("seen")
+            .push(issues.iter().map(|issue| issue.number).collect());
+    });
+    let bridge = IssuesBridge::new(settings);
+
+    bridge.sync_now().await;
+    assert_eq!(
+        *seen.lock().expect("seen"),
+        vec![Vec::<u64>::new()],
+        "the empty read reaches the hook"
+    );
+
+    // The unchanged poll is the same result: the freshness marker publishes
+    // it once, and a page read never republishes it.
+    bridge.sync_now().await;
+    assert_eq!(
+        *seen.lock().expect("seen"),
+        vec![Vec::<u64>::new()],
+        "an unchanged poll publishes once"
+    );
+}
+
 /// A newer harness starts its own worker while an older one is live and then
 /// drains the older one. Attaching instead leaves the family paused with no
 /// worker that can start a queued issue.

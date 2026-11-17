@@ -3644,7 +3644,9 @@ impl IssuesBridge {
                 true
             }
         };
-        if !fresh || state.queue.is_empty() {
+        // An empty queue is a result, not an absence: it says every open issue
+        // is closed, and the hook's templates must be corrected to say so.
+        if !fresh {
             return;
         }
         let issues: Vec<Issue> = state
