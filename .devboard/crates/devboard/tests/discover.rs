@@ -2260,6 +2260,112 @@ fn an_excluded_tree_grounding_is_refused() {
     );
 }
 
+/// A tracked installed wrapper is not a host fact: the crawl prompts exclude
+/// every path under `<host>/.omp/`, and the grounding check agrees with them.
+#[test]
+fn an_installed_wrapper_grounding_is_refused() {
+    let scratch = Scratch::new("grounding-installed-wrapper");
+    let repo = fixture_repo(&scratch, "repo", false);
+    write(
+        &repo.join(".omp/commands/discover-sheet.md"),
+        "Read `.devboard/prompts/discover-sheet.md`.\n",
+    );
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Discover Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "the installed wrapper",
+        ],
+    );
+    assert!(
+        repo.join(".omp/commands/discover-sheet.md").is_file(),
+        "the installed wrapper is tracked"
+    );
+    assert_eq!(
+        staged_grounding_error(&repo, "code:.omp/commands/discover-sheet.md"),
+        "orders.glossary.yaml:concepts[0].grounding[0]: names .omp/commands/discover-sheet.md, \
+         which the host does not carry"
+    );
+}
+
+/// A rewritten wrapper is harness-install noise, so it never moves the host
+/// fingerprint and never leaves a publication stale.
+#[test]
+fn an_installed_wrapper_edit_keeps_the_host_fingerprint() {
+    let scratch = Scratch::new("fingerprint-installed-wrapper");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let wrapper = repo.join(".omp/commands/discover-sheet.md");
+    write(&wrapper, "Read `.devboard/prompts/discover-sheet.md`.\n");
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Discover Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "the installed wrapper",
+        ],
+    );
+
+    let staging = scratch.path().join("staging");
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet(json!([{
+            "name": "bun test",
+            "checks": "Runs the whole fixture test suite in CI.",
+        }])))
+        .expect("a staged sheet"),
+    );
+    let facts = devboard::discover_mode::host_facts(&repo);
+    devboard::discover_mode::publish_agent_staged(
+        &repo,
+        "run-installed-wrapper",
+        &facts,
+        &staging,
+        "fixture",
+        "sheet",
+    )
+    .expect("the sheet publishes into the host");
+    let artifacts = devboard::discover_mode::read_artifacts(&repo)
+        .artifacts
+        .expect("the publication is readable");
+    let before = devboard::discover_mode::host_facts(&repo);
+    assert!(
+        !before.dirty,
+        "a publication into `.omp/` leaves the host clean"
+    );
+    assert!(
+        !devboard::discover_mode::artifacts_stale(&repo, Some(&artifacts)),
+        "the freshly published artifacts are current"
+    );
+
+    write(
+        &wrapper,
+        "# Rewritten wrapper\n\nA later install rewrote it.\n",
+    );
+    let after = devboard::discover_mode::host_facts(&repo);
+    assert_eq!(
+        after.fingerprint, before.fingerprint,
+        "an installed wrapper edit is not a host fact"
+    );
+    assert!(!after.dirty, "an installed wrapper edit is not dirt");
+    assert!(
+        !devboard::discover_mode::artifacts_stale(&repo, Some(&artifacts)),
+        "an installed wrapper edit leaves the publication current"
+    );
+}
+
 #[test]
 fn a_tracked_host_file_grounds_a_concept() {
     let scratch = Scratch::new("grounding-tracked");

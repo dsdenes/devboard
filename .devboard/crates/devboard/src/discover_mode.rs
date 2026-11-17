@@ -5281,13 +5281,10 @@ pub struct HostFacts {
     pub dirty: bool,
 }
 
-const EXCLUDED_ROOTS: &[&str] = &[
-    ".devboard",
-    ".worktree",
-    ".omp/discover",
-    ".omp/skills",
-    ".git",
-];
+/// The trees no Discover crawl reads: the harness, the worktrees, git's
+/// internals, and every installed wrapper under `.omp/`, which the crawl
+/// contract calls this feature's published artifacts.
+const EXCLUDED_ROOTS: &[&str] = &[".devboard", ".worktree", ".omp", ".git"];
 
 fn excluded(relative_path: &str) -> bool {
     EXCLUDED_ROOTS
