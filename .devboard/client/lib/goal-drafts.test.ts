@@ -6,7 +6,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // The preload registers DOM globals before these modules evaluate; a static
 // import would load them first and capture the wrong document.
 const { connection } = await import("./connection.svelte");
-const { goalDrafts } = await import("./goal-drafts.svelte");
+const { goalDrafts, DRAFT_PATH_KEY } = await import("./goal-drafts.svelte");
 const { queryClient } = await import("./query-client");
 const { queryKeyFor } = await import("./query-keys");
 
@@ -175,4 +175,45 @@ test("a draft answer with no selected draft or no question sends nothing", () =>
   };
   expect(goalDrafts.submitDraftAnswer("Aurora")).toBe(false);
   expect(sent).toEqual([]);
+});
+
+test("a late draft detail cannot revive a draft the drafts list removed", () => {
+  const detail = (path: string) => ({
+    type: "issuesDraftDetail",
+    draft: { path, name: "example.md", text: "text" },
+  });
+  const other = ".devboard/goal-proposals/other.md";
+  const original = queryClient.invalidateQueries.bind(queryClient);
+  queryClient.invalidateQueries = (() =>
+    Promise.resolve()) as typeof queryClient.invalidateQueries;
+
+  try {
+    // The detail read is dispatched, then the authoritative list reports the
+    // draft gone before that read answers.
+    goalDrafts.openDraft(PATH);
+    goalDrafts.handleEvent({ type: "issuesDrafts", drafts: [] });
+    expect(goalDrafts.draftPath).toBeNull();
+    expect(goalDrafts.draft).toBeNull();
+
+    // The in-flight read lands after the removal: it is not the requested
+    // selection any more, so it must not restore the draft or its path.
+    goalDrafts.handleEvent(detail(PATH));
+    expect(goalDrafts.draftPath).toBeNull();
+    expect(goalDrafts.draft).toBeNull();
+    expect(localStorage.getItem(DRAFT_PATH_KEY)).toBeNull();
+
+    // A detail for another path while `PATH` is requested is ignored.
+    goalDrafts.openDraft(PATH);
+    goalDrafts.handleEvent(detail(other));
+    expect(goalDrafts.draftPath).toBe(PATH);
+    expect(goalDrafts.draft).toBeNull();
+
+    // The requested path's own detail selects it and records the selection.
+    goalDrafts.handleEvent(detail(PATH));
+    expect(goalDrafts.draftPath).toBe(PATH);
+    expect(goalDrafts.draft?.path).toBe(PATH);
+    expect(localStorage.getItem(DRAFT_PATH_KEY)).toBe(PATH);
+  } finally {
+    queryClient.invalidateQueries = original;
+  }
 });

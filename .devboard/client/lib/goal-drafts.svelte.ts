@@ -377,8 +377,10 @@ export class GoalDraftsStore {
       const draft = message.draft as unknown as GoalDraftDetail;
       if (typeof draft.path !== "string" || typeof draft.text !== "string") return;
       if (this.draftReading === draft.path) this.draftReading = null;
-      // A detail for a superseded selection must not replace the open draft.
-      if (this.draftRequest !== null && draft.path !== this.draftRequest) return;
+      // Only the path actually requested is accepted: a detail for a
+      // superseded selection, or one that answers a read `clearDraft` already
+      // disarmed, must not put a removed draft back.
+      if (draft.path !== this.draftRequest) return;
       this.draft = draft;
       this.draftPath = draft.path;
       writeDraftPath(draft.path);
