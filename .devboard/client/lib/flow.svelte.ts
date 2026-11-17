@@ -124,6 +124,19 @@ export class FlowStore {
     );
   }
 
+  /**
+   * The activity of the lane an answer belongs to. The store appends a
+   * `flowActivity` frame to the lane that produced it — an interview's frames
+   * land in `goalCreation`, a conversation's in `conversation`, and only a
+   * plain implementation's in `activity` — so a `Submit answer` latch reads
+   * the lane it answers and never another lane's activity.
+   */
+  answerActivity(target: AnswerTarget): number {
+    if (target === "goal") return this.goalCreation?.activity.length ?? 0;
+    if (target === "conversation") return this.conversation?.activity.length ?? 0;
+    return this.activity.length;
+  }
+
   widget(id: string): FlowWidget | null {
     return this.widgets.find((widget) => widget.id === id) ?? null;
   }

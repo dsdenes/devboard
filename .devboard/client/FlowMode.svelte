@@ -77,14 +77,17 @@
   }
 
   const answerPending = {
-    goal: createCommandBusy({ label: "Submit answer", evidence: () => flow.activity.length }),
+    goal: createCommandBusy({
+      label: "Submit answer",
+      evidence: () => flow.answerActivity("goal"),
+    }),
     implementation: createCommandBusy({
       label: "Submit answer",
-      evidence: () => flow.activity.length,
+      evidence: () => flow.answerActivity("implementation"),
     }),
     conversation: createCommandBusy({
       label: "Submit answer",
-      evidence: () => flow.activity.length,
+      evidence: () => flow.answerActivity("conversation"),
     }),
   };
   const conversationSendPending = createCommandBusy({
@@ -131,7 +134,7 @@
             class="choice"
             label={option.label}
             busyLabel="Answering…"
-            evidence={() => flow.activity.length}
+            evidence={() => flow.answerActivity(target)}
             command={() => flow.answerQuestion(pending, option.label, target)}
             data-testid="flow-choice"
             data-command={`flow.answer.submit.${target}`}
