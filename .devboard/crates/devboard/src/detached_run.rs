@@ -447,8 +447,9 @@ pub fn read_json(path: &Path) -> Option<Value> {
     crate::sampling::json(path).map(|value| (*value).clone())
 }
 
-/// Writes one JSON document atomically with a trailing newline.
-pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
+/// Replaces a file through a temporary sibling and a rename, so a reader
+/// observes either the old bytes or the new ones and never a truncated file.
+fn write_atomic(path: &Path, text: String) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -458,8 +459,6 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
         std::process::id(),
         rand::random::<u32>()
     ));
-    let mut text = crate::jsjson::stringify(value);
-    text.push('\n');
     let result = (|| {
         std::fs::write(&temporary, text)?;
         std::fs::rename(&temporary, path)
@@ -468,6 +467,13 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// Writes one JSON document atomically with a trailing newline.
+pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
+    let mut text = crate::jsjson::stringify(value);
+    text.push('\n');
+    write_atomic(path, text)
 }
 
 pub fn read_detached_run_state(directory: &Path) -> Option<DetachedRunState> {
@@ -720,7 +726,7 @@ pub fn append_detached_run_text(directory: &Path, text: &str) {
         text.push_str(&crate::jsjson::stringify(&Value::String(chunk)));
         text.push('\n');
     }
-    let _ = std::fs::write(&path, text);
+    let _ = write_atomic(&path, text);
 }
 
 /// Appends one entry, then bounds the journal to the documented window.
@@ -756,7 +762,7 @@ pub fn append_detached_run_activity(directory: &Path, activity: &DetachedRunActi
         text.push_str(&crate::jsjson::stringify(&entry.to_json()));
         text.push('\n');
     }
-    let _ = std::fs::write(&path, text);
+    let _ = write_atomic(&path, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -2024,20 +2030,20 @@ fn turn_settled(state: &DetachedRunState, seq: u64) -> bool {
 /// Drops the entries this reader already delivered. `seen` counts every entry
 /// the run ever appended; the journal's header re-bases that count onto the
 /// file its bound rewrote, so a rewritten journal resumes where the retained
-/// window ends instead of replaying it.
+/// window ends instead of replaying it. A sample that yields no entry never
+/// lowers `seen`, so a file caught mid-rewrite cannot reset the count.
 pub(crate) fn consume<T: Clone>(read: DetachedRunJournalRead<T>, seen: usize) -> (Vec<T>, usize) {
-    if read.from_start {
+    let outcome = if read.from_start {
         let base = seen
             .saturating_sub(read.dropped as usize)
             .min(read.entries.len());
-        (
-            read.entries[base..].to_vec(),
-            read.dropped as usize + read.entries.len(),
-        )
+        let entries = read.entries[base..].to_vec();
+        (entries, read.dropped as usize + read.entries.len())
     } else {
         let total = seen + read.entries.len();
         (read.entries, total)
-    }
+    };
+    (outcome.0, outcome.1.max(seen))
 }
 
 /// The harness binary that runs a detached owner, through the shared resolver.

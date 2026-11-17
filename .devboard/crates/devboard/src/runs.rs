@@ -1717,6 +1717,59 @@ mod tests {
         );
     }
 
+    /// A sample taken while the bound's rewrite truncates the journal reports
+    /// an empty file with an unreadable header. That sample must not reset the
+    /// reader's delivered count, or the completed rewrite replays the whole
+    /// retained window.
+    #[test]
+    fn a_truncated_text_journal_sample_keeps_the_delivered_count() {
+        let directory = scratch("detached-text-truncated-sample");
+        let chunk = "z".repeat(1041);
+        for index in 0..1_002 {
+            crate::detached_run::append_detached_run_text(&directory, &format!("{chunk} {index}"));
+        }
+        let path = crate::detached_run::detached_run_text_path(&directory);
+        let rewritten = std::fs::read_to_string(&path).expect("a compacted journal");
+        let mut cursor = DetachedRunJournalCursor::default();
+        let (first, seen) =
+            crate::detached_run::consume(read_detached_run_text_since(&directory, &mut cursor), 0);
+        assert_eq!(
+            first.len(),
+            1_000,
+            "the first sample is the retained window"
+        );
+
+        // The rewrite's truncation makes the journal zero-length for a reader
+        // that samples exactly then.
+        std::fs::write(&path, "").expect("a truncated journal");
+        let (emptied, kept) = crate::detached_run::consume(
+            read_detached_run_text_since(&directory, &mut cursor),
+            seen,
+        );
+        assert!(emptied.is_empty(), "the truncated sample holds no entry");
+        assert_eq!(
+            kept, seen,
+            "a truncated sample never lowers the delivered count"
+        );
+
+        // The rewrite lands and the run appends more text.
+        std::fs::write(&path, &rewritten).expect("the completed rewrite");
+        let appended: Vec<String> = (0..2)
+            .map(|index| format!("{chunk} appended {index}"))
+            .collect();
+        for text in &appended {
+            crate::detached_run::append_detached_run_text(&directory, text);
+        }
+        let (delivered, _) = crate::detached_run::consume(
+            read_detached_run_text_since(&directory, &mut cursor),
+            kept,
+        );
+        assert_eq!(
+            delivered, appended,
+            "only the chunks appended after the first read are delivered"
+        );
+    }
+
     /// The activity journal is bounded the same way, so its compaction never
     /// re-emits an entry a subscriber already holds.
     #[test]
