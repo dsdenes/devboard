@@ -896,6 +896,15 @@ pub fn take_commands(directory: &Path) -> Vec<Command> {
 /// The one glossary status that carries vocabulary authority.
 const CONFIRMED_STATUS: &str = "confirmed";
 
+/// One label of a published glossary concept, with the language it is written
+/// in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlossaryLabel {
+    /// `en` or `de`; empty when a hand-written document omits it.
+    pub language: String,
+    pub text: String,
+}
+
 /// One concept a published UbiLang glossary defines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlossaryConcept {
@@ -909,9 +918,9 @@ pub struct GlossaryConcept {
     /// invalidated, or one marked deprecated, never demands its label back.
     pub status: String,
     /// Every preferred label, in file order.
-    pub pref_labels: Vec<String>,
+    pub pref_labels: Vec<GlossaryLabel>,
     /// Every alternative label, in file order.
-    pub alt_labels: Vec<String>,
+    pub alt_labels: Vec<GlossaryLabel>,
 }
 
 /// One published glossary document.
@@ -941,13 +950,19 @@ fn text_of(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn labels_of(value: Option<&Value>) -> Vec<String> {
+fn labels_of(value: Option<&Value>) -> Vec<GlossaryLabel> {
     value
         .and_then(Value::as_array)
         .map(|entries| {
             entries
                 .iter()
-                .filter_map(|entry| text_of(entry.get("text")))
+                .filter_map(|entry| {
+                    let text = text_of(entry.get("text"))?;
+                    Some(GlossaryLabel {
+                        language: text_of(entry.get("language")).unwrap_or_default(),
+                        text,
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1049,7 +1064,7 @@ pub fn concepts_defined_as<'a>(
                 || concept
                     .pref_labels
                     .iter()
-                    .any(|label| normalize_name(label) == wanted)
+                    .any(|label| normalize_name(&label.text) == wanted)
             {
                 matches.push(concept);
             }
@@ -1077,7 +1092,7 @@ pub fn concepts_using_term<'a>(
                 .pref_labels
                 .iter()
                 .chain(concept.alt_labels.iter())
-                .any(|label| normalize_name(label) == wanted)
+                .any(|label| normalize_name(&label.text) == wanted)
             {
                 matches.push(concept);
             }
@@ -1086,12 +1101,18 @@ pub fn concepts_using_term<'a>(
     matches
 }
 
-/// The concept's preferred label, preferring the first label in file order.
+/// The concept's canonical label: its `en` preferred label, or the first
+/// preferred label when the concept carries no English one. Published
+/// glossaries sort their labels by language, so file order alone would name the
+/// German label of a bilingual concept while the Glossary page shows the
+/// English one; this is the rule `labelText` applies there.
 pub fn preferred_label(concept: &GlossaryConcept) -> String {
     concept
         .pref_labels
-        .first()
-        .cloned()
+        .iter()
+        .find(|label| label.language == "en")
+        .or_else(|| concept.pref_labels.first())
+        .map(|label| label.text.clone())
         .unwrap_or_else(|| concept.id.clone())
 }
 

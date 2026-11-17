@@ -638,6 +638,57 @@ async fn consistent_naming_keeps_a_row_after_the_cited_evidence_moves() {
 }
 
 #[tokio::test]
+async fn consistent_naming_takes_the_english_label_of_a_bilingual_concept() {
+    let fixture = Fixture::new("bilingual");
+    fixture.naming_inputs();
+    // The published format sorts labels by language, so `de` precedes `en` in
+    // the document the Glossary page and this gate both read.
+    fixture.write(
+        ".omp/discover/glossary/orders.glossary.yaml",
+        "boundedContext: orders\nconcepts:\n  - id: item_price\n    prefLabels:\n      - language: de\n        text: Betrag\n      - language: en\n        text: Amount\n    altLabels:\n      - language: de\n        text: Gebühr\n",
+    );
+    let config = cn::consistent_naming_config();
+    let glossaries = cn::read_glossaries(&fixture.repo, &config);
+    assert_eq!(
+        cn::preferred_label(&glossaries[0].concepts[0]),
+        "Amount",
+        "a bilingual concept's canonical label is its English one"
+    );
+    let body = naming_body(
+        "synonymous naming",
+        BodyOptions {
+            concept: "item_price",
+            name_in_use: "price",
+            proposed: "Amount",
+            evidence_path: "src/price.ts",
+            evidence_lines: "4",
+            quote: "export const price = unitPrice;",
+            occurrences: &[("src/price.ts", "1-4"), ("client/PriceCard.svelte", "2-4")],
+            glossary: Some(
+                "## Glossary\n\n.omp/discover/glossary/orders.glossary.yaml defines item_price as Amount.",
+            ),
+        },
+    );
+    let skill = cn::read_skill_directives(&fixture.repo, &config.skill_document)
+        .expect("the fixture skill");
+    let mut options = cn::FilingOptions {
+        glossaries,
+        ..Default::default()
+    };
+    let filing = cn::FilingProvenance {
+        title: "Rename price to amount".to_string(),
+        body,
+        labels: vec![cn::CONSISTENT_NAMING_LABEL.to_string()],
+    };
+    match cn::verify_filing(&fixture.repo, &skill, &filing, &mut options) {
+        cn::ProvenanceResult::Ok(category) => assert_eq!(category, "synonymous naming"),
+        cn::ProvenanceResult::Problem(detail) => {
+            panic!("the English preferred label is refused: {detail}")
+        }
+    }
+}
+
+#[tokio::test]
 async fn consistent_naming_publishes_a_backlog_it_never_proved() {
     let fixture = Fixture::new("backlog");
     fixture.naming_inputs();
