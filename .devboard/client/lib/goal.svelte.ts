@@ -797,7 +797,10 @@ export class GoalStore {
               },
         paused: message.paused,
       } as LifecycleState;
-      if (this.lifecycle.stage !== "goal" || this.lifecycle.paused) this.lifecycleSeen = true;
+      // Derived per frame, never latched: the idle lifecycle the reset's
+      // completion broadcast reports (`goal`, no pause) must read "Not
+      // started" again instead of keeping the pass the reset discarded.
+      this.lifecycleSeen = this.lifecycle.stage !== "goal" || this.lifecycle.paused;
     }
   }
 }

@@ -444,7 +444,7 @@
             stage={goal.lifecycle.stage}
             pass={goal.lifecycle.pass}
             paused={goal.lifecycle.paused}
-            seen={goal.lifecycleSeen || goal.lifecycleActive}
+            seen={goal.lifecycleSeen}
             workLabel={goal.running && !goal.lifecycleActive ? goal.runTitle : goal.lifecycleWorkTitle}
             workUrl={goal.running && !goal.lifecycleActive ? null : goal.lifecycleWorkUrl}
             manual={goal.running && !goal.lifecycleActive}
