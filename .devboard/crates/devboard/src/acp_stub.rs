@@ -701,9 +701,12 @@ impl Stub {
     }
 
     /// The `/goal-draft` turn. The draft's own bytes choose the scenario:
-    /// `STUB-QUESTION` asks one question first, `STUB-HANG` waits for Stop, and
-    /// `STUB-FAIL` reports a failed label verification. A successful turn
-    /// writes the five-section spec and removes the draft.
+    /// `STUB-QUESTION` asks one question first, `STUB-HANG` waits for Stop,
+    /// `STUB-FAIL` reports a failed label verification, and `STUB-KEEP`
+    /// reports the same failure the way the contract tells the agent to — as
+    /// its last activity line, with the draft left on disk — and ends the turn
+    /// green. A successful turn writes the five-section spec and removes the
+    /// draft.
     fn run_goal_draft(&self, relative: &str) -> std::result::Result<(), String> {
         self.log(&format!("goal-draft {relative}"));
         let draft_path = self.cwd.join(relative);
@@ -714,6 +717,12 @@ impl Stub {
 
         if source.contains("STUB-QUESTION") {
             self.ask_questions_with(1, false)?;
+        }
+        if source.contains("STUB-KEEP") {
+            self.stream(
+                "The read-back failed: the issue body differs from the spec; the draft is kept",
+            );
+            return Ok(());
         }
         if source.contains("STUB-FAIL") {
             return Err("goal label verification failed".to_string());

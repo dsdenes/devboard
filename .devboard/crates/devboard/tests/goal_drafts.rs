@@ -539,6 +539,87 @@ async fn start_streams_activity_answers_a_question_and_stops() {
     assert!(stored["peer"].is_null());
 }
 
+/// The draft's absence is the only evidence the contract accepts: a turn that
+/// removed it filed and verified the goal issue, so the run is a success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_that_removes_the_draft_records_success() {
+    let _serial = serial().await;
+    let repo = repo_root("succeeded");
+    let path = write_draft(&repo, "filed.md", "# Filed\n\nPlain draft.\n");
+    let draft = repo.join(&path);
+    let app = app(&repo);
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(
+        &conn,
+        Command::StartGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let finished = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftState" && frame["draft"]["status"] != "running",
+        15000,
+    )
+    .await;
+
+    assert_eq!(
+        finished["draft"]["status"],
+        json!("succeeded"),
+        "{finished}"
+    );
+    assert_eq!(finished["draft"]["error"], Value::Null);
+    assert!(!draft.exists());
+    assert!(repo.join(".devboard/goals/filed.md").exists());
+}
+
+/// A reported blocker and a failed read-back both end the turn green with the
+/// draft kept, so the run is a failure that carries the peer's own last words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_that_keeps_its_draft_records_the_reported_failure() {
+    let _serial = serial().await;
+    let repo = repo_root("retained");
+    let path = write_draft(&repo, "unverified.md", "# Unverified\n\nSTUB-KEEP\n");
+    let draft = repo.join(&path);
+    let reported = "The read-back failed: the issue body differs from the spec; the draft is kept";
+    let app = app(&repo);
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(
+        &conn,
+        Command::StartGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let finished = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftState" && frame["draft"]["status"] != "running",
+        15000,
+    )
+    .await;
+
+    assert_eq!(finished["draft"]["status"], json!("failed"), "{finished}");
+    assert_eq!(finished["draft"]["error"], json!(reported));
+    assert!(activity_contains(&finished, "The read-back failed"));
+    assert!(
+        draft.exists(),
+        "the draft a failed run keeps is never deleted"
+    );
+    let stored: Value = serde_json::from_str(
+        &std::fs::read_to_string(devboard::goal_drafts::goal_draft_owner_state_path(
+            &state_dir(),
+            &repo,
+            &path,
+        ))
+        .expect("the finished owner state"),
+    )
+    .expect("state JSON");
+    assert_eq!(stored["run"]["status"], "failed");
+    assert_eq!(stored["run"]["error"], json!(reported));
+}
+
 /// The page answers over one HTTP request, so that reply must carry the state
 /// that confirms the answer: it is the only frame the page reads before its
 /// next poll, and the poll cadence is longer than the UI latency budget. The

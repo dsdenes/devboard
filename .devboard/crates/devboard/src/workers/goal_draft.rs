@@ -20,7 +20,7 @@ use crate::goal_drafts::{
     read_goal_draft_owner_state, recorded_child_alive, self_child, take_goal_draft_owner_commands,
     write_goal_draft_owner_state, GoalDraftOwnerCommand, GoalDraftOwnerState, GoalDraftQuestion,
     GoalDraftRun, GoalDraftStatus, RecordedChild, GOAL_DRAFT_OWNER_EXITED,
-    GOAL_DRAFT_OWNER_VERSION,
+    GOAL_DRAFT_OWNER_VERSION, GOAL_DRAFT_RETAINED,
 };
 use crate::workers::WorkerInvocation;
 
@@ -32,6 +32,8 @@ const OWNER_COMMAND_MS: u64 = 250;
 const PEER_CLOSE_GRACE_MS: u64 = 1_500;
 /// How long the owner waits for the dashboard's running state to appear.
 const LAUNCH_WAIT_MS: u64 = 2_000;
+/// How much of the peer's own last activity entry the recorded error keeps.
+const DETAIL_MAX_BYTES: usize = 600;
 
 /// Runs one draft's owner until its elaboration ends; the entry point of its
 /// process.
@@ -137,14 +139,34 @@ pub async fn run(invocation: &WorkerInvocation) -> Result<()> {
                 owner.apply_event(event);
             }
             result = &mut turn => {
-                if let Ok(Ok(_)) = result {
-                    owner.finish(GoalDraftStatus::Succeeded, None).await;
-                } else {
-                    let detail = match result {
-                        Ok(Err(error)) if !error.message.is_empty() => error.message,
-                        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => owner.failure_detail(),
-                    };
-                    owner.finish(GoalDraftStatus::Failed, Some(detail)).await;
+                // A resolved turn can still have its last activity frames
+                // queued on this channel: the reader applies them in stream
+                // order before it settles the request, so draining here is
+                // what makes the recorded reason the peer's own last words.
+                while let Ok(event) = events.try_recv() {
+                    owner.apply_event(event);
+                }
+                match result {
+                    // The contract's success postcondition is the filed and
+                    // verified issue, and only the removed draft evidences it:
+                    // a blocker and a failed read-back both end the turn green
+                    // with the draft kept.
+                    Ok(Ok(_)) if !owner.draft_retained() => {
+                        owner.finish(GoalDraftStatus::Succeeded, None).await;
+                    }
+                    Ok(Ok(_)) => {
+                        let detail = owner.retained_draft_detail();
+                        owner.finish(GoalDraftStatus::Failed, Some(detail)).await;
+                    }
+                    Ok(Err(error)) if !error.message.is_empty() => {
+                        owner
+                            .finish(GoalDraftStatus::Failed, Some(error.message))
+                            .await;
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        let detail = owner.failure_detail();
+                        owner.finish(GoalDraftStatus::Failed, Some(detail)).await;
+                    }
                 }
                 return Ok(());
             }
@@ -282,6 +304,41 @@ impl Owner {
         }
         "the elaboration agent ended with an error".to_string()
     }
+
+    /// Whether the draft the peer was handed is still on disk. Only a removed
+    /// draft evidences the contract's success postcondition: the agent reports
+    /// a blocker, or a read-back whose label or body check failed, by keeping
+    /// the draft and ending its turn.
+    fn draft_retained(&self) -> bool {
+        self.repo_dir.join(&self.draft_path).exists()
+    }
+
+    /// The error of a completed turn that kept its draft: the peer's own last
+    /// activity entry, which names the blocker it reported or the check that
+    /// failed, bounded so one streamed chunk cannot become the whole error.
+    fn retained_draft_detail(&self) -> String {
+        self.run
+            .activity
+            .iter()
+            .rev()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+            .map(bounded_detail)
+            .unwrap_or_else(|| GOAL_DRAFT_RETAINED.to_string())
+    }
+}
+
+/// Cuts the recorded reason to `DETAIL_MAX_BYTES` without splitting a
+/// character.
+fn bounded_detail(text: &str) -> String {
+    if text.len() <= DETAIL_MAX_BYTES {
+        return text.to_string();
+    }
+    let mut cut = DETAIL_MAX_BYTES;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text[..cut].trim_end().to_string()
 }
 
 async fn connect_peer(

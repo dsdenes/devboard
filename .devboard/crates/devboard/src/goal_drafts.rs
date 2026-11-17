@@ -35,6 +35,11 @@ pub const GOAL_DRAFT_OWNER_DID_NOT_START: &str = "The elaboration owner did not 
 /// restart also died.
 pub const GOAL_DRAFT_OWNER_EXITED: &str = "The elaboration owner exited before it finished.";
 
+/// The recorded error of a turn that completed while its draft was still on
+/// disk and left no activity line to quote.
+pub const GOAL_DRAFT_RETAINED: &str =
+    "The elaboration ended with the draft still present and reported no reason.";
+
 /// The poll cadence the dashboard observes owners with. A tick reads file
 /// contents only when a stamp changed; an idle watcher costs a directory scan.
 const POLL_MS: u64 = 250;

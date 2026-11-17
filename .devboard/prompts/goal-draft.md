@@ -154,6 +154,10 @@ one exists, and what must be corrected; leave the spec file in place.
 When both checks pass, delete the draft with `rm` and report the spec path and the issue URL. That
 is the end of the run.
 
+The owner records this run as `failed` whenever the draft is still on disk when the turn ends, and
+it quotes the run's last activity line as the recorded error. Report a blocker or a failed check as
+that last line, and remove the draft only once both checks pass.
+
 ## Reporting
 
 The final reply names only: the spec path, the issue number and URL, and whether the draft was
