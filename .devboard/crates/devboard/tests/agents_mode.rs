@@ -944,6 +944,85 @@ async fn a_worker_that_dies_without_publishing_reports_the_proof_failure() {
     assert_eq!(failed["lifecycle"], "stopped", "{all:?}");
 }
 
+/// A Start whose spawned worker exits before publishing a lock leaves no
+/// worker behind. The next Start must spawn one instead of answering
+/// `Start did nothing: … already starting`, which settled the family on the
+/// five-second proof error while the operator's click did nothing.
+#[tokio::test]
+async fn a_start_after_a_worker_died_before_publishing_spawns_a_worker() {
+    let root = scratch("start-after-dead-spawn");
+    let app = app_at(&root);
+    let spawned: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&spawned);
+    // The worker the first Start forked exits at once without a lock or a
+    // state: exactly what a worker that found a predecessor still holding its
+    // version lock leaves behind.
+    devboard::agents_mode::set_spawn(&app, move |_argv, _environment| {
+        let mut child = std::process::Command::new("true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("a stand-in worker");
+        let pid = child.id();
+        let _ = child.wait();
+        recorded.lock().expect("pids").push(pid);
+        Some(pid)
+    });
+    let preflight: devboard::agents_mode::PreflightCallback =
+        Arc::new(|_request| Box::pin(async { Ok("owner/repository".to_string()) }));
+    devboard::agents_mode::set_preflight(&app, "scout", preflight);
+    devboard::agents_mode::set_agent_environment(&app, || Box::pin(async { Ok(HashMap::new()) }));
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("scout")),
+        },
+    )
+    .await;
+    // The fork runs beside the answer; the second Start must reach a state in
+    // which the first worker was already forked and recorded.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while spawned.lock().expect("pids").is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the first Start never forked its worker"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("scout")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while spawned.lock().expect("pids").len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second Start did not spawn a worker: {all:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let snapshot = agent(&all, "scout").expect("a scout snapshot");
+    assert!(
+        snapshot["notice"].as_str().is_none()
+            || !snapshot["notice"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("Start did nothing: the Auto Scout worker is already starting"),
+        "{all:?}"
+    );
+}
+
 #[tokio::test]
 async fn an_attached_worker_clears_a_preview_its_own_start_still_shows() {
     let root = scratch("stale-preview");

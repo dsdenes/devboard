@@ -5739,7 +5739,7 @@ impl RepoFamily {
             Ok(program) => program,
             Err(_) => return,
         };
-        let started = self.spawn_worker(program).await;
+        let started = self.spawn_worker(program, None).await.0;
         if !started.ok {
             return;
         }
@@ -5780,11 +5780,23 @@ impl RepoFamily {
             // preflight and a second worker.
             let mut mutable = self.mutable.lock().expect("family state");
             if mutable.starting {
-                mutable.notice = Some(format!(
-                    "Start did nothing: the {} worker is already starting for this dashboard.",
-                    self.family_id.worker_label()
-                ));
-                return AgentResult::ok();
+                // A fork still in flight, or a worker that is still alive,
+                // owns the family. A start whose worker already exited owns
+                // nothing: refusing the next command as "already starting"
+                // left the card on the five-second proof error with no worker.
+                if mutable.starting_since.is_none()
+                    || mutable.started_pid.is_some_and(pid_alive)
+                {
+                    mutable.notice = Some(format!(
+                        "Start did nothing: the {} worker is already starting for this dashboard.",
+                        self.family_id.worker_label()
+                    ));
+                    return AgentResult::ok();
+                }
+                mutable.starting = false;
+                mutable.starting_since = None;
+                mutable.start_deadline = None;
+                mutable.started_pid = None;
             }
         }
         for _ in 0..1000 {
@@ -5926,12 +5938,12 @@ impl RepoFamily {
     /// publisher, so the card updates without a poll whose disk fingerprint a
     /// failed spawn never changed.
     async fn spawn_and_preflight(self: Arc<Self>, attempt: u64, program: PathBuf) {
-        let started = self.spawn_worker(program).await;
-        let (owned, spawned_pid) = self
+        let (started, spawned_pid) = self.spawn_worker(program, Some(attempt)).await;
+        let owned = self
             .mutable
             .lock()
-            .map(|mutable| (mutable.start_attempt == attempt, mutable.started_pid))
-            .unwrap_or((false, None));
+            .map(|mutable| mutable.start_attempt == attempt)
+            .unwrap_or(false);
         if !owned {
             // A later Start or Stop owns the state this spawn was armed for, so
             // the process this attempt started belongs to neither.
@@ -6032,7 +6044,15 @@ impl RepoFamily {
     /// The provider environment this dashboard generates and the detached
     /// process it forks are the slow half of a Start, so this runs on the
     /// Start's own task and never on the operator's request.
-    async fn spawn_worker(&self, program: PathBuf) -> AgentResult {
+    async fn spawn_worker(
+        &self,
+        program: PathBuf,
+        attempt: Option<u64>,
+    ) -> (AgentResult, Option<u32>) {
+        let current = |mutable: &RepoMutable| match attempt {
+            Some(attempt) => mutable.start_attempt == attempt,
+            None => true,
+        };
         let argv = harness_argv(
             &program,
             self.family_id.directory(),
@@ -6054,10 +6074,12 @@ impl RepoFamily {
             Ok(base) => base,
             Err(message) => {
                 let mut mutable = self.mutable.lock().expect("family state");
-                mutable.starting = false;
-                mutable.starting_since = None;
-                mutable.start_error = Some(message.clone());
-                return AgentResult::failure(message);
+                if current(&mutable) {
+                    mutable.starting = false;
+                    mutable.starting_since = None;
+                    mutable.start_error = Some(message.clone());
+                }
+                return (AgentResult::failure(message), None);
             }
         };
         let environment = provider_environment(
@@ -6086,11 +6108,16 @@ impl RepoFamily {
                 // ensures its labels outlasts the five second window. The live
                 // pid is the proof; the lock only proves attachment.
                 let mut mutable = self.mutable.lock().expect("family state");
-                mutable.starting = true;
-                mutable.started_pid = Some(spawn_pid);
-                mutable.starting_since = Some((self.now)());
-                mutable.start_deadline = None;
-                AgentResult::ok()
+                // A Stop that landed while this fork ran bumped the attempt and
+                // retired the start: it owns the family now, so this spawn must
+                // not arm a start the Stop already answered.
+                if current(&mutable) {
+                    mutable.starting = true;
+                    mutable.started_pid = Some(spawn_pid);
+                    mutable.starting_since = Some((self.now)());
+                    mutable.start_deadline = None;
+                }
+                (AgentResult::ok(), Some(spawn_pid))
             }
             None => {
                 let message = format!(
@@ -6098,10 +6125,12 @@ impl RepoFamily {
                     self.family_id.worker_label()
                 );
                 let mut mutable = self.mutable.lock().expect("family state");
-                mutable.starting = false;
-                mutable.starting_since = None;
-                mutable.start_error = Some(message.clone());
-                AgentResult::failure(message)
+                if current(&mutable) {
+                    mutable.starting = false;
+                    mutable.starting_since = None;
+                    mutable.start_error = Some(message.clone());
+                }
+                (AgentResult::failure(message), None)
             }
         }
     }
@@ -6150,6 +6179,13 @@ impl RepoFamily {
             mutable.stop_requested = true;
             mutable.start_error = None;
             mutable.notice = None;
+            // A start whose worker is being stopped is retired with it: the
+            // family settles `stopped` instead of waiting out the proof for a
+            // worker that no later Start can attach.
+            mutable.starting = false;
+            mutable.starting_since = None;
+            mutable.start_deadline = None;
+            mutable.started_pid = None;
             // A preflight still in flight belongs to the worker being stopped.
             mutable.start_attempt = mutable.start_attempt.wrapping_add(1);
         }
