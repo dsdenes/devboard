@@ -90,6 +90,14 @@
     barState === "running" ? earliestWorkerStart(snapshot?.workers ?? []) : null,
   );
   const cycles = $derived(detail?.panel === "cycles" ? detail.cycles : []);
+  // A cycle family's page names the filing queue beside its filed count: after a
+  // capped, deferred, or skipped cycle the findings stay pending, so a
+  // count-only subtitle would assert a queue size it never shows.
+  const issuesCountLabel = $derived(
+    detail?.panel === "cycles"
+      ? `${issues.length} filed · ${snapshot?.pending ?? 0} pending filing`
+      : `${issues.length} filed`,
+  );
   // A Watchdog or MCP optimizer page follows cycles instead of a scan log; the bar's
   // expansion is the one place either history renders.
   const barActivity = $derived(
@@ -487,7 +495,7 @@
           <section class="panel agent-page__issues" aria-label={`${descriptor.label} filed issues`}>
             <div class="panel__header">
               <h2 class="panel__title">Filed issues</h2>
-              <span class="panel__subtitle" data-testid="agent-issues-count">{issues.length} filed</span>
+              <span class="panel__subtitle" data-testid="agent-issues-count">{issuesCountLabel}</span>
             </div>
             <div class="panel__body panel__body--flush">
               <AgentIssuesTable {issues} agentLabel={descriptor.label} {sync} />

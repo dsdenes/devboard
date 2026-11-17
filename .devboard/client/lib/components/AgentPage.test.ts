@@ -1139,7 +1139,46 @@ test("a cycle family keeps its filing limits and filed issues", () => {
   expect(page.getByTestId("agent-limit-pending")).toBeTruthy();
   expect(page.getByTestId("agent-save-limits")).toBeTruthy();
   expect(page.getByTestId("agent-issues")).toBeTruthy();
-  expect(page.getByTestId("agent-issues-count").textContent).toContain("1");
+  expect(page.getByTestId("agent-issues-count").textContent).toBe("1 filed");
   expect(page.queryByTestId("agent-deploys")).toBeNull();
   expect(page.queryByRole("heading", { name: "Deploy history" })).toBeNull();
+});
+
+test("a cycle family's filed-issues subtitle names the pending filing queue", () => {
+  const finding = {
+    title: "a watchdog finding",
+    category: "correctness",
+    createdAt: "2026-11-03T10:15:00.000Z",
+    url: "https://example.test/issues/3",
+    state: "pending",
+    version: null,
+  };
+  const view = presentAgent(
+    "watchdog",
+    releaseSnapshot({
+      id: "watchdog",
+      label: "Watchdog",
+      issues: [finding],
+      pending: 2,
+      detail: { panel: "cycles", cycles: [] },
+    }),
+  );
+  expect(within(view.container).getByTestId("agent-issues-count").textContent).toBe(
+    "1 filed · 2 pending filing",
+  );
+
+  cleanup();
+  const drained = presentAgent(
+    "watchdog",
+    releaseSnapshot({
+      id: "watchdog",
+      label: "Watchdog",
+      issues: [finding],
+      pending: 0,
+      detail: { panel: "cycles", cycles: [] },
+    }),
+  );
+  expect(within(drained.container).getByTestId("agent-issues-count").textContent).toBe(
+    "1 filed · 0 pending filing",
+  );
 });
