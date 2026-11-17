@@ -7,7 +7,9 @@ date: 2026-10-19
 deciders: ["@dsdenes"]
 affects:
   - type: path
-    pattern: .devboard/server/app.ts
+    pattern: .devboard/crates/devboard/src/detached_run.rs
+  - type: path
+    pattern: .devboard/crates/devboard/src/runs.rs
 ---
 # Run and interview state persistence
 
@@ -24,4 +26,19 @@ The choice must support:
 
 ## Decision
 
-Active-run state lives in the backend process's memory for its lifetime: the record being worked on, the activity log, the current question, the answers, and the stop state. Restarting the backend ends the run. No other storage mechanism is introduced.
+Run and interview state is durable and owned by a detached process, not by the dashboard. Each run
+keeps its record under `STATE_DIR/runs/<repository key>/<kind>-<digest>/`: `state.json` carries the
+lifecycle status, the current question and choices, the run and owner identity, and the recorded
+error; `activity.jsonl` and `text.jsonl` carry the activity log and the assistant text; `prompt.txt`
+carries the instruction. The developer's answers and the stop, pause, resume, and further prompt
+commands are queued as files under `control/` for the run's live owner, and `closed` records that
+the run was closed and stops that owner.
+
+The owner process outlives the dashboard that started it. A replacement dashboard attaches to a
+live owner, replays each journal from its cursor, and follows it live, so the retained window
+survives a backend restart and the same run receives the answers. Restarting the backend ends only
+a run whose owner is gone: a record with a non-terminal status and no live owner reports `stopped`
+and is never resumed.
+
+These run-keyed files under `STATE_DIR` are the only persistence; no database and no run state held
+in dashboard process memory is introduced.
