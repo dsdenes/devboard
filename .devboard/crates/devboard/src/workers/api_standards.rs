@@ -2521,6 +2521,11 @@ pub struct Finding {
 pub struct FindingsAnswer {
     pub findings: Vec<Finding>,
     pub no_http_surface: bool,
+    /// Titles of entries whose `decision` named neither `filed` nor `skipped`,
+    /// including an entry that carries no string `decision` at all. The cycle
+    /// records each one as dropped, so a malformed entry stays visible without
+    /// discarding the rest of the answer.
+    pub undecided: Vec<String>,
 }
 
 fn stamp(millis: i64) -> String {
@@ -3067,14 +3072,24 @@ pub fn read_findings(directory: &Path) -> Option<FindingsAnswer> {
             .iter()
             .any(|entry| entry.get("reason").and_then(Value::as_str) == Some("no-http-surface"));
     let mut findings = Vec::new();
+    let mut undecided = Vec::new();
     for entry in entries {
         let Some(candidate) = entry.as_object() else {
             continue;
         };
-        let decision = candidate.get("decision").and_then(Value::as_str)?;
-        if decision != "filed" && decision != "skipped" {
-            continue;
-        }
+        let decision = match candidate.get("decision").and_then(Value::as_str) {
+            Some(decision @ ("filed" | "skipped")) => decision,
+            _ => {
+                undecided.push(
+                    candidate
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                );
+                continue;
+            }
+        };
         findings.push(Finding {
             title: candidate
                 .get("title")
@@ -3124,6 +3139,7 @@ pub fn read_findings(directory: &Path) -> Option<FindingsAnswer> {
     Some(FindingsAnswer {
         findings,
         no_http_surface,
+        undecided,
     })
 }
 
@@ -4527,6 +4543,16 @@ impl Worker {
             }
             Some(answer) => {
                 no_http_surface = answer.no_http_surface;
+                for title in &answer.undecided {
+                    record(format!(
+                        "dropped (no decision): {}",
+                        if title.is_empty() {
+                            "(no title)"
+                        } else {
+                            title
+                        }
+                    ));
+                }
                 let sources: HashMap<String, String> = input
                     .sources
                     .iter()
@@ -5501,6 +5527,73 @@ mod detection_tests {
         assert!(evidence_path(Path::new("."), "")
             .expect_err("an empty path")
             .contains("names no path"));
+    }
+}
+
+#[cfg(test)]
+mod findings_tests {
+    //! One undecided entry must not discard the rest of the peer's answer: the
+    //! cycle would then read as a silent no-answer cycle with no proof of the
+    //! rule it filed.
+
+    use super::*;
+
+    fn answer_directory(label: &str, document: &Value) -> PathBuf {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("findings-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("a cycle directory");
+        std::fs::write(findings_path(&directory), document.to_string())
+            .expect("a findings document");
+        directory
+    }
+
+    fn filed_entry() -> Value {
+        json!({
+            "title": "List endpoints return a bare array",
+            "ruleId": "101",
+            "level": "SHOULD",
+            "chapter": "Filtering",
+            "directive": "Filtered collections SHOULD be wrapped in an object",
+            "endpoints": [{ "method": "GET", "path": "/items" }],
+            "evidence": [{ "path": "src/server.ts", "lines": "1-2", "quote": "app.get('/items'" }],
+            "proposedChange": "Return an envelope",
+            "acceptanceCriteria": ["GET /items returns an object"],
+            "decision": "filed",
+            "issueNumber": 12,
+            "issueUrl": "https://forge/dsdenes/devboard/issues/12"
+        })
+    }
+
+    #[test]
+    fn an_entry_without_a_decision_keeps_the_rest_of_the_answer() {
+        let directory = answer_directory(
+            "undecided",
+            &json!({
+                "version": 1,
+                "findings": [
+                    filed_entry(),
+                    { "title": "An undecided candidate", "reason": "no-room" }
+                ]
+            }),
+        );
+        let answer = read_findings(&directory).expect("the answer is not discarded");
+        assert_eq!(answer.findings.len(), 1);
+        assert_eq!(
+            answer.findings[0].title,
+            "List endpoints return a bare array"
+        );
+        assert_eq!(answer.findings[0].decision, "filed");
+        assert_eq!(answer.findings[0].issue_number, Some(12));
+        assert_eq!(answer.undecided, vec!["An undecided candidate".to_string()]);
+    }
+
+    #[test]
+    fn a_document_without_findings_is_no_answer() {
+        let directory = answer_directory("no-findings", &json!({ "version": 1 }));
+        assert_eq!(read_findings(&directory), None);
     }
 }
 

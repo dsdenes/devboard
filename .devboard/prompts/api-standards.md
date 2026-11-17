@@ -200,4 +200,6 @@ Write one entry for every candidate you considered, filed or skipped. A skipped 
 `"decision": "skipped"` and a `reason` of `may-level`, `duplicate`, `no-room`, `outside-http`,
 `missing-citation`, `missing-evidence`, `tool-error`, or `no-http-surface`. A filed entry carries
 the number and URL the tool returned. The worker records every decision; it never files anything
-itself and never invents a filing.
+itself and never invents a filing. Every entry MUST carry `"decision"`: the worker ignores an
+entry whose `decision` is absent or names neither value, records it as dropped, and still reads
+every other entry in the same answer.
