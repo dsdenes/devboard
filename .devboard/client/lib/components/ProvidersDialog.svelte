@@ -64,6 +64,9 @@
       label: label.trim().length === 0 ? PROVIDERS[provider].name : label.trim(),
       ...(key.trim().length === 0 ? {} : { key: key.trim() }),
     });
+    // A refused send has no answer to wait for: the control returns to rest and
+    // keeps the draft, and the transport's own refusal is the response.
+    if (saving === null) savePending.refuse();
   }
 
   function confirmDelete(): void {
