@@ -316,12 +316,13 @@ pub fn tokenize(source: &str, language: Language) -> Vec<Token> {
             index = if cursor < length { cursor + 3 } else { length };
             continue;
         }
-        if let Some(end) = raw_string_end(&chars, index, language) {
+        if let Some((end, newlines)) = raw_string_end(&chars, index, language) {
             tokens.push(Token {
                 kind: TokenKind::String,
                 text: chars[index..end].iter().collect(),
                 line,
             });
+            line += newlines;
             index = end;
             continue;
         }
@@ -509,9 +510,10 @@ fn char_literal_end(chars: &[char], index: usize) -> Option<usize> {
     (chars.get(cursor) == Some(&'\'')).then_some(cursor + 1)
 }
 
-/// The index just past one Rust raw string (`r"…"`, `r#"…"#`, `br#"…"#`),
-/// or `None` when the text at `index` is an ordinary identifier.
-fn raw_string_end(chars: &[char], index: usize, language: Language) -> Option<usize> {
+/// The index just past one Rust raw string (`r"…"`, `r#"…"#`, `br#"…"#`) and
+/// the number of newlines it contains, or `None` when the text at `index` is an
+/// ordinary identifier.
+fn raw_string_end(chars: &[char], index: usize, language: Language) -> Option<(usize, usize)> {
     if language != Language::Rust {
         return None;
     }
@@ -537,6 +539,15 @@ fn raw_string_end(chars: &[char], index: usize, language: Language) -> Option<us
         return None;
     }
     cursor += 1;
+    let finish = |end: usize| {
+        (
+            end,
+            chars[index..end]
+                .iter()
+                .filter(|value| **value == '\n')
+                .count(),
+        )
+    };
     while cursor < chars.len() {
         if chars[cursor] == '"' {
             let mut matched = 0;
@@ -544,12 +555,12 @@ fn raw_string_end(chars: &[char], index: usize, language: Language) -> Option<us
                 matched += 1;
             }
             if matched == hashes {
-                return Some(cursor + 1 + hashes);
+                return Some(finish(cursor + 1 + hashes));
             }
         }
         cursor += 1;
     }
-    Some(chars.len())
+    Some(finish(chars.len()))
 }
 
 /// The index of the `open` token matching the `close` token at `index`.

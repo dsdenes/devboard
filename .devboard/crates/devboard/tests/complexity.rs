@@ -606,6 +606,33 @@ fn tokenizer_skips_comments_and_keeps_one_token_per_literal() {
 }
 
 #[test]
+fn a_multi_line_raw_string_keeps_later_function_lines() {
+    let source = [
+        "fn first() -> &'static str {",
+        "    let fixture = r#\"one",
+        "two\"#;",
+        "    fixture",
+        "}",
+        "",
+        "fn second() -> u64 {",
+        "    1",
+        "}",
+    ]
+    .join("\n");
+    let measured = measure_source(&source, Language::Rust);
+    let spans: Vec<_> = measured
+        .functions
+        .iter()
+        .map(|row| (row.name.as_str(), row.line, row.lines))
+        .collect();
+    // The raw string spans two physical lines, so the closing brace sits on
+    // line 5 and `second` starts on line 7, not one line earlier.
+    assert_eq!(spans, vec![("first", 1, 5), ("second", 7, 3)]);
+    // Distinct physical lines that carry tokens: 1-5 and 7-9.
+    assert_eq!(measured.loc, 8);
+}
+
+#[test]
 fn utc_date_reads_the_utc_calendar_day() {
     assert_eq!(
         utc_date(datetime!(2026 - 11 - 01 23:59:59.999 UTC)),
