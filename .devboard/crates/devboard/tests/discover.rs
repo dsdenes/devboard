@@ -2630,16 +2630,21 @@ fn an_installed_wrapper_edit_keeps_the_host_fingerprint() {
         "sheet",
     )
     .expect("the sheet publishes into the host");
-    let artifacts = devboard::discover_mode::read_artifacts(&repo)
-        .artifacts
-        .expect("the publication is readable");
+    assert!(
+        devboard::discover_mode::read_artifacts(&repo)
+            .artifacts
+            .is_some(),
+        "the publication is readable"
+    );
     let before = devboard::discover_mode::host_facts(&repo);
     assert!(
         !before.dirty,
         "a publication into `.omp/` leaves the host clean"
     );
+    let mut cache = devboard::discover_mode::WorkspaceCache::new(repo.clone());
+    cache.read(&repo, true);
     assert!(
-        !devboard::discover_mode::artifacts_stale(&repo, Some(&artifacts)),
+        !cache.stale(),
         "the freshly published artifacts are current"
     );
 
@@ -2653,8 +2658,9 @@ fn an_installed_wrapper_edit_keeps_the_host_fingerprint() {
         "an installed wrapper edit is not a host fact"
     );
     assert!(!after.dirty, "an installed wrapper edit is not dirt");
+    cache.read(&repo, true);
     assert!(
-        !devboard::discover_mode::artifacts_stale(&repo, Some(&artifacts)),
+        !cache.stale(),
         "an installed wrapper edit leaves the publication current"
     );
 }

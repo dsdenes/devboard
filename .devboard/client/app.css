@@ -2074,6 +2074,18 @@ kbd {
 .discover-skill__state[data-tone="error"] .discover-skill__state-dot {
   background: var(--error);
 }
+.discover-skill__state[data-tone="muted"] {
+  background: var(--secondary);
+  color: var(--muted-foreground);
+}
+.discover-skill__state[data-tone="muted"] .discover-skill__state-dot {
+  background: var(--muted-foreground);
+}
+
+/* An unpublished skill's body states why it is empty; it is not a missing file. */
+.discover-skill__pending {
+  padding: 12px;
+}
 
 .discover-skill__body {
   display: flex;

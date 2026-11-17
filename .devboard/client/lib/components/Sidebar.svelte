@@ -22,7 +22,7 @@
   import { statusTone, verificationTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
-  import type { DiscoverTab, Mode } from "../types";
+  import type { DiscoverSkillState, DiscoverTab, Mode } from "../types";
 
   interface Props {
     openTab: (mode: Mode, tab: WorkspaceTab) => void;
@@ -70,8 +70,8 @@
     ),
   );
 
-  function skillState(name: string): "generated" | "edited" | "missing" {
-    return discover.skill(name)?.state ?? "missing";
+  function skillState(name: string): DiscoverSkillState {
+    return discover.skillState(name);
   }
 
   /** One Discover agent's own entry state; never another agent's or the suite's. */
@@ -662,8 +662,11 @@
           >
             <span class="sidebar-item__label">{tab.label}</span>
             {#if state !== "generated"}
-              <span class="sidebar-item__meta" data-tone={state === "missing" ? "error" : "warning"}>
-                {state}
+              <span
+                class="sidebar-item__meta"
+                data-tone={state === "missing" ? "error" : state === "edited" ? "warning" : undefined}
+              >
+                {state === "pending" ? "Not generated yet" : state}
               </span>
             {/if}
             {#if runState !== "idle"}

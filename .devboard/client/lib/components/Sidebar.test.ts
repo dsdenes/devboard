@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { DiscoverStatePayload } from "../types";
+import type { DiscoverSkill, DiscoverStatePayload } from "../types";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
@@ -57,6 +57,7 @@ function discoverPayload(options: {
   activeAgent?: string | null;
   runningAll?: boolean;
   allFailed?: string | null;
+  skills?: DiscoverSkill[];
 } = {}): DiscoverStatePayload {
   const states = options.states ?? {};
   return {
@@ -96,7 +97,7 @@ function discoverPayload(options: {
     glossaryUsage: {},
     glossarySignificance: {},
     decisions: [],
-    skills: SKILL_TABS.filter((tab) => tab.skill !== null).map((tab) => ({
+    skills: options.skills ?? SKILL_TABS.filter((tab) => tab.skill !== null).map((tab) => ({
       name: tab.skill ?? "",
       state: tab.skill === "discover-contribution" ? ("missing" as const) : ("generated" as const),
       baseline: "",
@@ -381,6 +382,20 @@ test("idle entries render no run badge and the skill's missing meta survives", a
   const contributionSkill = document.querySelector('[data-tab="contribution-skill"]');
   expect(contributionSkill?.getAttribute("data-state")).toBe("missing");
   expect(contributionSkill?.querySelector(".sidebar-item__meta")?.textContent?.trim()).toBe("missing");
+});
+
+test("an unpublished skill row reads Not generated yet on the muted tone", async () => {
+  await showDiscover(
+    discoverPayload({ skills: [{ name: "discover-glossary", state: "generated", baseline: "", live: "" }] }),
+  );
+  const contributionSkill = document.querySelector('[data-tab="contribution-skill"]');
+  expect(contributionSkill?.getAttribute("data-state")).toBe("pending");
+  const meta = contributionSkill?.querySelector(".sidebar-item__meta");
+  expect(meta?.textContent?.trim()).toBe("Not generated yet");
+  expect(meta?.hasAttribute("data-tone")).toBe(false);
+  const glossarySkill = document.querySelector('[data-tab="glossary-skill"]');
+  expect(glossarySkill?.getAttribute("data-state")).toBe("generated");
+  expect(glossarySkill?.querySelector(".sidebar-item__meta")).toBeNull();
 });
 
 test("no Discover entry is a tab outside a tablist and the open page stays current", async () => {

@@ -17,6 +17,7 @@ import type {
   DiscoverAgentPrompt,
   DiscoverAgentState,
   DiscoverSkill,
+  DiscoverSkillState,
   DiscoverStatePayload,
   DiscoverTarget,
   Freshness,
@@ -360,6 +361,17 @@ export class DiscoverStore {
 
   skill(name: string): DiscoverSkill | null {
     return this.skills.find((skill) => skill.name === name) ?? null;
+  }
+
+  /**
+   * A skill's page state. No published entry is `pending`, because no Discover
+   * agent has generated the file yet; a published entry whose live file is gone
+   * stays `missing`, the only state `Live file missing` names.
+   */
+  skillState(name: string): DiscoverSkillState {
+    const entry = this.skill(name);
+    if (entry === null) return "pending";
+    return entry.live === null ? "missing" : entry.state;
   }
 
   /** The live skill file's bytes, or its generated baseline while it is missing. */

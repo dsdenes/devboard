@@ -47,12 +47,24 @@
     activeSkill === null ? null : (TABS.find((entry) => entry.skill === activeSkill) ?? null),
   );
   const skillState = $derived(
-    activeSkill === null ? "missing" : (discover.skill(activeSkill)?.state ?? "missing"),
+    activeSkill === null ? "pending" : discover.skillState(activeSkill),
   );
   const skillStateTone = $derived(
-    skillState === "generated" ? "success" : skillState === "edited" ? "warning" : "error",
+    skillState === "generated"
+      ? "success"
+      : skillState === "edited"
+        ? "warning"
+        : skillState === "missing"
+          ? "error"
+          : "muted",
   );
-  const skillStateLabel = $derived(skillState === "missing" ? "Live file missing" : skillState);
+  const skillStateLabel = $derived(
+    skillState === "missing"
+      ? "Live file missing"
+      : skillState === "pending"
+        ? "Not generated yet"
+        : skillState,
+  );
 
   const totalTerms = $derived(
     discover.contexts.reduce(
@@ -369,7 +381,13 @@
             </span>
           </div>
           <div class="grow discover-skill__body">
-            <pre class="discover-skill__text mono" data-testid="discover-skill-text" aria-label={`${activeSkill} skill text`}>{skillText}</pre>
+            {#if skillState === "pending"}
+              <p class="empty discover-skill__pending" data-testid="discover-skill-pending">
+                No Discover agent has generated this file yet. Start the agent above to create it.
+              </p>
+            {:else}
+              <pre class="discover-skill__text mono" data-testid="discover-skill-text" aria-label={`${activeSkill} skill text`}>{skillText}</pre>
+            {/if}
           </div>
         </div>
       </div>
