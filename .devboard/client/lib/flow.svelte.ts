@@ -87,6 +87,13 @@ export class FlowStore {
    *  discards the operator's words. */
   pendingAnswer: { target: AnswerTarget; id: string } | null = null;
 
+  /** The conclusion this dashboard sent and the server has not confirmed yet,
+   *  with the board text it was dispatched against. The draft survives until a
+   *  `flowDecisions` frame appends that text to that board, so a refused send
+   *  never discards the operator's words and a confirmation never leaves them
+   *  to be appended a second time. */
+  pendingConclusion: { text: string; board: string } | null = null;
+
   /** A stored session this dashboard is still restoring: its state is not
    *  settled yet, so no control that edits it is offered. */
   get restoring(): boolean {
@@ -166,6 +173,7 @@ export class FlowStore {
     this.status = message.status;
     this.goal = message.goal;
     this.decisions = message.decisions;
+    this.#settleConclusion(message.decisions);
     this.worktree = message.worktree;
     this.branch = message.branch;
     this.baseRevision = message.baseRevision;
@@ -275,6 +283,18 @@ export class FlowStore {
     this.answers[sent.target] = "";
   }
 
+  /** Settles a dispatched conclusion once the board frame appends it: the
+   *  draft belongs to a conclusion the server took. The frame must differ from
+   *  the board the dispatch captured, so an earlier section with the same text
+   *  never confirms a later dispatch of it. */
+  #settleConclusion(text: string): void {
+    const sent = this.pendingConclusion;
+    if (sent === null || text === sent.board) return;
+    if (!text.includes(sent.text)) return;
+    this.pendingConclusion = null;
+    this.conclusionDraft = "";
+  }
+
   sendConversation(): void {
     const text = this.conversationDraft;
     if (text.trim().length === 0) return;
@@ -282,10 +302,18 @@ export class FlowStore {
     this.conversationDraft = "";
   }
 
-  sendConclusion(): void {
+  /** Dispatches the conclusion; false when nothing left the page. The draft and
+   *  its board survive until the `flowDecisions` frame that appends it, exactly
+   *  as `sendSteering` keeps its note until the confirming steering frame. */
+  sendConclusion(): boolean {
     const text = this.conclusionDraft;
-    if (text.trim().length === 0) return;
-    connection.send({ type: "sendFlowConclusion", text });
+    if (text.trim().length === 0) return false;
+    this.pendingConclusion = { text, board: this.decisions };
+    if (!connection.send({ type: "sendFlowConclusion", text })) {
+      this.pendingConclusion = null;
+      return false;
+    }
+    return true;
   }
 
   closeConversation(): void {
@@ -418,6 +446,7 @@ export class FlowStore {
     }
     if (type === "flowDecisions" && typeof message.text === "string") {
       this.decisions = message.text;
+      this.#settleConclusion(message.text);
       return;
     }
     if (type === "flowCheckpoints" && Array.isArray(message.checkpoints)) {
@@ -446,6 +475,7 @@ export class FlowStore {
       };
       this.conversationDraft = "";
       this.conclusionDraft = "";
+      this.pendingConclusion = null;
       this.#settleAnswer();
       return;
     }

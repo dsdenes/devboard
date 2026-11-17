@@ -1,6 +1,7 @@
 <script lang="ts">
   import { html as diffHtml } from "diff2html";
   import "diff2html/bundles/css/diff2html.min.css";
+  import { connection } from "./lib/connection.svelte";
   import { flow } from "./lib/flow.svelte";
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import { layout } from "./lib/layout.svelte";
@@ -1061,7 +1062,8 @@
                 <CommandButton
                   variant="secondary"
                   label="Send conclusion to implementation"
-                  evidence={() => flow.notice}
+                  evidence={() => flow.decisions}
+                  refusal={() => connection.refusalRevision("sendFlowConclusion")}
                   command={() => flow.sendConclusion()}
                   data-command="flow.conclusion.send"
                   data-testid="send-flow-conclusion"
