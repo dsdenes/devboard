@@ -51,6 +51,10 @@ const LEASE_INTERVAL_MS: i64 = 400;
 const ANSWER_APPLIED_DEADLINE_MS: u64 = 700;
 /// The cadence the reply reads the durable owner state at while it waits.
 const ANSWER_APPLIED_POLL_MS: u64 = 10;
+/// The activity line a restart records when it drops the dead owner's pending
+/// question: the fresh peer never asked it, so no answer can ever apply.
+const RESTARTED_QUESTION_ACTIVITY: &str =
+    "The interrupted elaboration's question was dropped; it can no longer be answered.";
 
 /// One draft as the drafts view lists it.
 #[derive(Debug, Clone)]
@@ -1297,7 +1301,14 @@ impl DraftWatcher {
                 crate::supervision::signal_process_group(peer.pid, libc::SIGTERM);
             }
         }
-        self.store_state(&path, latest.run.clone(), None, None);
+        // The fresh peer never asked the dead owner's question, so the new run
+        // must not carry it: a page holding it would accept an answer the new
+        // peer cannot apply, and the reply would redraw the same question.
+        let mut run = latest.run.clone();
+        if run.question.take().is_some() {
+            append_activity_line(&mut run.activity, RESTARTED_QUESTION_ACTIVITY, false);
+        }
+        self.store_state(&path, run, None, None);
         self.emit_state(&path);
         match self.spawn_run_owner(&path) {
             Some(_) => false,

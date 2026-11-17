@@ -34,6 +34,10 @@ const PEER_CLOSE_GRACE_MS: u64 = 1_500;
 const LAUNCH_WAIT_MS: u64 = 2_000;
 /// How much of the peer's own last activity entry the recorded error keeps.
 const DETAIL_MAX_BYTES: usize = 600;
+/// The activity line an answer records when its peer no longer holds the
+/// question, so the page stops offering a control that can never apply.
+const LOST_QUESTION_ACTIVITY: &str =
+    "An answer arrived for a question this elaboration no longer holds; it was ignored.";
 
 /// Runs one draft's owner until its elaboration ends; the entry point of its
 /// process.
@@ -291,6 +295,12 @@ impl Owner {
             return;
         };
         if !peer.answer(&id, value).await {
+            // The peer no longer holds this question — a restarted owner's
+            // peer never asked it — so leaving it in the run would confirm an
+            // answer and redraw a control that can never apply.
+            self.run.question = None;
+            append_activity_line(&mut self.run.activity, LOST_QUESTION_ACTIVITY, false);
+            self.persist();
             return;
         }
         self.run.question = None;
@@ -420,5 +430,84 @@ mod tick_bounds {
         // poll.
         let tick = super::OWNER_COMMAND_MS;
         assert!(tick >= 250, "the control tick is {tick} ms");
+    }
+}
+
+#[cfg(test)]
+mod lost_question {
+    //! An answer whose question the peer no longer holds must not stay in the
+    //! run: the reply that confirms the answer would redraw the same question
+    //! over a control that can never apply.
+
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.test-tmp")
+            .join(format!("goal-draft-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".devboard/goal-proposals")).expect("a drafts dir");
+        root
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_peer_no_longer_holds_leaves_no_pending_question() {
+        let repo = scratch("lost-question");
+        let path = ".devboard/goal-proposals/ask.md".to_string();
+        std::fs::write(repo.join(&path), "# Ask\n\nSTUB-HANG\n").expect("a draft");
+        let state_dir = repo.join("state");
+        std::fs::create_dir_all(&state_dir).expect("a state directory");
+
+        // A live peer that never asked anything: its question table is empty,
+        // which is what a restarted owner's fresh peer looks like.
+        let options = AcpConnectionOptions::new("sleep 60", repo.display().to_string());
+        let (peer, _events) = AcpConnection::connect(options)
+            .await
+            .expect("a peer without a session");
+        let peer = Arc::new(peer);
+        let mut owner = Owner {
+            repo_dir: repo.clone(),
+            state_dir: state_dir.clone(),
+            draft_path: path.clone(),
+            control: goal_draft_control_directory(&state_dir, &repo, &path),
+            run: GoalDraftRun {
+                status: GoalDraftStatus::Running,
+                path: Some(path.clone()),
+                started_at: Some(crate::journal::now_iso8601()),
+                finished_at: None,
+                error: None,
+                activity: vec!["Waiting for the answer".to_string()],
+                question: Some(GoalDraftQuestion {
+                    id: AcpId::Number(7001),
+                    message: "Choose an answer".to_string(),
+                    options: Vec::new(),
+                }),
+            },
+            owner: self_child(&repo),
+            launcher_pid: Some(std::process::id()),
+            supervisor_pid: Some(std::process::id()),
+            peer: Some(Arc::clone(&peer)),
+            peer_child: None,
+            first_stderr: String::new(),
+            applied_answer: None,
+            done: false,
+        };
+
+        owner.apply_answer(AcpId::Number(7001), "Alpha").await;
+
+        assert!(owner.run.question.is_none(), "no question stays pending");
+        assert_eq!(
+            owner.run.activity.last().map(String::as_str),
+            Some(LOST_QUESTION_ACTIVITY)
+        );
+        let stored =
+            read_goal_draft_owner_state(&state_dir, &repo, &path).expect("the durable run state");
+        assert_eq!(stored.run.status, GoalDraftStatus::Running);
+        assert!(stored.run.question.is_none(), "the reply cannot redraw it");
+        assert_eq!(
+            stored.run.activity.last().map(String::as_str),
+            Some(LOST_QUESTION_ACTIVITY)
+        );
+        peer.close();
     }
 }

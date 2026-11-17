@@ -144,6 +144,25 @@ fn use_owner_executable(path: &Path) -> RestoreOwnerExecutable {
     RestoreOwnerExecutable(previous)
 }
 
+/// Restores the agent command a test replaced when it ends.
+struct RestoreAgentCommand(Option<String>);
+
+impl Drop for RestoreAgentCommand {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("AGENT_COMMAND", value),
+            None => std::env::remove_var("AGENT_COMMAND"),
+        }
+    }
+}
+
+/// Runs one draft's owner and its restarts against a test-owned agent.
+fn use_agent_command(command: String) -> RestoreAgentCommand {
+    let previous = std::env::var("AGENT_COMMAND").ok();
+    std::env::set_var("AGENT_COMMAND", command);
+    RestoreAgentCommand(previous)
+}
+
 fn executable_script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("a script");
     #[cfg(unix)]
@@ -417,6 +436,105 @@ for line in sys.stdin:
 "#,
     );
     format!("python3 {}", path.display())
+}
+
+/// An ACP agent that asks one question only on its first start. The marker is
+/// its argv, so a run the supervisor restarts gets a fresh peer that never
+/// asked it — exactly the peer the restarted run must not answer for.
+fn ask_once_agent_command(marker: &Path) -> String {
+    let path = root().join("ask-once-agent.py");
+    executable_script(
+        &path,
+        r#"#!/usr/bin/env python3
+import json
+import os
+import sys
+
+marker = sys.argv[1]
+out = sys.stdout
+
+
+def send(message):
+    out.write(json.dumps(message) + "\n")
+    out.flush()
+
+
+def stream(text):
+    send({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": "live-session",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text},
+                "messageId": "ask-once-elaboration",
+            },
+        },
+    })
+
+
+def ask():
+    send({
+        "jsonrpc": "2.0",
+        "id": 7001,
+        "method": "elicitation/create",
+        "params": {
+            "mode": "form",
+            "sessionId": "live-session",
+            "message": "Choose an answer",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "type": "string",
+                        "title": "Choose an answer",
+                        "oneOf": [
+                            {
+                                "const": "Alpha",
+                                "title": "Alpha",
+                                "description": "Alpha leads to the first outcome.",
+                            },
+                            {
+                                "const": "Beta",
+                                "title": "Beta",
+                                "description": "Beta leads to the second outcome.",
+                            },
+                        ],
+                    }
+                },
+                "required": ["value"],
+            },
+        },
+    })
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        message = json.loads(line)
+    except ValueError:
+        continue
+    method = message.get("method")
+    wire_id = message.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": wire_id, "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": wire_id, "result": {"sessionId": "live-session"}})
+    elif method == "session/prompt":
+        stream("Reading the draft")
+        if not os.path.exists(marker):
+            with open(marker, "w") as handle:
+                handle.write("asked")
+            ask()
+    elif wire_id == 7001 and "result" in message:
+        content = message.get("result", {}).get("content") or {}
+        stream("Answer received: %s" % content.get("value", ""))
+"#,
+    );
+    format!("python3 {} {}", path.display(), marker.display())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1651,6 +1769,141 @@ async fn a_dead_owner_is_restarted_once_and_a_second_death_is_truthful() {
     if let Some(peer) = first_peer {
         kill_pid(peer as u32);
     }
+}
+
+/// A restart gives the run a fresh peer that never asked the dead owner's
+/// question, so that question must not survive the restart: the page would
+/// offer it, the server would accept the answer, and the reply would redraw
+/// the same question over a control the new peer can never apply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_run_drops_the_dead_owners_question() {
+    let _serial = serial().await;
+    let repo = repo_root("restart-question");
+    let path = write_draft(&repo, "restart-question.md", "# Restart\n\nSTUB-HANG\n");
+    let marker = root().join("restart-question-asked.txt");
+    let _ = std::fs::remove_file(&marker);
+    let _agent = use_agent_command(ask_once_agent_command(&marker));
+    let app = app(&repo);
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(
+        &conn,
+        Command::StartGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let asked = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftState" && frame["draft"]["question"].is_object(),
+        15000,
+    )
+    .await;
+    let id = asked["draft"]["question"]["id"].clone();
+    assert_eq!(id, json!(7001));
+
+    let mut first_pid = None;
+    assert!(
+        wait_until(
+            || {
+                let state = owner_state(&repo, &path);
+                first_pid = state.as_ref().and_then(owner_pid_of);
+                first_pid.is_some()
+            },
+            10000,
+        )
+        .await
+    );
+    let first_pid = first_pid.expect("a claimed pid");
+    let before = owner_state(&repo, &path).expect("the running state");
+    let before_activity: Vec<String> = before["run"]["activity"]
+        .as_array()
+        .expect("an activity")
+        .iter()
+        .map(|line| line.as_str().expect("an activity line").to_string())
+        .collect();
+    assert!(
+        before["run"]["question"].is_object(),
+        "the run waits on the question the page shows: {before}"
+    );
+
+    kill_pid(first_pid);
+
+    // The watcher observes the death on its 250 ms cadence; the contract is
+    // one replacement, not a fixed deadline.
+    let mut second_pid = None;
+    let deadline = std::time::Instant::now() + Duration::from_millis(15_000);
+    while std::time::Instant::now() < deadline {
+        if let Some(pid) = owner_state(&repo, &path).and_then(|state| owner_pid_of(&state)) {
+            if pid != first_pid {
+                second_pid = Some(pid);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let second_pid = second_pid.expect("the restarted owner claims within fifteen seconds");
+    assert!(devboard::supervision::live_process(second_pid));
+
+    let after = owner_state(&repo, &path).expect("the restarted state");
+    assert_eq!(after["run"]["status"], "running");
+    assert_eq!(
+        after["run"]["question"],
+        Value::Null,
+        "the fresh peer never asked it: {after}"
+    );
+    let after_activity: Vec<String> = after["run"]["activity"]
+        .as_array()
+        .expect("an activity")
+        .iter()
+        .map(|line| line.as_str().expect("an activity line").to_string())
+        .collect();
+    assert_eq!(
+        &after_activity[..before_activity.len()],
+        &before_activity[..],
+        "the recorded activity stays a prefix"
+    );
+    assert!(
+        after_activity.iter().any(|line| line
+            == "The interrupted elaboration's question was dropped; it can no longer be answered."),
+        "the lost question is recorded in activity: {after_activity:?}"
+    );
+
+    // The stale answer is refused instead of confirmed with the same question.
+    app.command(
+        &conn,
+        Command::AnswerGoalDraft {
+            path: Some(json!(path)),
+            id: Some(id),
+            value: Some(json!("Alpha")),
+        },
+    )
+    .await;
+    let refusal = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftError",
+        5000,
+    )
+    .await;
+    assert_eq!(
+        refusal["message"],
+        "That question is no longer waiting for an answer."
+    );
+
+    app.command(
+        &conn,
+        Command::StopGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let stopped = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftState" && frame["draft"]["status"] == "stopped",
+        15000,
+    )
+    .await;
+    assert_eq!(stopped["draft"]["error"], Value::Null);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

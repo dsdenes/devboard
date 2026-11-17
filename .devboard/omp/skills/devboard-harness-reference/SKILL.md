@@ -4474,12 +4474,15 @@ exit reaches the original peer for its own draft, and no second peer or second q
 When a run's owner is really gone, the dashboard that supervises the drafts gives it exactly one
 automatic restart from the same draft: it starts one new owner and keeps the run's recorded
 activity as the prefix of the new activity. The run stays `running` across that restart, and no
-client starts it. A run that cannot continue records the actual cause and leaves its draft listed
-and startable: `The elaboration owner did not start.` when no owner ever claims the run, and
-`The elaboration owner exited before it finished.` when the owner, or its one automatic restart,
-exits before the elaboration finishes. A `running` record whose draft file is gone starts no owner
-and records the same `No draft at <path>.` message a start refusal uses, and nothing claims a
-server exit that did not happen.
+client starts it. A question the dead owner had pending is dropped by that restart and recorded in
+activity, because the new peer never asked it; an answer that reaches an owner whose peer no longer
+holds the question it names clears the question and records that it was ignored, rather than
+keeping the page's control over an answer that can never apply. A run that cannot continue records
+the actual cause and leaves its draft listed and startable: `The elaboration owner did not start.`
+when no owner ever claims the run, and `The elaboration owner exited before it finished.` when the
+owner, or its one automatic restart, exits before the elaboration finishes. A `running` record whose
+draft file is gone starts no owner and records the same `No draft at <path>.` message a start
+refusal uses, and nothing claims a server exit that did not happen.
 
 `.devboard/prompts/goal-draft.md` is the elaboration contract and
 `.devboard/omp/commands/goal-draft.md` its command wrapper, which reads the prompt and passes
