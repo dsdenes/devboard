@@ -5,7 +5,7 @@
   import { Tooltip } from "bits-ui";
   import ActivityBar from "./lib/components/ActivityBar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
-  import CommandButton from "./lib/components/CommandButton.svelte";
+  import ReloadButton from "./lib/components/ReloadButton.svelte";
   import DevboardWorkspace from "./lib/components/DevboardWorkspace.svelte";
   import DiscoverWorkspace from "./lib/components/DiscoverWorkspace.svelte";
   import FeedbackOverlay from "./FeedbackOverlay.svelte";
@@ -440,11 +440,8 @@
       display.
     </p>
     {#if connection.version?.replacement != null}
-      <CommandButton
+      <ReloadButton
         variant="default"
-        label="Reload"
-        evidence={() => connection.version?.running}
-        command={() => connection.requestRestart()}
         data-command="app.reload"
         data-testid="reload-devboard"
         title={`Devboard ${connection.version.replacement.running ?? "unknown"} is still running; the automatic replacement with ${
@@ -456,7 +453,7 @@
         disabled={connection.restarting}
       >
         Restart devboard
-      </CommandButton>
+      </ReloadButton>
     {/if}
   </div>
 {:else}

@@ -11,7 +11,7 @@
   import { providers } from "../providers.svelte";
   import { statusTone } from "../status-tone";
   import Button from "./ui/button.svelte";
-  import CommandButton from "./CommandButton.svelte";
+  import ReloadButton from "./ReloadButton.svelte";
   import WatchdogIndicator from "./watchdog-indicator.svelte";
 
   const connectionLabel = $derived(
@@ -180,11 +180,8 @@
       </span>
     {/if}
     {#if connection.version?.replacement != null}
-      <CommandButton
+      <ReloadButton
         bare
-        label="Reload"
-        evidence={() => connection.version?.running}
-        command={() => connection.requestRestart()}
         class="status-item status-item--button"
         data-testid="reload-devboard"
         data-command="app.reload"
@@ -194,7 +191,7 @@
       >
         <RefreshCw size={12} aria-hidden="true" />
         <span>reload</span>
-      </CommandButton>
+      </ReloadButton>
     {/if}
   </div>
 </footer>

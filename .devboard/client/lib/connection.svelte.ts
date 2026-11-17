@@ -76,6 +76,13 @@ export class ConnectionStore {
   state = $state<ConnectionState>("connecting");
   projectPath = $state("");
   version = $state<VersionState | null>(null);
+  /**
+   * Bumped by every accepted `versionState` frame. A control that waits for the
+   * server to answer a command reads this instead of `version`: a failed
+   * replacement leaves `running` unchanged because the old process keeps
+   * serving, so only the frame's arrival distinguishes an answer from silence.
+   */
+  versionRevision = $state(0);
   /** True when the server has a Gitea address for harness-owned reporting. */
   feedbackEnabled = $state(false);
   /** True once a version frame has stated whether reporting is available. */
@@ -297,6 +304,7 @@ export class ConnectionStore {
       };
       this.feedbackEnabled = message.feedbackEnabled === true;
       this.feedbackResolved = true;
+      this.versionRevision += 1;
       if (message.upgradePending === true) this.upgradePending = true;
       if (message.restarting === true || message.serverRestarting === true) {
         this.awaitingRestart = true;
