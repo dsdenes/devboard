@@ -941,6 +941,9 @@ fn prune_dead_owners(state_dir: &Path, repo_dir: &Path) {
 
 static COMMAND_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// The last millisecond stamp a control file was named with.
+static COMMAND_STAMP: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum IssuesCommand {
     Pause,
@@ -1017,13 +1020,41 @@ impl IssuesCommand {
     }
 }
 
+/// The stamp that names one control file after every earlier one.
+///
+/// The wall clock may step backwards — an NTP correction, a VM resume — so the
+/// stamp follows the later of the clock and one past the last stamp. Files are
+/// applied in filename order, and a step must not reorder a Pause and a Resume
+/// the operator pressed. `monotonic_millis` refuses wall-clock time for
+/// scheduling for the same reason.
+fn next_command_stamp(now_millis: u64, last: &AtomicU64) -> u64 {
+    let mut previous = last.load(Ordering::Relaxed);
+    loop {
+        let stamp = now_millis.max(previous.saturating_add(1));
+        match last.compare_exchange_weak(previous, stamp, Ordering::SeqCst, Ordering::Relaxed) {
+            Ok(_) => return stamp,
+            Err(current) => previous = current,
+        }
+    }
+}
+
 fn write_command(directory: &Path, command: &IssuesCommand) -> std::io::Result<()> {
+    write_command_stamped(
+        directory,
+        command,
+        next_command_stamp(wall_millis().max(0) as u64, &COMMAND_STAMP),
+    )
+}
+
+/// Writes one control file under `stamp`, so the filename sort in
+/// `take_commands` applies it in the order it was written.
+fn write_command_stamped(
+    directory: &Path,
+    command: &IssuesCommand,
+    stamp: u64,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(directory)?;
     let sequence = COMMAND_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
     let name = format!("{stamp:014}-{sequence:06}.json");
     let path = directory.join(name);
     let temporary = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
@@ -10209,6 +10240,35 @@ mod tests {
             .push(QueuedIssue::from_issue(&issue(17, &["scout"]), None, None));
         let rows = queue_rows(Some(Vec::new()), std::slice::from_ref(&state));
         assert!(rows.is_empty());
+    }
+
+    /// A control file's stamp must not come from the wall clock alone: a step
+    /// backwards between Pause and Resume would sort the Resume first and leave
+    /// the worker paused against the operator's last command.
+    #[tokio::test]
+    async fn a_clock_step_backwards_keeps_pause_before_resume() {
+        let (repo, state) = unit_root("command-stamp");
+        let control = control_directory(&state, &repo);
+        let last = AtomicU64::new(0);
+        let pause_stamp = next_command_stamp(1_700_000_000_000, &last);
+        write_command_stamped(&control, &IssuesCommand::Pause, pause_stamp).expect("a pause");
+        let resume_stamp = next_command_stamp(1_699_999_995_000, &last);
+        assert!(
+            resume_stamp > pause_stamp,
+            "the stepped clock wrote {resume_stamp} behind {pause_stamp}"
+        );
+        write_command_stamped(&control, &IssuesCommand::Resume, resume_stamp).expect("a resume");
+        let commands = take_commands(&control);
+        assert_eq!(
+            commands,
+            vec![IssuesCommand::Pause, IssuesCommand::Resume],
+            "the filename order is the order the operator pressed"
+        );
+        let mut worker = worker(&repo, &state);
+        for command in commands {
+            worker.apply(command).await;
+        }
+        assert!(!worker.state.paused, "the later Resume holds");
     }
 }
 
