@@ -38,6 +38,8 @@
     label: () => (editing === null ? "Add key" : "Save changes"),
     evidence: () => changeSeq,
   });
+  // The render only reads the latch; the settled provider change is the answer.
+  $effect(() => savePending.settle());
 
   function resetForm(): void {
     editing = null;

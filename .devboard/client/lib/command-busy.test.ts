@@ -37,6 +37,27 @@ test("busy holds until the confirming evidence, then releases the label", () => 
   expect(command.word).toBe("Starting…");
   expect(command.notice).toBeNull();
   box.value = 2;
+  command.settle();
+  expect(command.busy).toBe(false);
+  expect(command.notice).toBeNull();
+});
+
+test("reading the latch after the evidence changes writes no state", () => {
+  const box = { value: 1 };
+  const command = createCommandBusy({ label: "Start", evidence: () => box.value });
+  command.start();
+  box.value = 2;
+  // A render reads the latch; it never settles it.
+  expect(command.busy).toBe(true);
+  expect(command.busy).toBe(true);
+  expect(command.notice).toBeNull();
+  // The owning control's effect settles it once, and a second pass is a no-op.
+  command.settle();
+  command.settle();
+  expect(command.busy).toBe(false);
+  // The answer stays confirmed when the evidence returns to its baseline.
+  box.value = 1;
+  command.settle();
   expect(command.busy).toBe(false);
   expect(command.notice).toBeNull();
 });
@@ -98,6 +119,7 @@ test("a server refusal answers the latch and never shows the ceiling notice", ()
     command.start();
     expect(command.busy).toBe(true);
     refusals.value += 1;
+    command.settle();
     expect(command.busy).toBe(false);
     expect(command.notice).toBeNull();
     jest.advanceTimersByTime(5);
@@ -121,10 +143,12 @@ test("a repeated refusal still answers the next dispatch", () => {
     });
     command.start();
     refusals.value += 1;
+    command.settle();
     expect(command.busy).toBe(false);
     command.start();
     expect(command.busy).toBe(true);
     refusals.value += 1;
+    command.settle();
     expect(command.busy).toBe(false);
     jest.advanceTimersByTime(5);
     expect(command.notice).toBeNull();
@@ -166,6 +190,7 @@ test("a confirming frame that arrives after the ceiling drops the notice", () =>
     jest.advanceTimersByTime(5);
     expect(command.notice).toBe("Start received no answer.");
     box.value = 2;
+    command.settle();
     expect(command.notice).toBeNull();
   } finally {
     jest.useRealTimers();
@@ -190,6 +215,7 @@ test("a control reused for another subject drops the previous subject's latch", 
   family.id = "scout";
   expect(command.busy).toBe(true);
   lifecycle.value = "stopped";
+  command.settle();
   expect(command.busy).toBe(false);
 });
 
@@ -228,9 +254,11 @@ test("a confirmation stays permanent when the evidence returns to its dispatch b
     expect(command.busy).toBe(true);
     // The Issues lifecycle answers the command.
     box.value = 2;
+    command.settle();
     expect(command.busy).toBe(false);
     // Stop returns the lifecycle to its pre-dispatch value.
     box.value = 1;
+    command.settle();
     expect(command.busy).toBe(false);
     expect(command.notice).toBeNull();
     // The answered dispatch never reaches its ceiling.
@@ -258,8 +286,10 @@ test("an answered dispatch never repeats its ceiling notice after the evidence r
     jest.advanceTimersByTime(5);
     expect(command.notice).toBe("Start received no answer.");
     box.value = 2;
+    command.settle();
     expect(command.notice).toBeNull();
     box.value = 1;
+    command.settle();
     expect(command.notice).toBeNull();
     expect(command.busy).toBe(false);
     jest.advanceTimersByTime(5);

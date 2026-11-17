@@ -72,8 +72,13 @@ Screenshots are in this directory; all were captured against the production bund
 
 ## Pre-existing issue observed
 
-Both the pre-change bundle and this change log `Svelte error: state_unsafe_mutation` when a provider
-change settles, because `CommandBusy.#awaiting()` writes its latch while the component reads
-`busy`/`notice` during render. It is reproduced on the pre-change bundle at 8080 and is outside
-this issue's scope; no behavior was changed by this redesign. Its visible effect is that the
-submit label can trail the reset by one render frame; the form and the list settle correctly.
+Both the pre-change bundle and this change logged `Svelte error: state_unsafe_mutation` when a
+provider change settled, because `CommandBusy.#awaiting()` wrote its latch while the component read
+`busy`/`notice` during render. It was reproduced on the pre-change bundle at 8080 and was outside
+this redesign's scope; no behavior was changed by it. Its visible effect was that the submit label
+could trail the reset by one render frame; the form and the list settled correctly.
+
+Issue #2004 fixed it at the cause: `busy` and `notice` are now pure reads, and the control that
+owns the latch settles it from its own `$effect` (`$effect(() => control.settle())`), so no render
+writes state. The provider form's save label settles on the confirming frame with no framework
+error.

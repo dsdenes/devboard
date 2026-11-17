@@ -131,6 +131,7 @@ test("a refused answer keeps both and releases the control at once", () => {
 
   store.handleEvent({ type: "error", message: "No pending question with that id." });
 
+  control.settle();
   expect(control.busy).toBe(false);
   expect(control.notice).toBeNull();
   expect(store.question?.id).toBe(7);
@@ -238,6 +239,7 @@ test("a refused lane answer keeps the prompt and releases the control", () => {
   expect(store.submitLaneAnswer("lane-1", store.laneDraft)).toBe(true);
   store.handleEvent({ type: "error", message: "No pending question with that id." });
 
+  control.settle();
   expect(control.busy).toBe(false);
   expect(store.lane("lane-1")?.question?.id).toBe(7);
   expect(store.laneDraft).toBe("Alpha");

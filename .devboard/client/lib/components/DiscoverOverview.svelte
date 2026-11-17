@@ -68,6 +68,12 @@
     refusal: () => discover.errorRevision,
   });
 
+  // The render only reads the latches; the answering frame settles them here.
+  $effect(() => {
+    answerPending.settle();
+    remoteStartPending.settle();
+  });
+
   const sheet = $derived(discover.sheet);
   const freshness = $derived(discover.freshness);
   const definition = $derived(sectionLeaf(sheet, "definition"));

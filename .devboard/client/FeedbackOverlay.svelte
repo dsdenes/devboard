@@ -102,6 +102,8 @@
   let filingSeq = $state(0);
   /** Both the Ask button and the composer's Enter path dispatch this command. */
   const askPendingCommand = createCommandBusy({ label: "Ask", evidence: () => answerSeq });
+  // The render only reads the latch; the answering frame settles it here.
+  $effect(() => askPendingCommand.settle());
   /**
    * Invalidates the answer to a filing whose panel the operator closed. Every
    * reset bumps it, so a late response writes nothing into a panel that is

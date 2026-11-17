@@ -29,6 +29,9 @@
     scope: () => scope?.(),
   });
 
+  // The render only reads the latch; the confirming frame settles it here.
+  $effect(() => pending.settle());
+
   function activate(): void {
     pending.start();
     // The baseline is captured before dispatch so an immediate answer is never

@@ -66,6 +66,8 @@
     evidence: () => answerRevision(),
     scope: () => subject,
   });
+  // The render only reads the latch; the answering frame settles it here.
+  $effect(() => answerPending.settle());
 
   /**
    * Dispatches one answer. The draft stays in the input until the question

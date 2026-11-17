@@ -92,6 +92,14 @@
     evidence: () => flow.conversation?.messages.length,
   });
 
+  // The render only reads the latches; the answering frame settles them here.
+  $effect(() => {
+    answerPending.goal.settle();
+    answerPending.implementation.settle();
+    answerPending.conversation.settle();
+    conversationSendPending.settle();
+  });
+
   const hasGoal = $derived(flow.goal.trim().length > 0);
   const goalHeaderState = $derived.by(() => {
     if (flow.restoring) {

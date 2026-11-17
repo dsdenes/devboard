@@ -207,6 +207,7 @@ test("a refused close releases the row's label on the frame that carries its rea
   });
 
   // The refusal is an answer: the label rests at once and claims no silence.
+  control.settle();
   expect(control.busy).toBe(false);
   expect(control.notice).toBeNull();
   expect(store.closing).toEqual([]);
@@ -234,6 +235,7 @@ test("an accepted close releases the label but stays disabled until the queue dr
 
   socket.deliver({ type: "issuesClosed", number: 42, ok: true });
 
+  control.settle();
   expect(control.busy).toBe(false);
   expect(control.notice).toBeNull();
   expect(store.canClose(42)).toBe(false);

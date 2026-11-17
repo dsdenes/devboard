@@ -134,6 +134,7 @@ test("a refusal frame releases the Start latch without the ceiling notice", () =
 
   store.handleEvent({ type: "agentState", agent: snapshot({ notice: REFUSAL }) });
 
+  busy.settle();
   expect(busy.busy).toBe(false);
   expect(busy.notice).toBeNull();
 });
@@ -148,6 +149,7 @@ test("a starting frame releases the Start latch the same way", () => {
   busy.start();
   store.handleEvent({ type: "agentState", agent: snapshot({ lifecycle: "starting" }) });
 
+  busy.settle();
   expect(busy.busy).toBe(false);
   expect(busy.notice).toBeNull();
 });

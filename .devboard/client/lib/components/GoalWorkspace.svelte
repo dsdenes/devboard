@@ -44,6 +44,12 @@
     evidence: () => goal.answerRevision,
   });
 
+  // The render only reads the latches; the answering frame settles them here.
+  $effect(() => {
+    answerPending.settle();
+    laneAnswerPending.settle();
+  });
+
   const createGoalTitle = $derived(
     goal.creationActive
       ? "Restart goal creation."

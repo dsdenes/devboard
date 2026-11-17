@@ -99,3 +99,37 @@ test("a dispatched command keeps its busy word until the ceiling", async () => {
     jest.useRealTimers();
   }
 });
+
+test("a confirming evidence settles the label without a render-time mutation", async () => {
+  const reported: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    reported.push(args.map((argument) => String(argument)).join(" "));
+  };
+  try {
+    const view = render(CommandButton, {
+      props: {
+        variant: "secondary",
+        label: "Save limits",
+        evidence: () => 0,
+        command: () => true,
+        "data-testid": "save-limits",
+      },
+    });
+    const button = view.container.querySelector("button");
+    if (button === null) throw new Error("no button");
+    await fireEvent.click(button);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+
+    // The confirming frame: the template reads the latch and the control's own
+    // effect settles it, so no render writes state.
+    view.rerender({ evidence: () => 1 });
+
+    expect(button.getAttribute("aria-busy")).toBeNull();
+    expect(button.textContent?.trim()).toBe("Save limits");
+    expect(view.container.querySelector(".command-notice")).toBeNull();
+    expect(reported.filter((line) => line.includes("state_unsafe_mutation"))).toEqual([]);
+  } finally {
+    console.error = original;
+  }
+});

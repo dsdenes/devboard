@@ -9,12 +9,15 @@
  * changes, without the ceiling notice. A value that never arrives within the
  * ceiling releases the label and surfaces a `role="status"` notice.
  *
- * A confirmation is permanent for its dispatch. Reading the control's state is
- * how a render observes the confirming frame, so that first differing value
- * clears the latch instead of leaving it to re-test the same comparison: a
- * value that later returns to its pre-dispatch value — an Issues lifecycle
- * going back to `stopped` — never re-shows the busy word or repeats the
- * ceiling notice, and only `start()` arms the control again.
+ * A confirmation is permanent for its dispatch. The control that owns the
+ * busy state settles the latch from its own `$effect` — `$effect(() =>
+ * control.settle())` — so reading `busy` or `notice` never writes state: a
+ * getter that settled during render would mutate state inside the template
+ * expression reading it, which Svelte reports as `state_unsafe_mutation`.
+ * That first differing value clears the latch instead of leaving it to re-test
+ * the same comparison: a value that later returns to its pre-dispatch value —
+ * an Issues lifecycle going back to `stopped` — never re-shows the busy word
+ * or repeats the ceiling notice, and only `start()` arms the control again.
  *
  * Evidence must be a primitive or a stable reference, so a read that did not
  * change does not spuriously confirm; unlike the latch, the value may return
@@ -103,7 +106,7 @@ export class CommandBusy<E> {
 
   /** True from the activation until evidence, the ceiling, or a dismissal. */
   get busy(): boolean {
-    return this.#awaiting() && !this.#expired && !this.#dismissed;
+    return this.#active && !this.#expired && !this.#dismissed && this.#sameSubject();
   }
 
   /** The present-participle busy word of the resting label. */
@@ -116,7 +119,7 @@ export class CommandBusy<E> {
    * replaces another message; the control renders it beside itself.
    */
   get notice(): string | null {
-    if (!this.#awaiting() || !this.#expired || this.#dismissed) return null;
+    if (!this.#active || !this.#expired || this.#dismissed || !this.#sameSubject()) return null;
     const label = this.#label().trim();
     return label.length === 0
       ? "The action received no answer."
@@ -158,27 +161,26 @@ export class CommandBusy<E> {
   }
 
   /**
-   * Whether the latch still waits for its answer, settling the confirmation
-   * the first time the evidence differs from the dispatch baseline.
+   * Settle the latch once its evidence or refusal revision differs from the
+   * dispatch baseline.
    *
-   * Reading this control is how a render observes the confirming frame, and a
+   * The control that owns the busy state calls this from its own reactive
+   * effect — `$effect(() => control.settle())` — so no render writes state. A
    * confirmation lasts for its dispatch: the latch and its ceiling timer are
    * cleared here, so a later value that matches the baseline again re-arms
    * nothing. Only `start()` arms the latch.
    */
-  #awaiting(): boolean {
-    if (!this.#active || !this.#sameSubject()) return false;
+  settle(): void {
+    if (!this.#active || !this.#sameSubject()) return;
     if (this.#refusal !== undefined && !Object.is(this.#refusal(), this.#refusalBaseline)) {
       this.#clearTimer();
       this.#active = false;
-      return false;
+      return;
     }
     if (!Object.is(this.#evidence(), this.#baseline)) {
       this.#clearTimer();
       this.#active = false;
-      return false;
     }
-    return true;
   }
 
   #sameSubject(): boolean {
