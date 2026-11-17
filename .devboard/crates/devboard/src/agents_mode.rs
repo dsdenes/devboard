@@ -5784,9 +5784,7 @@ impl RepoFamily {
                 // owns the family. A start whose worker already exited owns
                 // nothing: refusing the next command as "already starting"
                 // left the card on the five-second proof error with no worker.
-                if mutable.starting_since.is_none()
-                    || mutable.started_pid.is_some_and(pid_alive)
-                {
+                if mutable.starting_since.is_none() || mutable.started_pid.is_some_and(pid_alive) {
                     mutable.notice = Some(format!(
                         "Start did nothing: the {} worker is already starting for this dashboard.",
                         self.family_id.worker_label()
