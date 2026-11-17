@@ -31,7 +31,7 @@ struct Entry<T> {
 #[derive(Default)]
 struct Cache {
     json: HashMap<PathBuf, Entry<Option<Arc<Value>>>>,
-    text: HashMap<PathBuf, Entry<Option<Arc<String>>>>,
+    text: HashMap<PathBuf, Entry<Result<Arc<String>, String>>>,
     reads: HashMap<PathBuf, u64>,
 }
 
@@ -94,19 +94,37 @@ pub fn json(path: &Path) -> Option<Arc<Value>> {
 
 /// One file's text, read only when the file changed since the last sample.
 pub fn text(path: &Path) -> Option<Arc<String>> {
+    try_text(path).ok()
+}
+
+/// One file's text, or the cause that stopped the read.
+///
+/// `text` answers "is there text here"; this answers "why is there none", for
+/// a caller that must tell a file that vanished from one it cannot read. The
+/// failed read is retained by the same stamp, so an unchanged unreadable file
+/// costs no content read per sample.
+pub fn try_text(path: &Path) -> Result<Arc<String>, String> {
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .map(Arc::new)
+            .map_err(|error| error.to_string())
+    };
     let Some((modified, len)) = stamp_of(path) else {
         forget(path);
-        return None;
+        // A path whose metadata cannot be read — a vanished file, a link with
+        // no target — costs no content read, so its cause is the stamp that
+        // failed.
+        return Err("its metadata could not be read".to_string());
     };
     let Ok(mut cache) = cache().lock() else {
-        return std::fs::read_to_string(path).ok().map(Arc::new);
+        return read(path);
     };
     if let Some(entry) = cache.text.get(path) {
         if matches(entry, modified, len) {
             return entry.value.clone();
         }
     }
-    let value = std::fs::read_to_string(path).ok().map(Arc::new);
+    let value = read(path);
     cache.text.insert(
         path.to_path_buf(),
         Entry {
@@ -250,6 +268,20 @@ mod tests {
             2,
             "an unchanged file is sampled without a read"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreadable_file_reports_its_cause_and_keeps_its_one_read() {
+        let root = scratch("unreadable");
+        let path = root.join("record.md");
+        std::fs::write(&path, [0x80]).expect("a fixture");
+        assert!(
+            try_text(&path).is_err(),
+            "an invalid UTF-8 file has no text"
+        );
+        assert!(text(&path).is_none(), "the optional read reports the same");
+        assert_eq!(reads(&path), 1, "an unchanged failure is retained");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

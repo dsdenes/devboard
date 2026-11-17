@@ -438,3 +438,31 @@ async fn discovery_reads_the_served_repository_not_the_working_directory() {
         "discovery resolved the loopback Gitea origin of the served checkout"
     );
 }
+
+#[tokio::test]
+async fn an_unreadable_record_is_reported_instead_of_dropped_from_the_listing() {
+    let scratch = Scratch::new("unreadable-record");
+    let repo = scratch.repository("served");
+    std::fs::write(repo.join("GOAL.md"), "# The served goal\n").expect("a goal");
+    let adrs_dir = repo.join("adrs");
+    std::fs::write(adrs_dir.join("0001-unreadable.md"), [0x66, 0x80])
+        .expect("an unreadable record");
+    write_adr(&adrs_dir, "0002-readable.md", "Readable record");
+
+    let dashboard = Dashboard::start(scratch, &[OsStr::new("--adrs-dir"), adrs_dir.as_os_str()]);
+    let port = dashboard.port().await;
+
+    let answered = frames(port, "/records").await;
+    assert!(
+        answered
+            .iter()
+            .all(|frame| frame["type"].as_str() != Some("records")),
+        "an unreadable record never yields a listing: {answered:?}"
+    );
+    let message = answered
+        .iter()
+        .find(|frame| frame["type"].as_str() == Some("error"))
+        .and_then(|frame| frame["message"].as_str())
+        .expect("the report");
+    assert!(message.contains("0001-unreadable.md"), "{message}");
+}

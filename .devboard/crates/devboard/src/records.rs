@@ -26,24 +26,35 @@ impl AdrRecord {
     }
 }
 
-/// Reads the corpus and lists only the records it accepts, sorted by file.
+/// Reads the corpus and lists its records, sorted by file.
+///
+/// A `.md` entry that vanished between `read_dir` and the read is skipped: it
+/// was never part of the corpus this sample describes. An entry that is still
+/// there and cannot be read — permission denied, invalid UTF-8, a directory, a
+/// dangling symlink — is reported with the file and its cause, because the
+/// listing, its `pending` flag, and `next` all come from this corpus and a
+/// dropped record reads exactly like an absent one.
 pub fn read_records(directory: &Path) -> Result<(Vec<Value>, Value), String> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok((Vec::new(), Value::Null))
         }
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(format!("{}: {error}", directory.display())),
     };
     let mut records: Vec<AdrRecord> = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("{}: {error}", directory.display()))?;
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("md") {
             continue;
         }
-        let source = match crate::sampling::text(&path) {
-            Some(text) => text,
-            None => continue,
+        let source = match crate::sampling::try_text(&path) {
+            Ok(text) => text,
+            Err(failure) => match std::fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                _ => return Err(format!("{}: {failure}", path.display())),
+            },
         };
         if let Some(record) = record_from_document(&path, &source) {
             records.push(record);
@@ -308,6 +319,69 @@ mod tests {
         assert_eq!(records[2]["status"], "Draft");
         assert_eq!(records[2]["pending"], true);
         assert_eq!(next, Value::String("0003-draft.md".to_string()));
+    }
+
+    #[test]
+    fn an_unreadable_record_is_reported_beside_a_readable_pending_one() {
+        let root = records_fixture_dir("unreadable");
+        std::fs::write(root.join("0001-unreadable.md"), [0x66, 0x80, 0x80]).expect("a fixture");
+        write_record(
+            &root,
+            "0002-pending.md",
+            "Readable record",
+            Some("Proposed"),
+        );
+        let listed = read_records(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let failure = listed.expect_err("a record that exists but cannot be read is reported");
+        assert!(
+            failure.contains("0001-unreadable.md"),
+            "the report names the record: {failure}"
+        );
+        assert!(
+            !failure.contains("0002-pending.md"),
+            "the readable pending record is not the report: {failure}"
+        );
+    }
+
+    #[test]
+    fn a_record_that_is_a_directory_is_reported_rather_than_dropped() {
+        let root = records_fixture_dir("directory");
+        std::fs::create_dir_all(root.join("0001-directory.md")).expect("a fixture directory");
+        write_record(
+            &root,
+            "0002-pending.md",
+            "Readable record",
+            Some("Proposed"),
+        );
+        let listed = read_records(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let failure = listed.expect_err("a `.md` directory is reported");
+        assert!(
+            failure.contains("0001-directory.md"),
+            "the report names the entry: {failure}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_record_link_is_reported_rather_than_treated_as_vanished() {
+        let root = records_fixture_dir("dangling");
+        std::os::unix::fs::symlink(root.join("absent.md"), root.join("0001-dangling.md"))
+            .expect("a fixture link");
+        write_record(
+            &root,
+            "0002-pending.md",
+            "Readable record",
+            Some("Proposed"),
+        );
+        let listed = read_records(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let failure = listed.expect_err("a link whose target is absent is reported");
+        assert!(
+            failure.contains("0001-dangling.md"),
+            "the report names the entry: {failure}"
+        );
     }
 
     fn records_fixture_dir(label: &str) -> std::path::PathBuf {
