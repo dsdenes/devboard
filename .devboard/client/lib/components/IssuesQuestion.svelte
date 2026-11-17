@@ -13,6 +13,13 @@
     /** The agent run answering through the shared store; omitted by the draft surface. */
     runId?: string;
     /**
+     * The subject this question belongs to: the run id for an agent question,
+     * the draft path for an elaboration question. Two subjects number their
+     * own questions independently, so this — not the run alone — is what
+     * separates one waiting question from another's. Defaults to `runId`.
+     */
+    identity?: string | null;
+    /**
      * Submits the answer; defaults to the agent-run store call for `runId`.
      * Returns false when it sent nothing, so the control keeps the draft.
      */
@@ -32,6 +39,7 @@
     question,
     testid,
     runId,
+    identity,
     onanswer,
     answerRevision = () => 0,
     choiceTestid = "issues-agent-choice",
@@ -43,10 +51,12 @@
   let answer = $state("");
 
   // The draft belongs to the question it answers. The Overview pane and the
-  // Focus tab reuse one instance as the selected agent changes, so a switch to
-  // another run or question clears the text instead of carrying the previous
-  // agent's draft to the new subject.
-  const subject = $derived(`${runId ?? ""}\u0000${question.id}`);
+  // Focus tab reuse one instance as the selected agent changes, and the Drafts
+  // page reuses one as the selected draft changes, so a switch to another
+  // subject or question clears the text instead of carrying the previous
+  // draft to the new subject. Each subject numbers its own questions, so the
+  // identity — not the question id alone — is what the draft belongs to.
+  const subject = $derived(`${identity ?? runId ?? ""}\u0000${question.id}`);
   let shownSubject = $state<string | undefined>(undefined);
 
   $effect(() => {

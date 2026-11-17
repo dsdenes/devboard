@@ -313,6 +313,7 @@
             >
               <IssuesQuestion
                 question={question}
+                identity={goalDrafts.draftPath}
                 testid="issues-draft-question"
                 onanswer={(value) => goalDrafts.submitDraftAnswer(value)}
                 answerRevision={() =>

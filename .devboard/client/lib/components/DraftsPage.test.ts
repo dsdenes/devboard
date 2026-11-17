@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { RunQuestion } from "../types";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
@@ -38,7 +39,7 @@ function layout(log: HTMLElement): { grow: (by: number) => void } {
   };
 }
 
-function draftRun(startedAt: string, activity: string[]) {
+function draftRun(startedAt: string, activity: string[], question: RunQuestion | null = null) {
   return {
     status: "running" as const,
     path: "alpha.md",
@@ -46,8 +47,29 @@ function draftRun(startedAt: string, activity: string[]) {
     finishedAt: null,
     error: null,
     activity,
-    question: null,
+    question,
   };
+}
+
+/** A waiting elaboration question; two drafts may number their own identically. */
+function question(id: number, message: string): RunQuestion {
+  return { id, message, options: [] };
+}
+
+/** The draft answer field and the Answer control beside it. */
+function answerField(container: HTMLElement): {
+  input: HTMLInputElement;
+  submit: HTMLButtonElement;
+} {
+  const input = container.querySelector<HTMLInputElement>(
+    "[data-testid=issues-draft-answer-input]",
+  );
+  const submit = container.querySelector<HTMLButtonElement>(
+    "[data-testid=issues-draft-answer-submit]",
+  );
+  if (input === null || submit === null)
+    throw new Error("the draft question rendered no answer field");
+  return { input, submit };
 }
 
 /** The grid whose column count the page keys on a second panel. */
@@ -124,4 +146,75 @@ test("a restarted run of the selected draft starts at its newest line", async ()
   await tick();
 
   expect(log.scrollTop).toBe(log.scrollHeight - log.clientHeight);
+});
+
+/** Submits the answer form the way the operator's Enter key does. */
+async function submitAnswer(input: HTMLInputElement): Promise<void> {
+  const form = input.closest("form");
+  if (form === null) throw new Error("the answer field is not inside its form");
+  const event = form.ownerDocument.createEvent("Event");
+  event.initEvent("submit", true, true);
+  form.dispatchEvent(event);
+  await tick();
+}
+
+test("two drafts whose questions share an id never share one typed answer", async () => {
+  const sent: string[] = [];
+  const original = goalDrafts.submitDraftAnswer;
+  goalDrafts.submitDraftAnswer = (value: string) => {
+    sent.push(value);
+    return true;
+  };
+  try {
+    goalDrafts.drafts = [
+      summary("alpha.md", "alpha.md", "Alpha"),
+      summary("beta.md", "beta.md", "Beta"),
+    ];
+    goalDrafts.draftPath = "alpha.md";
+    goalDrafts.draft = { ...summary("alpha.md", "alpha.md", "Alpha"), text: "" };
+    // Two elaboration peers number their own ACP requests, so equal ids are ordinary.
+    goalDrafts.draftRuns = {
+      "alpha.md": draftRun("2026-11-17T10:00:00.000Z", [], question(3, "Which file changes?")),
+      "beta.md": draftRun("2026-11-17T11:00:00.000Z", [], question(3, "Which file changes?")),
+    };
+    const view = render(DraftsPage);
+    const alpha = answerField(view.container);
+
+    await fireEvent.input(alpha.input, { target: { value: "the store" } });
+    await tick();
+    await submitAnswer(alpha.input);
+    expect(sent).toEqual(["the store"]);
+    expect(alpha.submit.getAttribute("aria-busy")).toBe("true");
+
+    goalDrafts.draftPath = "beta.md";
+    goalDrafts.draft = { ...summary("beta.md", "beta.md", "Beta"), text: "" };
+    await tick();
+
+    const beta = answerField(view.container);
+    expect(beta.input.value).toBe("");
+    expect(beta.submit.getAttribute("aria-busy")).toBeNull();
+  } finally {
+    goalDrafts.submitDraftAnswer = original;
+  }
+});
+
+test("switching to a draft whose question has another id clears the answer", async () => {
+  goalDrafts.draftPath = "alpha.md";
+  goalDrafts.draft = { ...summary("alpha.md", "alpha.md", "Alpha"), text: "" };
+  goalDrafts.draftRuns = {
+    "alpha.md": draftRun("2026-11-17T10:00:00.000Z", [], question(3, "Which file changes?")),
+    "beta.md": draftRun("2026-11-17T11:00:00.000Z", [], question(4, "Which suite proves it?")),
+  };
+  const view = render(DraftsPage);
+  const alpha = answerField(view.container);
+
+  await fireEvent.input(alpha.input, { target: { value: "the store" } });
+  await tick();
+  expect(alpha.input.value).toBe("the store");
+
+  goalDrafts.draftPath = "beta.md";
+  goalDrafts.draft = { ...summary("beta.md", "beta.md", "Beta"), text: "" };
+  await tick();
+
+  expect(answerField(view.container).input.value).toBe("");
 });
