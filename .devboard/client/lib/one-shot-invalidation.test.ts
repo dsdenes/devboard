@@ -22,6 +22,12 @@ const RUN = "run-42";
 const PROMPT_AGENT = "dead-code";
 
 const realWindow = (globalThis as unknown as Record<string, unknown>).window;
+/** The globals this file replaces; every one is restored for the next file. */
+const originalGlobals = {
+  window: realWindow,
+  fetch: (globalThis as unknown as Record<string, unknown>).fetch,
+  location: (globalThis as unknown as Record<string, unknown>).location,
+};
 
 function setGlobal(key: string, value: unknown): void {
   Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -71,7 +77,7 @@ afterEach(() => {
   issues.run = null;
   goalDrafts.clearDraft();
   agents.forgetPrompt(PROMPT_AGENT);
-  setGlobal("window", realWindow);
+  for (const [key, value] of Object.entries(originalGlobals)) setGlobal(key, value);
 });
 
 test("opening a draft invalidates the key its document is cached under", async () => {

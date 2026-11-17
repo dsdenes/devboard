@@ -14,6 +14,10 @@ export const MAX_URL = 2000;
 export const MAX_SELECTOR = 500;
 /** The server's bound on the viewport label. */
 export const MAX_VIEWPORT = 500;
+/** The client's bound on the captured DOM excerpt. */
+export const MAX_DOM_EXCERPT = 4000;
+/** The client's bound on the captured visible text. */
+export const MAX_VISIBLE_TEXT = 1500;
 
 /** The page values a capture reads, as the browser reports them. */
 export interface PageSource {
@@ -50,5 +54,14 @@ export function pageContext(page: PageSource, selector: string): PageContext {
     url: truncate(page.href, MAX_URL),
     selector: truncate(selector, MAX_SELECTOR),
     viewport: truncate(page.viewport, MAX_VIEWPORT),
+  };
+}
+
+/** This page as the bounded context reads it. */
+export function pageSource(): PageSource {
+  return {
+    pathname: window.location.pathname,
+    href: window.location.href,
+    viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
   };
 }

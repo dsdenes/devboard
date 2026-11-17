@@ -23,6 +23,7 @@ const { default: NotificationRegion } = await import("./NotificationRegion.svelt
 
 type PendingRequest = {
   url: string;
+  body: string;
   resolve: (response: Response) => void;
 };
 
@@ -43,13 +44,19 @@ function refuse(detail: string): Response {
 
 const issueHref = "http://localhost:3001/dsdenes/devboard/issues/7";
 
+/** Replaces the document URL; `about:blank` refuses a relative history push. */
+function setPageURL(url: string): void {
+  const { happyDOM } = window as unknown as { happyDOM: { setURL(value: string): void } };
+  happyDOM.setURL(url);
+}
+
 beforeEach(() => {
   notifications.clear();
   notificationFiler.reset();
   pending.length = 0;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const { promise, resolve } = Promise.withResolvers<Response>();
-    pending.push({ url: String(input), resolve });
+    pending.push({ url: String(input), body: String(init?.body ?? ""), resolve });
     return promise;
   }) as typeof fetch;
 });
@@ -60,6 +67,7 @@ afterEach(() => {
   notificationFiler.reset();
   slowUiAction.uninstall();
   document.body.replaceChildren();
+  setPageURL("about:blank");
   globalThis.fetch = originalFetch;
 });
 
@@ -299,4 +307,88 @@ test("a slow action filing failure offers a retry that links the issue", async (
   expect(view.container.querySelector(".notification__file")).toBeNull();
   expect(posts).toHaveLength(2);
   expect(posts[1]?.key).toBe(posts[0]?.key);
+});
+
+/** The posted report body, decoded the way the server reads it. */
+function postedBody(request: PendingRequest): Record<string, string> {
+  return JSON.parse(request.body) as Record<string, string>;
+}
+
+/** The capture text as the shared builder's own cut sees it: collapsed. */
+function collapsed(value: string): string {
+  return value.replace(/[ \t]+/g, " ").trim();
+}
+
+/** The index of the first lone surrogate in `value`, or null when it has none. */
+function loneSurrogate(value: string): number | null {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        index += 1;
+        continue;
+      }
+      return index;
+    }
+    if (unit >= 0xdc00 && unit <= 0xdfff) return index;
+  }
+  return null;
+}
+
+test("a captured card cuts its excerpt and visible text on code-point boundaries", async () => {
+  notifications.push("Flow", "warning", "The excerpt subject.");
+  const view = render(NotificationRegion, { props: { feedbackenabled: true } });
+  await tick();
+
+  const item = notifications.items[0];
+  if (item === undefined) throw new Error("the notification was not stored");
+  const card = view.container.querySelector(
+    `.notification[data-notification-id="${item.id}"]`,
+  ) as HTMLElement;
+  const text = card.querySelector(".notification__text") as HTMLElement;
+
+  // Measure where a text-node character lands in both captured strings, so
+  // each cut below straddles the high half of an emoji's surrogate pair.
+  text.textContent = "😀".repeat(3000);
+  const excerptStart = collapsed(card.outerHTML).indexOf("😀");
+  const visibleStart = collapsed(card.innerText).indexOf("😀");
+  expect(excerptStart).toBeGreaterThanOrEqual(0);
+  expect(visibleStart).toBeGreaterThanOrEqual(0);
+
+  const visiblePair = 1500 - 1 - visibleStart;
+  const excerptPair = 4000 - 1 - excerptStart;
+  expect(visiblePair).toBeGreaterThanOrEqual(0);
+  expect(excerptPair).toBeGreaterThan(visiblePair + 2);
+
+  const padding = excerptPair - visiblePair - 2;
+  text.textContent = `${"x".repeat(visiblePair)}😀${"y".repeat(padding)}${"😀".repeat(3000)}`;
+
+  const button = view.getByLabelText("File an issue from this notification") as HTMLButtonElement;
+  await fireEvent.click(button);
+  expect(pending).toHaveLength(1);
+
+  const context = postedBody(pending[0]!);
+  expect(loneSurrogate(context.dom_excerpt ?? "")).toBeNull();
+  expect(loneSurrogate(context.visible_text ?? "")).toBeNull();
+  expect(pending[0]!.body).not.toMatch(/\\ud[89ab]/i);
+});
+
+test("a captured card bounds its route and URL to the server's limits", async () => {
+  setPageURL(`http://localhost:3000/${"deep-".repeat(700)}`);
+  notifications.push("Flow", "warning", "The bound subject.");
+  const view = render(NotificationRegion, { props: { feedbackenabled: true } });
+  await tick();
+
+  const button = view.getByLabelText("File an issue from this notification") as HTMLButtonElement;
+  await fireEvent.click(button);
+  expect(pending).toHaveLength(1);
+
+  const context = postedBody(pending[0]!);
+  expect(window.location.pathname.length).toBeGreaterThan(2000);
+  expect(context.route?.length).toBe(2000);
+  expect(context.url?.length).toBe(2000);
+  expect(context.selector?.length).toBeLessThanOrEqual(2000);
+  expect(context.viewport?.length).toBeLessThanOrEqual(500);
+  expect(context.route?.endsWith("…")).toBe(true);
 });

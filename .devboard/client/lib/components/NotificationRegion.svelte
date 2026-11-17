@@ -8,6 +8,13 @@
     type NotificationFiling,
   } from "../notification-issue";
   import { notifications, type AppNotification } from "../notifications.svelte";
+  import {
+    MAX_DOM_EXCERPT,
+    MAX_VISIBLE_TEXT,
+    pageContext,
+    pageSource,
+    truncate,
+  } from "../feedback-capture.ts";
   import { slowUiAction } from "../slow-ui-action";
   import Button from "./ui/button.svelte";
   import CommandButton from "./CommandButton.svelte";
@@ -20,9 +27,6 @@
   let { feedbackenabled }: Props = $props();
 
   const visible = $derived(notifications.live.slice(0, 4));
-  /** Bounds shared with the server's report context. */
-  const MAX_DOM_EXCERPT = 4000;
-  const MAX_VISIBLE_TEXT = 1500;
 
   /** Filed issue URLs, keyed by notification id, for warnings and retries. */
   let filed = $state<Record<number, string>>({});
@@ -66,15 +70,12 @@
     const card = document.querySelector(selector);
     const target = card ?? document.querySelector(".notification-region") ?? document.body;
     return {
-      route: window.location.pathname,
-      url: window.location.href,
-      selector: card === null ? ".notification-region" : selector,
-      domExcerpt: (target.outerHTML ?? "").slice(0, MAX_DOM_EXCERPT),
-      visibleText: ((target as HTMLElement).innerText ?? target.textContent ?? "").slice(
-        0,
+      ...pageContext(pageSource(), card === null ? ".notification-region" : selector),
+      domExcerpt: truncate(target.outerHTML ?? "", MAX_DOM_EXCERPT),
+      visibleText: truncate(
+        (target as HTMLElement).innerText ?? target.textContent ?? "",
         MAX_VISIBLE_TEXT,
       ),
-      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
       capturedAt: new Date().toISOString(),
     };
   }

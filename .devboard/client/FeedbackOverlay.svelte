@@ -14,7 +14,13 @@
   import CommandNotice from "./lib/components/CommandNotice.svelte";
   import { createCommandBusy } from "./lib/command-busy.svelte";
   import type { AskContext, AskTurn, FeedbackAction, FeedbackPhase } from "./lib/types";
-  import { pageContext, truncate, type PageSource } from "./lib/feedback-capture.ts";
+  import {
+    MAX_DOM_EXCERPT,
+    MAX_VISIBLE_TEXT,
+    pageContext,
+    pageSource,
+    truncate,
+  } from "./lib/feedback-capture.ts";
   import { fileReport, writeGoalDraft } from "./lib/feedback-transport.ts";
   import {
     MARGIN,
@@ -49,8 +55,6 @@
 
   type Toast = { ok: boolean; text: string; url?: string };
 
-  const MAX_DOM_EXCERPT = 4000;
-  const MAX_VISIBLE_TEXT = 1500;
   const MAX_CAPTURED_AT = 100;
   /** Bounds shared with the server's Ask conversation capture. */
   const MAX_CONVERSATION_TURNS = 40;
@@ -222,15 +226,6 @@
       node = node.parentElement;
     }
     return parts.join(" > ");
-  }
-
-  /** This page as the bounded context reads it. */
-  function pageSource(): PageSource {
-    return {
-      pathname: window.location.pathname,
-      href: window.location.href,
-      viewport: `${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio}x`,
-    };
   }
 
   /** The captured context every filing carries. */

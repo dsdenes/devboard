@@ -18,6 +18,12 @@ const { queryKeyFor } = await import("./query-keys");
 const DRAFT = ".devboard/goal-proposals/alpha.md";
 
 const realWindow = (globalThis as unknown as Record<string, unknown>).window;
+/** The globals this file replaces; every one is restored for the next file. */
+const originalGlobals = {
+  window: realWindow,
+  fetch: (globalThis as unknown as Record<string, unknown>).fetch,
+  location: (globalThis as unknown as Record<string, unknown>).location,
+};
 
 function setGlobal(key: string, value: unknown): void {
   Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -104,7 +110,7 @@ afterEach(() => {
   goalDrafts.draftRuns = {};
   goalDrafts.draftErrors = {};
   goalDrafts.clearDraft();
-  setGlobal("window", realWindow);
+  for (const [key, value] of Object.entries(originalGlobals)) setGlobal(key, value);
 });
 
 test("a draft read that never answers reports its message and stops latching", async () => {
