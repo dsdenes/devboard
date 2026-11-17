@@ -838,6 +838,31 @@ test("the deploy sidebar count is the history rows, not the filed issues", async
   ).toBe("2");
 });
 
+test("a background-agent row states its count before its state word", async () => {
+  layout.mode = "devboard";
+  agents.snapshots = {
+    "deploy-on-main": backgroundSnapshot("deploy-on-main", "Deploy on main", {
+      state: "enabled",
+      reason: null,
+    }) as (typeof agents.snapshots)[string],
+  };
+  mount();
+  await tick();
+
+  const row = document.querySelector('[data-testid="open-devboard-deploy-on-main"]');
+  expect(row).not.toBeNull();
+  const trailing = [...(row as HTMLElement).children]
+    .filter(
+      (child) =>
+        child.classList.contains("sidebar-item__meta") || child.classList.contains("badge"),
+    )
+    .map((child) => child.textContent?.trim());
+  expect(trailing).toEqual(["0", "stopped"]);
+  expect((row as HTMLElement).textContent?.replace(/\s+/g, " ").trim()).toBe(
+    "Deploy on main 0 stopped",
+  );
+});
+
 /** A project payload with the delivery fields the server sends. */
 function projectPayload(
   mode: "merge" | "pull-request",

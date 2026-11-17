@@ -773,6 +773,9 @@
                 {gateReason}
               </span>
             {/if}
+            <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
+              {agents.count(descriptor.id)}
+            </span>
             <span
               class="badge"
               data-tone={statusTone(snapshot?.lifecycle ?? "stopped")}
@@ -787,9 +790,6 @@
                 answer
               </span>
             {/if}
-            <span class="sidebar-item__meta" data-testid={`agent-count-${descriptor.id}`}>
-              {agents.count(descriptor.id)}
-            </span>
           </Button>
         {/each}
       </section>
