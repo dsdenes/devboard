@@ -36,10 +36,12 @@
 
   const currentIndex = $derived(Math.max(0, STAGES.findIndex((entry) => entry.id === stage)));
   const stateLabel = $derived(
-    paused
-      ? "Paused"
-      : manual
-        ? "Manual run"
+    // A live manual run pauses the lifecycle it interrupted, so the paused
+    // frame the caller still holds may never name the track's current work.
+    manual
+      ? "Manual run"
+      : paused
+        ? "Paused"
         : !seen
           ? "Not started"
           : stage === "finished"

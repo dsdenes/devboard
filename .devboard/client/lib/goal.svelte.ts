@@ -220,6 +220,15 @@ export class GoalStore {
   }
 
   /**
+   * A single-record run the console names by its own frame. It is never derived
+   * from the lifecycle: starting one pauses the lifecycle, so a paused lifecycle
+   * is still `lifecycleActive` while this run is the work in flight.
+   */
+  get manualRunLive(): boolean {
+    return this.running && this.manualRunActive;
+  }
+
+  /**
    * A question the run cannot advance past: the run-level one, or any lane's.
    * A paused lifecycle keeps a lane's question, so pause never hides it.
    */

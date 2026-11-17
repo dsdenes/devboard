@@ -445,15 +445,15 @@
             pass={goal.lifecycle.pass}
             paused={goal.lifecycle.paused}
             seen={goal.lifecycleSeen}
-            workLabel={goal.running && !goal.lifecycleActive ? goal.runTitle : goal.lifecycleWorkTitle}
-            workUrl={goal.running && !goal.lifecycleActive ? null : goal.lifecycleWorkUrl}
-            manual={goal.running && !goal.lifecycleActive}
+            workLabel={goal.manualRunLive ? goal.runTitle : goal.lifecycleWorkTitle}
+            workUrl={goal.manualRunLive ? null : goal.lifecycleWorkUrl}
+            manual={goal.manualRunLive}
             testid="lifecycle-stages"
           />
         </div>
       </section>
 
-      {#if goal.running && !goal.lifecycleActive}
+      {#if goal.manualRunLive}
         <section class="panel" data-testid="now">
           <div class="panel__body row-sm">
             <span class="muted">Manual run</span>
