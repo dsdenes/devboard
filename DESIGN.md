@@ -799,11 +799,14 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   `foreground` and the file name in `muted-foreground`, so a file path draws no second
   presentation of its own. The trailing group holds the 11px read-only state as one full-radius
   pill on the tint of the state it names: `generated` on `success-surface` with a `success` dot
-  and word, `edited` on `warning-surface` with `warning`, and `Live file missing` on
-  `error-surface` with `error`. The 6px dot pairs with the word, so the word states the meaning
+  and word, `edited` on `warning-surface` with `warning`, `Live file missing` on
+  `error-surface` with `error`, and `Not generated yet` on `secondary` with a
+  `muted-foreground` dot, which names a skill no agent has published yet and never a deleted
+  file. The 6px dot pairs with the word, so the word states the meaning
   and the tint and dot never carry it alone. The document is read-only, so the band carries no
   Save or restore control. The chip ellipsizes with a full-path `title` while the state never
-  shrinks or wraps.
+  shrinks or wraps. A pending skill's pane states that no Discover agent has generated the file
+  yet instead of an empty document, so the empty pane reads as work not done, not a lost file.
 - **Discover page frame** — every Discover page renders the shared **Page header** flat, so the
   drill-in pages (Glossary, Contribution, Warnings, a skill, an agent) and the Overview share one
   identity, one page-name rule, and one action group; no `.discover-page__*` header markup or

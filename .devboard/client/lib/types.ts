@@ -463,6 +463,13 @@ export interface DiscoverSkill {
   live: string | null;
 }
 
+/**
+ * A skill page's state: `pending` while the published manifest lists no entry,
+ * because no Discover agent has generated the file yet; `missing` stays the
+ * published entry whose live file is gone.
+ */
+export type DiscoverSkillState = "pending" | DiscoverSkill["state"];
+
 export interface Freshness {
   project: string;
   commit: string;

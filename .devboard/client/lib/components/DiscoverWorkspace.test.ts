@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { DiscoverAgentState, DiscoverStatePayload, Glossary } from "../types";
+import type { DiscoverAgentState, DiscoverSkill, DiscoverStatePayload, Glossary } from "../types";
 import { REST_OPERATIONS } from "../rest-map";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
@@ -44,6 +44,7 @@ function payload(
     glossaries?: Glossary[];
     cloning?: { url: string } | null;
     starting?: boolean;
+    skills?: DiscoverSkill[];
   } = {},
 ): DiscoverStatePayload {
   const activeAgent = options.activeAgent ?? null;
@@ -76,7 +77,7 @@ function payload(
     glossaryUsage: {},
     glossarySignificance: {},
     decisions: [],
-    skills: [],
+    skills: options.skills ?? [],
   };
 }
 
@@ -280,6 +281,46 @@ test("a skill page stops only its own running agent", async () => {
   expect(controlTitle()).toBe("Stop this discovery agent");
   const sent = await activateControl();
   expect(sent).toEqual([{ type: "stopDiscover" }]);
+});
+
+const CONTRIBUTION_SKILL_TAB = {
+  id: "contribution-skill",
+  kind: "skill",
+  resourceId: "discover-contribution",
+  title: "Contribution",
+};
+
+function skillPill(): Element {
+  const pill = document.querySelector('[data-testid="discover-skill-state"]');
+  if (pill === null) throw new Error("the skill page renders no state pill");
+  return pill;
+}
+
+test("an unpublished skill page names a pending file instead of a missing one", async () => {
+  await show(CONTRIBUTION_SKILL_TAB, payload({ skills: [] }));
+  expect(skillPill().getAttribute("data-state")).toBe("pending");
+  expect(skillPill().getAttribute("data-tone")).toBe("muted");
+  expect(skillPill().textContent?.trim()).toBe("Not generated yet");
+  expect(
+    document.querySelector('[data-testid="discover-skill-pending"]')?.textContent,
+  ).toContain("No Discover agent has generated this file yet.");
+  expect(document.querySelector('[data-testid="discover-skill-text"]')).toBeNull();
+});
+
+test("a published skill whose live file is gone keeps the missing state", async () => {
+  await show(
+    CONTRIBUTION_SKILL_TAB,
+    payload({
+      skills: [
+        { name: "discover-contribution", state: "missing", baseline: null, live: null },
+      ],
+    }),
+  );
+  expect(skillPill().getAttribute("data-state")).toBe("missing");
+  expect(skillPill().getAttribute("data-tone")).toBe("error");
+  expect(skillPill().textContent?.trim()).toBe("Live file missing");
+  expect(document.querySelector('[data-testid="discover-skill-pending"]')).toBeNull();
+  expect(document.querySelector('[data-testid="discover-skill-text"]')?.textContent).toBe("");
 });
 
 test("a Run all suite stops the whole sequence from the running agent's page", async () => {
