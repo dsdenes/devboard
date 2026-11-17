@@ -123,7 +123,7 @@ afterEach(() => {
   layout.reset();
   issues.selectedRun = null;
   issues.run = null;
-  issues.runError = null;
+  issues.missingRun = null;
   issues.resetActiveOperations();
   setGlobal("window", realWindow);
 });
@@ -142,7 +142,7 @@ test("a reconnect re-requests a run whose history answer was lost", async () => 
 
   applyFrames([{ type: "issuesRun", run: finishedRun() }]);
   expect(issues.run?.activityLines).toEqual(["$ cargo test", "2 passed"]);
-  expect(issues.runError).toBeNull();
+  expect(issues.missingRun).toBeNull();
 
   // The answered detail is what the next effect pass reads; it asks again
   // only after another reconnect.
@@ -176,7 +176,7 @@ test("a missing run asks once per open transition and then stays unavailable", a
   applyFrames([
     { type: "issuesRunMissing", runId: "run-gone", message: "No such issues run." },
   ]);
-  expect(issues.runError).toBe("No such issues run.");
+  expect(issues.missingRun).toBe("run-gone");
 
   issues.loadRun("run-gone");
   await settle();

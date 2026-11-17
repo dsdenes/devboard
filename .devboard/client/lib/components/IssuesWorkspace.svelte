@@ -656,6 +656,22 @@
               runId={issues.run.runId}
             />
           </div>
+        {:else if issues.selectedRun !== null && issues.missingRun === issues.selectedRun}
+          <div
+            class="issues-run-detail"
+            data-testid="issues-run-unavailable"
+            data-run={issues.selectedRun}
+          >
+            <p class="muted">This run is no longer available in run history.</p>
+          </div>
+        {:else if issues.selectedRun !== null}
+          <div
+            class="issues-run-detail"
+            data-testid="issues-run-loading"
+            data-run={issues.selectedRun}
+          >
+            <p class="muted">Loading the run from history…</p>
+          </div>
         {/if}
       </div>
     </div>

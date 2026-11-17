@@ -64,7 +64,12 @@ export class IssuesStore {
   snapshot = $state<IssuesSnapshot | null>(null);
   agentActivity = $state<Record<string, string[]>>({});
   run = $state<IssuesRunDetail | null>(null);
-  runError = $state<string | null>(null);
+  /**
+   * The run whose own history read answered `issuesRunMissing`. The frame
+   * names the run it settles, so a late answer for an earlier selection never
+   * marks the run now on screen unavailable.
+   */
+  missingRun = $state<string | null>(null);
   selectedRun = $state<string | null>(null);
   /**
    * The run this connection generation asked history for. A reconnect clears
@@ -356,7 +361,7 @@ export class IssuesStore {
     this.selectedRun = runId;
     this.requestedRun = runId;
     this.run = null;
-    this.runError = null;
+    this.missingRun = null;
     if (reopening) invalidateRead({ type: "getIssuesRun", runId });
   }
 
@@ -409,7 +414,7 @@ export class IssuesStore {
       const run = message.run as unknown as IssuesRunDetail;
       if (typeof run.runId === "string" && Array.isArray(run.activityLines)) {
         this.run = run;
-        this.runError = null;
+        this.missingRun = null;
         this.selectedRun = run.runId;
       }
       return;
@@ -433,10 +438,12 @@ export class IssuesStore {
       return;
     }
     if (message.type === "issuesRunMissing") {
-      // A run whose history is gone answers its own frame: the focus page
-      // renders that as unavailable, and the generic server error channel
-      // never raises a notification for a pruned or restored history entry.
-      this.runError = "No such issues run.";
+      // A run whose history is gone answers its own frame: the focus page and
+      // the Runs detail render that run as unavailable, and the generic server
+      // error channel never raises a notification for a pruned or restored
+      // history entry. The frame names the run it settles, so the selection
+      // only renders unavailable when that name is its own.
+      this.missingRun = typeof message.runId === "string" ? message.runId : null;
       return;
     }
   }

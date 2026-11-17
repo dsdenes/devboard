@@ -295,7 +295,7 @@ afterEach(() => {
   issues.snapshot = null;
   issues.selectedRun = null;
   issues.run = null;
-  issues.runError = null;
+  issues.missingRun = null;
   issues.resetActiveOperations();
   flow.status = "none";
   flow.goalCreation = null;

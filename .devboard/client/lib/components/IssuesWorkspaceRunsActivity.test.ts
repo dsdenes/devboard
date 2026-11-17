@@ -5,8 +5,9 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
 // Static imports evaluate before the DOM globals exist, so the component and
 // the testing library load after registration.
-const { cleanup, render } = await import("@testing-library/svelte");
+const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { default: IssuesWorkspace } = await import("./IssuesWorkspace.svelte");
+const { connection } = await import("../connection.svelte");
 const { issues } = await import("../issues.svelte");
 
 /** The Runs tab, which carries the run list and its detail panel. */
@@ -76,13 +77,14 @@ function resetRunState(): void {
   issues.snapshot = null;
   issues.agentActivity = {};
   issues.run = null;
-  issues.runError = null;
+  issues.missingRun = null;
   issues.selectedRun = null;
 }
 
 afterEach(() => {
   cleanup();
   resetRunState();
+  connection.state = "connecting";
 });
 
 test("runs detail renders a command line as the shared log renders it", () => {
@@ -107,4 +109,35 @@ test("a run with no retained lines shows the shared empty state", () => {
   const view = render(IssuesWorkspace, { props: { tab: RUNS } });
 
   expect(view.getByTestId("issues-run-activity").textContent?.trim()).toBe("No activity yet.");
+});
+
+test("a run whose history is gone says why, and another selection clears it", async () => {
+  connection.state = "open";
+  const [first] = snapshot().runs as Record<string, unknown>[];
+  issues.handleEvent(snapshot({ runs: [first, { ...first, runId: "run-43", issueNumbers: [43] }] }));
+
+  const view = render(IssuesWorkspace, { props: { tab: RUNS } });
+  const rowFor = (runId: string): HTMLElement => {
+    const row = view.container.querySelector(`[data-testid="issues-run"][data-run="${runId}"]`);
+    if (!(row instanceof HTMLElement)) throw new Error(`no run row ${runId}`);
+    return row;
+  };
+  expect(view.getAllByTestId("issues-run").length).toBe(2);
+
+  await fireEvent.click(rowFor("run-42"));
+  issues.handleEvent({
+    type: "issuesRunMissing",
+    runId: "run-42",
+    message: "No such issues run.",
+  });
+
+  const unavailable = await view.findByTestId("issues-run-unavailable");
+  expect(unavailable.getAttribute("data-run")).toBe("run-42");
+  expect(unavailable.textContent).toContain("This run is no longer available in run history.");
+  expect(view.queryByTestId("issues-run-detail")).toBeNull();
+  expect(view.getAllByTestId("issues-run").length).toBe(2);
+
+  await fireEvent.click(rowFor("run-43"));
+  expect(view.queryByTestId("issues-run-unavailable")).toBeNull();
+  expect(view.getByTestId("issues-run-loading").getAttribute("data-run")).toBe("run-43");
 });

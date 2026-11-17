@@ -26,7 +26,7 @@
   // only the newest lines of each running agent, so a live agent's page shows
   // the run read as soon as it lands and the preview until then.
   const lines = $derived(detail !== null ? detail.activityLines : issues.activityFor(runId));
-  const unavailable = $derived(agent === null && detail === null && issues.runError !== null);
+  const unavailable = $derived(agent === null && detail === null && issues.missingRun === runId);
   const harnessVersion = $derived(detail?.harnessVersion ?? issues.versionForRun(runId));
   const startedAt = $derived(agent?.startedAt ?? detail?.startedAt ?? null);
   let now = $state(Date.now());

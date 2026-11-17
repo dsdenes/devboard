@@ -25,13 +25,13 @@ test("a run whose history is gone reads as unavailable without a server error no
   ]);
 
   expect(frames).toEqual(["issuesRunMissing"]);
-  expect(issues.runError).toBe("No such issues run.");
+  expect(issues.missingRun).toBe("run-gone");
   expect(notifications.items.length).toBe(before);
 
   // The history read that follows clears the unavailable state; a pruned run
   // is an answer, not a page that stays broken.
   applyFrames([{ type: "issuesRun", run: { runId: "run-gone", activityLines: [] } }]);
-  expect(issues.runError).toBeNull();
+  expect(issues.missingRun).toBeNull();
   expect(notifications.items.length).toBe(before);
 });
 

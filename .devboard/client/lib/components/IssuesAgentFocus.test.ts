@@ -25,7 +25,7 @@ function resetRunState(): void {
   issues.snapshot = null;
   issues.agentActivity = {};
   issues.run = null;
-  issues.runError = null;
+  issues.missingRun = null;
   issues.selectedRun = null;
 }
 
@@ -176,7 +176,7 @@ test("a pruned run shows the unavailable panel and its way to the run list", asy
   });
   expect(view.getByText("Loading the run from history…")).not.toBeNull();
 
-  issues.handleEvent({ type: "issuesRunMissing" });
+  issues.handleEvent({ type: "issuesRunMissing", runId: "run-42" });
 
   const panel = await view.findByTestId("issues-agent-focus-unavailable");
   expect(panel.textContent).toContain("This run is no longer available in run history.");
