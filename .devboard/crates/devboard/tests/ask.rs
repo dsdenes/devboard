@@ -864,6 +864,11 @@ async fn ask_recovery_settles_the_turn_its_owner_reports() {
     )
     .expect("the credentials file is written");
     std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    // The detached owner admits its peer against this host's memory budget. A
+    // whole-suite run that leaves available memory below the reserve defers
+    // that admission, so the stub logs no prompt and the turn never starts.
+    // The floor keeps admission independent of what else the suite is doing.
+    std::env::set_var("DEVBOARD_MEMORY_RESERVE_MB", "64");
     let command = format!(
         "{} acp-stub --ask --ask-delay-ms=700 --log={}",
         env!("CARGO_BIN_EXE_devboard"),
