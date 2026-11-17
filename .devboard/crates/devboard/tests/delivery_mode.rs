@@ -68,6 +68,18 @@ async fn set_mode(app: &std::sync::Arc<App>, mode: &str) -> Value {
         app,
         Command::SetDeliveryMode {
             mode: Some(json!(mode)),
+            request_id: None,
+        },
+    )
+    .await
+}
+
+async fn set_mode_under(app: &std::sync::Arc<App>, mode: &str, request_id: Value) -> Value {
+    frame(
+        app,
+        Command::SetDeliveryMode {
+            mode: Some(json!(mode)),
+            request_id: Some(request_id),
         },
     )
     .await
@@ -177,4 +189,35 @@ async fn a_harness_source_checkout_is_pinned_to_merge() {
     let text = std::fs::read_to_string(&path).expect("the state file");
     let value: Value = serde_json::from_str(&text).expect("state JSON");
     assert_eq!(value["state"]["deliveryMode"], "pull-request");
+}
+
+#[tokio::test]
+async fn a_delivery_answer_names_the_save_it_settles() {
+    let root = scratch("request-id");
+    let repo = root.join("repo");
+    let state = root.join("state");
+    let app = dashboard(&repo, &state);
+
+    // The confirmed answer carries the page's id beside the project payload.
+    let saved = set_mode_under(&app, "pull-request", json!(7)).await;
+    assert_eq!(saved["type"], "project");
+    assert_eq!(saved["deliveryMode"], "pull-request");
+    assert_eq!(saved["requestId"], 7);
+
+    // Every refusal echoes the same id, so the page settles its own save.
+    let unknown = set_mode_under(&app, "fast-forward", json!(8)).await;
+    assert_eq!(unknown["type"], "error");
+    assert_eq!(unknown["requestId"], 8);
+    assert!(unknown["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("fast-forward"));
+
+    // An untracked save answers exactly as before: no id on either frame.
+    let untracked = set_mode(&app, "merge").await;
+    assert_eq!(untracked["deliveryMode"], "merge");
+    assert_eq!(untracked["requestId"], Value::Null);
+    let refused = set_mode(&app, "fast-forward").await;
+    assert_eq!(refused["type"], "error");
+    assert_eq!(refused["requestId"], Value::Null);
 }

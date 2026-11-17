@@ -31,6 +31,7 @@ pub enum Command {
     },
     SetDeliveryMode {
         mode: Option<Value>,
+        request_id: Option<Value>,
     },
     GetIssues,
     GetIssuesRun {
@@ -345,7 +346,8 @@ impl Command {
             Self::CreateProvider { request_id, .. }
             | Self::SaveProvider { request_id, .. }
             | Self::DeleteProvider { request_id, .. }
-            | Self::SetProviderEnabled { request_id, .. } => request_id.as_ref(),
+            | Self::SetProviderEnabled { request_id, .. }
+            | Self::SetDeliveryMode { request_id, .. } => request_id.as_ref(),
             _ => None,
         }
     }
@@ -378,6 +380,7 @@ pub fn command_from_json(text: &str) -> Option<Command> {
         },
         "setDeliveryMode" => Command::SetDeliveryMode {
             mode: field("mode"),
+            request_id: field("requestId"),
         },
         "setInstalledSkillEnabled" => Command::SetInstalledSkillEnabled {
             name: field("name"),

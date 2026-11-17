@@ -868,13 +868,16 @@ function projectPayload(
   mode: "merge" | "pull-request",
   state: "enabled" | "disabled" = "enabled",
   reason: string | null = null,
+  requestId?: number,
 ): Record<string, unknown> {
-  return {
+  const frame: Record<string, unknown> = {
     type: "project",
     path: "/fixture/repo",
     deliveryMode: mode,
     deliveryModeAvailability: { state, reason },
   };
+  if (requestId !== undefined) frame.requestId = requestId;
+  return frame;
 }
 
 function deliveryToggle(): HTMLButtonElement {
@@ -937,7 +940,11 @@ test("a delivery activation flips optimistically and confirms the save", async (
   const sent = stubSend();
   try {
     await fireEvent.click(toggle);
-    expect(sent).toEqual([{ type: "setDeliveryMode", mode: "pull-request" }]);
+    const save = delivery.pending;
+    if (save === null) throw new Error("the activation dispatched no pending save");
+    expect(sent).toEqual([
+      { type: "setDeliveryMode", mode: "pull-request", requestId: save.requestId },
+    ]);
     // The confirmed mode waits for the server; the switch already shows it.
     expect(delivery.mode).toBe("merge");
     expect(toggle.getAttribute("data-mode")).toBe("pull-request");
@@ -950,7 +957,7 @@ test("a delivery activation flips optimistically and confirms the save", async (
     await fireEvent.click(toggle);
     expect(sent.length).toBe(1);
 
-    delivery.handleEvent(projectPayload("pull-request"));
+    delivery.handleEvent(projectPayload("pull-request", "enabled", null, save.requestId));
     await tick();
     expect(document.querySelector('[data-testid="delivery-mode-saving"]')).toBeNull();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
@@ -977,9 +984,12 @@ test("a refused delivery save restores the previous mode and shows the error", a
   try {
     await fireEvent.click(toggle);
     expect(sent.length).toBe(1);
+    const save = delivery.pending;
+    if (save === null) throw new Error("the activation dispatched no pending save");
     delivery.handleEvent({
       type: "error",
       message: "Unknown delivery mode \"fast-forward\"; use `merge` or `pull-request`.",
+      requestId: save.requestId,
     });
     await tick();
     expect(toggle.getAttribute("data-mode")).toBe("merge");
@@ -993,9 +1003,11 @@ test("a refused delivery save restores the previous mode and shows the error", a
 
     // The refusal leaves the next activation free to dispatch again.
     await fireEvent.click(toggle);
+    const retry = delivery.pending;
+    if (retry === null) throw new Error("the retry dispatched no pending save");
     expect(sent).toEqual([
-      { type: "setDeliveryMode", mode: "pull-request" },
-      { type: "setDeliveryMode", mode: "pull-request" },
+      { type: "setDeliveryMode", mode: "pull-request", requestId: save.requestId },
+      { type: "setDeliveryMode", mode: "pull-request", requestId: retry.requestId },
     ]);
     expect(document.querySelector('[data-testid="delivery-mode-error"]')).toBeNull();
   } finally {

@@ -224,44 +224,61 @@ pub fn init(shared: &Shared, repo_dir: &Path, state_dir: &Path) -> std::sync::Ar
     setting
 }
 
+/// One refusal frame. It names the save's own request id when the page sent
+/// one, so a page settles that save and never a refusal another command raised.
+fn refused(request_id: Option<&Value>, message: String) -> Value {
+    let mut frame = json!({"type": "error", "message": message});
+    if let Some(request_id) = request_id {
+        frame["requestId"] = request_id.clone();
+    }
+    frame
+}
+
 /// Answers `setDeliveryMode`: parses the one field, refuses an unknown value
 /// and a harness checkout, persists the accepted value, and answers the whole
-/// project payload.
+/// project payload under the save's own request id.
 pub fn handle(app: &std::sync::Arc<App>, conn: &Conn, command: &Command) -> bool {
-    let Command::SetDeliveryMode { mode } = command else {
+    let Command::SetDeliveryMode { mode, request_id } = command else {
         return false;
     };
+    let request_id = request_id.as_ref();
     let Some(text) = mode.as_ref().and_then(Value::as_str) else {
-        conn.send(json!({
-            "type": "error",
-            "message": "A delivery mode needs `merge` or `pull-request`.",
-        }));
+        conn.send(refused(
+            request_id,
+            "A delivery mode needs `merge` or `pull-request`.".to_string(),
+        ));
         return true;
     };
     let Some(mode) = DeliveryMode::parse(text) else {
-        conn.send(json!({
-            "type": "error",
-            "message": format!("Unknown delivery mode {text:?}; use `merge` or `pull-request`."),
-        }));
+        conn.send(refused(
+            request_id,
+            format!("Unknown delivery mode {text:?}; use `merge` or `pull-request`."),
+        ));
         return true;
     };
     let setting = &app.delivery;
     if mode == DeliveryMode::PullRequest && setting.kind() == ProjectKind::HarnessSource {
-        conn.send(json!({
-            "type": "error",
-            "message": format!("{HARNESS_REFUSAL} The saved mode is unchanged."),
-        }));
+        conn.send(refused(
+            request_id,
+            format!("{HARNESS_REFUSAL} The saved mode is unchanged."),
+        ));
         return true;
     }
     if let Err(message) = setting.set(mode) {
-        conn.send(json!({"type": "error", "message": message}));
+        conn.send(refused(request_id, message));
         return true;
     }
     // Flush the registered section before the answer, so the frame a page
     // applies is the value a restart reads back.
     app.shared.flush_state();
     let frame = setting.project_frame();
-    conn.send(frame.clone());
+    // The answer names the save it settles. The broadcast carries the plain
+    // payload: no other page awaits this save.
+    let mut answer = frame.clone();
+    if let Some(request_id) = request_id {
+        answer["requestId"] = request_id.clone();
+    }
+    conn.send(answer);
     app.shared.broadcast(frame);
     true
 }

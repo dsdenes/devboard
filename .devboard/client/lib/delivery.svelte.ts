@@ -33,6 +33,12 @@ function isMode(value: unknown): value is DeliveryMode {
   return value === "merge" || value === "pull-request";
 }
 
+/** One save in flight: the mode it asks for and the id its answer names. */
+interface PendingSave {
+  requestId: number;
+  mode: DeliveryMode;
+}
+
 function availabilityOf(value: unknown): DeliveryAvailability | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const row = value as Record<string, unknown>;
@@ -50,19 +56,22 @@ function availabilityOf(value: unknown): DeliveryAvailability | undefined {
  *
  * The confirmed mode follows the server's project payload only; `shown` is the
  * pending mode while a save is in flight, so the switch flips at once without
- * rewriting `mode`. A confirming frame clears the pending save and posts the
- * one transient success note; a refusal clears it, restores `shown` to `mode`,
- * and states the server's reason. On a harness source checkout the control
- * renders disabled with the availability reason.
+ * rewriting `mode`. The answer that names the save's own request id clears it
+ * and posts the one transient success note; a refusal that names that id
+ * clears it, restores `shown` to `mode`, and states the server's reason. Any
+ * other frame — the generic error a different command raised, a broadcast, or
+ * another page's save — leaves the save awaiting its own answer. On a harness
+ * source checkout the control renders disabled with the availability reason.
  */
 export class DeliveryStore {
   mode = $state<DeliveryMode>("merge");
   availability = $state<DeliveryAvailability>({ state: "enabled", reason: null });
-  /** The mode a save is awaiting, so a repeated click does not dispatch twice. */
-  pending = $state<DeliveryMode | null>(null);
+  /** The save awaiting its answer, so a repeated click does not dispatch twice. */
+  pending = $state<PendingSave | null>(null);
   error = $state<string | null>(null);
   /** True once a project frame stated the mode; before that, `merge` is a default. */
   resolved = $state(false);
+  private nextRequestId = 1;
 
   get disabled(): boolean {
     return this.availability.state === "disabled";
@@ -72,9 +81,9 @@ export class DeliveryStore {
     return this.availability.reason;
   }
 
-  /** The optimistic mode: the pending save, else the confirmed one. */
+  /** The optimistic mode: the pending save's target, else the confirmed one. */
   get shown(): DeliveryMode {
-    return this.pending ?? this.mode;
+    return this.pending?.mode ?? this.mode;
   }
 
   /** True while one save awaits its server frame. */
@@ -89,7 +98,11 @@ export class DeliveryStore {
 
   handleEvent(message: Record<string, unknown>): void {
     if (message.type === "error") {
-      if (this.pending === null) return;
+      // A generic error frame names no command, so only the save's own id
+      // settles it: a refusal another command raised is not this save's
+      // answer and never replaces it or its confirmation.
+      const pending = this.#ownAnswer(message);
+      if (pending === null) return;
       clearOwnFeedback();
       this.error =
         typeof message.message === "string" && message.message.length > 0
@@ -105,16 +118,24 @@ export class DeliveryStore {
     this.mode = message.deliveryMode;
     this.availability = availability;
     this.resolved = true;
-    const pending = this.pending;
+    const pending = this.#ownAnswer(message);
     if (pending === null) return;
     this.pending = null;
     this.error = null;
-    if (pending === this.mode) {
+    if (pending.mode === this.mode) {
       saveFeedback.saved(
         DELIVERY_FEEDBACK_SCOPE,
         `Delivery mode saved: ${DELIVERY_MODE_LABELS[this.mode]}.`,
       );
     }
+  }
+
+  /** The save this frame answers, or `null` when it names no pending id. */
+  #ownAnswer(message: Record<string, unknown>): PendingSave | null {
+    const pending = this.pending;
+    if (pending === null) return null;
+    const requestId = message.requestId;
+    return typeof requestId === "number" && requestId === pending.requestId ? pending : null;
   }
 
   /** Dispatches one save. A disabled checkout dispatches nothing. */
@@ -124,12 +145,22 @@ export class DeliveryStore {
     if (this.pending !== null) return;
     clearOwnFeedback();
     this.error = null;
-    this.pending = mode;
-    const sent = connection.send({ type: "setDeliveryMode", mode });
+    const requestId = this.nextRequestId;
+    this.nextRequestId += 1;
+    this.pending = { requestId, mode };
+    const sent = connection.send({ type: "setDeliveryMode", mode, requestId }, "operator", () =>
+      this.#abandon(requestId),
+    );
     if (!sent) {
       this.pending = null;
       this.error = "Could not reach the server.";
     }
+  }
+
+  /** A save the transport never delivered stops awaiting an answer. */
+  #abandon(requestId: number): void {
+    if (this.pending?.requestId !== requestId) return;
+    this.pending = null;
   }
 
   /** Test seam: applies the store's own state without a server. */

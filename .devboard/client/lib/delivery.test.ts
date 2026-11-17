@@ -12,13 +12,16 @@ function projectFrame(
   mode: "merge" | "pull-request",
   state: "enabled" | "disabled" = "enabled",
   reason: string | null = null,
+  requestId?: number,
 ): Record<string, unknown> {
-  return {
+  const frame: Record<string, unknown> = {
     type: "project",
     path: "/fixture/repo",
     deliveryMode: mode,
     deliveryModeAvailability: { state, reason },
   };
+  if (requestId !== undefined) frame.requestId = requestId;
+  return frame;
 }
 
 function stubSend(): unknown[] {
@@ -56,9 +59,9 @@ test("a pending save shows the target mode without changing the confirmed one", 
 
   store.choose("pull-request");
 
-  expect(sent).toEqual([{ type: "setDeliveryMode", mode: "pull-request" }]);
+  expect(sent).toEqual([{ type: "setDeliveryMode", mode: "pull-request", requestId: 1 }]);
   expect(store.mode).toBe("merge");
-  expect(store.pending).toBe("pull-request");
+  expect(store.pending).toEqual({ requestId: 1, mode: "pull-request" });
   expect(store.shown).toBe("pull-request");
   expect(store.saving).toBe(true);
   expect(store.other).toBe("merge");
@@ -66,7 +69,7 @@ test("a pending save shows the target mode without changing the confirmed one", 
   // One save at a time: a second activation dispatches nothing.
   store.choose("merge");
   expect(sent.length).toBe(1);
-  expect(store.pending).toBe("pull-request");
+  expect(store.pending).toEqual({ requestId: 1, mode: "pull-request" });
   expect(store.shown).toBe("pull-request");
 });
 
@@ -76,7 +79,7 @@ test("a confirming frame posts the scoped success note from the label map", () =
   stubSend();
 
   store.choose("pull-request");
-  store.handleEvent(projectFrame("pull-request"));
+  store.handleEvent(projectFrame("pull-request", "enabled", null, 1));
 
   expect(store.pending).toBeNull();
   expect(store.saving).toBe(false);
@@ -102,13 +105,13 @@ test("an initial frame without a pending save shows no feedback", () => {
   expect(saveFeedback.scope).toBeNull();
 });
 
-test("a frame for another mode clears the pending save without a success note", () => {
+test("the save's own answer for another mode settles it without a success note", () => {
   const store = new DeliveryStore();
   store.handleEvent(projectFrame("merge"));
   stubSend();
   store.choose("pull-request");
 
-  store.handleEvent(projectFrame("merge"));
+  store.handleEvent(projectFrame("merge", "enabled", null, 1));
 
   expect(store.pending).toBeNull();
   expect(store.shown).toBe("merge");
@@ -122,7 +125,11 @@ test("a refusal restores the confirmed mode, shows the error, and allows a retry
   saveFeedback.saved(DELIVERY_FEEDBACK_SCOPE, "Delivery mode saved: Merge to main.");
   store.choose("pull-request");
 
-  store.handleEvent({ type: "error", message: "Unknown delivery mode \"fast-forward\"." });
+  store.handleEvent({
+    type: "error",
+    message: "Unknown delivery mode \"fast-forward\".",
+    requestId: 1,
+  });
 
   expect(store.pending).toBeNull();
   expect(store.shown).toBe("merge");
@@ -132,10 +139,50 @@ test("a refusal restores the confirmed mode, shows the error, and allows a retry
 
   store.choose("pull-request");
   expect(sent).toEqual([
-    { type: "setDeliveryMode", mode: "pull-request" },
-    { type: "setDeliveryMode", mode: "pull-request" },
+    { type: "setDeliveryMode", mode: "pull-request", requestId: 1 },
+    { type: "setDeliveryMode", mode: "pull-request", requestId: 2 },
   ]);
   expect(store.error).toBeNull();
+});
+
+test("an unrelated error frame leaves the save awaiting its own answer", () => {
+  const store = new DeliveryStore();
+  store.handleEvent(projectFrame("merge"));
+  stubSend();
+  store.choose("pull-request");
+  const save = store.pending;
+  if (save === null) throw new Error("the activation dispatched no pending save");
+  const { requestId } = save;
+
+  // The dispatcher refuses every non-read-only command while an implementation
+  // reset is active, and that frame names no command; a broadcast refusal names
+  // another id. Neither is this save's answer.
+  store.handleEvent({ type: "error", message: "An implementation reset is active." });
+  store.handleEvent({
+    type: "error",
+    message: "A provider credential was lost.",
+    requestId: requestId + 1,
+  });
+
+  expect(store.error).toBeNull();
+  expect(store.pending).toEqual({ requestId, mode: "pull-request" });
+  expect(store.saving).toBe(true);
+  expect(store.shown).toBe("pull-request");
+
+  // A project frame naming no save — a re-read or another page's answer —
+  // updates the confirmed mode without settling this one.
+  store.handleEvent(projectFrame("pull-request"));
+  expect(store.pending).toEqual({ requestId, mode: "pull-request" });
+  expect(saveFeedback.text).toBeNull();
+
+  // The frame that names the save confirms it, whatever arrived before.
+  store.handleEvent(projectFrame("pull-request", "enabled", null, requestId));
+  expect(store.pending).toBeNull();
+  expect(store.saving).toBe(false);
+  expect(store.error).toBeNull();
+  expect(store.shown).toBe("pull-request");
+  expect(store.mode).toBe("pull-request");
+  expect(saveFeedback.text).toBe("Delivery mode saved: Open pull request.");
 });
 
 test("a disabled checkout names its reason and dispatches nothing", () => {

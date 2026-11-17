@@ -198,7 +198,10 @@ pub static ROUTES: &[Route] = &[
         "setDeliveryMode",
         PUT,
         "/delivery-mode",
-        [body_field!("mode", "mode")],
+        [
+            body_field!("request_id", "requestId"),
+            body_field!("mode", "mode")
+        ],
         200,
         false
     ),

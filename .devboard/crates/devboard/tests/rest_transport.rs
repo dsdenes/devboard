@@ -349,6 +349,39 @@ async fn provider_creation_posts_to_the_collection() {
 }
 
 #[tokio::test]
+async fn a_delivery_save_answers_under_the_request_id_it_carries() {
+    let instance = start("delivery-request-id").await;
+    let (status, _headers, body) = send_json(
+        &instance.base,
+        Method::PUT,
+        "/delivery-mode",
+        json!({"requestId": 11, "mode": "pull-request"}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200);
+    let saved = frames(&body);
+    assert_eq!(saved[0]["type"], "project");
+    assert_eq!(saved[0]["deliveryMode"], "pull-request");
+    assert_eq!(saved[0]["requestId"], 11);
+
+    let (status, _headers, body) = send_json(
+        &instance.base,
+        Method::PUT,
+        "/delivery-mode",
+        json!({"requestId": 12, "mode": "fast-forward"}),
+    )
+    .await;
+    assert_eq!(status.as_u16(), 200);
+    let refused = frames(&body);
+    assert_eq!(refused[0]["type"], "error");
+    assert_eq!(refused[0]["requestId"], 12);
+    assert!(refused[0]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("fast-forward"));
+}
+
+#[tokio::test]
 async fn a_retry_answers_no_location_and_its_get_is_still_refused() {
     let instance = start("retry-no-location").await;
     let (status, headers, _body) = send_json(
