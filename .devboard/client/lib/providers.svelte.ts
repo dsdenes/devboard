@@ -23,6 +23,12 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const rest = { ...record };
+  delete rest[key];
+  return rest;
+}
+
 const STATUSES: readonly ProviderKeyStatus[] = [
   "ok",
   "near-limit",
@@ -124,6 +130,17 @@ export class ProviderStore {
   /** The answer to the latest save: its request id and whether it was applied. */
   saveResult = $state<{ requestId: number; ok: boolean } | null>(null);
   /**
+   * The enabled value the operator asked for, by subscription id, until the
+   * server answers that row's own change. The checkbox follows this draft, so a
+   * refused change puts the row back on the stored value; a state frame that
+   * catches up with it drops it.
+   */
+  enabledDraft = $state<Record<string, boolean>>({});
+  /** Subscription ids whose enable change the server has not answered yet. */
+  enablePending = $state<Record<string, true>>({});
+  /** The subscription each in-flight enable names, by request id. */
+  private enableIds = new Map<number, string>();
+  /**
    * Change requests the server has not answered yet, by kind. Every save,
    * delete, and enable carries a client-generated id the server echoes in its
    * own acknowledgement, so a state broadcast never settles someone else's
@@ -138,6 +155,9 @@ export class ProviderStore {
    */
   resetActiveOperations(): void {
     this.pending.clear();
+    this.enableIds.clear();
+    this.enabledDraft = {};
+    this.enablePending = {};
     this.busy = false;
     this.saveResult = null;
   }
@@ -167,12 +187,30 @@ export class ProviderStore {
   }
 
   setEnabled(id: string, enabled: boolean): number | null {
-    return this.#change("enable", (requestId) => ({
+    const requestId = this.#change("enable", (requestId) => ({
       type: "setProviderEnabled",
       requestId,
       id,
       enabled,
     }));
+    if (requestId === null) return null;
+    this.enableIds.set(requestId, id);
+    this.enablePending = { ...this.enablePending, [id]: true };
+    this.enabledDraft = { ...this.enabledDraft, [id]: enabled };
+    return requestId;
+  }
+
+  /**
+   * The checkbox value for one row: the operator's pending choice until the
+   * server answers it, then the stored value again.
+   */
+  enabledValue(subscription: ProviderSubscription): boolean {
+    return this.enabledDraft[subscription.id] ?? subscription.enabled;
+  }
+
+  /** Whether that row's own enable change is still waiting on the server. */
+  enabling(subscription: ProviderSubscription): boolean {
+    return this.enablePending[subscription.id] === true;
   }
 
   /**
@@ -204,6 +242,19 @@ export class ProviderStore {
   #abandon(requestId: number): void {
     if (!this.pending.delete(requestId)) return;
     this.busy = this.pending.size > 0;
+    const id = this.enableIds.get(requestId);
+    if (id === undefined) return;
+    this.enableIds.delete(requestId);
+    this.#restoreEnabled(id);
+  }
+
+  /**
+   * Puts one row's checkbox back on the stored value: its change was not
+   * applied, so the operator's toggle must not outlive the refusal.
+   */
+  #restoreEnabled(id: string): void {
+    this.enablePending = withoutKey(this.enablePending, id);
+    this.enabledDraft = withoutKey(this.enabledDraft, id);
   }
 
   /** Settles one answered change; a stale id changes nothing. */
@@ -214,6 +265,15 @@ export class ProviderStore {
     this.pending.delete(requestId);
     this.busy = this.pending.size > 0;
     if (kind === "save") this.saveResult = { requestId, ok };
+    if (kind === "enable") {
+      const id = this.enableIds.get(requestId);
+      this.enableIds.delete(requestId);
+      if (id === undefined) return kind;
+      // An applied enable keeps its draft until the server's own view of the
+      // row carries it; a refusal puts the row back at once.
+      if (ok) this.enablePending = withoutKey(this.enablePending, id);
+      else this.#restoreEnabled(id);
+    }
     return kind;
   }
 
@@ -236,6 +296,16 @@ export class ProviderStore {
             .filter((entry): entry is ProviderSubscription => entry !== null)
         : [];
       this.subscriptions = subscriptions;
+      // A draft survives only while its own enable is unanswered and the
+      // server's view has not caught up with it; once they agree, or the row
+      // changed elsewhere, the stored value is the row's truth again.
+      const drafts: Record<string, boolean> = {};
+      for (const subscription of subscriptions) {
+        const draft = this.enabledDraft[subscription.id];
+        if (draft === undefined || draft === subscription.enabled) continue;
+        if (this.enablePending[subscription.id] === true) drafts[subscription.id] = draft;
+      }
+      this.enabledDraft = drafts;
       this.selection = selectionFrom(message.selection);
       this.refusal = string(message.refusal) ?? (this.selection === null ? "No provider" : null);
       this.rule = string(message.rule) ?? this.rule;

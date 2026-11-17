@@ -259,12 +259,15 @@
                   <input
                     type="checkbox"
                     data-testid="provider-enabled"
-                    checked={subscription.enabled}
-                    onchange={(event) =>
-                      providers.setEnabled(
-                        subscription.id,
-                        (event.currentTarget as HTMLInputElement).checked,
-                      )}
+                    checked={providers.enabledValue(subscription)}
+                    disabled={providers.enabling(subscription)}
+                    onchange={(event) => {
+                      const input = event.currentTarget as HTMLInputElement;
+                      providers.setEnabled(subscription.id, input.checked);
+                      // A send the socket refused answers nothing, so the row is
+                      // put back on the store's value without waiting for a frame.
+                      input.checked = providers.enabledValue(subscription);
+                    }}
                   />
                   enabled
                 </label>
