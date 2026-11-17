@@ -849,6 +849,11 @@ pub fn goal_draft_heading(text: &str) -> String {
 /// refused rather than read as a separator: on this host it is an ordinary
 /// byte of a file name, and a name the reader rewrites into two segments would
 /// otherwise be listed, served, and then refused by the reader.
+///
+/// A control byte is refused for the same reason: the start command is one
+/// line, delivered as `/goal-draft <path>`, so a name carrying a line break
+/// would reach the elaboration cut at that byte. The list, the reader, the
+/// route, and start therefore accept exactly the names that round-trip.
 pub fn is_goal_draft_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
@@ -856,6 +861,7 @@ pub fn is_goal_draft_name(name: &str) -> bool {
         && name.ends_with(".md")
         && !name.contains('/')
         && !name.contains('\\')
+        && !name.chars().any(char::is_control)
 }
 
 /// Resolves one repository-relative draft path.

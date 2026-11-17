@@ -452,6 +452,7 @@ async fn one_draft_name_rule_governs_the_list_the_reader_and_the_route() {
     std::fs::create_dir_all(&directory).expect("a drafts directory");
     std::fs::write(directory.join("alpha.md"), "# Alpha\n\nBody.\n").expect("a draft");
     std::fs::write(directory.join("a\\b.md"), "# Backslash\n").expect("a draft");
+    std::fs::write(directory.join("line\nbreak.md"), "# Newline\n").expect("a draft");
 
     let drafts =
         devboard::goal_drafts::list_goal_drafts(&repo).expect("a readable drafts directory");
@@ -500,6 +501,35 @@ async fn one_draft_name_rule_governs_the_list_the_reader_and_the_route() {
     );
     let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
     assert_eq!(parsed["detail"], "The requested draft was not found.");
+
+    let refusal = devboard::goal_drafts::resolve_goal_draft(
+        &repo,
+        Some(&serde_json::json!(
+            ".devboard/goal-proposals/line\nbreak.md"
+        )),
+    )
+    .expect_err("the reader refuses a control byte");
+    assert_eq!(refusal.status, 400);
+    assert_eq!(refusal.message, "A draft path must end in .md.");
+    let (status, _headers, body) = send(
+        Method::GET,
+        &format!("{}/goal-proposals/line%0Abreak.md", instance.base),
+        HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the route refuses the name the list never published"
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("problem JSON");
+    assert!(
+        parsed["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("carries a control character"),
+        "{parsed}"
+    );
 }
 
 #[tokio::test]

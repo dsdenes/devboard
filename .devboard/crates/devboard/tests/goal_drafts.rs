@@ -751,6 +751,40 @@ async fn a_missing_draft_refuses_a_start() {
     assert!(!devboard::goal_drafts::goal_draft_state_directory(&state_dir(), &repo).exists());
 }
 
+/// A name carrying a control byte cannot ride the one-line `/goal-draft
+/// <path>` command, so the list never publishes it and start never sends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_control_byte_draft_name_is_never_listed_and_never_started() {
+    let _serial = serial().await;
+    let repo = repo_root("control-byte");
+    let path = write_draft(&repo, "line\nbreak.md", "# Newline\n\nBody.\n");
+    let app = app(&repo);
+    let (conn, mut inbox) = connected(&app).await;
+
+    assert!(
+        devboard::goal_drafts::list_goal_drafts(&repo)
+            .expect("a readable drafts directory")
+            .is_empty(),
+        "the list publishes no name the start command cannot carry"
+    );
+    app.command(
+        &conn,
+        Command::StartGoalDraft {
+            path: Some(json!(path)),
+        },
+    )
+    .await;
+    let refusal = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "issuesDraftError",
+        5000,
+    )
+    .await;
+    assert_eq!(refusal["path"], json!(path));
+    assert_eq!(refusal["message"], "A draft path must end in .md.");
+    assert!(!devboard::goal_drafts::goal_draft_state_directory(&state_dir(), &repo).exists());
+}
+
 /// A draft read is one file: it answers on the request's own handle and never
 /// joins the watcher's replay list, so reads never accumulate there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
