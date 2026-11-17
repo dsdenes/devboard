@@ -812,6 +812,78 @@ async fn consistent_naming_reports_a_glossary_conflict_and_rejects_a_synonym() {
     worker.stop().await;
 }
 
+#[test]
+fn consistent_naming_ignores_a_concept_the_operator_invalidated() {
+    let fixture = Fixture::new("invalidated-glossary");
+    fixture.naming_inputs();
+    fixture.write("src/amount.ts", "export const Amount = 1;\n");
+    let glossary = |status: &str| {
+        format!(
+            "boundedContext: orders\nconcepts:\n  - id: item_price\n    status: {status}\n    prefLabels:\n      - text: Amount\n    altLabels:\n      - text: Charge\n"
+        )
+    };
+    fixture.write(
+        ".omp/discover/glossary/orders.glossary.yaml",
+        &glossary("confirmed"),
+    );
+    let config = cn::consistent_naming_config();
+    let skill = cn::read_skill_directives(&fixture.repo, &config.skill_document)
+        .expect("the fixture skill");
+    let body = naming_body(
+        "synonymous naming",
+        BodyOptions {
+            concept: "item_price",
+            name_in_use: "Amount",
+            proposed: "Total",
+            evidence_path: "src/amount.ts",
+            evidence_lines: "1",
+            quote: "export const Amount = 1;",
+            occurrences: &[("src/amount.ts", "1")],
+            glossary: Some(
+                "## Glossary\n\n.omp/discover/glossary/orders.glossary.yaml defines item_price; the preferred label is Amount.",
+            ),
+        },
+    );
+    let filing = cn::FilingProvenance {
+        title: "Name the item price total".to_string(),
+        body,
+        labels: vec![cn::CONSISTENT_NAMING_LABEL.to_string()],
+    };
+    let glossaries = cn::read_glossaries(&fixture.repo, &config);
+    assert_eq!(glossaries[0].concepts[0].status, "confirmed");
+    let mut options = cn::FilingOptions {
+        glossaries,
+        ..Default::default()
+    };
+    match cn::verify_filing(&fixture.repo, &skill, &filing, &mut options) {
+        cn::ProvenanceResult::Problem(detail) => assert!(
+            detail.contains("the proposed name must be the glossary's preferred label Amount"),
+            "{detail}"
+        ),
+        cn::ProvenanceResult::Ok(category) => {
+            panic!("the confirmed glossary still proves {category}")
+        }
+    }
+    for status in ["invalidated", "deprecated"] {
+        fixture.write(
+            ".omp/discover/glossary/orders.glossary.yaml",
+            &glossary(status),
+        );
+        let glossaries = cn::read_glossaries(&fixture.repo, &config);
+        assert_eq!(glossaries[0].concepts[0].status, status);
+        let mut options = cn::FilingOptions {
+            glossaries,
+            ..Default::default()
+        };
+        match cn::verify_filing(&fixture.repo, &skill, &filing, &mut options) {
+            cn::ProvenanceResult::Ok(category) => assert_eq!(category, "synonymous naming"),
+            cn::ProvenanceResult::Problem(detail) => {
+                panic!("a {status} concept stays vocabulary authority: {detail}")
+            }
+        }
+    }
+}
+
 /* ------------------------------------------------------------------------ */
 /* The idle deadline                                                         */
 /* ------------------------------------------------------------------------ */

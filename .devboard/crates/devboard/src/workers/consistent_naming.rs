@@ -893,6 +893,9 @@ pub fn take_commands(directory: &Path) -> Vec<Command> {
 /* Glossary authority                                                        */
 /* ------------------------------------------------------------------------ */
 
+/// The one glossary status that carries vocabulary authority.
+const CONFIRMED_STATUS: &str = "confirmed";
+
 /// One concept a published UbiLang glossary defines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlossaryConcept {
@@ -901,6 +904,10 @@ pub struct GlossaryConcept {
     pub bounded_context: String,
     /// The UbiLang concept id.
     pub id: String,
+    /// The concept's glossary status, `confirmed` when the document omits it.
+    /// Only a confirmed concept is vocabulary authority: a concept the operator
+    /// invalidated, or one marked deprecated, never demands its label back.
+    pub status: String,
     /// Every preferred label, in file order.
     pub pref_labels: Vec<String>,
     /// Every alternative label, in file order.
@@ -996,6 +1003,7 @@ pub fn parse_glossary_text(text: &str, path: &str) -> Option<Glossary> {
             path: path.to_string(),
             bounded_context: bounded_context.clone(),
             id,
+            status: text_of(concept.get("status")).unwrap_or_else(|| CONFIRMED_STATUS.to_string()),
             pref_labels,
             alt_labels: labels_of(concept.get("altLabels")),
         });
@@ -1034,6 +1042,9 @@ pub fn concepts_defined_as<'a>(
     let mut matches = Vec::new();
     for glossary in glossaries {
         for concept in &glossary.concepts {
+            if concept.status != CONFIRMED_STATUS {
+                continue;
+            }
             if normalize_name(&concept.id) == wanted
                 || concept
                     .pref_labels
@@ -1059,6 +1070,9 @@ pub fn concepts_using_term<'a>(
     let mut matches = Vec::new();
     for glossary in glossaries {
         for concept in &glossary.concepts {
+            if concept.status != CONFIRMED_STATUS {
+                continue;
+            }
             if concept
                 .pref_labels
                 .iter()
