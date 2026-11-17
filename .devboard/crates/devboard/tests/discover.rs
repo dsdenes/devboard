@@ -1872,6 +1872,137 @@ fn a_staged_quality_gate_record_reads_back_after_publication() {
     );
 }
 
+fn publish_fixture_sheet(repo: &Path, staging: &Path, run_id: &str, gate: &str) {
+    write(
+        &staging.join("sheet.json"),
+        &serde_json::to_string(&staged_sheet(json!([{
+            "name": gate,
+            "checks": "Runs the fixture suite in CI.",
+        }])))
+        .expect("a staged sheet"),
+    );
+    let facts = devboard::discover_mode::host_facts(repo);
+    devboard::discover_mode::publish_agent_staged(
+        repo, run_id, &facts, staging, "fixture", "sheet",
+    )
+    .expect("the sheet publishes");
+}
+
+fn published_fingerprint(cache: &devboard::discover_mode::WorkspaceCache) -> String {
+    cache
+        .artifacts()
+        .expect("the published artifacts")
+        .manifest
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .expect("the publication records the host fingerprint")
+        .to_string()
+}
+
+#[test]
+fn an_unchanged_workspace_read_reuses_the_cached_snapshot() {
+    let scratch = Scratch::new("workspace-cache");
+    let repo = fixture_repo(&scratch, "repo", false);
+    publish_fixture_sheet(
+        &repo,
+        &scratch.path().join("staging"),
+        "run-cache",
+        "bun test",
+    );
+
+    let mut cache = devboard::discover_mode::WorkspaceCache::new(repo.clone());
+    let first = cache.read(&repo, true);
+    assert!(first.parsed, "the first read parses the publication");
+    assert!(first.hashed > 0, "the first read hashes the host tree");
+    assert_eq!(first.reused, 0);
+    assert!(!cache.stale(), "the publication matches the host tree");
+    let published = published_fingerprint(&cache);
+    assert_eq!(cache.fingerprint(), Some(published.as_str()));
+
+    let second = cache.read(&repo, true);
+    assert_eq!(second.hashed, 0, "an unchanged read reads no file content");
+    assert!(second.reused > 0, "every unchanged digest is reused");
+    assert!(
+        !second.parsed,
+        "the parsed artifacts come from the cached snapshot"
+    );
+    assert_eq!(cache.fingerprint(), Some(published.as_str()));
+    assert!(!cache.stale());
+
+    write(&repo.join("README.md"), "# Fixture\n\nAn edited readme.\n");
+    let third = cache.read(&repo, true);
+    assert!(third.hashed > 0, "the edited file is hashed again");
+    assert!(!third.parsed, "a host edit parses no artifact");
+    assert_ne!(cache.fingerprint(), Some(published.as_str()));
+    assert!(cache.stale(), "an edited host file is stale");
+
+    publish_fixture_sheet(
+        &repo,
+        &scratch.path().join("staging-second"),
+        "run-cache-second",
+        "bun run verify",
+    );
+    let fourth = cache.read(&repo, true);
+    assert!(fourth.parsed, "a finished run's publication is parsed");
+    assert!(!cache.stale(), "the new publication matches the host tree");
+    assert_eq!(
+        cache
+            .artifacts()
+            .expect("the artifacts")
+            .sheet
+            .as_ref()
+            .expect("the sheet")["ci"]["qualityGates"]["value"][0]["name"],
+        json!("bun run verify"),
+        "the read answers with the newly published sheet"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspace_poll_answers_from_the_cached_snapshot_until_a_host_file_changes() {
+    let scratch = Scratch::new("workspace-poll");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let state = scratch.path().join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    publish_fixture_sheet(
+        &repo,
+        &scratch.path().join("staging"),
+        "run-poll",
+        "bun test",
+    );
+
+    let command = format!("{} --discover", stub_agent());
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(&conn, Command::GetDiscover).await;
+    let first = state_of(&next_frame(&mut inbox, Duration::from_secs(10)).await).clone();
+    assert_eq!(first["stale"], json!(false));
+    assert!(first["sheet"].is_object(), "the publication is served");
+
+    app.command(&conn, Command::GetDiscover).await;
+    let second = state_of(&next_frame(&mut inbox, Duration::from_secs(10)).await).clone();
+    assert_eq!(second["stale"], json!(false));
+    assert_eq!(
+        second["sheet"], first["sheet"],
+        "an unchanged poll serves the cached snapshot"
+    );
+
+    write(&repo.join("README.md"), "# Fixture\n\nAn edited readme.\n");
+    app.command(&conn, Command::GetDiscover).await;
+    let third = state_of(&next_frame(&mut inbox, Duration::from_secs(10)).await).clone();
+    assert_eq!(third["stale"], json!(true), "an edited host file is stale");
+    assert_eq!(
+        third["sheet"], first["sheet"],
+        "the publication itself is unchanged"
+    );
+}
+
 #[test]
 fn a_staged_string_quality_gate_is_refused_and_publishes_nothing() {
     let scratch = Scratch::new("quality-gate-string");

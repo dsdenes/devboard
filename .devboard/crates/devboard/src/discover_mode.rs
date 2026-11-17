@@ -6881,16 +6881,199 @@ pub fn live_warnings(repo_dir: &Path, artifacts: &Artifacts) -> Vec<String> {
         .collect()
 }
 
-pub fn artifacts_stale(repo_dir: &Path, artifacts: Option<&Artifacts>) -> bool {
-    let Some(artifacts) = artifacts else {
-        return false;
-    };
-    let fingerprint = artifacts
-        .manifest
-        .get("fingerprint")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    host_facts(repo_dir).fingerprint != fingerprint
+// ------------------------------------------------------- workspace cache
+
+/// One workspace read: the work it performed, so a caller can see that an
+/// unchanged workspace was answered from the cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceRead {
+    /// Files whose contents were read and hashed on this read.
+    pub hashed: usize,
+    /// Files whose digest was reused because its metadata signature held.
+    pub reused: usize,
+    /// Whether the published artifacts were parsed on this read.
+    pub parsed: bool,
+}
+
+fn entry_signature_of(path: &Path) -> String {
+    fs::symlink_metadata(path)
+        .map(|metadata| entry_signature(&metadata))
+        .unwrap_or_else(|_| "missing".to_string())
+}
+
+/// Every file `read_artifacts` reads, with the signature each held when the
+/// cached snapshot was parsed. The manifest comes first: its own signature
+/// decides whether the set still describes the publication.
+fn artifact_signatures(root: &Path, artifacts: Option<&Artifacts>) -> Vec<(PathBuf, String)> {
+    let mut paths = vec![
+        discover_root(root).join("manifest.json"),
+        discover_root(root).join("decisions.json"),
+    ];
+    if let Some(artifacts) = &artifacts {
+        let manifest = &artifacts.manifest;
+        let field = |name: &str| {
+            manifest
+                .get("paths")
+                .and_then(|paths| paths.get(name))
+                .and_then(Value::as_str)
+        };
+        if let Some(path) = field("sheet") {
+            paths.push(root.join(path));
+        }
+        if let Some(entries) = manifest
+            .get("paths")
+            .and_then(|paths| paths.get("glossaries"))
+            .and_then(Value::as_array)
+        {
+            paths.extend(
+                entries
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|path| root.join(path)),
+            );
+        }
+        for name in ["significance", "contribution"] {
+            if let Some(path) = field(name) {
+                paths.push(root.join(path));
+            }
+        }
+        for skill in &artifacts.skills {
+            paths.push(baseline_path(root, &skill.name));
+            paths.push(live_skill_path(root, &skill.name));
+        }
+    }
+    paths
+        .into_iter()
+        .map(|path| {
+            let signature = entry_signature_of(&path);
+            (path, signature)
+        })
+        .collect()
+}
+
+/// The parsed publication and the host fingerprint of one tree, each rebuilt
+/// only when a file it covers changed. `GET /discoveries/workspace` polls this
+/// on a timer, so a read with no change behind it must touch no file content.
+#[derive(Default)]
+pub struct WorkspaceCache {
+    root: PathBuf,
+    /// The signatures the cached artifacts were parsed from; `None` before the
+    /// first read of this root.
+    signatures: Option<Vec<(PathBuf, String)>>,
+    artifacts: Option<Artifacts>,
+    read_error: Option<String>,
+    warnings: Vec<String>,
+    stale: bool,
+    /// The last content digest of each file, kept while its signature holds.
+    digests: HashMap<String, (String, String)>,
+    fingerprint: Option<String>,
+}
+
+impl WorkspaceCache {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            ..Self::default()
+        }
+    }
+
+    /// Re-reads `root`, reusing every digest and parsed artifact whose file
+    /// signature still matches. The whole-tree fingerprint is computed only
+    /// when `fingerprint` is set: staleness matters for the host target alone.
+    pub fn read(&mut self, root: &Path, fingerprint: bool) -> WorkspaceRead {
+        if self.root.as_path() != root {
+            *self = WorkspaceCache::new(root.to_path_buf());
+        }
+        let mut read = WorkspaceRead::default();
+        self.refresh_artifacts(&mut read);
+        if fingerprint {
+            let current = self.current_fingerprint(&mut read);
+            self.stale = self.artifacts.as_ref().is_some_and(|artifacts| {
+                artifacts
+                    .manifest
+                    .get("fingerprint")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    != current
+            });
+            self.fingerprint = Some(current);
+        } else {
+            self.stale = false;
+            self.fingerprint = None;
+        }
+        read
+    }
+
+    fn refresh_artifacts(&mut self, read: &mut WorkspaceRead) {
+        let manifest = discover_root(&self.root).join("manifest.json");
+        let manifest_signature = entry_signature_of(&manifest);
+        if let Some(signatures) = &self.signatures {
+            if signatures.first().map(|(_, signature)| signature) == Some(&manifest_signature)
+                && signatures[1..]
+                    .iter()
+                    .all(|(path, signature)| entry_signature_of(path) == *signature)
+            {
+                return;
+            }
+        }
+        read.parsed = true;
+        let parsed = read_artifacts(&self.root);
+        self.signatures = Some(artifact_signatures(&self.root, parsed.artifacts.as_ref()));
+        self.warnings = parsed
+            .artifacts
+            .as_ref()
+            .map(|artifacts| live_warnings(&self.root, artifacts))
+            .unwrap_or_default();
+        self.artifacts = parsed.artifacts;
+        self.read_error = parsed.error;
+    }
+
+    fn current_fingerprint(&mut self, read: &mut WorkspaceRead) -> String {
+        let files = host_files(&self.root);
+        let mut digests = String::new();
+        let mut entries = HashMap::with_capacity(files.len());
+        for path in files {
+            let absolute = self.root.join(&path);
+            let signature = entry_signature_of(&absolute);
+            let digest = match self.digests.get(&path) {
+                Some((cached, digest)) if *cached == signature => {
+                    read.reused += 1;
+                    digest.clone()
+                }
+                _ => {
+                    read.hashed += 1;
+                    entry_digest(&absolute)
+                }
+            };
+            digests.push_str(&path);
+            digests.push('\u{0}');
+            digests.push_str(&digest);
+            digests.push('\u{0}');
+            entries.insert(path, (signature, digest));
+        }
+        self.digests = entries;
+        sha256_hex(digests.as_bytes())
+    }
+
+    pub fn artifacts(&self) -> Option<&Artifacts> {
+        self.artifacts.as_ref()
+    }
+
+    pub fn read_error(&self) -> Option<&str> {
+        self.read_error.as_deref()
+    }
+
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    pub fn stale(&self) -> bool {
+        self.stale
+    }
+
+    pub fn fingerprint(&self) -> Option<&str> {
+        self.fingerprint.as_deref()
+    }
 }
 
 // ------------------------------------------------------- derived payloads
@@ -7495,10 +7678,9 @@ struct Run {
 struct ModeState {
     run: Option<Run>,
     interrupted: bool,
-    artifacts: Option<Artifacts>,
-    read_error: Option<String>,
-    warnings: Vec<String>,
-    stale: bool,
+    /// The target's published artifacts and host fingerprint, cached per file
+    /// signature so the workspace poll parses nothing that did not change.
+    snapshot: WorkspaceCache,
     statuses: Vec<AgentStatus>,
     all_active: bool,
     all_failed: Option<String>,
@@ -7579,10 +7761,7 @@ fn mode_for(app: &Arc<App>) -> Arc<Mode> {
         state: Mutex::new(ModeState {
             run: None,
             interrupted: false,
-            artifacts: None,
-            read_error: None,
-            warnings: Vec::new(),
-            stale: false,
+            snapshot: WorkspaceCache::new(app.config().repo_dir.clone()),
             statuses: DISCOVER_AGENTS
                 .iter()
                 .map(|_| AgentStatus::idle())
@@ -7872,16 +8051,10 @@ fn prompts_replay(repo_dir: &Path, state: &ModeState, conn: &Conn) {
 fn refresh_snapshot(app: &Arc<App>, state: &mut ModeState) {
     let repo_dir = app.config().repo_dir.clone();
     let root = target_root(state, &repo_dir);
-    let read = read_artifacts(&root);
-    state.artifacts = read.artifacts;
-    state.read_error = read.error;
-    let Some(artifacts) = &state.artifacts else {
-        state.warnings.clear();
-        state.stale = false;
-        return;
-    };
-    state.warnings = live_warnings(&root, artifacts);
-    state.stale = state.target.is_none() && artifacts_stale(&root, Some(artifacts));
+    // Staleness compares the host tree with the publication, so the whole-tree
+    // fingerprint is walked for the host target alone.
+    let host_target = state.target.is_none();
+    state.snapshot.read(&root, host_target);
 }
 
 fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String>) -> Value {
@@ -7892,7 +8065,7 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
     let artifacts = if showing_in_flight {
         None
     } else {
-        state.artifacts.as_ref()
+        state.snapshot.artifacts()
     };
     let root = target_root(state, &repo_dir);
     let prompt_root = prompt_root(state, &repo_dir);
@@ -8055,7 +8228,7 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
         Value::Bool(if showing_in_flight {
             false
         } else {
-            state.stale
+            state.snapshot.stale()
         }),
     );
     payload.insert(
@@ -8064,9 +8237,10 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
             Vec::new()
         } else {
             state
-                .warnings
-                .clone()
-                .into_iter()
+                .snapshot
+                .warnings()
+                .iter()
+                .cloned()
                 .map(Value::String)
                 .collect()
         }),
@@ -8081,9 +8255,9 @@ fn discover_state_payload(app: &Arc<App>, state: &ModeState, busy: Option<String
             Value::Null
         } else {
             state
-                .read_error
-                .clone()
-                .map(Value::String)
+                .snapshot
+                .read_error()
+                .map(|error| Value::String(error.to_string()))
                 .unwrap_or(Value::Null)
         },
     );
@@ -8467,7 +8641,7 @@ pub fn replay_resource(app: &Arc<App>, conn: &Conn) {
     let (payload, read_error, started, activity, question) = {
         let state = lock(&mode.state);
         let payload = discover_state_payload(app, &state, busy);
-        let read_error = state.read_error.clone();
+        let read_error = state.snapshot.read_error().map(str::to_string);
         let started = state.run.as_ref().map(|run| {
             json!({
                 "type": "discoverStarted",
