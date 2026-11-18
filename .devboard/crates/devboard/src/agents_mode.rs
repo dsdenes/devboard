@@ -1548,6 +1548,16 @@ impl ForgeProjection {
         let Some(last_success) = inner.last_success else {
             return AgentSync::stale();
         };
+        // An answered empty table has nothing to re-read: its one read stays
+        // current, so it never ages into `stale` while no row is known. The
+        // recorded instant still names that read, not a later poll.
+        if inner.facts.is_empty() && inner.unreadable.is_empty() {
+            return AgentSync {
+                state: "ok".to_string(),
+                at,
+                error: None,
+            };
+        }
         // A known row goes stale once the staleness interval passes without a
         // successful read; a fresh successful read is the only `ok`.
         if now.saturating_sub(last_success) > self.stale_after_ms {
@@ -11612,6 +11622,22 @@ mod forge_tests {
         );
         assert_eq!(projection.sync(11_000).state, "ok");
         assert_eq!(projection.sync(12_001).state, "stale");
+    }
+
+    #[test]
+    fn an_answered_empty_table_never_ages_into_stale() {
+        let mut projection = projection(Vec::new());
+        projection.stale_after_ms = 2_000;
+        projection.note_empty_read(1_000);
+        let sync = projection.sync(10_000);
+        assert_eq!(sync.state, "ok");
+        assert_eq!(sync.at.as_deref(), Some(iso_from_millis(1_000).as_str()));
+    }
+
+    #[test]
+    fn an_empty_table_no_read_ever_answered_stays_stale() {
+        let projection = projection(Vec::new());
+        assert_eq!(projection.sync(1_000).state, "stale");
     }
 
     #[test]

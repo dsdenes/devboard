@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 /** One Watchdog snapshot whose newest cycle carries the named action. */
-function snapshot(action: string): AgentSnapshot {
+function snapshot(action: string, overrides: Partial<AgentSnapshot> = {}): AgentSnapshot {
   return {
     id: "watchdog",
     label: "Watchdog",
@@ -64,6 +64,7 @@ function snapshot(action: string): AgentSnapshot {
     timer: null,
     workers: [],
     peers: 0,
+    ...overrides,
   };
 }
 
@@ -117,6 +118,67 @@ test("filed, commented, and duplicate cycles paint healthy green", () => {
 test("an unrecognized action never claims health", () => {
   agents.snapshots = { watchdog: snapshot("something-new") };
   expect(dotState()).toBe("connecting");
+});
+
+test("a stopped family with no cycles warns instead of painting green", () => {
+  agents.snapshots = {
+    watchdog: snapshot("none", {
+      lifecycle: "stopped",
+      enabled: false,
+      detail: { panel: "cycles", cycles: [] },
+    }),
+  };
+  expect(dotState()).toBe("connecting");
+});
+
+test("a starting, stopping, disabled, or paused family never paints green", () => {
+  for (const overrides of [
+    { lifecycle: "starting" as const },
+    { lifecycle: "stopping" as const },
+    { enabled: false },
+    { paused: true },
+  ]) {
+    cleanup();
+    agents.snapshots = {};
+    agents.snapshots = { watchdog: snapshot("none", overrides) };
+    expect({ overrides, dot: dotState() }).toEqual({ overrides, dot: "connecting" });
+  }
+});
+
+test("a pending filing queue warns even when the cycle itself was healthy", () => {
+  for (const action of ["none", "filed"]) {
+    cleanup();
+    agents.snapshots = {};
+    agents.snapshots = { watchdog: snapshot(action, { pending: 2 }) };
+    expect({ action, dot: dotState() }).toEqual({ action, dot: "connecting" });
+  }
+});
+
+test("an unread or failed tracker table warns", () => {
+  for (const sync of [
+    { state: "stale" as const, at: null, error: null },
+    { state: "error" as const, at: null, error: "bad credentials" },
+  ]) {
+    cleanup();
+    agents.snapshots = {};
+    agents.snapshots = { watchdog: snapshot("none", { sync }) };
+    expect({ state: sync.state, dot: dotState() }).toEqual({
+      state: sync.state,
+      dot: "connecting",
+    });
+  }
+});
+
+test("a failed family or a reported error stays red", () => {
+  for (const overrides of [
+    { lifecycle: "failed" as const },
+    { error: "the Watchdog worker did not publish its state" },
+  ]) {
+    cleanup();
+    agents.snapshots = {};
+    agents.snapshots = { watchdog: snapshot("none", overrides) };
+    expect({ overrides, dot: dotState() }).toEqual({ overrides, dot: "closed" });
+  }
 });
 
 test("a Watchdog with no snapshot yet stays connecting", () => {

@@ -33,17 +33,23 @@
   /** Cycle actions that leave nothing pending and nothing unsent. */
   const HEALTHY_ACTIONS = new Set(["none", "filed", "commented", "duplicate"]);
 
-  const dot = $derived(
-    snapshot === null
-      ? "connecting"
-      : action === "failed"
-        ? "closed"
-        : HEALTHY_ACTIONS.has(action)
-          ? "open"
-          : // capped, deferred, skipped, and any unrecognized action leave
-            // findings pending or unsent, so they never paint healthy green.
-            "connecting",
-  );
+  // The dot is a verdict over the whole snapshot, never one cycle word: a
+  // family that is stopped, disabled, starting, stopping, or paused has no
+  // health to report, and a pending filing queue or an unread tracker table is
+  // work still waiting. Only a running family whose cycle left nothing behind
+  // paints healthy green.
+  const dot = $derived.by(() => {
+    if (snapshot === null) return "connecting";
+    if (snapshot.lifecycle === "failed" || snapshot.error !== null) return "closed";
+    if (snapshot.lifecycle !== "running" || !snapshot.enabled || snapshot.paused) {
+      return "connecting";
+    }
+    if (snapshot.pending > 0 || snapshot.sync.state !== "ok") return "connecting";
+    if (action === "failed") return "closed";
+    // capped, deferred, skipped, and any unrecognized action leave findings
+    // pending or unsent, so they never paint healthy green.
+    return HEALTHY_ACTIONS.has(action) ? "open" : "connecting";
+  });
 
   function toggle(): void {
     open = !open;
