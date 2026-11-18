@@ -8,6 +8,10 @@
   its `verify:watchdog` verifier are recorded nowhere as shipped or as having run.
 - The superseded duplicate packet under `.devboard/.design/watchdog/`, its wireframe pair, and the
   retired layout's captures were removed with this change; `.design/ux/watchdog/` is the one packet.
+- Base: the landed packet sits on `b1838e79` (*derive the status dot from the whole snapshot*,
+  #2101). The indicator's dot verdict and the answered-empty-table staleness rule are stated from
+  that commit; the captures below predate it and show the same layout in a running, `pending 0`,
+  `ok` state that both rules paint green.
 
 ## Commands
 
@@ -16,7 +20,7 @@ Each command is a script in `.devboard/package.json` and runs from `.devboard/`:
 | Command | Result |
 |---|---|
 | `bun run check` | pass; `svelte-check`: 1825 files, 0 errors, 0 warnings |
-| `bun run test:client` | pass; 765 tests, 0 fail, 3512 expectations, 108 files |
+| `bun run test:client` | pass; 770 tests, 0 fail, 3523 expectations, 108 files |
 
 No build ran: the change edits documentation only, so the client bundle and the server binary are
 untouched. A verifier who changes the documented surface runs `bun run build` in the same package
@@ -25,8 +29,9 @@ root before capturing new evidence.
 ## Live inspection
 
 The shipped page was inspected in the running dashboard at its 1440×900 viewport and at the
-1024×720 floor. The dashboard served the checkout's released source (`1.57.15`, source), and the
-client bundle is identical to the one this documentation describes.
+1024×720 floor. The captures come from that dashboard's `1.57.15` build; the later `b1838e79`
+base changed only the indicator's dot derivation and the empty-table staleness rule, which this
+packet states from the landed source.
 
 - Header: `Watchdog` h1, the descriptor description, peers badge, worker version `1.57.15`, forge
   badge `ok`, and `Last read Nov 18, 02:11`. The settings footer held `Every 10 min`, its last and

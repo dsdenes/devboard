@@ -93,8 +93,9 @@ states that the Watchdog runs no agent.
 ## Assumptions
 
 - One cycle every ten minutes by default; the cadence accepts 1 through 1440 minutes.
-- The server reads the tracker every 60 seconds, and a successful read older than 120 seconds
-  reads `stale`; a failed read reads `error` with its reason.
+- The server reads the tracker every 60 seconds. A successful read of a table with known rows
+  older than 120 seconds reads `stale`; an answered empty table keeps its `ok` state, and a
+  failed read reads `error` with its reason.
 - The server retains 100 cycles; the activity log lists them oldest first and the newest last.
 - A snapshot arrives only when the server pushes one; opening the page asks for one fresh refresh.
 - The supported viewport floor is 1024×720; below it the shell replaces the workspace with the

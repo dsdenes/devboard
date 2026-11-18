@@ -27,7 +27,8 @@ added. This packet therefore documents the shipped surface and requests no clien
 
 - Snapshots: none yet, a stopped family, a running family with one or several worker versions, a
   family gated for the project, and a snapshot carrying an error.
-- Forge reads: `ok`, `stale` after 120 seconds, `error` with a reason, and a never-read family.
+- Forge reads: `ok`, `stale` for a table with known rows read more than 120 seconds ago, `ok` for
+  an answered empty table however old, `error` with a reason, and a never-read family.
 - Cycles: zero, one, and the retained 100; unknown action; no reason; no issue links; several issue
   links; a start or window value the client renders verbatim.
 - Filed issues: zero, one, 87, and more rows than fit; titles from 40 to 200 characters; a category

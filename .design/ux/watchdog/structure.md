@@ -89,9 +89,13 @@ scroll area below it owns the page's scrolling and the filed-issues panel flexes
   `<action> · <age>` in 11px mono. The age is compact (`just now`, `4s ago`, `3m ago`, `2h ago`,
   `5d ago`) and `never` with no cycle; the action reads `unknown` before the first snapshot and
   `none` when the snapshot carries no cycle.
-- Dot states: `open` for `none`/`filed`/`commented`/`duplicate`, `closed` for `failed`, and
-  `connecting` for a capped, deferred, skipped, or unrecognized action and before the first
-  snapshot. The word beside the dot always carries the action.
+- Dot states are a verdict over the whole snapshot, never one cycle word: `closed` while the
+  family failed, the snapshot carries an error, or the newest action is `failed`; `connecting`
+  before the first snapshot, while the family is not running (stopped, starting, stopping,
+  disabled, paused), while filings are pending, or while the forge read is not `ok`; `open` only
+  for a running, enabled, unpaused family whose pending count is `0`, whose read is `ok`, and
+  whose newest action is `none`/`filed`/`commented`/`duplicate`. The word beside the dot always
+  carries the action.
 - The trigger opens a fixed `dialog` popover above the bar, 8px from the right, anchored to the
   bottom: one summary line (`Cycle <ISO start> · <n> finding(s) · <p> pending`), one muted reason
   line when the cycle carries one, then every filed issue as a link, or `No issues filed.` The
