@@ -112,6 +112,17 @@ now, Stop, and settings apply to every live worker of the family. A worker start
 that predates this mechanism has no drain command and is never killed mid-unit; it is left to
 finish its unit.
 
+The operator's Start and Stop are durable commands, never a report the worker's own state can
+revive. The dashboard writes a family's intent under its state directory, keyed by repository and
+family; an enabled family restarts its worker on the newest version after a dashboard restart or a
+version change, a disabled family is drained and never started by a takeover, and only an explicit
+Start clears a Stop. A Start that never produced a worker is not retried behind the operator's
+back. The card never says `stopped` while a worker or one of the family's agent peers is alive: a
+live worker reads `running` or `stopping`, and a peer that outlived its worker reads `stopping`
+with its pid until it is reaped. Every ACP peer carries a kernel parent-death signal and a
+supervision record, so ending its worker ends it too, and a recorded peer whose owner is gone is
+reaped by the ordinary orphan pass.
+
 `versionState` reports `running`, `installed`, `latest`, `stale`, and `source`. `running` is the
 version the process actually loaded; `installed` is what a restart would load now — the binary and
 manifest beside it on an installed host, the checkout's released source version on a source

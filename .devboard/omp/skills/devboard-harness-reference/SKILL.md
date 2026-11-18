@@ -1249,6 +1249,20 @@ live, installing a newer version starts none. A worker or run started by a versi
 this mechanism has no drain command; it is never killed mid-unit, and the dashboard's own drain
 marker still distinguishes its automatic drain from a manual Pause.
 
+The operator's Start and Stop are a durable family intent, not a report read back from a worker's
+state. The dashboard records it under `<stateDir>/families/<repo-key>/<family>.json` with
+`enabled` and `confirmed`: `enabled` is the last Start/Stop, and `confirmed` is proof that a worker
+of that intent generation actually attached. A card reconciles from the intent and the live
+processes, so a disabled family is drained and never started by a version takeover, an abandoned
+Start is not retried, and a confirmed enabled family whose worker exited starts again on the
+newest version. A Stop is idempotent: it records the command even when no worker is live, and a
+failed intent write refuses the command rather than half-applying it. The projection is never
+`stopped` while a worker or one of the family's agent peers is alive: a live worker reads
+`running` (or `stopping` when its state says it is ending), a disabled family that still runs
+reads `stopping`, and a live peer with no worker reads `stopping` with its pid until it is reaped.
+Every ACP peer carries a kernel parent-death signal and a supervision record, so a killed worker
+cannot leave an agent with working tools behind; the record is removed when the peer is reaped.
+
 A closed or failed lane whose retention window expired while the server was down is not
 replayed; the remaining window is honored after a restart. An unreadable, truncated, or
 unsupported-version state file never prevents startup: the server renames it aside inside
