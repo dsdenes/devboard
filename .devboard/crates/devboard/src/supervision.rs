@@ -42,7 +42,8 @@ const RECORD_VERSION: i64 = 1;
 /// One supervised child. `argv` and `start_ticks` are read from `/proc` right
 /// after the spawn, so they describe the process the kernel started rather
 /// than the request the caller made; `start_ticks` is what separates a live
-/// child from a recycled pid.
+/// child from a recycled pid, and what proves the recorded owner still holds
+/// its pid, because an owner starts before the child it spawns.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisionRecord {
@@ -1079,14 +1080,32 @@ fn terminate(pid: u32, alive: &dyn Fn(u32) -> bool, kill_grace_ms: u64) -> bool 
     wait_for_exit(pid, alive, kill_grace_ms)
 }
 
+/// True when the recorded owner still holds its pid.
+///
+/// An owner starts before the child it spawns, so its kernel start tick is never
+/// greater than the child's. A pid whose tick is greater was handed to a newer
+/// process after the owner died, and `alive` alone would read that recycled pid
+/// as a live owner forever. A kernel that reports no start tick leaves the bare
+/// existence check, exactly as [`live_identity`] does.
+fn owner_lives(record: &SupervisionRecord, alive: &dyn Fn(u32) -> bool) -> bool {
+    if !alive(record.owner_pid) {
+        return false;
+    }
+    match start_ticks(record.owner_pid) {
+        Some(ticks) => ticks <= record.start_ticks,
+        None => true,
+    }
+}
+
 /// One reaping pass. Records are the first proof: a recorded child whose owner
 /// is dead and whose argv and start ticks still match is killed and its record
-/// removed; a recorded child whose owner lives is never signalled. The second
-/// proof covers records that were never written: a supervised surface whose
-/// cwd or `REPO_DIR` is verification scratch, whose ancestor chain reaches PID
-/// 1 again, and which no live harness process in that chain still owns is
-/// killed. Everything a live lease, handoff, or worker lock protects is left
-/// alone, and a doubt journals the candidate instead of signalling it.
+/// removed; a recorded child whose owner still holds its pid is never
+/// signalled. The second proof covers records that were never written: a
+/// supervised surface whose cwd or `REPO_DIR` is verification scratch, whose
+/// ancestor chain reaches PID 1 again, and which no live harness process in
+/// that chain still owns is killed. Everything a live lease, handoff, or worker
+/// lock protects is left alone, and a doubt journals the candidate instead of
+/// signalling it.
 pub fn reap_orphans(options: ReapOptions) -> ReapReport {
     let mut options = options;
     let mut report = ReapReport {
@@ -1156,7 +1175,7 @@ pub fn reap_orphans(options: ReapOptions) -> ReapReport {
                 handled.insert(pid);
                 continue;
             }
-            if alive(record.owner_pid) {
+            if owner_lives(&record, alive) {
                 touch_record(&path);
                 continue;
             }
@@ -1684,6 +1703,75 @@ mod tests {
         assert!(decision.detail.contains("survived SIGTERM and SIGKILL"));
 
         let _status = child.wait().await.expect("a signalled child");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn the_reaper_ends_an_orphan_whose_owner_pid_a_newer_process_holds() {
+        let root = scratch("recycled-owner");
+        let state = root.join("state");
+        let mut child = supervised_spawn(
+            &sleeper(),
+            SupervisedSpawnOptions {
+                cwd: root.clone(),
+                env: None,
+                state_dir: Some(state.clone()),
+            },
+        )
+        .expect("a supervised child");
+        let pid = child.pid().expect("a pid");
+        let path = supervision_record_path(&state, pid);
+        let text = std::fs::read_to_string(&path).expect("a record");
+        let mut value: Value = serde_json::from_str(&text).expect("record JSON");
+        let child_ticks = value["startTicks"].as_i64().expect("ticks");
+
+        // A recycled owner is provably newer only once the kernel's start clock
+        // has ticked past the child, so the spawn below carries a greater tick.
+        while uptime_seconds().expect("the kernel uptime") * CLOCK_TICKS_PER_SECOND
+            <= child_ticks as f64 + 1.0
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut recycled = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("while :; do sleep 0.2; done")
+            .spawn()
+            .expect("a recycled owner");
+        let owner = recycled.id();
+        let owner_ticks = start_ticks(owner).expect("the recycled owner's tick");
+        assert!(
+            owner_ticks > child_ticks,
+            "the recycled owner started after the child: {owner_ticks} vs {child_ticks}"
+        );
+        assert!(live_process(owner), "the recycled owner is alive");
+
+        value["ownerPid"] = json!(owner);
+        std::fs::write(&path, format!("{}\n", crate::jsjson::stringify(&value)))
+            .expect("a recycled-owner record");
+
+        let report = reap_orphans(ReapOptions {
+            kill_grace_ms: Some(200),
+            ..scope(&state, &root)
+        });
+        assert!(report.available);
+        assert_eq!(
+            report.killed,
+            vec![pid],
+            "a recycled owner pid never protects the orphan: {:?}",
+            report.decisions
+        );
+        assert_eq!(report.decisions.len(), 1);
+        assert_eq!(report.decisions[0].action, ReapAction::Killed);
+        assert_eq!(report.decisions[0].reason, ReapReason::Record);
+        assert!(report.decisions[0]
+            .detail
+            .contains(&format!("owner {owner} is gone")));
+        assert!(!path.exists(), "the record leaves with the child");
+        assert!(!live_process(pid), "the child is no longer running");
+
+        let _ = recycled.kill();
+        let _ = recycled.wait();
+        let _status = child.wait().await.expect("a reaped child");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
