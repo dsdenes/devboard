@@ -9120,9 +9120,16 @@ mod tests {
 
     /// A stand-in that shares the recorded command but runs in `cwd`, which is
     /// what a pid the kernel handed to another peer looks like.
+    ///
+    /// Between the fork and the exec `/proc/<pid>/cmdline` is not yet the
+    /// child's own command line: it reads empty while the child still shares
+    /// the parent's address space. A record written in that gap names a command
+    /// the stand-in never runs, so the startup reap reads it as a recycled pid
+    /// and spares the peer. Wait for the stand-in's own argv before returning
+    /// it, so every record this helper feeds carries what the kernel reports.
     fn peer_in(cwd: &Path) -> std::process::Child {
         use std::os::unix::process::CommandExt;
-        std::process::Command::new("sleep")
+        let child = std::process::Command::new("sleep")
             .arg0("omp")
             .arg("120")
             .current_dir(cwd)
@@ -9130,7 +9137,17 @@ mod tests {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .expect("a stand-in peer")
+            .expect("a stand-in peer");
+        let expected = vec!["omp".to_string(), "120".to_string()];
+        let started = std::time::Instant::now();
+        while crate::supervision::process_argv(child.id()).as_deref() != Some(expected.as_slice()) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "the stand-in runs its own command before it is recorded"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child
     }
 
     /// The state document a previous worker left, carrying one recorded peer.
