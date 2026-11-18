@@ -10,6 +10,8 @@
   const SCOPE = "resources.budget";
 
   const budget = $derived(resources.state);
+  /** True until a frame reports unreadable host memory; the form loads enabled. */
+  const memoryAvailable = $derived(budget === null || budget.effective.memoryMaxMb !== null);
 
   let maxAgentsText = $state("");
   let memoryHighText = $state("");
@@ -45,9 +47,12 @@
     if (seeded !== null && sameBudget(seeded, current.effective)) return;
     seeded = current.effective;
     maxAgentsText = String(current.effective.maxAgentPeers);
-    memoryHighText = String(current.effective.memoryHighMb);
-    memoryMaxText = String(current.effective.memoryMaxMb);
-    reserveText = String(current.effective.memoryReserveMb);
+    memoryHighText =
+      current.effective.memoryHighMb === null ? "" : String(current.effective.memoryHighMb);
+    memoryMaxText =
+      current.effective.memoryMaxMb === null ? "" : String(current.effective.memoryMaxMb);
+    reserveText =
+      current.effective.memoryReserveMb === null ? "" : String(current.effective.memoryReserveMb);
     error = null;
   });
 
@@ -60,15 +65,17 @@
 
   function draft(): ResourceSettings | null {
     const maxAgentPeers = whole(maxAgentsText);
+    if (maxAgentPeers === null) return null;
+    // A host whose memory total could not be read has no memory mark to send:
+    // the cap is the whole budget this page can save, and the server keeps the
+    // slice unchanged.
+    if (!memoryAvailable) {
+      return { maxAgentPeers, memoryHighMb: null, memoryMaxMb: null, memoryReserveMb: null };
+    }
     const memoryHighMb = whole(memoryHighText);
     const memoryMaxMb = whole(memoryMaxText);
     const memoryReserveMb = whole(reserveText);
-    if (
-      maxAgentPeers === null ||
-      memoryHighMb === null ||
-      memoryMaxMb === null ||
-      memoryReserveMb === null
-    ) {
+    if (memoryHighMb === null || memoryMaxMb === null || memoryReserveMb === null) {
       return null;
     }
     return { maxAgentPeers, memoryHighMb, memoryMaxMb, memoryReserveMb };
@@ -92,8 +99,8 @@
   /**
    * Sends the draft. The bounds have one owner, the server: a value it refuses
    * comes back as its refusal, so the page never refuses a budget the server
-   * would accept. Only a draft that is not four whole numbers stays here,
-   * because it is not a budget at all.
+   * would accept. Only a draft that names no budget at all stays here, because
+   * it is not a budget to send.
    */
   function save(): void {
     const values = draft();
@@ -156,6 +163,7 @@
             inputmode="numeric"
             data-testid="resource-memory-high"
             value={memoryHighText}
+            disabled={!memoryAvailable}
             oninput={(event) => {
               memoryHighText = event.currentTarget.value;
               error = null;
@@ -171,6 +179,7 @@
             inputmode="numeric"
             data-testid="resource-memory-max"
             value={memoryMaxText}
+            disabled={!memoryAvailable}
             oninput={(event) => {
               memoryMaxText = event.currentTarget.value;
               error = null;
@@ -186,6 +195,7 @@
             inputmode="numeric"
             data-testid="resource-reserve"
             value={reserveText}
+            disabled={!memoryAvailable}
             oninput={(event) => {
               reserveText = event.currentTarget.value;
               error = null;
@@ -193,6 +203,16 @@
           />
         </label>
       </div>
+
+      {#if budget?.memoryError}
+        <p
+          class="resources-saved resources-meta__error"
+          data-testid="resource-memory-unavailable"
+          title={budget.memoryError}
+        >
+          Memory unavailable: {budget.memoryError}
+        </p>
+      {/if}
 
       {#if alertMessage !== null}
         <p class="issues-error" data-testid="resource-error" role="alert">{alertMessage}</p>
@@ -202,8 +222,11 @@
         <p class="resources-saved" data-testid="resource-saved">Waiting for the budget…</p>
       {:else if budget.saved !== null}
         <p class="resources-saved" data-testid="resource-saved">
-          Saved: {budget.saved.maxAgentPeers} agents · high {budget.saved.memoryHighMb} MB · max
-          {budget.saved.memoryMaxMb} MB · reserve {budget.saved.memoryReserveMb} MB
+          Saved: {budget.saved.maxAgentPeers} agents
+          {#if budget.saved.memoryMaxMb !== null}
+            · high {budget.saved.memoryHighMb} MB · max {budget.saved.memoryMaxMb} MB · reserve
+            {budget.saved.memoryReserveMb} MB
+          {/if}
         </p>
       {:else}
         <p class="resources-saved" data-testid="resource-saved">No saved settings.</p>

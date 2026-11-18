@@ -37,9 +37,9 @@ fn a_transient_scope_carries_the_io_weight_property() {
 fn a_scope_with_a_limit_carries_both_io_and_memory_properties() {
     let limit = Settings {
         max_agent_peers: 2,
-        memory_high_mb: 128,
-        memory_max_mb: 256,
-        memory_reserve_mb: 64,
+        memory_high_mb: Some(128),
+        memory_max_mb: Some(256),
+        memory_reserve_mb: Some(64),
     };
     let arguments = scope_property_arguments(io_weight_from(Some("25")), Some(limit));
     assert_eq!(

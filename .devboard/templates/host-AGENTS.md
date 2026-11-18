@@ -402,6 +402,9 @@ default when no saved value exists. The Devboard workspace's `Resources` tab rea
 same values, refuses a maximum that reaches into the reserve, applies the values to the live slice
 without a restart, and persists them in the dashboard state directory. A CLI invocation, a
 workspace test, and a worker only join the slice; only the dashboard ever rewrites its budget.
+A host whose memory total cannot be read derives no memory budget at all: the peer cap stands,
+no memory mark is derived, saved, or written to the slice, the failed read is journaled once as
+activity, and the Resources page reports `memory unavailable` instead of a number.
 
 The host write path is bounded too. `/etc/sysctl.d/99-io-tuning.conf` sets
 `vm.dirty_background_bytes=268435456` and `vm.dirty_bytes=1073741824`, so a workspace build cannot

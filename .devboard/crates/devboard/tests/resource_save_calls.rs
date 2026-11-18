@@ -46,8 +46,8 @@ fn modelled_latency(calls: &[String]) -> Duration {
 struct FakeMemory;
 
 impl MemoryReader for FakeMemory {
-    fn total_mb(&self) -> u64 {
-        131_072
+    fn total_mb(&self) -> Result<u64, String> {
+        Ok(131_072)
     }
     fn available_mb(&self) -> Option<u64> {
         Some(65_000)
@@ -70,9 +70,9 @@ fn scratch(label: &str) -> PathBuf {
 fn settings(high: u64) -> Settings {
     Settings {
         max_agent_peers: 8,
-        memory_high_mb: high,
-        memory_max_mb: 16_384,
-        memory_reserve_mb: 1024,
+        memory_high_mb: Some(high),
+        memory_max_mb: Some(16_384),
+        memory_reserve_mb: Some(1024),
     }
 }
 

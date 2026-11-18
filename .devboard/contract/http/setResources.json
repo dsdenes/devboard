@@ -15,6 +15,7 @@
             "memoryReserveMb": 24117
           },
           "settingsError": null,
+          "memoryError": null,
           "effective": {},
           "live": {}
         }

@@ -10228,8 +10228,8 @@ mod tests {
     }
 
     impl crate::resources::MemoryReader for FlatMemory {
-        fn total_mb(&self) -> u64 {
-            self.total_mb
+        fn total_mb(&self) -> Result<u64, String> {
+            Ok(self.total_mb)
         }
 
         fn available_mb(&self) -> Option<u64> {

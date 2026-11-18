@@ -10,6 +10,7 @@
         "state": {
           "saved": null,
           "settingsError": null,
+          "memoryError": null,
           "effective": {},
           "live": {}
         }

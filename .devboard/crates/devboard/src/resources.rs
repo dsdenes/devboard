@@ -74,12 +74,23 @@ const ADMISSION_POLL_MS: u64 = 250;
 /* ------------------------------------------------------------------------ */
 
 /// The effective budget and cap.
+///
+/// The peer cap always exists. The memory marks exist only when the host's
+/// total was read: a governor never derives a memory budget from a total the
+/// [`MemoryReader`] did not supply, so [`Self::without_memory`] carries a cap
+/// and no marks. `None` marks mean no memory property may be written to the
+/// slice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub max_agent_peers: u32,
-    pub memory_high_mb: u64,
-    pub memory_max_mb: u64,
-    pub memory_reserve_mb: u64,
+    pub memory_high_mb: Option<u64>,
+    pub memory_max_mb: Option<u64>,
+    pub memory_reserve_mb: Option<u64>,
+}
+
+/// One peer per four CPUs, clamped to 1..=64.
+fn peer_cap(cpus: u32) -> u32 {
+    (cpus / 4).clamp(1, 64)
 }
 
 impl Settings {
@@ -93,8 +104,11 @@ impl Settings {
     /// accepts instead of one it refuses. Only a host smaller than both floors
     /// together has no valid budget at all; it gets the floors, and only
     /// [`Self::validate_for`] then refuses the host size.
+    ///
+    /// `total_mb` is a total a [`MemoryReader`] read. A host whose total could
+    /// not be read uses [`Self::without_memory`] instead, so no mark is ever
+    /// derived from a placeholder.
     pub fn derive(total_mb: u64, cpus: u32) -> Self {
-        let total_mb = total_mb.max(1);
         // What the documented formula asks for: a quarter of RAM, at least
         // 1 GiB.
         let wanted_reserve_mb = (total_mb / 4).max(GIB / MIB);
@@ -109,13 +123,36 @@ impl Settings {
             .saturating_sub(memory_reserve_mb)
             .max(MIN_MEMORY_MAX_MB);
         let memory_high_mb = (memory_max_mb.saturating_mul(4) / 5).max(MIN_MEMORY_FLOOR_MB);
-        let max_agent_peers = (cpus / 4).clamp(1, 64);
         Self {
-            max_agent_peers,
-            memory_high_mb,
-            memory_max_mb,
-            memory_reserve_mb,
+            max_agent_peers: peer_cap(cpus),
+            memory_high_mb: Some(memory_high_mb),
+            memory_max_mb: Some(memory_max_mb),
+            memory_reserve_mb: Some(memory_reserve_mb),
         }
+    }
+
+    /// The budget of a host whose memory total was never read: the peer cap
+    /// stands, and no memory mark exists to derive, report, or apply.
+    pub fn without_memory(cpus: u32) -> Self {
+        Self {
+            max_agent_peers: peer_cap(cpus),
+            memory_high_mb: None,
+            memory_max_mb: None,
+            memory_reserve_mb: None,
+        }
+    }
+
+    /// True when this budget carries the memory marks at all.
+    pub fn has_memory(&self) -> bool {
+        self.memory_max_mb.is_some()
+    }
+
+    /// Drops every memory mark. A host whose total was never read has no
+    /// memory budget, whatever a settings file or the environment names.
+    fn forget_memory(&mut self) {
+        self.memory_high_mb = None;
+        self.memory_max_mb = None;
+        self.memory_reserve_mb = None;
     }
 
     /// The values explicitly saved to disk; a missing key keeps the fallback.
@@ -124,13 +161,13 @@ impl Settings {
             self.max_agent_peers = value;
         }
         if let Some(value) = saved.memory_high_mb {
-            self.memory_high_mb = value;
+            self.memory_high_mb = Some(value);
         }
         if let Some(value) = saved.memory_max_mb {
-            self.memory_max_mb = value;
+            self.memory_max_mb = Some(value);
         }
         if let Some(value) = saved.memory_reserve_mb {
-            self.memory_reserve_mb = value;
+            self.memory_reserve_mb = Some(value);
         }
         self.normalize();
     }
@@ -141,29 +178,39 @@ impl Settings {
             self.max_agent_peers = value.clamp(1, 64);
         }
         if let Some(value) = env_u64(env, "DEVBOARD_MEMORY_HIGH_MB") {
-            self.memory_high_mb = value.max(64);
+            self.memory_high_mb = Some(value.max(64));
         }
         if let Some(value) = env_u64(env, "DEVBOARD_MEMORY_MAX_MB") {
-            self.memory_max_mb = value.max(64);
+            self.memory_max_mb = Some(value.max(64));
         }
         if let Some(value) = env_u64(env, "DEVBOARD_MEMORY_RESERVE_MB") {
-            self.memory_reserve_mb = value.max(64);
+            self.memory_reserve_mb = Some(value.max(64));
         }
         self.normalize();
     }
 
     /// Keeps a budget inside the bounds [`Self::validate`] states, so a value
     /// read from a saved file, an environment override, or a decoded frame
-    /// never leaves an effective budget its own validator refuses.
+    /// never leaves an effective budget its own validator refuses. A budget
+    /// with no marks keeps none: an absent total never becomes a number here.
     fn normalize(&mut self) {
         self.max_agent_peers = self.max_agent_peers.clamp(1, 64);
-        self.memory_max_mb = self.memory_max_mb.max(MIN_MEMORY_MAX_MB);
-        self.memory_high_mb = self
-            .memory_high_mb
-            .clamp(MIN_MEMORY_FLOOR_MB, self.memory_max_mb);
-        self.memory_reserve_mb = self
-            .memory_reserve_mb
-            .clamp(MIN_MEMORY_FLOOR_MB, self.memory_max_mb.saturating_sub(1));
+        if let Some(max) = self.memory_max_mb {
+            let max = max.max(MIN_MEMORY_MAX_MB);
+            self.memory_max_mb = Some(max);
+            self.memory_high_mb = Some(
+                self.memory_high_mb
+                    .unwrap_or(MIN_MEMORY_FLOOR_MB)
+                    .clamp(MIN_MEMORY_FLOOR_MB, max),
+            );
+        }
+        if let Some(reserve) = self.memory_reserve_mb {
+            let ceiling = self
+                .memory_max_mb
+                .map(|max| max.saturating_sub(1))
+                .unwrap_or(MIN_MEMORY_FLOOR_MB);
+            self.memory_reserve_mb = Some(reserve.clamp(MIN_MEMORY_FLOOR_MB, ceiling));
+        }
     }
 
     pub fn to_json(&self) -> Value {
@@ -180,32 +227,41 @@ impl Settings {
         let number = |key: &str| object.get(key).and_then(Value::as_u64);
         let mut settings = Self {
             max_agent_peers: number("maxAgentPeers")?.try_into().ok()?,
-            memory_high_mb: number("memoryHighMb")?,
-            memory_max_mb: number("memoryMaxMb")?,
-            memory_reserve_mb: number("memoryReserveMb")?,
+            memory_high_mb: number("memoryHighMb"),
+            memory_max_mb: number("memoryMaxMb"),
+            memory_reserve_mb: number("memoryReserveMb"),
         };
         settings.normalize();
         Some(settings)
     }
 
-    /// The values this save would write; refuses impossible combinations.
+    /// The values this save would write; refuses impossible combinations. A
+    /// budget with no memory marks saves its cap alone, which is what a host
+    /// whose total could not be read has to offer.
     pub fn validate(&self) -> Result<(), String> {
         if self.max_agent_peers == 0 || self.max_agent_peers > 64 {
             return Err("Max concurrent agents must be between 1 and 64.".to_string());
         }
-        if self.memory_max_mb < MIN_MEMORY_MAX_MB {
+        let (high, max, reserve) = match (
+            self.memory_high_mb,
+            self.memory_max_mb,
+            self.memory_reserve_mb,
+        ) {
+            (None, None, None) => return Ok(()),
+            (Some(high), Some(max), Some(reserve)) => (high, max, reserve),
+            _ => return Err("Memory high, max, and reserve must be set together.".to_string()),
+        };
+        if max < MIN_MEMORY_MAX_MB {
             return Err(format!(
                 "Memory max must be at least {MIN_MEMORY_MAX_MB} MB."
             ));
         }
-        if self.memory_high_mb < MIN_MEMORY_FLOOR_MB || self.memory_high_mb > self.memory_max_mb {
+        if high < MIN_MEMORY_FLOOR_MB || high > max {
             return Err(format!(
                 "Memory high must be at least {MIN_MEMORY_FLOOR_MB} MB and at most memory max."
             ));
         }
-        if self.memory_reserve_mb < MIN_MEMORY_FLOOR_MB
-            || self.memory_reserve_mb >= self.memory_max_mb
-        {
+        if reserve < MIN_MEMORY_FLOOR_MB || reserve >= max {
             return Err(format!(
                 "Reserve must be at least {MIN_MEMORY_FLOOR_MB} MB and below memory max."
             ));
@@ -214,10 +270,16 @@ impl Settings {
     }
 
     /// Like [`Self::validate`], and also refuses a hard maximum that reaches
-    /// into the reserve the host must keep free.
-    pub fn validate_for(&self, total_mb: u64) -> Result<(), String> {
+    /// into the reserve the host must keep free. An unknown host total has no
+    /// bound to check: a memory budget is refused before it is written.
+    pub fn validate_for(&self, total_mb: Option<u64>) -> Result<(), String> {
         self.validate()?;
-        if self.memory_max_mb.saturating_add(self.memory_reserve_mb) > total_mb {
+        let (Some(max), Some(reserve), Some(total_mb)) =
+            (self.memory_max_mb, self.memory_reserve_mb, total_mb)
+        else {
+            return Ok(());
+        };
+        if max.saturating_add(reserve) > total_mb {
             return Err(format!(
                 "Memory max plus reserve must not exceed the host's {total_mb} MB."
             ));
@@ -273,9 +335,9 @@ impl SavedSettings {
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             max_agent_peers: Some(settings.max_agent_peers),
-            memory_high_mb: Some(settings.memory_high_mb),
-            memory_max_mb: Some(settings.memory_max_mb),
-            memory_reserve_mb: Some(settings.memory_reserve_mb),
+            memory_high_mb: settings.memory_high_mb,
+            memory_max_mb: settings.memory_max_mb,
+            memory_reserve_mb: settings.memory_reserve_mb,
         }
     }
 
@@ -302,6 +364,29 @@ impl SavedSettings {
             && self.memory_max_mb.is_none()
             && self.memory_reserve_mb.is_none()
     }
+}
+
+/// The budget in force for one read of the host's memory and one settings
+/// file: the derived defaults, the environment overrides, then the saved
+/// values. A host whose total was never read carries no memory mark at all, so
+/// a saved or exported memory budget is dropped rather than enforced against a
+/// total nothing measured.
+fn effective_settings(
+    memory_total: &Result<u64, String>,
+    cpus: u32,
+    env: &BTreeMap<String, String>,
+    saved: &SavedSettings,
+) -> Settings {
+    let mut effective = match memory_total {
+        Ok(total) => Settings::derive(*total, cpus),
+        Err(_) => Settings::without_memory(cpus),
+    };
+    effective.apply_environment(env);
+    effective.apply_saved(saved);
+    if memory_total.is_err() {
+        effective.forget_memory();
+    }
+    effective
 }
 
 fn env_u64(env: &BTreeMap<String, String>, key: &str) -> Option<u64> {
@@ -334,19 +419,19 @@ pub fn io_weight_from(raw: Option<&str>) -> u64 {
 /// The transient scope's property arguments. Every scope the harness starts
 /// carries the IO weight, so a build's processes are never left at the
 /// default weight while they compete with the desktop. A caller that proves a
-/// memory bound adds its memory properties here too.
+/// memory bound adds its memory properties here too. A budget with no memory
+/// marks adds none, so nothing derived from an unread total reaches a scope.
 pub fn scope_property_arguments(weight: u64, limit: Option<Settings>) -> Vec<String> {
     let mut arguments = vec![format!("--property=IOWeight={weight}")];
     if let Some(settings) = limit {
-        arguments.push(format!(
-            "--property=MemoryHigh={}",
-            settings.memory_high_mb.saturating_mul(MIB)
-        ));
-        arguments.push(format!(
-            "--property=MemoryMax={}",
-            settings.memory_max_mb.saturating_mul(MIB)
-        ));
-        arguments.push("--property=MemorySwapMax=0".to_string());
+        if let (Some(high), Some(max)) = (settings.memory_high_mb, settings.memory_max_mb) {
+            arguments.push(format!(
+                "--property=MemoryHigh={}",
+                high.saturating_mul(MIB)
+            ));
+            arguments.push(format!("--property=MemoryMax={}", max.saturating_mul(MIB)));
+            arguments.push("--property=MemorySwapMax=0".to_string());
+        }
     }
     arguments
 }
@@ -357,7 +442,9 @@ pub fn scope_property_arguments(weight: u64, limit: Option<Settings>) -> Vec<Str
 
 /// The facts admission control needs about the host.
 pub trait MemoryReader: Send + Sync {
-    fn total_mb(&self) -> u64;
+    /// The host's memory total, or the reason it could not be read. A
+    /// governor never derives a budget from a total this did not supply.
+    fn total_mb(&self) -> Result<u64, String>;
     /// The memory a new run may use before the reserve is breached.
     fn available_mb(&self) -> Option<u64>;
     fn cpu_count(&self) -> u32;
@@ -369,7 +456,7 @@ pub trait MemoryReader: Send + Sync {
 pub struct SystemMemory;
 
 impl MemoryReader for SystemMemory {
-    fn total_mb(&self) -> u64 {
+    fn total_mb(&self) -> Result<u64, String> {
         system_memory().0
     }
 
@@ -385,17 +472,20 @@ impl MemoryReader for SystemMemory {
 }
 
 #[cfg(target_os = "linux")]
-fn system_memory() -> (u64, Option<u64>) {
-    let text = fs::read_to_string("/proc/meminfo").unwrap_or_default();
-    parse_meminfo(&text)
+fn system_memory() -> (Result<u64, String>, Option<u64>) {
+    match fs::read_to_string("/proc/meminfo") {
+        Ok(text) => parse_meminfo(&text),
+        Err(error) => (Err(format!("could not read /proc/meminfo: {error}")), None),
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn system_memory() -> (u64, Option<u64>) {
+fn system_memory() -> (Result<u64, String>, Option<u64>) {
     let total = command_stdout("sysctl", &["-n", "hw.memsize"])
         .and_then(|text| text.trim().parse::<u64>().ok())
         .map(|bytes| bytes / MIB)
-        .unwrap_or(0);
+        .filter(|total| *total > 0)
+        .ok_or_else(|| "could not read hw.memsize from sysctl".to_string());
     let page_size = command_stdout("sysctl", &["-n", "hw.pagesize"])
         .and_then(|text| text.trim().parse::<u64>().ok())
         .unwrap_or(4096);
@@ -406,13 +496,17 @@ fn system_memory() -> (u64, Option<u64>) {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn system_memory() -> (u64, Option<u64>) {
-    (0, None)
+fn system_memory() -> (Result<u64, String>, Option<u64>) {
+    (
+        Err("the host's memory total is not readable on this platform".to_string()),
+        None,
+    )
 }
 
-/// Parses the two `meminfo` fields admission uses.
-pub fn parse_meminfo(text: &str) -> (u64, Option<u64>) {
-    let mut total = 0;
+/// Parses the two `meminfo` fields admission uses. A file with no positive
+/// `MemTotal` is a failed read, never a zero total a budget is derived from.
+pub fn parse_meminfo(text: &str) -> (Result<u64, String>, Option<u64>) {
+    let mut total = None;
     let mut available = None;
     for line in text.lines() {
         let mut parts = line.split_whitespace();
@@ -420,11 +514,12 @@ pub fn parse_meminfo(text: &str) -> (u64, Option<u64>) {
         let value = parts.next().and_then(|value| value.parse::<u64>().ok());
         let Some(value) = value else { continue };
         match key.trim_end_matches(':') {
-            "MemTotal" => total = value / 1024,
+            "MemTotal" => total = (value >= 1024).then_some(value / 1024),
             "MemAvailable" => available = Some(value / 1024),
             _ => {}
         }
     }
+    let total = total.ok_or_else(|| "/proc/meminfo carries no MemTotal".to_string());
     (total, available)
 }
 
@@ -815,6 +910,12 @@ pub struct Governor {
     state_dir: PathBuf,
     directory: PathBuf,
     memory: Arc<dyn MemoryReader>,
+    /// The host's memory total as one read returned it. `Err` means the host's
+    /// memory was never read, so the budget carries no memory mark and the
+    /// slice is never limited to a number derived from nothing.
+    memory_total: Result<u64, String>,
+    /// Whether the failed read already reached the journal.
+    memory_error_journaled: AtomicBool,
     env: BTreeMap<String, String>,
     settings: Mutex<Settings>,
     saved: Mutex<SavedSettings>,
@@ -895,14 +996,19 @@ impl Governor {
     ) -> Arc<Self> {
         let directory = state_dir.join(RESOURCES_DIRECTORY);
         let (saved, settings_error) = read_saved_verdict(&directory);
-        let derived = Settings::derive(options.memory.total_mb(), options.memory.cpu_count());
-        let mut effective = derived;
-        effective.apply_environment(&options.env);
-        effective.apply_saved(&saved);
+        let memory_total = options.memory.total_mb();
+        let effective = effective_settings(
+            &memory_total,
+            options.memory.cpu_count(),
+            &options.env,
+            &saved,
+        );
         let governor = Arc::new(Self {
             state_dir: state_dir.to_path_buf(),
             directory,
             memory: options.memory,
+            memory_total,
+            memory_error_journaled: AtomicBool::new(false),
             env: options.env,
             settings: Mutex::new(effective),
             saved: Mutex::new(saved),
@@ -962,7 +1068,17 @@ impl Governor {
 
     /// The derived defaults for this host without any override.
     pub fn defaults(&self) -> Settings {
-        Settings::derive(self.memory.total_mb(), self.memory.cpu_count())
+        let cpus = self.memory.cpu_count();
+        match &self.memory_total {
+            Ok(total) => Settings::derive(*total, cpus),
+            Err(_) => Settings::without_memory(cpus),
+        }
+    }
+
+    /// Why the host's memory total is unknown, or `None` when it was read. The
+    /// budget then carries no memory mark and the slice is left alone.
+    pub fn memory_error(&self) -> Option<&str> {
+        self.memory_total.as_ref().err().map(String::as_str)
     }
 
     /// Registers the dashboard journal (or a test collector) for deferrals
@@ -976,6 +1092,7 @@ impl Governor {
     /// Re-reads `settings.json` when the dashboard saved new values. Workers
     /// see a cap or budget change without a restart.
     pub fn refresh_settings(&self) {
+        self.journal_memory_error();
         let path = settings_path(&self.state_dir);
         let stamp = file_stamp(&path);
         let same = self
@@ -990,10 +1107,12 @@ impl Governor {
             return;
         }
         let (saved, error) = read_saved_verdict(&self.directory);
-        let derived = self.defaults();
-        let mut effective = derived;
-        effective.apply_environment(&self.env);
-        effective.apply_saved(&saved);
+        let effective = effective_settings(
+            &self.memory_total,
+            self.memory.cpu_count(),
+            &self.env,
+            &saved,
+        );
         if let Ok(mut current) = self.settings.lock() {
             *current = effective;
         }
@@ -1069,6 +1188,30 @@ impl Governor {
         );
     }
 
+    /// Journals a host whose memory total could not be read as activity, once
+    /// per governor. The budget keeps its peer cap and carries no memory mark,
+    /// so no memory property is written to the slice and the Resources page
+    /// reports why. A governor with no hook records nothing and journals the
+    /// line on its first read once the dashboard installs one.
+    fn journal_memory_error(&self) {
+        let Some(reason) = self.memory_error() else {
+            return;
+        };
+        let Some(hook) = self.journal.lock().ok().and_then(|hook| hook.clone()) else {
+            return;
+        };
+        if self.memory_error_journaled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        hook(
+            "activity",
+            &format!(
+                "could not read the host's memory total ({reason}); no memory budget is derived \
+                 and {SLICE_NAME} keeps its memory properties unchanged"
+            ),
+        );
+    }
+
     /// Persists the operator's values and applies them to the live slice
     /// before returning.
     ///
@@ -1088,7 +1231,18 @@ impl Governor {
     /// slice is not touched here, so a caller that owes an answer owes it
     /// after this call and before any apply.
     fn persist(&self, settings: Settings) -> Result<Settings, String> {
-        settings.validate_for(self.memory.total_mb())?;
+        let total_mb = self.memory_total.as_ref().ok().copied();
+        settings.validate_for(total_mb)?;
+        // A memory budget is never written for a host whose total was never
+        // read: nothing measured it, and the slice must not carry a number the
+        // operator could not have validated. The cap still saves.
+        if total_mb.is_none() && settings.has_memory() {
+            return Err(
+                "Memory high, max, and reserve cannot be set while the host's memory total is \
+                 unreadable."
+                    .to_string(),
+            );
+        }
         let saved = SavedSettings::from_settings(&settings);
         write_json_atomically(&settings_path(&self.state_dir), &saved.to_json())
             .map_err(|error| format!("could not save the resource settings: {error}"))?;
@@ -1121,7 +1275,7 @@ impl Governor {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let settings = self.settings();
-        if self.slice_carries(settings) {
+        if !settings.has_memory() || self.slice_carries(settings) {
             return;
         }
         self.apply_slice_locked();
@@ -1136,7 +1290,11 @@ impl Governor {
     /// the slice follows on its own thread, and a later save's applier skips
     /// the write the earlier one already made.
     fn schedule_apply(self: &Arc<Self>) {
-        if !self.slice_enabled || !self.slice_owned || self.slice_carries(self.settings()) {
+        if !self.slice_enabled || !self.slice_owned {
+            return;
+        }
+        let settings = self.settings();
+        if !settings.has_memory() || self.slice_carries(settings) {
             return;
         }
         let governor = Arc::clone(self);
@@ -1199,13 +1357,13 @@ impl Governor {
                 .map_err(|_| "Max concurrent agents must be between 1 and 64.".to_string())?;
         }
         if let Some(value) = number(memory_high_mb, "Memory high")? {
-            settings.memory_high_mb = value;
+            settings.memory_high_mb = Some(value);
         }
         if let Some(value) = number(memory_max_mb, "Memory max")? {
-            settings.memory_max_mb = value;
+            settings.memory_max_mb = Some(value);
         }
         if let Some(value) = number(memory_reserve_mb, "Reserve")? {
-            settings.memory_reserve_mb = value;
+            settings.memory_reserve_mb = Some(value);
         }
         let settings = self.persist(settings)?;
         self.schedule_apply();
@@ -1249,11 +1407,13 @@ impl Governor {
                 CapDeferral::new(settings.max_agent_peers, &cap_slots),
             )));
         }
-        if let Some(available) = self.memory.available_mb() {
-            if available < settings.memory_reserve_mb {
+        if let (Some(available), Some(reserve)) =
+            (self.memory.available_mb(), settings.memory_reserve_mb)
+        {
+            if available < reserve {
                 return Err(AdmissionError::Deferred(DeferReason::Memory {
                     available_mb: available,
-                    reserve_mb: settings.memory_reserve_mb,
+                    reserve_mb: reserve,
                 }));
             }
         }
@@ -1528,8 +1688,16 @@ impl Governor {
     }
 
     /// One slice transaction with the apply lock already held.
+    ///
+    /// A budget with no memory mark never reaches the slice: the host's total
+    /// was not read, so there is no maximum to enforce and nothing derived
+    /// from an unknown total may be written. The slice keeps whatever it
+    /// carries rather than being limited to a placeholder.
     fn apply_slice_locked(&self) -> SliceInfo {
         let settings = self.settings();
+        if !settings.has_memory() {
+            return SliceInfo::default();
+        }
         let marker = slice_owner_marker(&self.state_dir);
         let applied = apply_slice_properties_owned(&self.slice_name, settings, Some(&marker));
         if applied.info.present {
@@ -1654,6 +1822,7 @@ impl Governor {
         let saved = self.saved_settings();
         let effective = self.settings();
         let settings_error = self.settings_error();
+        let memory_error = self.memory_error();
         let info = self.slice_info();
         // One read answers both counts, so the cap's count and the exempt
         // count always add up to the slots a reader can list.
@@ -1663,6 +1832,7 @@ impl Governor {
             "state": {
                 "saved": if saved.is_empty() { Value::Null } else { saved.to_json() },
                 "settingsError": settings_error,
+                "memoryError": memory_error,
                 "effective": effective.to_json(),
                 "live": {
                     "activeAgents": cap_slots.len() as u32,
@@ -1964,16 +2134,17 @@ fn apply_slice_properties_owned(
         return AppliedSlice::default();
     };
     let leaf = leaf_slice_name(name);
-    let high = format!("MemoryHigh={}", settings.memory_high_mb.saturating_mul(MIB));
-    let max = format!("MemoryMax={}", settings.memory_max_mb.saturating_mul(MIB));
-    // The hard limit bounds RAM. Unlimited swap would let a runaway agent
-    // grow past it and pressure the session instead.
-    let mut properties = vec![
-        high,
-        max,
-        "MemorySwapMax=0".to_string(),
-        format!("IOWeight={}", io_weight()),
-    ];
+    let mut properties = Vec::new();
+    // A budget with no memory mark carries no maximum to enforce, so no memory
+    // property is written: an unknown total never becomes a limit.
+    if let (Some(high), Some(max)) = (settings.memory_high_mb, settings.memory_max_mb) {
+        properties.push(format!("MemoryHigh={}", high.saturating_mul(MIB)));
+        // The hard limit bounds RAM. Unlimited swap would let a runaway agent
+        // grow past it and pressure the session instead.
+        properties.push(format!("MemoryMax={}", max.saturating_mul(MIB)));
+        properties.push("MemorySwapMax=0".to_string());
+    }
+    properties.push(format!("IOWeight={}", io_weight()));
     if let Some(marker) = marker {
         // A slice already named for this dashboard is left as it is; the
         // description is a claim, not a value a save has to rewrite.
@@ -2257,14 +2428,14 @@ mod tests {
     #[test]
     fn the_default_budget_follows_the_documented_formula() {
         let settings = Settings::derive(100_000, 32);
-        assert_eq!(settings.memory_reserve_mb, 25_000);
-        assert_eq!(settings.memory_max_mb, 75_000);
-        assert_eq!(settings.memory_high_mb, 60_000);
+        assert_eq!(settings.memory_reserve_mb, Some(25_000));
+        assert_eq!(settings.memory_max_mb, Some(75_000));
+        assert_eq!(settings.memory_high_mb, Some(60_000));
         assert_eq!(settings.max_agent_peers, 8);
         let small = Settings::derive(4_096, 2);
-        assert_eq!(small.memory_reserve_mb, 1_024);
-        assert_eq!(small.memory_max_mb, 3_072);
-        assert_eq!(small.memory_high_mb, 2_457);
+        assert_eq!(small.memory_reserve_mb, Some(1_024));
+        assert_eq!(small.memory_max_mb, Some(3_072));
+        assert_eq!(small.memory_high_mb, Some(2_457));
         assert_eq!(small.max_agent_peers, 1);
     }
 
@@ -2291,7 +2462,20 @@ mod tests {
     fn the_meminfo_parser_reads_total_and_available() {
         let text =
             "MemTotal:       98783752 kB\nMemFree:         1234 kB\nMemAvailable:   50000000 kB\n";
-        assert_eq!(parse_meminfo(text), (96_468, Some(48_828)));
+        assert_eq!(parse_meminfo(text), (Ok(96_468), Some(48_828)));
+    }
+
+    #[test]
+    fn a_meminfo_without_a_total_is_a_failed_read() {
+        let (total, available) = parse_meminfo("MemFree: 1234 kB\nMemAvailable: 4096 kB\n");
+        assert!(
+            total.is_err(),
+            "a file without MemTotal never reads as a total"
+        );
+        assert_eq!(available, Some(4));
+        // A zero total is a failed read too: no budget is derived from it.
+        let (total, _) = parse_meminfo("MemTotal: 0 kB\n");
+        assert!(total.is_err(), "a zero total is not a total");
     }
 
     #[test]
@@ -2313,8 +2497,8 @@ Pages purgeable:                           250.\n";
     }
 
     impl MemoryReader for TestMemory {
-        fn total_mb(&self) -> u64 {
-            self.total_mb
+        fn total_mb(&self) -> Result<u64, String> {
+            Ok(self.total_mb)
         }
 
         fn available_mb(&self) -> Option<u64> {
@@ -2418,9 +2602,9 @@ Pages purgeable:                           250.\n";
             saved,
             Settings {
                 max_agent_peers: 2,
-                memory_high_mb: 512,
-                memory_max_mb: 1_024,
-                memory_reserve_mb: 256,
+                memory_high_mb: Some(512),
+                memory_max_mb: Some(1_024),
+                memory_reserve_mb: Some(256),
             }
         );
         assert_eq!(governor.settings(), saved);
@@ -2436,7 +2620,7 @@ Pages purgeable:                           250.\n";
             .apply_update(Some(&peers), None, None, None)
             .expect("the update validates");
         assert_eq!(kept.max_agent_peers, 3);
-        assert_eq!(kept.memory_max_mb, 1_024);
+        assert_eq!(kept.memory_max_mb, Some(1_024));
     }
 
     /// Writes `text` as the saved settings file under one scratch directory.

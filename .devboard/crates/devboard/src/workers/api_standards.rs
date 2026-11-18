@@ -5614,8 +5614,8 @@ mod peer_tests {
     struct FlatMemory;
 
     impl MemoryReader for FlatMemory {
-        fn total_mb(&self) -> u64 {
-            65_536
+        fn total_mb(&self) -> Result<u64, String> {
+            Ok(65_536)
         }
 
         fn available_mb(&self) -> Option<u64> {

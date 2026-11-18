@@ -367,3 +367,83 @@ test("a refused settings file carries its reason instead of a saved row", () => 
   });
   expect(store.state).toBe(accepted);
 });
+
+test("an unreadable memory total carries null marks and the reason", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  const reason = "could not read /proc/meminfo: No such file or directory";
+  socket.deliver({
+    type: "resourcesState",
+    state: {
+      ...frame(),
+      effective: {
+        maxAgentPeers: 4,
+        memoryHighMb: null,
+        memoryMaxMb: null,
+        memoryReserveMb: null,
+      },
+      memoryError: reason,
+    },
+  });
+  expect(store.state?.memoryError).toBe(reason);
+  expect(store.state?.effective.maxAgentPeers).toBe(4);
+  expect(store.state?.effective.memoryMaxMb).toBeNull();
+  expect(store.state?.effective.memoryReserveMb).toBeNull();
+
+  // A memory reason of another type is a frame this client cannot trust.
+  const accepted = store.state;
+  store.handleEvent({
+    type: "resourcesState",
+    state: { ...frame(), memoryError: 4 as unknown as string },
+  });
+  expect(store.state).toBe(accepted);
+});
+
+test("a frame that mixes a memory mark with an unavailable one drops", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({ type: "resourcesState", state: frame() });
+  const accepted = store.state;
+
+  // Half a memory budget names no limit the page could render or save.
+  store.handleEvent({
+    type: "resourcesState",
+    state: {
+      ...frame(),
+      effective: {
+        maxAgentPeers: 4,
+        memoryHighMb: 1024,
+        memoryMaxMb: null,
+        memoryReserveMb: null,
+      },
+    },
+  });
+  expect(store.state).toBe(accepted);
+});
+
+test("a saved row keeps the marks an unreadable host cannot enforce", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({
+    type: "resourcesState",
+    state: {
+      ...frame(),
+      effective: {
+        maxAgentPeers: 4,
+        memoryHighMb: null,
+        memoryMaxMb: null,
+        memoryReserveMb: null,
+      },
+      saved: { maxAgentPeers: 6, memoryHighMb: 1024 },
+      memoryError: "could not read /proc/meminfo: No such file or directory",
+    },
+  });
+
+  // The file still holds the operator's old marks; the effective row is the
+  // cap alone because nothing measured the total they were saved against.
+  expect(store.state?.effective.maxAgentPeers).toBe(4);
+  expect(store.state?.effective.memoryHighMb).toBeNull();
+  expect(store.state?.saved?.maxAgentPeers).toBe(6);
+  expect(store.state?.saved?.memoryHighMb).toBe(1024);
+  expect(store.state?.saved?.memoryMaxMb).toBeNull();
+});

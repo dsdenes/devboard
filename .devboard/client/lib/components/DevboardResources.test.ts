@@ -35,7 +35,15 @@ function recordSends(): { sent: unknown[]; restore: () => void } {
 
 const REFUSAL = "Memory max plus reserve exceeds this host's 65536 MB.";
 
-const BUDGET = {
+/** One effective row: the memory marks are null when the host total is unread. */
+type Budget = {
+  maxAgentPeers: number;
+  memoryHighMb: number | null;
+  memoryMaxMb: number | null;
+  memoryReserveMb: number | null;
+};
+
+const BUDGET: Budget = {
   maxAgentPeers: 4,
   memoryHighMb: 38587,
   memoryMaxMb: 48234,
@@ -44,16 +52,18 @@ const BUDGET = {
 
 /** One complete `resourcesState` frame; a caller overrides the saved or live section. */
 function deliver(
-  effective: typeof BUDGET,
+  effective: Budget,
   live: Record<string, unknown> = {},
   saved: Record<string, unknown> | null = null,
   settingsError: string | null = null,
+  memoryError: string | null = null,
 ): Promise<void> {
   resources.handleEvent({
     type: "resourcesState",
     state: {
       saved,
       settingsError,
+      memoryError,
       effective,
       live: {
         activeAgents: 0,
@@ -225,4 +235,45 @@ test("a refused settings file renders its reason instead of the derived default"
   // An absent file still reads as the derived defaults.
   await deliver(BUDGET);
   expect(view.getByTestId("resource-origin").textContent).toContain("Derived defaults");
+});
+
+test("an unreadable memory total renders unavailable and saves the cap alone", async () => {
+  const sends = recordSends();
+  try {
+    const view = render(DevboardResources);
+    await tick();
+    const reason = "could not read /proc/meminfo: No such file or directory";
+    const unavailable: Budget = {
+      maxAgentPeers: 4,
+      memoryHighMb: null,
+      memoryMaxMb: null,
+      memoryReserveMb: null,
+    };
+    await deliver(unavailable, {}, null, null, reason);
+
+    const notice = view.getByTestId("resource-memory-unavailable");
+    expect(notice.textContent).toContain("Memory unavailable");
+    expect(notice.textContent).toContain(reason);
+    for (const testid of ["resource-memory-high", "resource-memory-max", "resource-reserve"]) {
+      const input = view.getByTestId(testid) as HTMLInputElement;
+      expect(input.disabled).toBe(true);
+      expect(input.value).toBe("");
+    }
+
+    const agents = view.getByTestId("resource-max-agents") as HTMLInputElement;
+    expect(agents.value).toBe("4");
+    await fireEvent.input(agents, { target: { value: "6" } });
+    expect(view.getByTestId("resource-unsaved").textContent).toBe("Unsaved changes");
+    await fireEvent.click(view.getByTestId("resource-save"));
+    await tick();
+    expect(sends.sent).toContainEqual({
+      type: "setResources",
+      maxAgentPeers: 6,
+      memoryHighMb: null,
+      memoryMaxMb: null,
+      memoryReserveMb: null,
+    });
+  } finally {
+    sends.restore();
+  }
 });

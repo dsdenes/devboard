@@ -58,8 +58,8 @@ impl FakeMemory {
 }
 
 impl MemoryReader for FakeMemory {
-    fn total_mb(&self) -> u64 {
-        self.total_mb
+    fn total_mb(&self) -> Result<u64, String> {
+        Ok(self.total_mb)
     }
 
     fn available_mb(&self) -> Option<u64> {
@@ -706,20 +706,20 @@ fn budget_policy_uses_the_host_minus_the_reserve() {
     let governor = in_memory_governor(&directory, Arc::clone(&memory), &[]);
     // The default maximum is everything the operator's reserve leaves.
     let derived = governor.defaults();
-    assert_eq!(derived.memory_reserve_mb, 24_117);
-    assert_eq!(derived.memory_max_mb, 72_351);
+    assert_eq!(derived.memory_reserve_mb, Some(24_117));
+    assert_eq!(derived.memory_max_mb, Some(72_351));
 
     let at_the_limit = Settings {
         max_agent_peers: 12,
-        memory_high_mb: 60_000,
-        memory_max_mb: 86_468,
-        memory_reserve_mb: 10_000,
+        memory_high_mb: Some(60_000),
+        memory_max_mb: Some(86_468),
+        memory_reserve_mb: Some(10_000),
     };
     governor
         .save(at_the_limit)
         .expect("the host total minus the reserve is available");
     let over = Settings {
-        memory_max_mb: 86_469,
+        memory_max_mb: Some(86_469),
         ..at_the_limit
     };
     assert!(
@@ -728,9 +728,9 @@ fn budget_policy_uses_the_host_minus_the_reserve() {
     );
     governor
         .save(Settings {
-            memory_max_mb: 72_351,
-            memory_high_mb: 57_880,
-            memory_reserve_mb: 24_117,
+            memory_max_mb: Some(72_351),
+            memory_high_mb: Some(57_880),
+            memory_reserve_mb: Some(24_117),
             ..at_the_limit
         })
         .expect("the default reserve bounds the maximum");
@@ -748,9 +748,9 @@ fn budget_policy_uses_the_host_minus_the_reserve() {
         .is_err());
     let saved = Settings {
         max_agent_peers: 12,
-        memory_high_mb: 60_000,
-        memory_max_mb: 70_000,
-        memory_reserve_mb: 10_000,
+        memory_high_mb: Some(60_000),
+        memory_max_mb: Some(70_000),
+        memory_reserve_mb: Some(10_000),
     };
     governor
         .save(saved)
@@ -765,9 +765,9 @@ fn budget_policy_uses_the_host_minus_the_reserve() {
             FakeMemory::new(96_468, 90_000, 32),
             Settings {
                 max_agent_peers: 12,
-                memory_high_mb: 400,
-                memory_max_mb: 512,
-                memory_reserve_mb: 128,
+                memory_high_mb: Some(400),
+                memory_max_mb: Some(512),
+                memory_reserve_mb: Some(128),
             },
             true,
         );
@@ -795,9 +795,9 @@ fn a_second_dashboard_joins_without_rewriting_the_budget() {
         FakeMemory::new(64_000, 60_000, 16),
         Settings {
             max_agent_peers: 1,
-            memory_high_mb: 1_600,
-            memory_max_mb: 2_000,
-            memory_reserve_mb: 256,
+            memory_high_mb: Some(1_600),
+            memory_max_mb: Some(2_000),
+            memory_reserve_mb: Some(256),
         },
         true,
     );
@@ -807,9 +807,9 @@ fn a_second_dashboard_joins_without_rewriting_the_budget() {
         FakeMemory::new(64_000, 60_000, 16),
         Settings {
             max_agent_peers: 1,
-            memory_high_mb: 800,
-            memory_max_mb: 1_024,
-            memory_reserve_mb: 256,
+            memory_high_mb: Some(800),
+            memory_max_mb: Some(1_024),
+            memory_reserve_mb: Some(256),
         },
         true,
     );
@@ -822,9 +822,9 @@ fn a_second_dashboard_joins_without_rewriting_the_budget() {
     owner
         .save(Settings {
             max_agent_peers: 1,
-            memory_high_mb: 1_200,
-            memory_max_mb: 1_536,
-            memory_reserve_mb: 256,
+            memory_high_mb: Some(1_200),
+            memory_max_mb: Some(1_536),
+            memory_reserve_mb: Some(256),
         })
         .expect("the owner still applies its own budget");
     assert_eq!(owner.slice_info().memory_max_mb, 1_536);
@@ -834,14 +834,14 @@ fn a_second_dashboard_joins_without_rewriting_the_budget() {
 #[test]
 fn budget_formula_and_overrides() {
     let derived = Settings::derive(100_000, 32);
-    assert_eq!(derived.memory_reserve_mb, 25_000);
-    assert_eq!(derived.memory_max_mb, 75_000);
-    assert_eq!(derived.memory_high_mb, 60_000);
+    assert_eq!(derived.memory_reserve_mb, Some(25_000));
+    assert_eq!(derived.memory_max_mb, Some(75_000));
+    assert_eq!(derived.memory_high_mb, Some(60_000));
     assert_eq!(derived.max_agent_peers, 8);
     let small = Settings::derive(4_096, 2);
-    assert_eq!(small.memory_reserve_mb, 1_024);
-    assert_eq!(small.memory_max_mb, 3_072);
-    assert_eq!(small.memory_high_mb, 2_457);
+    assert_eq!(small.memory_reserve_mb, Some(1_024));
+    assert_eq!(small.memory_max_mb, Some(3_072));
+    assert_eq!(small.memory_high_mb, Some(2_457));
     assert_eq!(small.max_agent_peers, 1);
     assert_eq!(Settings::derive(100_000, 3).max_agent_peers, 1);
     assert_eq!(Settings::derive(100_000, 40).max_agent_peers, 10);
@@ -868,17 +868,17 @@ fn budget_formula_and_overrides() {
     );
     let overridden = governor.settings();
     assert_eq!(overridden.max_agent_peers, 7);
-    assert_eq!(overridden.memory_high_mb, 3_000);
-    assert_eq!(overridden.memory_max_mb, 4_000);
-    assert_eq!(overridden.memory_reserve_mb, 1_500);
+    assert_eq!(overridden.memory_high_mb, Some(3_000));
+    assert_eq!(overridden.memory_max_mb, Some(4_000));
+    assert_eq!(overridden.memory_reserve_mb, Some(1_500));
 
     // A saved value beats the environment on the next start.
     governor
         .save(Settings {
             max_agent_peers: 2,
-            memory_high_mb: 1_600,
-            memory_max_mb: 2_000,
-            memory_reserve_mb: 900,
+            memory_high_mb: Some(1_600),
+            memory_max_mb: Some(2_000),
+            memory_reserve_mb: Some(900),
         })
         .expect("the settings validate");
     let restarted = in_memory_governor(
@@ -887,7 +887,7 @@ fn budget_formula_and_overrides() {
         &[("DEVBOARD_MAX_AGENT_PEERS", "7")],
     );
     assert_eq!(restarted.settings().max_agent_peers, 2);
-    assert_eq!(restarted.settings().memory_max_mb, 2_000);
+    assert_eq!(restarted.settings().memory_max_mb, Some(2_000));
 }
 
 #[test]
@@ -895,9 +895,9 @@ fn settings_persist_across_restart() {
     let directory = scratch("settings");
     let saved = Settings {
         max_agent_peers: 2,
-        memory_high_mb: 256,
-        memory_max_mb: 512,
-        memory_reserve_mb: 128,
+        memory_high_mb: Some(256),
+        memory_max_mb: Some(512),
+        memory_reserve_mb: Some(128),
     };
     {
         let governor = in_memory_governor(&directory, FakeMemory::new(64_000, 60_000, 16), &[]);
@@ -938,9 +938,9 @@ fn settings_persist_across_restart() {
         governor
             .save(Settings {
                 max_agent_peers: 2,
-                memory_high_mb: 320,
-                memory_max_mb: 640,
-                memory_reserve_mb: 128,
+                memory_high_mb: Some(320),
+                memory_max_mb: Some(640),
+                memory_reserve_mb: Some(128),
             })
             .expect("the updated settings validate");
         let info = governor.slice_info();
@@ -948,6 +948,124 @@ fn settings_persist_across_restart() {
         assert_eq!(info.memory_max_mb, 640);
         stop_slice_for(test_slice());
     }
+}
+
+/// A reader whose host total cannot be read, like a `/proc/meminfo` that is
+/// absent or a `sysctl` that failed.
+struct UnreadableMemory {
+    available_mb: u64,
+    cpus: u32,
+}
+
+impl MemoryReader for UnreadableMemory {
+    fn total_mb(&self) -> Result<u64, String> {
+        Err("could not read /proc/meminfo: No such file or directory".to_string())
+    }
+
+    fn available_mb(&self) -> Option<u64> {
+        Some(self.available_mb)
+    }
+
+    fn cpu_count(&self) -> u32 {
+        self.cpus
+    }
+}
+
+#[test]
+fn an_unreadable_memory_total_applies_no_memory_budget() {
+    let _lock = slice_lock();
+    let directory = scratch("memory-unreadable");
+    // A budget saved on a host whose total could once be read. It names memory
+    // marks this host cannot validate now, so they are never derived, saved, or
+    // applied against a total nothing measured.
+    let resources = directory.join("resources");
+    std::fs::create_dir_all(&resources).expect("the resources directory");
+    std::fs::write(
+        resources.join("settings.json"),
+        "{\"maxAgentPeers\": 6, \"memoryHighMb\": 1024, \"memoryMaxMb\": 2048, \
+         \"memoryReserveMb\": 512}",
+    )
+    .expect("the settings file");
+    let reason = "could not read /proc/meminfo: No such file or directory";
+    let governor = Governor::in_slice(
+        &directory,
+        GovernorOptions {
+            memory: Arc::new(UnreadableMemory {
+                available_mb: 60_000,
+                cpus: 16,
+            }),
+            env: BTreeMap::new(),
+            slice: true,
+        },
+        test_slice(),
+    );
+    let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let recorded = Arc::clone(&recorded);
+        governor.set_journal_hook(Arc::new(move |kind, text| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((kind.to_string(), text.to_string()));
+        }));
+    }
+
+    // The budget keeps the saved cap and carries no memory mark at all, so no
+    // number derived from an unknown total can exist.
+    let settings = governor.settings();
+    assert_eq!(settings.max_agent_peers, 6);
+    assert!(!settings.has_memory());
+    assert_eq!(settings.memory_max_mb, None);
+    assert_eq!(settings.memory_high_mb, None);
+    assert_eq!(settings.memory_reserve_mb, None);
+
+    let frame = governor.state_event();
+    assert_eq!(frame["state"]["memoryError"], reason);
+    assert_eq!(
+        frame["state"]["effective"]["memoryMaxMb"],
+        serde_json::Value::Null
+    );
+    assert_eq!(frame["state"]["live"]["slicePresent"], false);
+    assert!(
+        slice_cgroup_path_for(test_slice()).is_none(),
+        "the governor never creates or limits the slice without a total"
+    );
+
+    // The failed read is one activity line, however often the page polls it.
+    let _ = governor.state_event();
+    let _ = governor.state_event();
+    let lines = recorded.lock().unwrap().clone();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one failed read records one line: {lines:?}"
+    );
+    assert_eq!(lines[0].0, "activity");
+    assert!(lines[0].1.contains(reason), "{}", lines[0].1);
+
+    // The cap still saves, and it writes no memory property to the slice.
+    let cap_only = governor
+        .save(Settings::without_memory(16))
+        .expect("a cap-only budget saves on a host whose total is unknown");
+    assert_eq!(cap_only.memory_max_mb, None);
+    assert!(
+        slice_cgroup_path_for(test_slice()).is_none(),
+        "saving the cap alone never creates or limits the slice"
+    );
+
+    // A memory budget is refused outright: nothing measured a mark to check.
+    let refused = governor
+        .save(Settings::derive(64_000, 16))
+        .expect_err("a memory budget needs a total");
+    assert!(
+        refused.contains("memory total is unreadable"),
+        "the refusal names the read: {refused}"
+    );
+    assert!(!governor.settings().has_memory());
+    assert!(
+        slice_cgroup_path_for(test_slice()).is_none(),
+        "a refused save writes no memory property either"
+    );
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1011,9 +1129,9 @@ fn a_two_gib_host_accepts_the_budget_it_preseeded() {
 fn slice_budget() -> Settings {
     Settings {
         max_agent_peers: 2,
-        memory_high_mb: 128,
-        memory_max_mb: 128,
-        memory_reserve_mb: 64,
+        memory_high_mb: Some(128),
+        memory_max_mb: Some(128),
+        memory_reserve_mb: Some(64),
     }
 }
 
@@ -1037,7 +1155,10 @@ fn spawn_allocator(governor: &Governor, limit: Settings) -> Child {
     );
     assert!(
         wrapped.iter().any(|argument| argument
-            == &format!("--property=MemoryMax={}", limit.memory_max_mb * 1024 * 1024)),
+            == &format!(
+                "--property=MemoryMax={}",
+                limit.memory_max_mb.unwrap_or(0) * 1024 * 1024
+            )),
         "the scope carries the hard limit: {wrapped:?}"
     );
     Command::new(&wrapped[0])
@@ -1495,9 +1616,9 @@ fn desktop_session_survives_a_slice_that_reaches_its_maximum() {
         memory,
         Settings {
             max_agent_peers: 1,
-            memory_high_mb: 128,
-            memory_max_mb: 128,
-            memory_reserve_mb: 64,
+            memory_high_mb: Some(128),
+            memory_max_mb: Some(128),
+            memory_reserve_mb: Some(64),
         },
         true,
     );
@@ -1614,9 +1735,9 @@ fn the_slice_defaults_follow_the_saved_budget() {
         memory,
         Settings {
             max_agent_peers: 3,
-            memory_high_mb: 1_600,
-            memory_max_mb: 2_000,
-            memory_reserve_mb: 512,
+            memory_high_mb: Some(1_600),
+            memory_max_mb: Some(2_000),
+            memory_reserve_mb: Some(512),
         },
         true,
     );
@@ -1637,9 +1758,9 @@ fn the_slice_defaults_follow_the_saved_budget() {
         test_slice(),
         Settings {
             max_agent_peers: 1,
-            memory_high_mb: 256,
-            memory_max_mb: 512,
-            memory_reserve_mb: 128,
+            memory_high_mb: Some(256),
+            memory_max_mb: Some(512),
+            memory_reserve_mb: Some(128),
         },
     );
     stop_slice_for(test_slice());

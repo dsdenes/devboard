@@ -4,9 +4,13 @@ import { saveFeedback } from "./save-feedback.svelte";
 /** The budget and cap the governor applies, in whole MiB and peer slots. */
 export interface ResourceSettings {
   maxAgentPeers: number;
-  memoryHighMb: number;
-  memoryMaxMb: number;
-  memoryReserveMb: number;
+  /**
+   * The memory marks, or null when the server could not read the host's
+   * memory total. A budget with null marks carries no memory limit at all.
+   */
+  memoryHighMb: number | null;
+  memoryMaxMb: number | null;
+  memoryReserveMb: number | null;
 }
 
 /** The governor's current counters; the slice fields are zero without one. */
@@ -31,6 +35,12 @@ export interface ResourcesState {
    * it read as a budget. The effective row is the derived budget either way.
    */
   settingsError: string | null;
+  /**
+   * Why the host's memory total could not be read, or null when it was. The
+   * effective memory marks are null in that case and the slice carries no
+   * memory limit.
+   */
+  memoryError: string | null;
   effective: ResourceSettings;
   live: ResourceLive;
 }
@@ -46,6 +56,8 @@ function isCount(value: unknown): value is number {
  * the keys the file carries, so an absent figure is a default the effective
  * budget already resolved rather than a value the server failed to send.
  * Without a base every figure must be present, which is the effective row.
+ * A null memory mark is the server reporting that the host's memory total
+ * could not be read; the three marks are all present or all null.
  */
 function settingsRow(
   value: unknown,
@@ -53,8 +65,9 @@ function settingsRow(
 ): ResourceSettings | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const row = value as Record<string, unknown>;
-  const figure = (key: keyof ResourceSettings): number | undefined => {
+  const figure = (key: keyof ResourceSettings): number | null | undefined => {
     const present = row[key];
+    if (present === null) return null;
     if (present === undefined) return base?.[key];
     return isCount(present) ? present : undefined;
   };
@@ -64,9 +77,22 @@ function settingsRow(
   const memoryReserveMb = figure("memoryReserveMb");
   if (
     maxAgentPeers === undefined ||
+    maxAgentPeers === null ||
     memoryHighMb === undefined ||
     memoryMaxMb === undefined ||
     memoryReserveMb === undefined
+  ) {
+    return undefined;
+  }
+  const marks = [memoryHighMb, memoryMaxMb, memoryReserveMb];
+  // The effective row is the whole budget in force, so half a memory budget
+  // names no limit the page could render. A saved row may hold one mark the
+  // file carries while the effective row has none, because that budget is not
+  // in force on a host whose memory total could not be read.
+  if (
+    base === undefined &&
+    marks.some((mark) => mark === null) &&
+    marks.some((mark) => mark !== null)
   ) {
     return undefined;
   }
@@ -131,7 +157,14 @@ export function parseResourcesState(value: unknown): ResourcesState | undefined 
     if (typeof frame.settingsError !== "string") return undefined;
     settingsError = frame.settingsError;
   }
-  return { saved, settingsError, effective, live };
+  // The same rule for the memory read: no field is an older server, and a
+  // value of another type is a frame this client cannot trust.
+  let memoryError: string | null = null;
+  if (frame.memoryError !== null && frame.memoryError !== undefined) {
+    if (typeof frame.memoryError !== "string") return undefined;
+    memoryError = frame.memoryError;
+  }
+  return { saved, settingsError, memoryError, effective, live };
 }
 
 /** True when both rows carry the same four figures. */
