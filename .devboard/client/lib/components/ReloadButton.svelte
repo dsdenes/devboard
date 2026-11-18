@@ -17,15 +17,17 @@
   let { label = "Reload", children, ...rest }: Props = $props();
 </script>
 
-<!-- The replacement retry is answered by a fresh version frame, so it latches
-     on the frame's revision rather than on `running`: a retry the server
-     reports as failed keeps the old process serving, which leaves `running`
-     unchanged, and only the frame's arrival distinguishes an answer from
-     silence. Both the status bar and the unsupported-viewport page render this
-     one control, so neither can latch on the wrong evidence. -->
+<!-- The replacement retry is answered either by a fresh version frame or by the
+     request's own answer: `versionRevision` covers a retry the server reports
+     as failed, and `restartAnswerRevision` covers the two refusals and a
+     failed fetch, which never produce a version frame. Both the status bar and
+     the unsupported-viewport page render this one control, so neither can
+     latch on the wrong evidence, and a request no answer reaches still shows
+     the ceiling notice. -->
 <CommandButton
   {label}
   evidence={() => connection.versionRevision}
+  refusal={() => connection.restartAnswerRevision}
   command={() => connection.requestRestart()}
   {...rest}
 >

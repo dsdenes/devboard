@@ -143,7 +143,12 @@ test("an accepted restart reloads once the answering pid changes", async () => {
         headers: { "content-type": "application/json" },
       });
     }
-    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/server-restarts") {
+      return new Response(JSON.stringify({ frames: [] }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    }
     return new Response(JSON.stringify({ frames: [] }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -207,7 +212,12 @@ test("a reported replacement failure clears the restart latch and resumes pollin
         headers: { "content-type": "application/json" },
       });
     }
-    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/server-restarts") {
+      return new Response(JSON.stringify({ frames: [] }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (url === "/version") {
       return new Response(JSON.stringify({ frames: [frame] }), {
         status: 200,
@@ -274,7 +284,12 @@ test("a failure recorded after the watch's deadline reports its reason, not the 
         headers: { "content-type": "application/json" },
       });
     }
-    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/server-restarts") {
+      return new Response(JSON.stringify({ frames: [] }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (url === "/version") {
       versionReads += 1;
       return new Response(JSON.stringify({ frames: [frame] }), {
@@ -337,7 +352,12 @@ test("a server that names no replacement failure still reports the timeout", asy
         headers: { "content-type": "application/json" },
       });
     }
-    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/server-restarts") {
+      return new Response(JSON.stringify({ frames: [] }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (url === "/version") versionReads += 1;
     return new Response(JSON.stringify({ frames: [] }), {
       status: 200,
@@ -364,5 +384,94 @@ test("a server that names no replacement failure still reports the timeout", asy
   expect(notifications.items.map((item) => item.text)).toEqual([
     "The replacement did not answer within 30 seconds.",
   ]);
+  store.dispose();
+});
+
+test("a refused restart reports the answer's own message and starts no watch", async () => {
+  const requests: Request[] = [];
+  const refusal = "A server restart is already in progress.";
+  setGlobal("location", {
+    protocol: "http:",
+    host: "test.invalid",
+    reload: () => {
+      throw new Error("a refused restart reloads nothing");
+    },
+  });
+  setGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    requests.push({ url, method });
+    if (url === "/ready") {
+      return new Response(JSON.stringify({ pid: 100 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/server-restarts") {
+      return new Response(
+        JSON.stringify({
+          frames: [{ type: "error", message: refusal, command: "restartServer" }],
+        }),
+        { status: 202, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  const timers = deferredTimers();
+  const store = connection;
+  const before = store.restartAnswerRevision;
+
+  store.requestRestart();
+  await settle();
+
+  expect(store.lastError).toBe(refusal);
+  expect(store.restarting).toBe(false);
+  expect(store.awaitingRestart).toBe(false);
+  expect(store.restartAnswerRevision).toBe(before + 1);
+  // The refusal is the whole answer: no handoff watch is started, so the
+  // replacement probe never runs and no 30-second notice can follow.
+  timers.advance();
+  await settle();
+  expect(count(requests, "HEAD", "/ready")).toBe(0);
+  expect(store.awaitingRestart).toBe(false);
+  store.dispose();
+});
+
+test("a restart whose fetch throws reports it and settles the answer revision", async () => {
+  setGlobal("location", {
+    protocol: "http:",
+    host: "test.invalid",
+    reload: () => {
+      throw new Error("a failed request reloads nothing");
+    },
+  });
+  setGlobal("fetch", (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/ready") {
+      return new Response(JSON.stringify({ pid: 100 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new TypeError("the network is down");
+  }) as typeof fetch);
+  const timers = deferredTimers();
+  const store = connection;
+  const before = store.restartAnswerRevision;
+
+  store.requestRestart();
+  await settle();
+
+  expect(store.lastError).toBe("Could not reach the server.");
+  expect(store.restarting).toBe(false);
+  expect(store.awaitingRestart).toBe(false);
+  expect(store.restartAnswerRevision).toBe(before + 1);
+  // A thrown fetch never starts the watch, so nothing waits on a replacement.
+  timers.advance();
+  await settle();
+  expect(store.awaitingRestart).toBe(false);
   store.dispose();
 });

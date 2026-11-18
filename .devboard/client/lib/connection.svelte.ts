@@ -110,6 +110,15 @@ export class ConnectionStore {
    */
   versionRevision = $state(0);
   /**
+   * Bumped by every answer the restart request itself carries: an `error`
+   * frame naming the refusal, or a thrown transport failure. Those refusals
+   * never move `versionRevision` — no version frame follows them — so the
+   * reload control latches on this revision and leaves its busy word when the
+   * request's own answer arrives. A request nothing answers leaves the latch
+   * to its ceiling notice.
+   */
+  restartAnswerRevision = $state(0);
+  /**
    * Bumped by every refusal frame that names the command it refused. The REST
    * layer names the refused command in its `error` frame, so a control reads
    * the revision of the command it dispatched: its own refusal releases the
@@ -421,22 +430,40 @@ export class ConnectionStore {
 
   /**
    * One operator restart: record the pid that answered, ask the server for the
-   * replacement, and watch for the handoff. The accepted answer starts the
-   * watch, so the outcome never depends on a frame the process being replaced
-   * may stop serving mid-handoff, and the `/version` query keeps reading so a
-   * refusal or a replacement failure still reaches the page.
+   * replacement, and watch for the handoff. The request's own answer settles
+   * the control: an `error` frame names a refusal, and a thrown transport
+   * failure names itself, so either one ends the busy word at once instead of
+   * leaving the page to infer an answer the answer already carried. Only an
+   * answer naming no failure starts the handoff watch, whose 30-second notice
+   * is the one a replacement that never answers shows.
    */
   private async performRestart(): Promise<void> {
     this.restartPid = await answeringPid();
     if (!this.restarting) return;
+    let frames: Envelope[];
     try {
-      await restartServer();
-      this.startRestartWatch();
+      frames = await restartServer();
     } catch (error) {
-      this.restarting = false;
-      this.awaitingRestart = false;
-      this.report(error instanceof Error ? error.message : String(error));
+      this.answerRestart(error instanceof Error ? error.message : String(error));
+      return;
     }
+    const refusal = frames.find(
+      (frame) => frame.type === "error" && typeof frame.message === "string",
+    );
+    if (refusal !== undefined) {
+      this.answerRestart(refusal.message as string);
+      return;
+    }
+    this.restartAnswerRevision += 1;
+    this.startRestartWatch();
+  }
+
+  /** Settles one restart request whose answer names a failure. */
+  private answerRestart(message: string): void {
+    this.restarting = false;
+    this.awaitingRestart = false;
+    this.restartAnswerRevision += 1;
+    this.report(message);
   }
 
   /** Starts the handoff watch once; every later frame joins the running one. */

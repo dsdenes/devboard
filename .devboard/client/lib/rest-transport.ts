@@ -127,8 +127,15 @@ export async function sendCommand(command: Command): Promise<Envelope[]> {
   return decode(response, operation);
 }
 
-/** Asks the server for one replacement. */
-export async function restartServer(): Promise<void> {
+/**
+ * Asks the server for one replacement and answers the frames it answered with.
+ *
+ * The two refusals — no launcher installed and a restart already in flight —
+ * travel as `error` frames under the route's success status, so the status
+ * alone never tells the requester what happened. The caller reads the frames
+ * instead of inferring an answer the server already gave.
+ */
+export async function restartServer(): Promise<Envelope[]> {
   const operation = REST_OPERATIONS.restartServer;
   if (operation === undefined) {
     throw new TransportError("No REST command is registered for restartServer.");
@@ -142,9 +149,7 @@ export async function restartServer(): Promise<void> {
   } catch {
     throw new TransportError("Could not reach the server.");
   }
-  if (!response.ok) {
-    throw new TransportError(`The server answered HTTP ${response.status}.`, response.status);
-  }
+  return decode(response, operation);
 }
 
 /** The pid `/ready` names, or `null` when no process answered it. */

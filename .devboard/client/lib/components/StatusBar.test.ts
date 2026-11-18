@@ -31,10 +31,16 @@ const failureFrame = {
 };
 
 /** The server's twin endpoints, answered without a network. */
-function stubTransport(): void {
+function stubTransport(
+  restart: () => Response | Promise<Response> = () =>
+    new Response(JSON.stringify({ frames: [] }), {
+      status: 202,
+      headers: { "content-type": "application/json" },
+    }),
+): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/server-restarts") return restart();
     if (url === "/ready") {
       return new Response(JSON.stringify({ pid: 1 }), {
         status: 200,
@@ -70,18 +76,56 @@ function release(previous: typeof globalThis.fetch): void {
   jest.useRealTimers();
 }
 
-test("a failure frame settles the reload busy word instead of the ceiling notice", async () => {
+/** Drains the restart request's own answer, then the render it settles. */
+async function settleAnswer(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  await tick();
+}
+
+test("a refused restart reports the server's reason instead of the ceiling notice", async () => {
+  jest.useFakeTimers();
+  const previous = globalThis.fetch;
+  const refusal = "A server restart is already in progress.";
+  try {
+    stubTransport(
+      () =>
+        new Response(
+          JSON.stringify({
+            frames: [{ type: "error", message: refusal, command: "restartServer" }],
+          }),
+          { status: 202, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const button = await presentReload();
+    await fireEvent.click(button);
+    await settleAnswer();
+
+    // The refusal travels under the route's success status, so only the
+    // answer's own frame names it; there is no version frame to wait for.
+    expect(connection.lastError).toBe(refusal);
+    expect(button.getAttribute("aria-busy")).toBeNull();
+    expect(button.textContent?.trim()).toBe("reload");
+
+    jest.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    await tick();
+    expect(button.closest("footer")?.querySelector(".command-notice")).toBeNull();
+  } finally {
+    release(previous);
+  }
+});
+
+test("a version frame settles a reload whose request is still unanswered", async () => {
   jest.useFakeTimers();
   const previous = globalThis.fetch;
   try {
-    stubTransport();
+    stubTransport(() => new Promise<Response>(() => undefined));
     const button = await presentReload();
     await fireEvent.click(button);
     expect(button.getAttribute("aria-busy")).toBe("true");
-    expect(button.textContent?.trim()).toBe("Reloading…");
 
-    // The answered retry: `running` is unchanged, so only the frame's arrival
-    // proves the server answered.
+    // The server's own frame answers a request that is still in flight, so the
+    // control still latches on the version revision it carries.
     applyFrames([failureFrame]);
     await tick();
 
@@ -93,11 +137,11 @@ test("a failure frame settles the reload busy word instead of the ceiling notice
   }
 });
 
-test("a retry no frame answers still shows the ceiling notice", async () => {
+test("a retry no answer reaches still shows the ceiling notice", async () => {
   jest.useFakeTimers();
   const previous = globalThis.fetch;
   try {
-    stubTransport();
+    stubTransport(() => new Promise<Response>(() => undefined));
     const button = await presentReload();
     await fireEvent.click(button);
     expect(button.getAttribute("aria-busy")).toBe("true");

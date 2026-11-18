@@ -9,7 +9,6 @@ const { cleanup, fireEvent, render } = await import("@testing-library/svelte");
 const { createRawSnippet, tick } = await import("svelte");
 const { default: ReloadButton } = await import("./ReloadButton.svelte");
 const { connection } = await import("../connection.svelte");
-const { applyFrames } = await import("../frames");
 
 const REPLACEMENT_FAILURE = "The replacement could not start: the port was taken.";
 
@@ -24,10 +23,16 @@ const failureFrame = {
 };
 
 /** The server's twin endpoints, answered without a network. */
-function stubTransport(): void {
+function stubTransport(
+  restart: () => Response | Promise<Response> = () =>
+    new Response(JSON.stringify({ frames: [] }), {
+      status: 202,
+      headers: { "content-type": "application/json" },
+    }),
+): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/server-restarts") return restart();
     if (url === "/ready") {
       return new Response(JSON.stringify({ pid: 1 }), {
         status: 200,
@@ -73,34 +78,50 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-test("the unsupported-viewport reload settles on the frame that reports the failure", async () => {
+/** Drains the restart request's own answer, then the render it settles. */
+async function settleAnswer(): Promise<void> {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  await tick();
+}
+
+test("the unsupported-viewport reload reports a refused restart's own reason", async () => {
   jest.useFakeTimers();
   const previous = globalThis.fetch;
+  const refusal = "Restarting the server is not available.";
   try {
-    stubTransport();
+    stubTransport(
+      () =>
+        new Response(
+          JSON.stringify({
+            frames: [{ type: "error", message: refusal, command: "restartServer" }],
+          }),
+          { status: 202, headers: { "content-type": "application/json" } },
+        ),
+    );
     const button = await presentUnsupportedReset();
     await fireEvent.click(button);
-    expect(button.getAttribute("aria-busy")).toBe("true");
-    expect(button.textContent?.trim()).toBe("Reloading…");
+    await settleAnswer();
 
-    // The answered retry: `running` is unchanged, so only the frame's arrival
-    // proves the server answered.
-    applyFrames([failureFrame]);
-    await tick();
-
+    // No frame ever follows a refusal: the request's own answer is what ends
+    // the busy word, so `running` never has to change for it.
+    expect(connection.lastError).toBe(refusal);
     expect(button.getAttribute("aria-busy")).toBeNull();
     expect(button.textContent?.trim()).toBe("Restart devboard");
+
+    jest.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    await tick();
     expect(button.parentElement?.querySelector(".command-notice") ?? null).toBeNull();
   } finally {
     globalThis.fetch = previous;
   }
 });
 
-test("the unsupported-viewport reload still reports a retry no frame answers", async () => {
+test("the unsupported-viewport reload still reports a retry no answer reaches", async () => {
   jest.useFakeTimers();
   const previous = globalThis.fetch;
   try {
-    stubTransport();
+    stubTransport(() => new Promise<Response>(() => undefined));
     const button = await presentUnsupportedReset();
     await fireEvent.click(button);
     expect(button.getAttribute("aria-busy")).toBe("true");
