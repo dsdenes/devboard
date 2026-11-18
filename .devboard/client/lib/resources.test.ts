@@ -238,3 +238,69 @@ test("a malformed live figure drops the frame rather than storing NaN", () => {
   expect(store.state).toBe(accepted);
   expect(Number.isNaN(store.state?.live.memoryCurrentMb)).toBe(false);
 });
+
+test("a refused save keeps the server's message and answers its own dispatch", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({ type: "resourcesState", state: frame() });
+
+  store.save(SAVED, "resources.budget");
+  expect(store.refusal).toBeNull();
+
+  socket.deliver({
+    type: "error",
+    command: "setResources",
+    message: "Memory max plus reserve exceeds the host's total memory.",
+  });
+  expect(store.refusal).toBe("Memory max plus reserve exceeds the host's total memory.");
+
+  // The refusal ended the save, so the poll that follows never confirms it.
+  const before = store.confirmed;
+  socket.deliver({ type: "resourcesState", state: frame({ effective: SAVED }) });
+  expect(store.confirmed).toBe(before);
+  expect(saveFeedback.text).toBeNull();
+
+  // The next dispatch clears the refusal for the new answer.
+  store.save(SAVED, "resources.budget");
+  expect(store.refusal).toBeNull();
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: SAVED, effective: SAVED }),
+  });
+});
+
+test("another command's refusal leaves this store's save waiting for its own answer", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({ type: "resourcesState", state: frame() });
+
+  store.save(SAVED, "resources.budget");
+  socket.deliver({ type: "error", command: "checkIssues", message: "Not now." });
+  expect(store.refusal).toBeNull();
+
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: SAVED, effective: SAVED }),
+  });
+  expect(saveFeedback.text).toBe("Resource settings saved.");
+  expect(store.confirmed).toBe(1);
+});
+
+test("only the pending save's own budget advances the confirmation revision", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({ type: "resourcesState", state: frame() });
+
+  store.save(SAVED, "resources.budget");
+  const before = store.confirmed;
+
+  // A poll with the unchanged budget is not a confirmation.
+  socket.deliver({ type: "resourcesState", state: frame({ effective: DERIVED }) });
+  expect(store.confirmed).toBe(before);
+
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: SAVED, effective: SAVED }),
+  });
+  expect(store.confirmed).toBe(before + 1);
+});

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resources, type ResourceSettings } from "../resources.svelte";
+  import { connection } from "../connection.svelte";
   import CommandButton from "./CommandButton.svelte";
   import SaveFeedback from "./SaveFeedback.svelte";
   import Input from "./ui/input.svelte";
@@ -15,6 +16,11 @@
   let memoryMaxText = $state("");
   let reserveText = $state("");
   let error = $state<string | null>(null);
+  /**
+   * The paragraph's text: this page's own validation first, then the server's
+   * refusal of the last save, which no local check can predict.
+   */
+  const alertMessage = $derived(error ?? resources.refusal);
 
   /** The effective values the inputs were last seeded from. */
   let seeded: ResourceSettings | null = null;
@@ -195,8 +201,8 @@
         </label>
       </div>
 
-      {#if error !== null}
-        <p class="issues-error" data-testid="resource-error" role="alert">{error}</p>
+      {#if alertMessage !== null}
+        <p class="issues-error" data-testid="resource-error" role="alert">{alertMessage}</p>
       {/if}
 
       {#if budget === null}
@@ -218,7 +224,8 @@
         variant="secondary"
         label="Save"
         busyLabel="Saving…"
-        evidence={() => resources.state}
+        evidence={() => resources.confirmed}
+        refusal={() => connection.refusalRevision("setResources")}
         command={save}
         data-testid="resource-save"
         data-command="devboard.resources.save"

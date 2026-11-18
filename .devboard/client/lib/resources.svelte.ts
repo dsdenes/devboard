@@ -123,16 +123,41 @@ function sameBudget(left: ResourceSettings, right: ResourceSettings): boolean {
  */
 export class ResourcesStore {
   state = $state<ResourcesState | null>(null);
+  /**
+   * The server's message for the one save it refused, or `null`. A refusal is
+   * an answer for the control that dispatched the command, so the page renders
+   * this beside the form; the next dispatch clears it.
+   */
+  refusal = $state<string | null>(null);
+  /**
+   * Bumped only when a pending save's own budget lands. A control that waits
+   * for its save reads this instead of `state`: the invalidation refetch a
+   * refused answer triggers writes a fresh `resourcesState` frame, which is
+   * not a confirmation and must not end the control's latch silently.
+   */
+  confirmed = $state(0);
   /** The Save control waiting for its budget, and the budget it submitted. */
   private pending: { scope: string; budget: ResourceSettings } | null = null;
 
   save(settings: ResourceSettings, scope: string): void {
+    this.refusal = null;
     if (connection.send({ type: "setResources", ...settings })) {
       this.pending = { scope, budget: { ...settings } };
     }
   }
 
   handleEvent(message: Record<string, unknown>): void {
+    if (message.type === "error") {
+      // Only a refusal names the command it refused; another control's refusal
+      // is not this store's answer.
+      if (message.command !== "setResources") return;
+      this.pending = null;
+      this.refusal =
+        typeof message.message === "string" && message.message.trim().length > 0
+          ? message.message
+          : "The server refused the resource settings.";
+      return;
+    }
     if (message.type !== "resourcesState") return;
     const state = parseResourcesState(message.state);
     if (state === undefined) return;
@@ -141,6 +166,7 @@ export class ResourcesStore {
     if (pending === null) return;
     if (!sameBudget(state.effective, pending.budget)) return;
     this.pending = null;
+    this.confirmed += 1;
     saveFeedback.saved(pending.scope, "Resource settings saved.");
   }
 }
