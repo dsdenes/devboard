@@ -1677,7 +1677,9 @@ fn read_guard_owner(host: &Path) -> Option<crate::instances::GuardOwner> {
 ///
 /// Only a marker that names its own repository and start instant is usable:
 /// the record must stand on its own, because the process it names may have
-/// rewritten its command line into something discovery cannot parse.
+/// rewritten its command line into something discovery cannot parse. A marker
+/// that predates the harness field carries none, and the state directory names
+/// the harness instead.
 fn read_version_marker(state_dir: &Path) -> Option<crate::instances::GuardOwner> {
     let text = std::fs::read_to_string(state_dir.join("version.json")).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
@@ -1685,6 +1687,11 @@ fn read_version_marker(state_dir: &Path) -> Option<crate::instances::GuardOwner>
         pid: u32::try_from(value.get("pid")?.as_u64()?).ok()?,
         port: u16::try_from(value.get("port")?.as_u64()?).ok()?,
         repo_dir: value.get("repoDir")?.as_str()?.to_string(),
+        harness: value
+            .get("harnessDir")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         state_dir: state_dir.to_string_lossy().into_owned(),
         started_at: value.get("startedAt")?.as_str()?.to_string(),
     })
@@ -1707,6 +1714,35 @@ pub(crate) fn recorded_start_matches(recorded: &str, started: Option<i64>) -> bo
     }
 }
 
+/// The harness a startup record names, or the harness its state directory
+/// belongs to.
+///
+/// A record written by a harness that predates the field carries no harness,
+/// and the state directory still names one: a dashboard's own state lives at
+/// `<harness>/.tmp`. `fallback` is the last resort, used when neither names a
+/// harness.
+fn recorded_harness(
+    owner: &crate::instances::GuardOwner,
+    state_dir: &Path,
+    fallback: &Path,
+) -> PathBuf {
+    if !owner.harness.is_empty() {
+        return PathBuf::from(&owner.harness);
+    }
+    harness_of_state_dir(state_dir).unwrap_or_else(|| fallback.to_path_buf())
+}
+
+/// The `.devboard` a state directory belongs to: `<harness>/.tmp`.
+fn harness_of_state_dir(state_dir: &Path) -> Option<PathBuf> {
+    let name = state_dir.file_name()?.to_str()?;
+    if !matches!(name, ".tmp" | ".test-tmp") {
+        return None;
+    }
+    let harness = state_dir.parent()?;
+    (harness.file_name().and_then(|name| name.to_str()) == Some(".devboard"))
+        .then(|| harness.to_path_buf())
+}
+
 /// The dashboard a marker record names, when the record still describes the
 /// process serving this repository.
 ///
@@ -1715,6 +1751,12 @@ pub(crate) fn recorded_start_matches(recorded: &str, started: Option<i64>) -> bo
 /// `argv[0]`, so the command line alone no longer names the harness. The record
 /// the dashboard wrote at startup still does, and the pid's own start instant
 /// proves the pid was not recycled.
+///
+/// The harness comes from the record, so a launcher published-worktree
+/// dashboard is attributed to `<repo>/.devboard/published/<version>/.devboard`
+/// rather than to the checkout's own tree. `publish` reads that field to
+/// decide which live dashboard receives a source-refresh request, and to find
+/// the published dashboard its one-time bootstrap restarts.
 pub fn marker_instance(
     host: &Path,
     owner: Option<&crate::instances::GuardOwner>,
@@ -1729,8 +1771,8 @@ pub fn marker_instance(
     if !recorded_start_matches(&owner.started_at, process_started_at(owner.pid)) {
         return None;
     }
-    let harness = host.join(".devboard");
     let state_dir = PathBuf::from(&owner.state_dir);
+    let harness = recorded_harness(owner, &state_dir, &host.join(".devboard"));
     let journal = journal_file(&state_dir, Path::new(&owner.repo_dir));
     let legacy = legacy_log_path(&harness, &owner.repo_dir);
     Some(Instance {

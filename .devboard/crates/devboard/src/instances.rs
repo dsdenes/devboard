@@ -58,6 +58,10 @@ pub struct GuardOwner {
     pub pid: u32,
     pub port: u16,
     pub repo_dir: String,
+    /// The harness tree that serves this dashboard, which is not always
+    /// `<repo>/.devboard`: a launcher published-worktree dashboard serves
+    /// through `<repo>/.devboard/published/<version>/.devboard`.
+    pub harness: String,
     pub state_dir: String,
     pub started_at: String,
 }
@@ -68,6 +72,7 @@ impl GuardOwner {
             "pid": self.pid,
             "port": self.port,
             "repoDir": self.repo_dir,
+            "harnessDir": self.harness,
             "stateDir": self.state_dir,
             "startedAt": self.started_at,
         })
@@ -79,6 +84,11 @@ impl GuardOwner {
             port: u16::try_from(value.get("port").and_then(Value::as_u64).unwrap_or(0)).ok()?,
             repo_dir: value
                 .get("repoDir")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            harness: value
+                .get("harnessDir")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),

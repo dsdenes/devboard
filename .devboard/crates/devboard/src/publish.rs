@@ -6050,6 +6050,142 @@ client error (Connect): tcp connect error: Connection refused (os error 111)"
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The startup record one live dashboard of `repo` writes beside its guard.
+    fn write_guard_record(repo: &Path, harness: &Path, state_dir: &Path, port: u16) {
+        std::fs::create_dir_all(state_dir).expect("the dashboard's state directory");
+        let record = json!({
+            "pid": std::process::id(),
+            "port": port,
+            "repoDir": repo.to_string_lossy(),
+            "harnessDir": harness.to_string_lossy(),
+            "stateDir": state_dir.to_string_lossy(),
+            "startedAt": crate::workers::watchdog::own_started_at(),
+        });
+        let path = repo
+            .join(".devboard")
+            .join(".tmp")
+            .join(crate::instances::GUARD_OWNER_FILE);
+        std::fs::create_dir_all(path.parent().expect("the guard directory"))
+            .expect("the guard directory");
+        std::fs::write(path, record.to_string()).expect("the guard record");
+    }
+
+    /// A source checkout whose only live dashboard is the record its harness
+    /// wrote at startup.
+    struct RecordedFixture {
+        root: PathBuf,
+        repo: PathBuf,
+        harness: PathBuf,
+    }
+
+    impl Drop for RecordedFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn recorded_fixture(label: &str) -> RecordedFixture {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("publish-recorded-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        let harness = repo.join(".devboard");
+        std::fs::create_dir_all(&harness).expect("a source harness");
+        std::fs::write(
+            harness.join("package.json"),
+            "{\"name\":\"@dsdenes/devboard\",\"version\":\"0.1.0\"}\n",
+        )
+        .expect("a source manifest");
+        std::fs::create_dir_all(harness.join("dist")).expect("a bundle");
+        std::fs::write(harness.join("dist/index.html"), "<html></html>\n").expect("a bundle file");
+        RecordedFixture {
+            root,
+            repo,
+            harness,
+        }
+    }
+
+    fn recorded_instances(repo: &Path) -> Vec<DashboardInstance> {
+        crate::workers::watchdog::marker_instances(repo)
+            .into_iter()
+            .map(|instance| DashboardInstance {
+                pid: instance.pid,
+                port: u16::try_from(instance.port).expect("a bound port"),
+                repo_dir: PathBuf::from(instance.repo_dir),
+                harness: PathBuf::from(instance.harness),
+                state_dir: PathBuf::from(instance.state_dir),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_published_dashboard_found_only_through_its_record_is_bootstrapped_and_skipped() {
+        let fixture = recorded_fixture("published");
+        let published = fixture
+            .harness
+            .join("published")
+            .join("v1.2.3")
+            .join(".devboard");
+        let published_state = published.join(".tmp");
+        write_guard_record(&fixture.repo, &published, &published_state, 8081);
+        let instances = recorded_instances(&fixture.repo);
+        assert_eq!(instances.len(), 1, "{instances:?}");
+        assert_eq!(instances[0].harness, published);
+        assert_eq!(instances[0].state_dir, published_state);
+        assert!(
+            published_dashboard_instance(&fixture.repo, &instances).is_some(),
+            "publish finds the dashboard its one-time bootstrap restarts"
+        );
+        let report = deliver_source_refresh(SourceRefreshOptions {
+            repo_root: fixture.repo.clone(),
+            harness_root: fixture.harness.clone(),
+            commit: "0123456789abcdef".to_string(),
+            version: "1.3.0".to_string(),
+            dist_dir: fixture.harness.join("dist"),
+            instances,
+            requested_at: "2026-01-01T00:00:00.000Z".to_string(),
+        })
+        .await
+        .expect("the refresh is delivered");
+        assert!(report.written.is_empty(), "{:?}", report.written);
+        assert_eq!(report.skipped.len(), 1, "{}", report.skipped.len());
+        assert_eq!(report.skipped[0].harness, published);
+        assert!(
+            !source_refresh_directory(&published_state).exists(),
+            "a published dashboard never receives a source-refresh request"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_source_dashboard_found_only_through_its_record_still_receives_the_refresh() {
+        let fixture = recorded_fixture("source");
+        let state = fixture.harness.join(".tmp");
+        write_guard_record(&fixture.repo, &fixture.harness, &state, 8080);
+        let instances = recorded_instances(&fixture.repo);
+        assert_eq!(instances.len(), 1, "{instances:?}");
+        assert_eq!(instances[0].harness, fixture.harness);
+        assert!(published_dashboard_instance(&fixture.repo, &instances).is_none());
+        let report = deliver_source_refresh(SourceRefreshOptions {
+            repo_root: fixture.repo.clone(),
+            harness_root: fixture.harness.clone(),
+            commit: "0123456789abcdef".to_string(),
+            version: "1.3.0".to_string(),
+            dist_dir: fixture.harness.join("dist"),
+            instances,
+            requested_at: "2026-01-01T00:00:00.000Z".to_string(),
+        })
+        .await
+        .expect("the refresh is delivered");
+        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+        assert_eq!(report.written.len(), 1);
+        assert_eq!(report.written[0].pid, std::process::id());
+        assert!(source_refresh_directory(&state)
+            .join(SOURCE_REFRESH_REQUEST_FILE)
+            .is_file());
+    }
+
     #[test]
     fn release_asset_uploads_use_the_uploads_host() {
         let api = Api {

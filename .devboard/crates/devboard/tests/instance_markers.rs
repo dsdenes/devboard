@@ -40,6 +40,7 @@ impl Fixture {
             pid: std::process::id(),
             port: 8080,
             repo_dir: self.root.to_string_lossy().into_owned(),
+            harness: self.root.join(".devboard").to_string_lossy().into_owned(),
             state_dir: self.state().to_string_lossy().into_owned(),
             started_at: own_started_at(),
         }
@@ -47,6 +48,11 @@ impl Fixture {
 
     fn record(&self, path: &Path, owner: &GuardOwner) {
         std::fs::write(path, record_json(owner)).unwrap();
+    }
+
+    /// The guard record a harness that predates `harnessDir` wrote.
+    fn record_legacy(&self, path: &Path, owner: &GuardOwner) {
+        std::fs::write(path, legacy_record_json(owner)).unwrap();
     }
 }
 
@@ -57,6 +63,19 @@ impl Drop for Fixture {
 }
 
 fn record_json(owner: &GuardOwner) -> String {
+    json!({
+        "pid": owner.pid,
+        "port": owner.port,
+        "repoDir": owner.repo_dir,
+        "harnessDir": owner.harness,
+        "stateDir": owner.state_dir,
+        "startedAt": owner.started_at,
+    })
+    .to_string()
+}
+
+/// A record written before `harnessDir` existed, which carries no harness.
+fn legacy_record_json(owner: &GuardOwner) -> String {
     json!({
         "pid": owner.pid,
         "port": owner.port,
@@ -189,4 +208,81 @@ fn a_marker_of_one_port_under_another_path_is_not_listed_twice() {
     let mut instances = vec![scanned(11, 7000, &root)];
     merge_marker_instances(&mut instances, vec![scanned(22, 7000, &root)]);
     assert_eq!(instances.len(), 1, "{instances:?}");
+}
+
+/// The published worktree one launcher started for `root`.
+fn published_harness(root: &Path, version: &str) -> PathBuf {
+    root.join(".devboard")
+        .join("published")
+        .join(version)
+        .join(".devboard")
+}
+
+/// A record whose state directory lives in the launcher's published worktree.
+fn published_owner(root: &Path, version: &str) -> (GuardOwner, PathBuf) {
+    let harness = published_harness(root, version);
+    let state = harness.join(".tmp");
+    std::fs::create_dir_all(&state).unwrap();
+    (
+        GuardOwner {
+            pid: std::process::id(),
+            port: 8081,
+            repo_dir: root.to_string_lossy().into_owned(),
+            harness: harness.to_string_lossy().into_owned(),
+            state_dir: state.to_string_lossy().into_owned(),
+            started_at: own_started_at(),
+        },
+        harness,
+    )
+}
+
+#[test]
+fn a_published_worktree_record_names_the_worktree_harness() {
+    let fixture = Fixture::new("published-harness");
+    let (owner, harness) = published_owner(&fixture.root, "v1.2.3");
+    fixture.record(
+        &fixture.state().join(devboard::instances::GUARD_OWNER_FILE),
+        &owner,
+    );
+    let instances = marker_instances(&fixture.root);
+    assert_eq!(instances.len(), 1, "{instances:?}");
+    assert_eq!(instances[0].harness, harness.to_string_lossy());
+    assert_ne!(
+        instances[0].harness,
+        fixture.root.join(".devboard").to_string_lossy(),
+        "a published dashboard is not attributed to the checkout's harness"
+    );
+}
+
+#[test]
+fn a_record_without_a_harness_names_the_harness_of_its_state_directory() {
+    let fixture = Fixture::new("published-legacy");
+    let (owner, harness) = published_owner(&fixture.root, "v1.2.3");
+    fixture.record_legacy(
+        &fixture.state().join(devboard::instances::GUARD_OWNER_FILE),
+        &owner,
+    );
+    let instances = marker_instances(&fixture.root);
+    assert_eq!(instances.len(), 1, "{instances:?}");
+    assert_eq!(instances[0].harness, harness.to_string_lossy());
+}
+
+#[test]
+fn a_record_without_a_harness_or_a_devboard_state_directory_names_the_checkout() {
+    let fixture = Fixture::new("bare-legacy");
+    let state = fixture.root.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let mut owner = fixture.live_owner();
+    owner.harness = String::new();
+    owner.state_dir = state.to_string_lossy().into_owned();
+    fixture.record_legacy(
+        &fixture.state().join(devboard::instances::GUARD_OWNER_FILE),
+        &owner,
+    );
+    let instances = marker_instances(&fixture.root);
+    assert_eq!(instances.len(), 1, "{instances:?}");
+    assert_eq!(
+        instances[0].harness,
+        fixture.root.join(".devboard").to_string_lossy()
+    );
 }

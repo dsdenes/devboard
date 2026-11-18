@@ -231,6 +231,9 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
         repo_dir: devboard::instances::canonical_host_dir(&config.repo_dir)
             .to_string_lossy()
             .into_owned(),
+        // The harness this process loaded, which is the published worktree for
+        // a launcher dashboard, never the checkout's own tree by assumption.
+        harness: harness_dir.to_string_lossy().into_owned(),
         state_dir: config.state_dir.to_string_lossy().into_owned(),
         // Discovery proves a record's pid by this instant, so the record names
         // the process's own start, not the later moment it took the guard: a
@@ -349,11 +352,12 @@ async fn serve_command(args: &[String]) -> anyhow::Result<()> {
 }
 
 /// Writes the marker naming the running version, this process, the port it
-/// serves on, and the repository it serves.
+/// serves on, the harness that serves it, and the repository it serves.
 ///
-/// The repository and the start instant make the marker attributable on its
-/// own: a discovery pass can accept a dashboard whose command line no longer
-/// names the harness, and reject a record a recycled pid left behind.
+/// The repository, the harness, and the start instant make the marker
+/// attributable on its own: a discovery pass can accept a dashboard whose
+/// command line no longer names the harness, and reject a record a recycled
+/// pid left behind.
 fn write_version_marker(
     path: &std::path::Path,
     running_version: &str,
@@ -365,6 +369,7 @@ fn write_version_marker(
         "pid": std::process::id(),
         "port": port,
         "repoDir": owner.repo_dir,
+        "harnessDir": owner.harness,
         "startedAt": owner.started_at,
     });
     let Ok(text) = serde_json::to_string(&marker) else {
