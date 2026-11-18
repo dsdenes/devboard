@@ -833,6 +833,110 @@ fn both_installers_refuse_a_differing_untracked_file() {
 }
 
 #[test]
+fn a_symlinked_gitignore_is_followed_by_both_installers() {
+    let binary = Scratch::new("gitignore-link-binary");
+    let scripted = Scratch::new("gitignore-link-script");
+    for host in [binary.host(), scripted.host()] {
+        fs::write(host.join(".gitignore.shared"), b"host-owned\n").unwrap();
+        std::os::unix::fs::symlink(".gitignore.shared", host.join(".gitignore")).unwrap();
+    }
+
+    let report = cli_install::install(Some(binary.host()), false).unwrap();
+    assert!(!report.gitignore_added.is_empty());
+    let output = run_install_script(scripted.host());
+    assert!(
+        output.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for host in [binary.host(), scripted.host()] {
+        let link = fs::symlink_metadata(host.join(".gitignore")).unwrap();
+        assert!(
+            link.file_type().is_symlink(),
+            "{} replaced the host's .gitignore link",
+            host.display()
+        );
+        let target = fs::read_to_string(host.join(".gitignore.shared")).unwrap();
+        assert!(target.starts_with("host-owned\n"), "{target}");
+        assert!(target.contains("/.omp/commands\n"), "{target}");
+        assert!(target.contains("/.omp/skills/devboard-ui-ux\n"), "{target}");
+    }
+    assert_eq!(
+        fs::read(binary.host().join(".gitignore.shared")).unwrap(),
+        fs::read(scripted.host().join(".gitignore.shared")).unwrap(),
+        "the two installers wrote different ignore bytes through the link"
+    );
+
+    // A rerun adds nothing and leaves the link target byte-identical.
+    let before = fs::read(binary.host().join(".gitignore.shared")).unwrap();
+    let report = cli_install::install(Some(binary.host()), false).unwrap();
+    assert!(report.gitignore_added.is_empty());
+    assert_eq!(
+        fs::read(binary.host().join(".gitignore.shared")).unwrap(),
+        before
+    );
+    let output = run_install_script(scripted.host());
+    assert!(
+        output.status.success(),
+        "install.sh failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(scripted.host().join(".gitignore.shared")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn a_directory_where_a_shipped_file_belongs_is_refused_before_any_write() {
+    let scratch = Scratch::new("directory-conflict");
+    let host = scratch.host();
+    // `.omp/mcp.json` sorts after every wrapper the old write loop upgraded
+    // before it bailed on this directory.
+    fs::create_dir_all(host.join(".omp/mcp.json")).unwrap();
+    fs::create_dir_all(host.join(".omp/commands")).unwrap();
+    fs::write(host.join(".omp/commands/retired.md"), b"host-owned\n").unwrap();
+
+    let before = snapshot(host);
+    for force in [false, true] {
+        let error = cli_install::install(Some(host), force)
+            .expect_err("a directory in a shipped path is refused");
+        assert!(error.to_string().contains(".omp/mcp.json"), "{error}");
+        assert!(error.to_string().contains("directory"), "{error}");
+        assert_eq!(snapshot(host), before, "a refused install wrote a file");
+        assert!(
+            !host.join(".omp/commands/adr-resolve.md").exists(),
+            "a refused install wrote the wrappers that sort before the conflict"
+        );
+        assert!(!host.join("AGENTS.md").exists());
+        assert!(!host.join(".devboard/prompts").exists());
+    }
+}
+
+#[test]
+fn a_dangling_gitignore_symlink_is_refused_before_any_write() {
+    let scratch = Scratch::new("gitignore-dangling");
+    let host = scratch.host();
+    std::os::unix::fs::symlink(".gitignore.shared", host.join(".gitignore")).unwrap();
+
+    let error = cli_install::install(Some(host), false).expect_err("a dangling link is refused");
+    assert!(error.to_string().contains(".gitignore"), "{error}");
+    assert!(error.to_string().contains("regular file"), "{error}");
+    let link = fs::symlink_metadata(host.join(".gitignore")).unwrap();
+    assert!(link.file_type().is_symlink(), "the link was replaced");
+    assert!(
+        !host.join(".gitignore.shared").exists(),
+        "the link was followed"
+    );
+    assert!(
+        !host.join(".omp").exists(),
+        "a refused install wrote the tree"
+    );
+    assert!(!host.join("AGENTS.md").exists());
+}
+
+#[test]
 fn every_installed_reference_resolves() {
     let scratch = Scratch::new("references");
     let host = scratch.host();

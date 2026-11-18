@@ -460,43 +460,62 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
             host.display()
         );
     }
-    repair_prefix_symlink(host)?;
     let package = package();
     let omp = host.join(".omp");
-    // Every write below resolves through `omp`: a symlinked component is
-    // replaced with a real directory first, exactly as `ensure_real_dir` does
-    // for the deeper paths, so nothing is written through a link.
-    ensure_real_dir(&omp)?;
-    let mut drift: Vec<String> = Vec::new();
 
     // `install.sh` gathers every conflict before it writes anything; the binary
     // must refuse the same input with the same untouched host tree. Every
     // `.omp/commands/*` entry sorts before `.omp/mcp.json`, so a bail inside
     // the write loop below would already have upgraded two dozen wrappers.
-    if !force {
-        let mut conflicts: Vec<String> = Vec::new();
-        for (relative, contents) in &package.files {
-            let destination = omp.join(relative.as_str());
-            if is_identical_file(&destination, contents)? {
-                continue;
-            }
-            let label = format!(".omp/{relative}");
-            if is_git_tracked(host, &label) {
-                continue;
-            }
-            if fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_dir()) {
-                conflicts.push(label);
-            }
+    // Both refusals live here, ahead of every write: an unusable host
+    // `.gitignore` and a directory occupying a shipped `.omp` path, which the
+    // write loop can never replace with a file.
+    let host_gitignore = read_host_gitignore(host)?;
+    let mut conflicts: Vec<String> = Vec::new();
+    let mut obstructed: Vec<String> = Vec::new();
+    for (relative, contents) in &package.files {
+        let destination = omp.join(relative.as_str());
+        if is_identical_file(&destination, contents)? {
+            continue;
         }
-        if !conflicts.is_empty() {
-            bail!(
-                "install: refusing to overwrite differing files in {}:\n  {}\n\
-                 install: rerun with --force to replace them",
-                omp.display(),
-                conflicts.join("\n  ")
-            );
+        let label = format!(".omp/{relative}");
+        if is_git_tracked(host, &label) {
+            continue;
+        }
+        match fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("install: probing {}", destination.display()))
+            }
+            Ok(meta) if meta.is_dir() => obstructed.push(label),
+            Ok(_) if !force => conflicts.push(label),
+            Ok(_) => {}
         }
     }
+    if !obstructed.is_empty() {
+        bail!(
+            "install: cannot replace a directory with a shipped file in {}:\n  {}\n\
+             install: remove or rename each directory and rerun",
+            omp.display(),
+            obstructed.join("\n  ")
+        );
+    }
+    if !conflicts.is_empty() {
+        bail!(
+            "install: refusing to overwrite differing files in {}:\n  {}\n\
+             install: rerun with --force to replace them",
+            omp.display(),
+            conflicts.join("\n  ")
+        );
+    }
+
+    repair_prefix_symlink(host)?;
+    // Every write below resolves through `omp`: a symlinked component is
+    // replaced with a real directory first, exactly as `ensure_real_dir` does
+    // for the deeper paths, so nothing is written through a link.
+    ensure_real_dir(&omp)?;
+    let mut drift: Vec<String> = Vec::new();
 
     let mut installed_files = 0usize;
     for (relative, contents) in &package.files {
@@ -640,7 +659,7 @@ fn install_into(host: &Path, force: bool) -> Result<InstallReport> {
     };
 
     install_manifest(host)?;
-    let gitignore_added = ensure_gitignore(host, &package.names)?;
+    let gitignore_added = ensure_gitignore(host, &package.names, host_gitignore)?;
 
     Ok(InstallReport {
         host: host.to_path_buf(),
@@ -820,20 +839,56 @@ fn baseline_ignore_lines(host: &Path, names: &[String]) -> Vec<String> {
     lines
 }
 
-/// Append one ignore line per installed entry that the host `.gitignore` does
-/// not already carry. A rerun appends nothing.
-fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
-    let ignore_path = host.join(".gitignore");
-    let existing = match fs::symlink_metadata(&ignore_path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("install: probing {}", ignore_path.display()))
+/// Read the host `.gitignore` before the install's first write. A symlink is
+/// followed to the regular file it names, exactly as `install.sh` treats it; a
+/// missing file is an empty baseline. A dangling link, a directory, an
+/// unreadable file, and any other non-regular entry are refused here, so the
+/// run leaves the host untouched and the message names the fix.
+fn read_host_gitignore(host: &Path) -> Result<Option<Vec<u8>>> {
+    let path = host.join(".gitignore");
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("install: probing {}", path.display())),
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                match fs::metadata(&path) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => bail!(
+                        "install: {} is a dangling symlink; point it at a regular file or replace it",
+                        path.display()
+                    ),
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("install: probing {}", path.display()))
+                    }
+                    Ok(resolved) if !resolved.is_file() => bail!(
+                        "install: {} is a symlink to a non-regular file; point it at a regular file or replace it",
+                        path.display()
+                    ),
+                    Ok(_) => {}
+                }
+            } else if !meta.is_file() {
+                bail!(
+                    "install: {} is not a regular file; replace it with one or a symlink to one",
+                    path.display()
+                );
+            }
+            fs::read(&path)
+                .map(Some)
+                .with_context(|| format!("install: reading {}", path.display()))
         }
-        Ok(meta) if meta.is_file() => fs::read(&ignore_path)
-            .with_context(|| format!("install: reading {}", ignore_path.display()))?,
-        Ok(_) => bail!("install: {} is not a regular file", ignore_path.display()),
-    };
+    }
+}
+
+/// Append one ignore line per installed entry that the host `.gitignore` does
+/// not already carry, writing through the preflight read. A rerun appends
+/// nothing.
+fn ensure_gitignore(
+    host: &Path,
+    names: &[String],
+    existing: Option<Vec<u8>>,
+) -> Result<Vec<String>> {
+    let ignore_path = host.join(".gitignore");
+    let existing = existing.unwrap_or_default();
     let lines: Vec<&[u8]> = existing.split(|byte| *byte == b'\n').collect();
     let mut added = Vec::new();
     for entry in baseline_ignore_lines(host, names) {
