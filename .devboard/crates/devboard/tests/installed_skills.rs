@@ -49,6 +49,22 @@ fn settings_path(repo: &Path) -> PathBuf {
     repo.join(".omp/settings.json")
 }
 
+/// The settings document's own permission bits, which a rewrite must carry.
+fn settings_mode(repo: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(settings_path(repo))
+        .expect("the settings document")
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+fn make_private(repo: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(settings_path(repo), std::fs::Permissions::from_mode(0o600))
+        .expect("a private settings document");
+}
+
 async fn toggle(repo: &Path, name: &str, enabled: bool) -> Result<Value, String> {
     let name = Value::String(name.to_string());
     let enabled = Value::Bool(enabled);
@@ -154,6 +170,7 @@ async fn disabling_writes_the_exclusion_and_a_rerun_reports_it() {
         ),
     )
     .expect("a settings document");
+    make_private(&repo);
 
     let changed = toggle(&repo, "beta", false).await.expect("a change");
     assert_eq!(changed["type"], "installedSkills");
@@ -187,6 +204,8 @@ async fn disabling_writes_the_exclusion_and_a_rerun_reports_it() {
             "}\n",
         )
     );
+    // The document was private before the toggle and stays private after it.
+    assert_eq!(settings_mode(&repo), 0o600);
 
     let rerun = installed_skills_payload(&repo).await;
     let rows = rerun["skills"].as_array().expect("rows");
@@ -219,6 +238,8 @@ async fn disabling_writes_the_exclusion_and_a_rerun_reports_it() {
             "}\n",
         )
     );
+    // Removing the exclusion rewrites the same document, so its mode holds.
+    assert_eq!(settings_mode(&repo), 0o600);
 
     // Toggling never touches the skill's bytes.
     assert_eq!(
@@ -247,6 +268,8 @@ async fn disabling_creates_the_settings_file_when_it_is_absent() {
             "}\n",
         )
     );
+    // A document the writer creates is private rather than umask-default.
+    assert_eq!(settings_mode(&repo), 0o600);
 }
 
 #[tokio::test]

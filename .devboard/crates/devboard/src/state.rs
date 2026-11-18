@@ -142,6 +142,20 @@ pub fn write_file_atomically_sync(path: &Path, text: &str) -> std::io::Result<()
 /// Orders staged writes so no two share a staging path.
 static STAGED_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// The mode a document the writer creates carries: private to its owner, never
+/// the process umask default. The same writer stores the project OMP settings,
+/// which can carry `mcpServers` environment values.
+#[cfg(unix)]
+const CREATED_FILE_MODE: u32 = 0o600;
+
+/// The mode bits that survive a rename onto the destination, without the file
+/// type bits `st_mode` also carries.
+#[cfg(unix)]
+fn permission_bits(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o7777
+}
+
 /// Replaces the state file atomically.
 pub fn write_state_file(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -155,7 +169,8 @@ pub fn write_state_file(path: &Path, text: &str) -> std::io::Result<()> {
         sequence
     ));
     let result = (|| {
-        std::fs::write(&temporary, text)?;
+        write_staged_file(&temporary, text)?;
+        carry_destination_mode(path, &temporary)?;
         std::fs::rename(&temporary, path)
     })();
     if result.is_err() {
@@ -178,7 +193,8 @@ pub async fn write_file_atomically(path: &Path, text: &str) -> std::io::Result<(
         sequence
     ));
     let result = async {
-        tokio::fs::write(&temporary, text).await?;
+        write_staged_file_async(&temporary, text).await?;
+        carry_destination_mode_async(path, &temporary).await?;
         tokio::fs::rename(&temporary, path).await
     }
     .await;
@@ -186,6 +202,97 @@ pub async fn write_file_atomically(path: &Path, text: &str) -> std::io::Result<(
         let _ = tokio::fs::remove_file(&temporary).await;
     }
     result
+}
+
+/// Creates the staging document with the private mode a fresh document gets.
+fn write_staged_file(temporary: &Path, text: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(CREATED_FILE_MODE)
+            .open(temporary)?;
+        // A umask can only clear the requested bits, so restore the exact mode
+        // the writer promises a document it creates.
+        file.set_permissions(std::fs::Permissions::from_mode(CREATED_FILE_MODE))?;
+        file.write_all(text.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(temporary, text)
+    }
+}
+
+/// The asynchronous counterpart of [`write_staged_file`].
+async fn write_staged_file_async(temporary: &Path, text: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(CREATED_FILE_MODE)
+            .open(temporary)
+            .await?;
+        tokio::fs::set_permissions(
+            temporary,
+            std::fs::Permissions::from_mode(CREATED_FILE_MODE),
+        )
+        .await?;
+        file.write_all(text.as_bytes()).await
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::fs::write(temporary, text).await
+    }
+}
+
+/// Carries the destination's own mode onto the staging file before the rename,
+/// so a document the host made private is never widened by a rewrite. A
+/// destination that does not exist keeps the private mode of a fresh document,
+/// and an unreadable one is never widened either.
+fn carry_destination_mode(destination: &Path, staged: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(destination) {
+            std::fs::set_permissions(
+                staged,
+                std::fs::Permissions::from_mode(permission_bits(&metadata)),
+            )?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (destination, staged);
+    }
+    Ok(())
+}
+
+/// The asynchronous counterpart of [`carry_destination_mode`].
+async fn carry_destination_mode_async(destination: &Path, staged: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = tokio::fs::metadata(destination).await {
+            tokio::fs::set_permissions(
+                staged,
+                std::fs::Permissions::from_mode(permission_bits(&metadata)),
+            )
+            .await?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (destination, staged);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -199,5 +306,73 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(parsed["version"], STATE_VERSION);
         assert_eq!(parsed["state"], value);
+    }
+
+    #[cfg(unix)]
+    fn fixture(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("state-mode-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a fixture root");
+        root
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("the document")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[cfg(unix)]
+    fn make_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("the document's mode");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sync_write_creates_private_and_carries_the_destination_mode() {
+        let root = fixture("sync");
+        let path = root.join("state.json");
+
+        write_state_file(&path, "{\"a\":1}").expect("a fresh document");
+        assert_eq!(mode_of(&path), 0o600);
+
+        make_mode(&path, 0o640);
+        write_state_file(&path, "{\"a\":2}").expect("a rewrite");
+        assert_eq!(mode_of(&path), 0o640);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the document"),
+            "{\"a\":2}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_async_write_creates_private_and_carries_the_destination_mode() {
+        let root = fixture("async");
+        let path = root.join("state.json");
+
+        write_file_atomically(&path, "{\"a\":1}")
+            .await
+            .expect("a fresh document");
+        assert_eq!(mode_of(&path), 0o600);
+
+        make_mode(&path, 0o600);
+        write_file_atomically(&path, "{\"a\":2}")
+            .await
+            .expect("a rewrite");
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the document"),
+            "{\"a\":2}"
+        );
     }
 }
