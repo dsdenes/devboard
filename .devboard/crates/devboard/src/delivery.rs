@@ -1742,7 +1742,7 @@ fn integration_branch(repo_dir: &Path) -> Result<String, String> {
 /// request exists and keeps needing maintenance.
 fn record_delivery(
     delivered: &DeliveredPullRequest,
-    written: std::io::Result<Vec<MaintenanceRecord>>,
+    written: Result<Vec<MaintenanceRecord>, String>,
 ) -> Result<(), String> {
     written.map(|_| ()).map_err(|error| {
         format!(
