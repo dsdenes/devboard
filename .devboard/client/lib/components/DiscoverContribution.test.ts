@@ -26,13 +26,20 @@ function contribution(): Contribution {
     },
     sections: [
       {
-        id: "change-size",
-        label: "Change size",
+        id: "pull-request-size",
+        label: "Pull request size",
         facts: [
           {
             key: "testFileShare",
             label: "Test-file share",
-            value: { median: 3, min: 1, max: 9 },
+            value: { median: 35, min: 1, max: 9 },
+            confidence: "observed",
+            evidence: ["."],
+          },
+          {
+            key: "additions",
+            label: "Additions",
+            value: { median: 40, min: 2, max: 900 },
             confidence: "observed",
             evidence: ["."],
           },
@@ -40,6 +47,19 @@ function contribution(): Contribution {
             key: "testsShare",
             label: "Tests share",
             value: 40,
+            confidence: "observed",
+            evidence: ["."],
+          },
+        ],
+      },
+      {
+        id: "pull-request-style",
+        label: "Pull request style",
+        facts: [
+          {
+            key: "issueLinking",
+            label: "Issue linking",
+            value: { referenceShare: 100, closingShare: 0 },
             confidence: "observed",
             evidence: ["."],
           },
@@ -112,15 +132,24 @@ function factValue(container: HTMLElement, key: string): string {
   return container.querySelector(`[data-fact="${key}"] dd`)?.textContent?.trim() ?? "";
 }
 
-test("a percent-shaped record fact renders its rows and a numeric one renders a percentage", () => {
+test("a share held as a spread or a record carries its unit on every share row", () => {
   discover.state = state();
   const view = render(DiscoverContribution);
 
   const share = factValue(view.container, "testFileShare");
-  expect(share).toContain("median: 3");
-  expect(share).toContain("min: 1");
-  expect(share).toContain("max: 9");
+  expect(share).toContain("median: 35%");
+  expect(share).toContain("min: 1%");
+  expect(share).toContain("max: 9%");
   expect(factValue(view.container, "testsShare")).toBe("40%");
+
+  const linking = factValue(view.container, "issueLinking");
+  expect(linking).toContain("referenceShare: 100%");
+  expect(linking).toContain("closingShare: 0%");
+
+  const additions = factValue(view.container, "additions");
+  expect(additions).toContain("median: 40");
+  expect(additions).toContain("min: 2");
+  expect(additions).toContain("max: 900");
 });
 
 test("an unpublished contribution shows the empty state and no page-level freshness stamp", () => {

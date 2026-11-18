@@ -31,13 +31,29 @@
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
-  function recordRows(value: Record<string, unknown>): Array<{ key: string; text: string }> {
+  function isSpread(value: Record<string, unknown>): boolean {
+    const keys = Object.keys(value);
+    return (
+      keys.length > 0 &&
+      keys.every((key) => key === "median" || key === "min" || key === "max")
+    );
+  }
+
+  function recordRows(
+    factKey: string,
+    value: Record<string, unknown>,
+  ): Array<{ key: string; text: string }> {
+    // A share held as a spread carries its unit on every row; a record carries
+    // it only on a row whose own key is share-shaped, so count rows stay bare.
+    const spreadPercent = PERCENT_KEY.test(factKey) && isSpread(value);
     return Object.entries(value).map(([key, entry]) => ({
       key,
       text: `${key}: ${
-        Array.isArray(entry)
-          ? entry.map((item) => scalar(item) || JSON.stringify(item)).join(", ")
-          : scalar(entry) || JSON.stringify(entry)
+        typeof entry === "number" && (spreadPercent || PERCENT_KEY.test(key))
+          ? `${entry}%`
+          : Array.isArray(entry)
+            ? entry.map((item) => scalar(item) || JSON.stringify(item)).join(", ")
+            : scalar(entry) || JSON.stringify(entry)
       }`,
     }));
   }
@@ -112,7 +128,7 @@
                     <span>{fact.value}%</span>
                   {:else if isRecord(fact.value)}
                     <span class="discover-contribution-record">
-                      {#each recordRows(fact.value) as row (row.key)}
+                      {#each recordRows(fact.key, fact.value) as row (row.key)}
                         <span class="discover-contribution-record__row">{row.text}</span>
                       {/each}
                     </span>
