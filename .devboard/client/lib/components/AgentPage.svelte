@@ -37,6 +37,10 @@
   const snapshot = $derived(agents.snapshot(agentId));
   const lifecycle = $derived(snapshot?.lifecycle ?? "stopped");
   const sync = $derived<AgentSync>(snapshot?.sync ?? { state: "stale", at: null, error: null });
+  // Why the last frame for this agent was unreadable. The stored snapshot is
+  // the last good one, so nothing else on the page can show that a newer frame
+  // arrived and was dropped.
+  const frameError = $derived(agents.frameError(agentId));
   // Deploy on main lists its runs in one history panel; the run-status line
   // that used to sit under the prompt repeats what a row already states. A
   // skipped run has no row, so its notice is the page's only statement of the
@@ -450,8 +454,11 @@
       <p class="agent-notice" data-testid="agent-notice" role="status">{visibleNotice}</p>
     {/if}
 
-    {#if snapshot?.error !== null || sync.error !== null}
+    {#if snapshot?.error !== null || sync.error !== null || frameError !== null}
       <div class="agent-page__alerts">
+        {#if frameError !== null}
+          <p class="issues-error" data-testid="agent-frame-error" role="alert">{frameError}</p>
+        {/if}
         {#if sync.error !== null}
           <p class="issues-error" data-testid="agent-sync-error" role="alert">{sync.error}</p>
         {/if}

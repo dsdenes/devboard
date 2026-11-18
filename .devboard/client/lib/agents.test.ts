@@ -195,6 +195,47 @@ test("a starting frame leaves the page neither busy nor waiting for the ceiling"
   expect(start.hasAttribute("disabled")).toBe(true);
   expect(view.container.textContent).not.toContain("Start received no answer.");
 });
+
+test("a frame the page cannot read settles Start and names the unreadable frame", async () => {
+  installGlobals();
+  openSocket();
+  agents.handleEvent({ type: "agentState", agent: snapshot({ lifecycle: "stopped" }) });
+
+  const view = render(AgentPage, { props: { agentId: "dead-code" } });
+  const start = within(view.container).getByTestId("agent-start");
+  await fireEvent.click(start);
+  expect(start.getAttribute("aria-busy")).toBe("true");
+
+  agents.handleEvent({
+    type: "agentState",
+    agent: snapshot({
+      lifecycle: "stopped",
+      issues: [
+        {
+          title: "A finding",
+          category: null,
+          createdAt: "2026-11-03T10:15:00.000Z",
+          state: "pending",
+          version: null,
+        },
+      ],
+    }),
+  });
+  await tick();
+  await Promise.resolve();
+
+  expect(start.getAttribute("aria-busy")).toBeNull();
+  expect(view.container.textContent).not.toContain("Start received no answer.");
+  const alert = within(view.container).getByTestId("agent-frame-error");
+  expect(alert.getAttribute("role")).toBe("alert");
+  expect(alert.textContent).toContain("Dead Code");
+  expect(alert.textContent).toContain("a url");
+
+  agents.handleEvent({ type: "agentState", agent: snapshot({ lifecycle: "stopped" }) });
+  await tick();
+  expect(within(view.container).queryByTestId("agent-frame-error")).toBeNull();
+});
+
 test("a snapshot that grows one scan's log refreshes the page's activity", () => {
   const store = new AgentsStore();
   const scan = (entries: string[], scanId = "scan-1") =>

@@ -71,10 +71,11 @@ test("a worker keeps the start its lock reported and stores null without one", (
   ]);
 });
 
-test("a frame whose issue row has no url is dropped and the stored snapshot stands", () => {
+test("a frame whose issue row has no url is dropped, named, and the stored snapshot stands", () => {
   const agents = new AgentsStore();
   agents.handleEvent({ type: "agentState", agent: frame() });
   const before = agents.snapshot("scout");
+  const answered = agents.revision("scout");
   agents.handleEvent({
     type: "agentState",
     agent: frame({
@@ -91,6 +92,15 @@ test("a frame whose issue row has no url is dropped and the stored snapshot stan
   });
   expect(agents.snapshot("scout")).toBe(before);
   expect(agents.count("scout")).toBe(0);
+  // The refusal is still an answer: the revision advances, so a Start latched
+  // on it settles instead of waiting out the ceiling, and the page can name
+  // the frame it could not read.
+  expect(agents.revision("scout")).toBe(answered + 1);
+  const reason = agents.frameError("scout");
+  expect(reason).toContain("Auto Scout");
+  expect(reason).toContain("a url");
+  agents.handleEvent({ type: "agentState", agent: frame() });
+  expect(agents.frameError("scout")).toBeNull();
 });
 
 test("a cycle row without a window is dropped instead of rendered", () => {

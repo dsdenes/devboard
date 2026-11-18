@@ -90,6 +90,13 @@ export class AgentsStore {
   requestedPrompts = $state<string[]>([]);
   /** A refused prompt read's text, cleared when that agent's prompt arrives. */
   promptErrors = $state<Record<string, string>>({});
+  /**
+   * The last frame refusal per agent. A frame the shared projection cannot
+   * read still proves the server answered, so the store keeps the last good
+   * snapshot, records why here, and advances the revision; the next accepted
+   * frame clears it.
+   */
+  private readonly frameErrors = $state<Record<string, string>>({});
   private readonly seen = new Set<string>();
   private readonly lastError = new Map<string, string | null>();
   private readonly lastNotice = new Map<string, string | null>();
@@ -152,6 +159,16 @@ export class AgentsStore {
    */
   revision(id: string): number {
     return this.revisions[id] ?? 0;
+  }
+
+  /**
+   * The reason the last frame for this agent could not be projected, or null
+   * when the last frame was accepted. A persistent malformed row otherwise
+   * leaves the page frozen with nothing naming the frame that arrived and was
+   * dropped.
+   */
+  frameError(id: string): string | null {
+    return this.frameErrors[id] ?? null;
   }
 
   /**
@@ -316,6 +333,8 @@ export class AgentsStore {
   /**
    * A snapshot is stored only when the shared projection accepts it: it carries
    * every fact the page reads, so no render path dereferences a missing field.
+   * A refused frame keeps the last good snapshot, records its reason, and
+   * advances the revision, so the drop is visible and never silent.
    */
   private accept(value: unknown): void {
     if (!isObject(value) || typeof value.id !== "string") return;
@@ -325,12 +344,16 @@ export class AgentsStore {
     try {
       snapshot = projectAgentSnapshot(descriptor, value as unknown as AgentSnapshotInput);
     } catch (error) {
-      if (error instanceof AgentRegistryError) return;
+      if (error instanceof AgentRegistryError) {
+        this.rejectFrame(descriptor, error.message);
+        return;
+      }
       throw error;
     }
     const first = !this.seen.has(snapshot.id);
     this.seen.add(snapshot.id);
     this.revisions[snapshot.id] = (this.revisions[snapshot.id] ?? 0) + 1;
+    if (this.frameErrors[snapshot.id] !== undefined) delete this.frameErrors[snapshot.id];
     const previousError = this.lastError.get(snapshot.id) ?? null;
     this.snapshots[snapshot.id] = snapshot;
     // The registry projection carries the shared shape only; the Release Train
@@ -372,6 +395,18 @@ export class AgentsStore {
         notifications.push(snapshot.label, "success", snapshot.notice);
       }
     }
+  }
+
+  /**
+   * A refused frame is an answer: the server spoke, this page could not read
+   * it. Keep the last good snapshot, name the unreadable frame, and increment
+   * the revision so every control latched on this agent settles instead of
+   * waiting out the ceiling and claiming the server never answered.
+   */
+  private rejectFrame(descriptor: AgentDescriptor, reason: string): void {
+    this.frameErrors[descriptor.id] =
+      `${descriptor.label} sent a frame this page could not read: ${reason}`;
+    this.revisions[descriptor.id] = (this.revisions[descriptor.id] ?? 0) + 1;
   }
 }
 
