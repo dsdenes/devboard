@@ -411,10 +411,12 @@ const ISSUE_MAX_PAGES = 100;
 /**
  * Every open issue on the board the harness reports to.
  *
- * The walk reads page after page until the forge serves a page shorter than
- * the one asked for, so a board holding more open issues than one page returns
- * all of them rather than only the newest page. A page that adds no new number
- * is a server that ignored `page`, and it ends the walk instead of looping.
+ * The walk reads page after page until the forge serves an empty page, so a
+ * board holding more open issues than one page returns all of them rather than
+ * only the newest page. A page shorter than the one asked for never ends the
+ * walk: the forge clamps `limit` to its own maximum, so a short page is an
+ * ordinary page. A page that adds no new number is a server that ignored
+ * `page`, and it ends the walk instead of looping.
  */
 export async function openIssues(): Promise<GiteaIssue[]> {
   const issues: GiteaIssue[] = [];
@@ -434,7 +436,7 @@ export async function openIssues(): Promise<GiteaIssue[]> {
       issues.push(issue);
       added += 1;
     }
-    if (entries.length < ISSUE_PAGE_SIZE || added === 0) break;
+    if (entries.length === 0 || added === 0) break;
   }
   return issues;
 }

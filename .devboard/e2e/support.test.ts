@@ -134,8 +134,9 @@ describe("the suite's .env search", () => {
  * The board read walks every page the tracker serves.
  *
  * The soak's proof is only as wide as the read behind it: a board holding more
- * open issues than one page must return all of them, and a page that repeats
- * itself must end the walk instead of looping.
+ * open issues than one page must return all of them, a forge that clamps the
+ * requested page size must not be read as a final page, and a page that
+ * repeats itself must end the walk instead of looping.
  */
 describe("the suite's board read", () => {
   const saved = {
@@ -192,7 +193,7 @@ describe("the suite's board read", () => {
     try {
       const issues = await openIssues();
       expect(issues.map((issue) => issue.number)).toEqual(numbers);
-      expect(board.requests.map((params) => params.get("page"))).toEqual(["1", "2", "3"]);
+      expect(board.requests.map((params) => params.get("page"))).toEqual(["1", "2", "3", "4"]);
       expect(board.requests.every((params) => params.get("limit") === "50")).toBe(true);
       expect(board.requests.every((params) => params.get("state") === "open")).toBe(true);
     } finally {
@@ -200,11 +201,30 @@ describe("the suite's board read", () => {
     }
   });
 
-  test("stops on a short final page instead of asking for another", async () => {
+  test("confirms a short final page with one empty request", async () => {
     const board = stubBoard((page) => (page === 1 ? [boardIssue(1), boardIssue(2)] : []), 2);
     try {
       expect((await openIssues()).map((issue) => issue.number)).toEqual([1, 2]);
-      expect(board.requests).toHaveLength(1);
+      expect(board.requests).toHaveLength(2);
+    } finally {
+      board.stop();
+    }
+  });
+
+  test("walks past a forge that clamps the requested page size", async () => {
+    const numbers = Array.from({ length: 60 }, (_, index) => index + 1);
+    // The forge serves its own cap of 20 rows whatever `limit` the read asks for.
+    const board = stubBoard(
+      (page) => numbers.slice((page - 1) * 20, page * 20).map(boardIssue),
+      numbers.length,
+    );
+    try {
+      const issues = await openIssues();
+      expect(issues.map((issue) => issue.number)).toEqual(numbers);
+      // Three clamped pages carry the board; the fourth confirms the end.
+      expect(board.requests.map((params) => params.get("page"))).toEqual(["1", "2", "3", "4"]);
+      expect(board.requests.every((params) => params.get("limit") === "50")).toBe(true);
+      expect(board.requests.every((params) => params.get("type") === "issues")).toBe(true);
     } finally {
       board.stop();
     }
