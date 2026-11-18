@@ -47,7 +47,8 @@ takes `forge`, `host`, and `project` from the `origin` remote — and on Gitea t
 `DEVBOARD_GITEA_URL` — so a prompt passes nothing it resolves itself. A prompt that gates a
 specific access level pins only its `--required` value, for example `--required write --json`.
 
-- `<forge>` is `github`, `gitlab`, or `gitea`; the wrapper infers it from the remote's host name.
+- `<forge>` is `github`, `gitlab`, or `gitea`; an explicit `DEVBOARD_FORGE` decides it first, then
+  the remote's host name.
 - Pass an explicit target only when the target repository is not this checkout's `origin`:
   `<devboard> forge-auth check --host <host> --project <owner>/<repo> --required <read|write>
   --json`.
@@ -66,10 +67,19 @@ already contains that JSON with `canWrite: true`, the precondition is resolved: 
 skip the check. Run the check at most once per session, and only when the context carries no such
 result.
 
-When a prompt needs the token inside a child process, it names
-`<devboard> forge-auth exec ... -- <command>`; that `exec` uses the same resolved path as the
-`check`, so one session resolves the binary once. The wrapper injects the selected token into that
-child's environment only, never into an argument, a log line, or a reply.
+When a prompt needs the token inside a child process, it names the canonical exec form for this
+checkout's own repository:
+
+```sh
+<devboard> forge-auth exec --required <read|write> -- <command>
+```
+
+That `exec` uses the same resolved path as the `check`, so one session resolves the binary once,
+and it takes `forge`, `host`, and `project` from the same origin inference, with `DEVBOARD_FORGE`
+deciding the forge before the host name. A prompt passes no `--forge`, `--host`, or `--project`
+there; an explicit target belongs only on a repository other than this checkout's `origin`, as it
+does for `check`. The wrapper injects the selected token into that child's environment only, never
+into an argument, a log line, or a reply.
 
 ## Forbidden
 

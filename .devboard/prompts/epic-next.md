@@ -131,25 +131,24 @@ pull request, and the remainder goes to Non-goals.
 
 1. `git rev-parse --show-toplevel`, `git remote get-url origin`. Not a git repository, or `origin`
    unset → halt.
-2. Classify the remote. Handle all three shapes — `https://host/path`,
-   `ssh://user@host[:port]/path`, `user@host:path` — by stripping the scheme, the `user@`, and the
-   port; the hostname decides the forge:
-   - `github.com` → GitHub, CLI `gh`;
-   - a hostname containing `gitlab` → GitLab, CLI `glab`;
-   - any other hostname → Gitea: the wrapper in step 4 resolves the public API or a
-     `GITEA_TOKEN`, with the HTTP origin in `DEVBOARD_GITEA_URL`. No forge is reachable → halt.
-3. Derive the project path from the remote: strip a trailing `.git` and any leading `/`, keep the
-   full namespace — `owner/repo` on GitHub, `group/subgroup/project` on GitLab.
-4. Resolve the identity against that exact project, from the host repository root:
+2. Resolve the identity against this checkout's own repository, from the host repository root:
 
    ```sh
-   <devboard> forge-auth check \
-     --host <host> --project <project> --forge <github|gitlab|gitea> --required write --cwd <host>
+   <devboard> forge-auth check --required write --json
    ```
 
    `<devboard>` is the absolute harness binary resolved once per session as
    `.devboard/prompts/forge-auth.md` states, so this block is the canonical invocation with only
    its program path absolute.
+
+   The wrapper is the single authority for the forge, the host, and the project: it reads the
+   `origin` remote, lets an explicit `DEVBOARD_FORGE` decide the forge before the host name, and
+   on Gitea reads the HTTP origin from `DEVBOARD_GITEA_URL`. Never classify the remote or derive a
+   project path yourself, and never pass `--forge`, `--host`, or `--project` to confirm an
+   inference. An explicit target belongs only on a repository other than this checkout's
+   `origin`, in the form `.devboard/prompts/forge-auth.md` states. Take `forge`, `host`,
+   `project`, `permission`, and `canWrite` from the returned document; those fields are the run's
+   entire knowledge of the tracker.
 
    The wrapper inspects every authenticated account for the host, tests each token against this
    repository, and chooses a write-capable account (repository owner first, then the active
@@ -162,21 +161,19 @@ pull request, and the remainder goes to Non-goals.
    Exit non-zero → halt, quoting the wrapper's message. Never switch the active account by hand,
    never retry another login, and never proceed with a read-only account: every later write
    would be refused.
-5. Every later `gh` or `glab` call in this run MUST run through the same selection. On Gitea,
-   use the API with `GITEA_TOKEN`, which the `check` output names. Write `<auth>` for:
+3. Every later `gh` or `glab` call in this run MUST run through the same selection. Write `<auth>`
+   for the wrapper's `exec`, with the same resolved `<devboard>` as the `check` above and no
+   target flags of its own:
 
    ```sh
-   <devboard> forge-auth exec \
-     --host <host> --project <project> --forge <forge> --required write --
+   <devboard> forge-auth exec --required write --
    ```
-
-   That is the same resolved `<devboard>` as the `check` above, so one session resolves the
-   binary once.
 
    Then run `<auth> gh ...` or `<auth> glab ...`. A direct CLI call can silently use a different
    account or a stale token; the wrapper is the only supported path. It puts the selected token
-   in the child environment, never in an argument or a reply. The CLIs are only ever called in
-   non-interactive form: never let one prompt.
+   in the child environment, never in an argument or a reply: on Gitea, the API call reads
+   `GITEA_TOKEN` from that environment and never from a command line. The CLIs are only ever
+   called in non-interactive form: never let one prompt.
 
 ## Phase B — End goal
 
@@ -353,7 +350,7 @@ contains the marker `<!-- devboard-epic -->` in its body.
    `<auth> gh issue list --label <name> --state open --json number,title,url --limit 100`, or
    `<auth> glab issue list --label <name> --output json`.
 3. No such label → search open issue bodies for the marker, scoped to the project:
-   `<auth> gh search issues --repo <owner>/<repo> --match body --state open 'devboard-epic' --json
+   `<auth> gh search issues --repo <project> --match body --state open 'devboard-epic' --json
    number,title,url --limit 100`, or `<auth> glab issue list --search devboard-epic --in
    description --output json`. If the CLI cannot search issue bodies at all → halt: the predicate
    is unverifiable.
