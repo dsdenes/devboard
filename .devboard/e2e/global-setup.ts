@@ -77,6 +77,32 @@ function git(cwd: string, args: string[]): void {
   return promise;
 }
 
+/**
+ * The version one devboard binary prints.
+ *
+ * A spawn that cannot start the binary emits `error` and `close`, never
+ * `exit`, so the probe settles on both: an unbuilt checkout or a typo'd
+ * `E2E_DEVBOARD_BIN` rejects with the path that could not run instead of
+ * hanging the suite before its first spec.
+ */
+export async function harnessVersionOf(bin: string): Promise<string> {
+  const version = spawn(bin, ["version"], { stdio: ["ignore", "pipe", "ignore"] });
+  let text = "";
+  version.stdout?.on("data", (chunk: Buffer) => {
+    text += chunk.toString();
+  });
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  version.once("error", (error: Error) => {
+    reject(new Error(`the suite's devboard binary could not be run: ${bin}: ${error.message}`));
+  });
+  version.once("close", (code) => {
+    if (code === 0) resolve();
+    else reject(new Error(`devboard version failed: ${bin}: exited ${code}`));
+  });
+  await promise;
+  return text.trim().split(/\s+/).pop() ?? "unknown";
+}
+
 async function freePort(): Promise<number> {
   const server = net.createServer();
   const { promise, resolve, reject } = Promise.withResolvers<number>();
@@ -128,15 +154,7 @@ async function prepareFixture(): Promise<Prepared> {
   mkdirSync(stateDir, { recursive: true });
   const adrsDir = path.join(repoDir, "adrs");
   const goalFile = path.join(repoDir, "GOAL.md");
-  const version = spawn(binary, ["version"], { stdio: ["ignore", "pipe", "ignore"] });
-  let text = "";
-  version.stdout?.on("data", (chunk: Buffer) => {
-    text += chunk.toString();
-  });
-  const { promise, resolve } = Promise.withResolvers<void>();
-  version.once("exit", () => resolve());
-  await promise;
-  const harnessVersion = text.trim().split(/\s+/).pop() ?? "unknown";
+  const harnessVersion = await harnessVersionOf(binary);
   return { repoDir, stateDir, adrsDir, goalFile, binDir, harnessVersion };
 }
 
