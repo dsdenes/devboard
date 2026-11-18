@@ -4860,7 +4860,7 @@ async fn prepared_skill_count(app: &Arc<App>) -> Result<usize, String> {
             continue;
         }
         let path = entry.path().join("SKILL.md");
-        let Ok(source) = tokio::fs::read_to_string(&path).await else {
+        let Some(source) = crate::sampling::text_lossy(&path) else {
             continue;
         };
         if crate::skill_frontmatter::fields(&source).is_some_and(|fields| {

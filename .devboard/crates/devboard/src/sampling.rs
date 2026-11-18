@@ -25,13 +25,16 @@ struct Entry<T> {
     value: T,
 }
 
-/// The two representations are cached apart. One `text` read and one `json`
-/// read of the same unchanged file each cost one content read, and neither
-/// makes the other look like a document that failed to parse.
+/// The representations are cached apart. One `text`, one `lossy_text`, and one
+/// `json` read of the same unchanged file each cost one content read, and none
+/// makes another look like a document it is not. The strict and lossy text
+/// entries stay separate because the same bytes are different documents to
+/// them.
 #[derive(Default)]
 struct Cache {
     json: HashMap<PathBuf, Entry<Option<Arc<Value>>>>,
     text: HashMap<PathBuf, Entry<Result<Arc<String>, String>>>,
+    lossy_text: HashMap<PathBuf, Entry<Result<Arc<String>, String>>>,
     reads: HashMap<PathBuf, u64>,
 }
 
@@ -97,6 +100,18 @@ pub fn text(path: &Path) -> Option<Arc<String>> {
     try_text(path).ok()
 }
 
+/// One file's text, decoding every byte sequence that is not valid UTF-8 as
+/// U+FFFD.
+///
+/// Every reader of a skill document uses this rule: a document saved in
+/// another encoding, or carrying one stray byte, still yields text, so that
+/// byte changes one character instead of making the reader drop or refuse the
+/// whole directory. [`text`] stays strict for a caller that must tell a
+/// document with no text from one it cannot read.
+pub fn text_lossy(path: &Path) -> Option<Arc<String>> {
+    sample_text(path, Decode::Lossy).ok()
+}
+
 /// One file's text, or the cause that stopped the read.
 ///
 /// `text` answers "is there text here"; this answers "why is there none", for
@@ -104,10 +119,28 @@ pub fn text(path: &Path) -> Option<Arc<String>> {
 /// failed read is retained by the same stamp, so an unchanged unreadable file
 /// costs no content read per sample.
 pub fn try_text(path: &Path) -> Result<Arc<String>, String> {
-    let read = |path: &Path| {
-        std::fs::read_to_string(path)
-            .map(Arc::new)
-            .map_err(|error| error.to_string())
+    sample_text(path, Decode::Strict)
+}
+
+/// Which decode a text sample asks for.
+#[derive(Clone, Copy)]
+enum Decode {
+    /// Invalid UTF-8 has no text.
+    Strict,
+    /// Invalid UTF-8 becomes U+FFFD.
+    Lossy,
+}
+
+fn sample_text(path: &Path, decode: Decode) -> Result<Arc<String>, String> {
+    let read = |path: &Path| -> Result<Arc<String>, String> {
+        match decode {
+            Decode::Strict => std::fs::read_to_string(path)
+                .map(Arc::new)
+                .map_err(|error| error.to_string()),
+            Decode::Lossy => std::fs::read(path)
+                .map(|bytes| Arc::new(String::from_utf8_lossy(&bytes).into_owned()))
+                .map_err(|error| error.to_string()),
+        }
     };
     let Some((modified, len)) = stamp_of(path) else {
         forget(path);
@@ -119,13 +152,17 @@ pub fn try_text(path: &Path) -> Result<Arc<String>, String> {
     let Ok(mut cache) = cache().lock() else {
         return read(path);
     };
-    if let Some(entry) = cache.text.get(path) {
+    let entries = match decode {
+        Decode::Strict => &mut cache.text,
+        Decode::Lossy => &mut cache.lossy_text,
+    };
+    if let Some(entry) = entries.get(path) {
         if matches(entry, modified, len) {
             return entry.value.clone();
         }
     }
     let value = read(path);
-    cache.text.insert(
+    entries.insert(
         path.to_path_buf(),
         Entry {
             modified,
@@ -143,6 +180,7 @@ fn forget(path: &Path) {
     if let Ok(mut cache) = cache().lock() {
         cache.json.remove(path);
         cache.text.remove(path);
+        cache.lossy_text.remove(path);
         cache.reads.remove(path);
     }
 }
@@ -190,6 +228,7 @@ pub fn reset() {
     if let Ok(mut cache) = cache().lock() {
         cache.json.clear();
         cache.text.clear();
+        cache.lossy_text.clear();
         cache.reads.clear();
     }
 }
@@ -282,6 +321,27 @@ mod tests {
         );
         assert!(text(&path).is_none(), "the optional read reports the same");
         assert_eq!(reads(&path), 1, "an unchanged failure is retained");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One stray byte makes a document unreadable to the strict reader but
+    /// still a document to the lossy one; the two samples are retained apart.
+    #[test]
+    fn a_lossy_sample_keeps_a_document_the_strict_reader_refuses() {
+        let root = scratch("lossy");
+        let path = root.join("SKILL.md");
+        std::fs::write(&path, [b'a', 0xe9, b'b']).expect("a fixture");
+        assert!(text(&path).is_none(), "the strict reader refuses the bytes");
+        assert_eq!(
+            text_lossy(&path).map(|text| text.to_string()),
+            Some("a\u{fffd}b".to_string())
+        );
+        assert_eq!(
+            text_lossy(&path).map(|text| text.to_string()),
+            Some("a\u{fffd}b".to_string()),
+            "an unchanged lossy sample is read once"
+        );
+        assert_eq!(reads(&path), 2, "one read per representation");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -142,8 +142,10 @@ struct ParsedSkill {
 async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<ParsedSkill>, String> {
     let path = root.join(directory).join("SKILL.md");
     // Sampled through the shared cache: a page that polls this list every
-    // second reads an unchanged skill document once, not once per poll.
-    let content = match crate::sampling::text(&path) {
+    // second reads an unchanged skill document once, not once per poll. The
+    // bytes are decoded lossily, so one stray byte changes that row's text
+    // instead of making the whole list unreadable.
+    let content = match crate::sampling::text_lossy(&path) {
         Some(text) => (*text).clone(),
         None if path.exists() => {
             return Err(format!(
@@ -976,6 +978,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".omp")).expect("a fixture settings root");
         root.join(".omp").join(PROJECT_SETTINGS_FILE)
+    }
+
+    /// A repository fixture whose skills root holds the written documents.
+    fn skills_fixture(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("installed-skills-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".omp").join("skills")).expect("a fixture skills root");
+        root
+    }
+
+    fn write_skill_document(repo_dir: &Path, name: &str, source: &[u8]) {
+        let directory = repo_dir.join(".omp").join("skills").join(name);
+        std::fs::create_dir_all(&directory).expect("a skill directory");
+        std::fs::write(directory.join("SKILL.md"), source).expect("a SKILL.md");
+    }
+
+    /// A document with one invalid UTF-8 byte keeps its row: the list decodes
+    /// it lossily instead of answering an `error` frame for every skill.
+    #[tokio::test]
+    async fn an_invalid_byte_in_one_document_still_lists_every_skill() {
+        let repo = skills_fixture("invalid-utf8");
+        write_skill_document(&repo, "alpha", b"---\nname: alpha\n---\n\n- Keep alpha.\n");
+        write_skill_document(&repo, "beta", b"---\nname: beta\n---\n\n- Keep beta.\n");
+        let mut broken = b"---\nname: broken\n---\n\n- caf".to_vec();
+        broken.push(0xe9);
+        broken.push(b'\n');
+        write_skill_document(&repo, "broken", &broken);
+
+        let payload = installed_skills_payload(&repo).await;
+
+        assert_eq!(payload["type"], Value::String("installedSkills".into()));
+        let rows = payload["skills"].as_array().expect("the skill rows");
+        let names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta", "broken"]);
+        let content = rows
+            .iter()
+            .find(|row| row["name"] == "broken")
+            .and_then(|row| row["content"].as_str())
+            .expect("the broken row's text");
+        assert!(content.contains("caf\u{fffd}"), "{content}");
+    }
+
+    /// A toggle beside the same document still writes the exclusion and
+    /// answers the authoritative rows.
+    #[tokio::test]
+    async fn a_toggle_beside_an_invalid_document_answers_the_authoritative_rows() {
+        let repo = skills_fixture("toggle-invalid-utf8");
+        write_skill_document(&repo, "alpha", b"---\nname: alpha\n---\n\n- Keep alpha.\n");
+        write_skill_document(&repo, "beta", b"---\nname: beta\n---\n\n- Keep beta.\n");
+        write_skill_document(&repo, "broken", b"---\nname: broken\n---\n\n- caf\xe9\n");
+
+        let outcome = toggle_installed_skill(
+            &repo,
+            Some(&Value::String("alpha".into())),
+            Some(&Value::Bool(false)),
+        )
+        .await;
+
+        let ToggleOutcome::Changed(frame) = outcome else {
+            panic!("a toggle must answer the authoritative rows");
+        };
+        let rows = frame["skills"].as_array().expect("the skill rows");
+        assert_eq!(rows.len(), 3);
+        let alpha = rows
+            .iter()
+            .find(|row| row["name"] == "alpha")
+            .expect("the alpha row");
+        assert_eq!(alpha["enabled"], Value::Bool(false));
+        let settings =
+            std::fs::read_to_string(project_settings_path(&repo)).expect("the written settings");
+        assert!(settings.contains("\"alpha\""), "{settings}");
     }
 
     /// A toggle and a delete both read-modify-write the whole settings document.

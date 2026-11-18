@@ -2127,12 +2127,19 @@ impl SkillsInspection {
 
 /// Reads one `SKILL.md`, or `None` when the directory holds none.
 async fn read_skill_at(root: &Path, directory: &str) -> Result<Option<SkillFile>, String> {
-    let bytes = match tokio::fs::read(root.join(directory).join("SKILL.md")).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+    let path = root.join(directory).join("SKILL.md");
+    // The same lossy decode the Skills page and the lifecycle start gate use:
+    // one stray byte changes this document's text, never whether it is listed.
+    let content = match crate::sampling::text_lossy(&path) {
+        Some(text) => (*text).clone(),
+        None if !path.exists() => return Ok(None),
+        None => {
+            return Err(format!(
+                "the skill document {} could not be read",
+                path.display()
+            ))
+        }
     };
-    let content = String::from_utf8_lossy(&bytes).into_owned();
     let fields = skill_frontmatter::fields(&content).unwrap_or_default();
     let field = |key: &str| fields.get(key).map(String::as_str).unwrap_or("");
     let family = if field(FAMILY_FIELD) == "discover" {
@@ -3078,6 +3085,39 @@ mod tests {
             inspection.contradictions[0].skills,
             ("bommed".to_string(), "plain".to_string())
         );
+    }
+
+    /// A document with one invalid UTF-8 byte is still a listed skill, exactly
+    /// as the Skills page lists it.
+    #[tokio::test]
+    async fn inspection_lists_a_document_that_is_not_valid_utf8() {
+        let (_repo, skills) = scratch("invalid-utf8");
+        write_skill(
+            &skills,
+            "alpha",
+            &marked_skill("alpha", true, "Always keep alpha in one place."),
+        );
+        write_skill(
+            &skills,
+            "beta",
+            &marked_skill("beta", true, "Always keep beta in one place."),
+        );
+        let mut broken =
+            marked_skill("broken", true, "Always keep broken in one place.").into_bytes();
+        broken.push(0xe9);
+        let directory = skills.join("broken");
+        std::fs::create_dir_all(&directory).expect("a skill directory");
+        std::fs::write(directory.join("SKILL.md"), &broken).expect("a SKILL.md");
+
+        let inspection = inspect_skills(&skills).await.expect("a skills inspection");
+
+        let mut directories: Vec<&str> = inspection
+            .prepare
+            .iter()
+            .map(|skill| skill.directory.as_str())
+            .collect();
+        directories.sort_unstable();
+        assert_eq!(directories, vec!["alpha", "beta", "broken"]);
     }
 
     /// A Discover document with empty metadata is the Discover page's problem;
