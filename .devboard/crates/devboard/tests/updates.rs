@@ -68,6 +68,18 @@ fn an_artifact_that_is_not_downloadable_yet_is_transient() {
     ));
 }
 
+/// The line a dashboard journaled when the connection cut a GitHub archive off
+/// mid-transfer: the artifact installed on the following check two minutes
+/// later, so the read is retried and the watchdog files no issue. The Gitea
+/// release carries the manifest and checksums rather than the platform
+/// archives, so its half of the same line names no permanent defect either.
+#[test]
+fn an_artifact_cut_off_mid_transfer_is_transient() {
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET https://github.com/dsdenes/devboard/releases/download/v1.57.16/devboard-x86_64-unknown-linux-gnu.tar.xz failed (error decoding response body); Gitea fallback failed: the Gitea release carries no devboard-x86_64-unknown-linux-gnu.tar.xz"
+    ));
+}
+
 /// A forge that answers 5xx is serving no release right now, not refusing the
 /// request: the same line the live dashboard journaled for a restarting Gitea.
 #[test]

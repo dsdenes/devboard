@@ -204,6 +204,65 @@ async fn a_failed_github_asset_falls_back_to_the_gitea_artifact() {
 }
 
 #[tokio::test]
+async fn a_truncated_artifact_read_is_a_transient_failure() {
+    let directory = root("truncated");
+    let bytes = archive();
+    let digest = sha256(&bytes);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let asset_url = format!(
+        "http://{}/devboard-x86_64-unknown-linux-gnu.tar.xz",
+        listener.local_addr().unwrap()
+    );
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0u8; 4096];
+        let read = stream.read(&mut buffer).unwrap();
+        assert!(read > 0, "the stub reads one artifact request");
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            bytes.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(&bytes[..bytes.len() / 2]).unwrap();
+    });
+    let target = devboard::release::current_target().unwrap();
+    let release = devboard::release::ReleaseInfo {
+        version: "1.2.3".to_string(),
+        tag: "v1.2.3".to_string(),
+        assets: vec![devboard::release::ReleaseAsset {
+            target: target.to_string(),
+            url: asset_url,
+            sha256: digest,
+        }],
+    };
+    let source = devboard::release::ManifestSource {
+        base_url: String::new(),
+        repository: "dsdenes/devboard".to_string(),
+        token: None,
+        timeout_ms: 5_000,
+        local_dir: None,
+        forge: devboard::release::ReleaseForge::GitHub,
+        download_base: String::new(),
+    };
+    let prefix = directory.join("prefix");
+    let error =
+        devboard::release::install_release(&source, &release, &prefix, &directory.join("state"))
+            .await
+            .expect_err("a truncated archive installs nothing");
+    handle.join().unwrap();
+    assert!(
+        error.contains("error decoding response body"),
+        "the failure names the cut-off read: {error}"
+    );
+    assert!(
+        devboard::updates::is_transient_update_failure(&error),
+        "the next interval reads the same address whole: {error}"
+    );
+    assert!(!prefix.join("bin/devboard").exists());
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[tokio::test]
 async fn a_local_release_directory_installs_offline() {
     let directory = root("local");
     let bytes = archive();

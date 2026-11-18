@@ -363,9 +363,9 @@ fn check_installed_host(app: &Arc<App>) -> UpdateOutcome {
 
 /// True for a check failure the next interval resolves on its own: an
 /// unreachable, rate-limited, or overloaded forge, a release body that arrived
-/// empty, unreadable, or unparsable, or a release whose manifest asset the
-/// publisher has not uploaded yet. The next interval retries it and the journal
-/// records only activity.
+/// empty, unreadable, unparsable, or cut off mid-transfer, or a release whose
+/// manifest asset the publisher has not uploaded yet. The next interval retries
+/// it and the journal records only activity.
 pub fn is_transient_update_failure(error: &str) -> bool {
     let text = error.to_ascii_lowercase();
     if names_server_error_status(&text) {
@@ -390,6 +390,11 @@ pub fn is_transient_update_failure(error: &str) -> bool {
         "empty body",
         "not json",
         "cannot read the body",
+        // A body the connection cut off mid-transfer: `reqwest` reports it as a
+        // decode failure on the artifact download, and the next interval reads
+        // the same address whole. The live dashboard journaled this for a
+        // platform archive that installed on the following check.
+        "error decoding response body",
         release::RELEASE_STILL_BEING_WRITTEN,
     ]
     .iter()
