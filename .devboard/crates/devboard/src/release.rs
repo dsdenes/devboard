@@ -197,6 +197,12 @@ pub struct ManifestSource {
     /// The public download root a GitHub manifest is read from, e.g.
     /// `https://github.com/owner/repo`. Empty for a Gitea or local source.
     pub download_base: String,
+    /// The Gitea origin a failed GitHub artifact read falls back to, e.g.
+    /// `http://forge.example:3000`, resolved beside every other field of the
+    /// source. The download reads no process environment of its own, so one
+    /// read never depends on configuration another thread may change between
+    /// the source it was given and its bytes.
+    pub gitea_fallback: Option<String>,
 }
 
 impl ManifestSource {
@@ -548,7 +554,7 @@ fn asset_name(url: &str) -> String {
 /// when the manifest's GitHub address cannot serve it.
 ///
 /// A local release directory serves its own files. Otherwise the GitHub asset
-/// is tried first; when that read fails and `DEVBOARD_GITEA_URL` is configured,
+/// is tried first; when that read fails and the source carries a Gitea origin,
 /// the release's Gitea assets are listed and the matching artifact is read
 /// with the same credentials. Both failures are reported together so a journal
 /// names the transport that failed.
@@ -597,13 +603,16 @@ pub(crate) async fn download_release_asset(
     } else {
         String::new()
     };
-    let Some(base_url) = std::env::var("DEVBOARD_GITEA_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
+    let Some(base_url) = source
+        .gitea_fallback
+        .as_deref()
+        .map(str::trim)
+        .map(|value| value.trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
     else {
         return Err(format!(
-            "GET {} failed ({github_error}){pending}; DEVBOARD_GITEA_URL is not set",
+            "GET {} failed ({github_error}){pending}; \
+             the source carries no Gitea fallback (set DEVBOARD_GITEA_URL)",
             asset.url
         ));
     };
@@ -615,6 +624,7 @@ pub(crate) async fn download_release_asset(
         local_dir: None,
         forge: ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: None,
     };
     let bytes = match gitea_asset_bytes(&fallback, release, asset).await {
         Ok(bytes) => bytes,

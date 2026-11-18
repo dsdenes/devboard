@@ -96,11 +96,17 @@ pub fn manifest_source(
             local_dir: Some(path),
             forge: release::ReleaseForge::Gitea,
             download_base: String::new(),
+            gitea_fallback: None,
         });
     }
     let repository =
         release::release_project(environment.get("DEVBOARD_RELEASE_REPO").map(String::as_str));
-    if let Some(base_url) = gitea_base(environment) {
+    // The Gitea origin this environment names. A configured origin takes the
+    // read below, so a public GitHub source carries this only as the fallback a
+    // failed artifact read consults: the source resolves it once, beside its
+    // other fields, instead of the download reading the process environment.
+    let gitea_fallback = gitea_base(environment);
+    if let Some(base_url) = &gitea_fallback {
         // The release repository is public. A check that presented the
         // operator's credential made Gitea update the token row every
         // interval, so the read is anonymous and never touches that store.
@@ -112,6 +118,7 @@ pub fn manifest_source(
             local_dir: None,
             forge: release::ReleaseForge::Gitea,
             download_base: String::new(),
+            gitea_fallback: None,
         });
     }
     // A host that cannot reach Gitea installs, updates, and passes doctor
@@ -146,6 +153,7 @@ pub fn manifest_source(
         local_dir: None,
         forge: release::ReleaseForge::GitHub,
         download_base,
+        gitea_fallback,
     })
 }
 

@@ -221,6 +221,7 @@ impl StubServer {
             local_dir: None,
             forge: devboard::release::ReleaseForge::Gitea,
             download_base: String::new(),
+            gitea_fallback: None,
         }
     }
 }
@@ -317,6 +318,7 @@ async fn a_github_manifest_that_is_not_uploaded_yet_is_a_transient_failure() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::GitHub,
         download_base: base,
+        gitea_fallback: None,
     };
     let error = devboard::release::latest_manifest_for(&source, Some("1.2.4"))
         .await
@@ -345,6 +347,7 @@ fn local_source(directory: &std::path::Path) -> devboard::release::ManifestSourc
         local_dir: Some(directory.to_path_buf()),
         forge: devboard::release::ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: None,
     }
 }
 
@@ -673,16 +676,11 @@ async fn an_install_that_precedes_its_artifact_is_a_transient_failure() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::GitHub,
         download_base: base.clone(),
+        // The artifact 404 is what this test proves; a source that carried a
+        // Gitea fallback would add its own line to the same message.
+        gitea_fallback: None,
     };
-    // The artifact 404 is what this test proves; a configured Gitea would add
-    // its own fallback line to the same message.
-    let restore = std::env::var("DEVBOARD_GITEA_URL").ok();
-    std::env::remove_var("DEVBOARD_GITEA_URL");
     let outcome = devboard::updates::check_with_source(&app, &source).await;
-    match restore {
-        Some(value) => std::env::set_var("DEVBOARD_GITEA_URL", value),
-        None => std::env::remove_var("DEVBOARD_GITEA_URL"),
-    }
     handle.abort();
     assert_eq!(outcome, devboard::updates::UpdateOutcome::Failed);
     let journal = std::fs::read_to_string(devboard::journal::journal_file(

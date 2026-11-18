@@ -158,7 +158,6 @@ async fn a_failed_github_asset_falls_back_to_the_gitea_artifact() {
     let bytes = archive();
     let digest = sha256(&bytes);
     let (base, handle) = gitea_stub(bytes.clone());
-    std::env::set_var("DEVBOARD_GITEA_URL", &base);
     let dead = TcpListener::bind("127.0.0.1:0").unwrap();
     let dead_url = format!(
         "http://{}/devboard-x86_64-unknown-linux-gnu.tar.xz",
@@ -183,6 +182,7 @@ async fn a_failed_github_asset_falls_back_to_the_gitea_artifact() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: Some(base.clone()),
     };
     let prefix = directory.join("prefix");
     let installed =
@@ -198,7 +198,6 @@ async fn a_failed_github_asset_falls_back_to_the_gitea_artifact() {
         devboard::release::installed_version(&prefix).as_deref(),
         Some("1.2.3")
     );
-    std::env::remove_var("DEVBOARD_GITEA_URL");
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&directory);
 }
@@ -243,6 +242,7 @@ async fn a_truncated_artifact_read_is_a_transient_failure() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::GitHub,
         download_base: String::new(),
+        gitea_fallback: None,
     };
     let prefix = directory.join("prefix");
     let error =
@@ -291,6 +291,7 @@ async fn a_local_release_directory_installs_offline() {
         local_dir: Some(directory.clone()),
         forge: devboard::release::ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: None,
     };
     let release = devboard::release::latest_manifest(&source).await.unwrap();
     assert_eq!(release.version, "9.9.9");
@@ -367,6 +368,7 @@ async fn a_refused_credential_still_reads_a_public_release() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: None,
     };
     let release = devboard::release::latest_manifest(&source)
         .await
@@ -387,6 +389,7 @@ async fn a_private_release_still_reports_a_refused_credential() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: None,
     };
     let error = devboard::release::latest_manifest(&source)
         .await
@@ -427,6 +430,7 @@ async fn an_empty_release_body_is_a_transient_failure() {
         local_dir: None,
         forge: devboard::release::ReleaseForge::Gitea,
         download_base: String::new(),
+        gitea_fallback: None,
     };
     let error = devboard::release::latest_manifest(&source)
         .await
