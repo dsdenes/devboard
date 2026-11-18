@@ -765,6 +765,48 @@ fn doctor_drifts_a_tracked_stale_package_file_and_fails_an_untracked_one() {
 }
 
 #[test]
+fn doctor_fails_a_marked_skill_the_package_no_longer_ships() {
+    let scratch = Scratch::new("doctor-stale-skill");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+
+    // An unmarked skill belongs to the host, so the check never inspects it.
+    let house = host.join(".omp/skills/house-style");
+    fs::create_dir_all(&house).unwrap();
+    fs::write(house.join("SKILL.md"), b"---\nname: house-style\n---\n").unwrap();
+    let report = doctor(host).unwrap();
+    assert!(report.ok(), "{:?}", report.failures);
+
+    // A marked directory the package no longer ships is the entry install
+    // deletes, and it still reaches `omp` at project scope until it goes.
+    let stale = host.join(".omp/skills/devboard-removed");
+    fs::create_dir_all(&stale).unwrap();
+    fs::write(
+        stale.join("SKILL.md"),
+        b"---\nname: devboard-removed\n---\n",
+    )
+    .unwrap();
+    let report = doctor(host).unwrap();
+    assert!(!report.ok());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure == ".omp/skills/devboard-removed is not shipped by the package"),
+        "{:?}",
+        report.failures
+    );
+    assert!(
+        !report
+            .drift
+            .iter()
+            .any(|entry| entry.contains("devboard-removed")),
+        "{:?}",
+        report.drift
+    );
+}
+
+#[test]
 fn install_sh_refuses_a_symlinked_prefix() {
     let scratch = Scratch::new("scripted-prefix");
     let host = scratch.host();

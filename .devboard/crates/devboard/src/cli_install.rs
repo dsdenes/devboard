@@ -964,6 +964,28 @@ pub fn doctor_with_env(
             }
             compare_tree(&label, &skill.files, &actual, &mut report.failures)?;
         }
+        // The marked namespace is package-owned everywhere else, so a
+        // `devboard-` entry the package no longer ships is the stale entry
+        // install deletes. An unmarked skill belongs to the host and is never
+        // inspected.
+        let shipped: BTreeSet<&str> = package
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
+        for entry in fs::read_dir(&skills_dir)
+            .with_context(|| format!("doctor: reading {}", skills_dir.display()))?
+        {
+            let entry =
+                entry.with_context(|| format!("doctor: reading {}", skills_dir.display()))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(MANAGED_SKILL_PREFIX) || shipped.contains(name.as_str()) {
+                continue;
+            }
+            report
+                .failures
+                .push(format!(".omp/skills/{name} is not shipped by the package"));
+        }
     }
 
     for (label, prefix) in [
