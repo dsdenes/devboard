@@ -47,11 +47,13 @@ function deliver(
   effective: typeof BUDGET,
   live: Record<string, unknown> = {},
   saved: Record<string, unknown> | null = null,
+  settingsError: string | null = null,
 ): Promise<void> {
   resources.handleEvent({
     type: "resourcesState",
     state: {
       saved,
+      settingsError,
       effective,
       live: {
         activeAgents: 0,
@@ -207,4 +209,20 @@ test("a saved row that carries one figure still renders the form and the live pa
   expect(view.getByTestId("resource-saved").textContent).toContain("2 agents");
   expect(view.getByTestId("resource-live-agents").textContent).toBe("1");
   expect(view.queryByText("Loading the resource budget…")).toBeNull();
+});
+
+test("a refused settings file renders its reason instead of the derived default", async () => {
+  const view = render(DevboardResources);
+  await tick();
+  const reason = "/state/resources/settings.json: maxAgentPeers must be a whole number";
+  await deliver(BUDGET, {}, null, reason);
+
+  const origin = view.getByTestId("resource-origin");
+  expect(origin.textContent).toContain("settings.json");
+  expect(origin.textContent).toContain("maxAgentPeers must be a whole number");
+  expect(origin.textContent).not.toContain("Derived defaults");
+
+  // An absent file still reads as the derived defaults.
+  await deliver(BUDGET);
+  expect(view.getByTestId("resource-origin").textContent).toContain("Derived defaults");
 });

@@ -96,12 +96,14 @@ const SAVED: ResourceSettings = {
 function frame(
   options: {
     saved?: unknown;
+    settingsError?: string | null;
     effective?: ResourceSettings;
     live?: Record<string, unknown>;
   } = {},
 ): Record<string, unknown> {
   return {
     saved: options.saved === undefined ? null : options.saved,
+    settingsError: options.settingsError === undefined ? null : options.settingsError,
     effective: options.effective ?? DERIVED,
     live: {
       activeAgents: 0,
@@ -342,4 +344,26 @@ test("a saved figure that is present and malformed drops the frame", () => {
     });
     expect(store.state).toBe(accepted);
   }
+});
+
+test("a refused settings file carries its reason instead of a saved row", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+
+  const reason = "/state/resources/settings.json: maxAgentPeers must be a whole number";
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ settingsError: reason }),
+  });
+  expect(store.state?.saved).toBeNull();
+  expect(store.state?.settingsError).toBe(reason);
+  expect(store.state?.effective).toEqual(DERIVED);
+
+  // A reason of another type is a frame this client cannot trust.
+  const accepted = store.state;
+  store.handleEvent({
+    type: "resourcesState",
+    state: frame({ settingsError: 4 as unknown as string }),
+  });
+  expect(store.state).toBe(accepted);
 });

@@ -123,6 +123,10 @@
       <span class="resources-meta" data-testid="resource-origin">
         {#if budget === null}
           Loading the resource budget…
+        {:else if budget.settingsError !== null}
+          <span class="resources-meta__error" title={budget.settingsError}>
+            {budget.settingsError}
+          </span>
         {:else if budget.saved === null}
           Derived defaults
         {:else}
@@ -281,6 +285,10 @@
   .resources-meta {
     color: var(--muted-foreground);
     font-size: 11px;
+  }
+
+  .resources-meta__error {
+    color: var(--destructive);
   }
 
   .resources-panel {

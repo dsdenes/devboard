@@ -203,20 +203,37 @@ pub struct SavedSettings {
 }
 
 impl SavedSettings {
-    pub fn from_value(value: &Value) -> Self {
-        let object = match value.as_object() {
-            Some(object) => object,
-            None => return Self::default(),
+    /// Reads one settings object. A value that is not a JSON object, or that
+    /// carries a setting of the wrong type, refuses the whole file: dropping a
+    /// key silently would let the peer cap fall back to the derived default
+    /// while the page still claimed a budget had been saved.
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let Some(object) = value.as_object() else {
+            return Err("the settings file must hold a JSON object".to_string());
         };
-        Self {
-            max_agent_peers: object
-                .get("maxAgentPeers")
-                .and_then(Value::as_u64)
-                .and_then(|value| value.try_into().ok()),
-            memory_high_mb: object.get("memoryHighMb").and_then(Value::as_u64),
-            memory_max_mb: object.get("memoryMaxMb").and_then(Value::as_u64),
-            memory_reserve_mb: object.get("memoryReserveMb").and_then(Value::as_u64),
-        }
+        let number = |key: &str| -> Result<Option<u64>, String> {
+            match object.get(key) {
+                None => Ok(None),
+                Some(value) => value
+                    .as_u64()
+                    .map(Some)
+                    .ok_or_else(|| format!("{key} must be a whole number")),
+            }
+        };
+        let max_agent_peers = match number("maxAgentPeers")? {
+            None => None,
+            Some(value) => Some(
+                value
+                    .try_into()
+                    .map_err(|_| "maxAgentPeers must be a whole number".to_string())?,
+            ),
+        };
+        Ok(Self {
+            max_agent_peers,
+            memory_high_mb: number("memoryHighMb")?,
+            memory_max_mb: number("memoryMaxMb")?,
+            memory_reserve_mb: number("memoryReserveMb")?,
+        })
     }
 
     pub fn from_settings(settings: &Settings) -> Self {
@@ -650,6 +667,12 @@ pub struct Governor {
     settings: Mutex<Settings>,
     saved: Mutex<SavedSettings>,
     settings_stamp: Mutex<Option<SystemTime>>,
+    /// The reason the saved settings file was rejected, when it was. The
+    /// derived budget stays in force until the file reads as a budget again.
+    settings_error: Mutex<Option<String>>,
+    /// The rejection the journal already carries, so one unchanged file
+    /// records one activity line.
+    settings_error_journaled: Mutex<Option<String>>,
     slice_enabled: bool,
     /// Whether this process owns the slice properties. A dashboard does; a
     /// worker or a CLI that only joins the slice never rewrites its budget.
@@ -716,7 +739,7 @@ impl Governor {
         apply: bool,
     ) -> Arc<Self> {
         let directory = state_dir.join(RESOURCES_DIRECTORY);
-        let saved = read_saved_settings(&directory).unwrap_or_default();
+        let (saved, settings_error) = read_saved_verdict(&directory);
         let derived = Settings::derive(options.memory.total_mb(), options.memory.cpu_count());
         let mut effective = derived;
         effective.apply_environment(&options.env);
@@ -729,6 +752,8 @@ impl Governor {
             settings: Mutex::new(effective),
             saved: Mutex::new(saved),
             settings_stamp: Mutex::new(file_stamp(&settings_path(state_dir))),
+            settings_error: Mutex::new(settings_error),
+            settings_error_journaled: Mutex::new(None),
             slice_enabled: options.slice,
             slice_owned: options.slice && apply,
             slice_name: slice_name.to_string(),
@@ -803,9 +828,12 @@ impl Governor {
             .map(|current| *current == stamp)
             .unwrap_or(true);
         if same {
+            // A governor that started on a rejected file has not journaled it
+            // yet; the first read that has a hook records it once.
+            self.journal_settings_error();
             return;
         }
-        let saved = read_saved_settings(&self.directory).unwrap_or_default();
+        let (saved, error) = read_saved_verdict(&self.directory);
         let derived = self.defaults();
         let mut effective = derived;
         effective.apply_environment(&self.env);
@@ -819,6 +847,70 @@ impl Governor {
         if let Ok(mut current) = self.settings_stamp.lock() {
             *current = stamp;
         }
+        self.note_settings_error(error);
+        self.journal_settings_error();
+    }
+
+    /// The reason the saved settings file was rejected, if it was.
+    pub fn settings_error(&self) -> Option<String> {
+        self.settings_error
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+
+    /// Records the read verdict: the reason the file was rejected, or `None`
+    /// when it read as a budget. A changed verdict starts a fresh journal
+    /// dedupe, so a rejection of new bytes records its own line.
+    fn note_settings_error(&self, error: Option<String>) {
+        let changed = self
+            .settings_error
+            .lock()
+            .map(|current| *current != error)
+            .unwrap_or(false);
+        if changed {
+            if let Ok(mut journaled) = self.settings_error_journaled.lock() {
+                *journaled = None;
+            }
+        }
+        if let Ok(mut current) = self.settings_error.lock() {
+            *current = error;
+        }
+    }
+
+    /// Journals a rejected settings file as activity, once per unchanged
+    /// reason. A governor with no hook records nothing, so the dashboard
+    /// journals the rejection on its first read rather than losing the line at
+    /// startup.
+    fn journal_settings_error(&self) {
+        let Some(hook) = self.journal.lock().ok().and_then(|hook| hook.clone()) else {
+            return;
+        };
+        let Some(error) = self
+            .settings_error
+            .lock()
+            .ok()
+            .and_then(|error| error.clone())
+        else {
+            return;
+        };
+        let already = self
+            .settings_error_journaled
+            .lock()
+            .map(|journaled| journaled.as_deref() == Some(error.as_str()))
+            .unwrap_or(true);
+        if already {
+            return;
+        }
+        if let Ok(mut journaled) = self.settings_error_journaled.lock() {
+            *journaled = Some(error.clone());
+        }
+        hook(
+            "activity",
+            &format!(
+                "ignored the saved resource budget {error}; the derived defaults stay in force"
+            ),
+        );
     }
 
     /// Persists the operator's values and applies them to the live slice
@@ -853,6 +945,8 @@ impl Governor {
         if let Ok(mut current) = self.settings_stamp.lock() {
             *current = file_stamp(&settings_path(&self.state_dir));
         }
+        // The save rewrote the file, so a rejection it had is answered.
+        self.note_settings_error(None);
         Ok(settings)
     }
 
@@ -1344,6 +1438,7 @@ impl Governor {
         self.refresh_settings();
         let saved = self.saved_settings();
         let effective = self.settings();
+        let settings_error = self.settings_error();
         let info = self.slice_info();
         // One read answers both counts, so the cap's count and the exempt
         // count always add up to the slots a reader can list.
@@ -1352,6 +1447,7 @@ impl Governor {
             "type": "resourcesState",
             "state": {
                 "saved": if saved.is_empty() { Value::Null } else { saved.to_json() },
+                "settingsError": settings_error,
                 "effective": effective.to_json(),
                 "live": {
                     "activeAgents": cap_slots.len() as u32,
@@ -1468,10 +1564,31 @@ fn settings_path(state_dir: &Path) -> PathBuf {
     state_dir.join(RESOURCES_DIRECTORY).join(SETTINGS_FILE)
 }
 
-fn read_saved_settings(directory: &Path) -> Option<SavedSettings> {
-    let text = fs::read_to_string(directory.join(SETTINGS_FILE)).ok()?;
-    let value: Value = serde_json::from_str(&text).ok()?;
-    Some(SavedSettings::from_value(&value))
+/// Reads the saved budget. `Ok(None)` means the file is absent, so the derived
+/// defaults stand. `Err` names the file and why its bytes are not a budget: the
+/// caller reports that refusal instead of silently reverting the operator's
+/// cap, and the derived defaults stay in force until the file reads again.
+fn read_saved_settings(directory: &Path) -> Result<Option<SavedSettings>, String> {
+    let path = directory.join(SETTINGS_FILE);
+    let shown = path.display();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{shown}: {error}")),
+    };
+    let value: Value = serde_json::from_str(&text).map_err(|error| format!("{shown}: {error}"))?;
+    SavedSettings::from_value(&value)
+        .map(Some)
+        .map_err(|error| format!("{shown}: {error}"))
+}
+
+/// The governor's startup and refresh verdict: the saved budget, or the
+/// derived defaults plus the reason the file was refused.
+fn read_saved_verdict(directory: &Path) -> (SavedSettings, Option<String>) {
+    match read_saved_settings(directory) {
+        Ok(saved) => (saved.unwrap_or_default(), None),
+        Err(error) => (SavedSettings::default(), Some(error)),
+    }
 }
 
 fn file_stamp(path: &Path) -> Option<SystemTime> {
@@ -2081,5 +2198,111 @@ Pages purgeable:                           250.\n";
             .expect("the update validates");
         assert_eq!(kept.max_agent_peers, 3);
         assert_eq!(kept.memory_max_mb, 1_024);
+    }
+
+    /// Writes `text` as the saved settings file under one scratch directory.
+    fn write_settings(directory: &Path, text: &str) {
+        let path = settings_path(directory);
+        fs::create_dir_all(path.parent().expect("the resources directory"))
+            .expect("the resources directory");
+        fs::write(&path, text).expect("the settings file");
+        // A fresh write must reach a new modification time, so the governor's
+        // stamp check re-reads it.
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    #[test]
+    fn a_rejected_settings_file_is_reported_and_the_derived_budget_stands() {
+        let directory = scratch("settings-refused");
+        write_settings(&directory, "{");
+        let governor = test_governor(&directory);
+        let derived = governor.defaults();
+        assert_eq!(governor.settings(), derived);
+
+        let frame = governor.state_event();
+        let reason = frame["state"]["settingsError"]
+            .as_str()
+            .expect("the frame names the refusal")
+            .to_string();
+        assert!(
+            reason.contains("settings.json"),
+            "the reason names the file: {reason}"
+        );
+        assert_eq!(frame["state"]["saved"], Value::Null);
+        assert_eq!(governor.settings(), derived);
+
+        // A wrong-typed key refuses the whole file rather than dropping that
+        // key, so the saved cap cannot silently revert.
+        write_settings(&directory, "{\"maxAgentPeers\": \"4\"}");
+        let frame = governor.state_event();
+        let reason = frame["state"]["settingsError"]
+            .as_str()
+            .expect("the frame names the refusal")
+            .to_string();
+        assert!(
+            reason.contains("maxAgentPeers"),
+            "the reason names the key: {reason}"
+        );
+        assert_eq!(frame["state"]["saved"], Value::Null);
+        assert_eq!(governor.settings(), derived);
+
+        // The file reads as a budget again; the saved values apply.
+        write_settings(
+            &directory,
+            "{\"maxAgentPeers\": 2, \"memoryHighMb\": 256, \"memoryMaxMb\": 512, \"memoryReserveMb\": 128}",
+        );
+        let frame = governor.state_event();
+        assert_eq!(frame["state"]["settingsError"], Value::Null);
+        assert_eq!(frame["state"]["saved"]["maxAgentPeers"], 2);
+        assert_eq!(governor.settings().max_agent_peers, 2);
+    }
+
+    #[test]
+    fn a_rejected_settings_file_is_journaled_once_per_unchanged_reason() {
+        let directory = scratch("settings-journal");
+        let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let governor = test_governor(&directory);
+        {
+            let recorded = Arc::clone(&recorded);
+            governor.set_journal_hook(Arc::new(move |kind, text| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((kind.to_string(), text.to_string()));
+            }));
+        }
+        // An absent file records nothing and keeps the derived defaults.
+        let frame = governor.state_event();
+        assert_eq!(frame["state"]["saved"], Value::Null);
+        assert_eq!(frame["state"]["settingsError"], Value::Null);
+        assert!(recorded.lock().unwrap().is_empty());
+
+        // A file that never read records one activity line, however often the
+        // page polls it.
+        write_settings(&directory, "{");
+        let _ = governor.state_event();
+        let _ = governor.state_event();
+        let lines = recorded.lock().unwrap().clone();
+        assert_eq!(
+            lines.len(),
+            1,
+            "one unchanged file records one line: {lines:?}"
+        );
+        assert_eq!(lines[0].0, "activity");
+        assert!(lines[0].1.contains("settings.json"), "{}", lines[0].1);
+
+        // The same bytes written again are still one unchanged reason.
+        write_settings(&directory, "{");
+        let _ = governor.state_event();
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+
+        // Fixed bytes clear the refusal; a later rejection records its own line.
+        write_settings(&directory, "{}");
+        let _ = governor.state_event();
+        let _ = governor.state_event();
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+        write_settings(&directory, "{");
+        let _ = governor.state_event();
+        assert_eq!(recorded.lock().unwrap().len(), 2);
     }
 }

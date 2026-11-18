@@ -806,12 +806,10 @@ impl App {
         });
     }
 
-    /// Journals every kernel kill the slice records and routes deferral
-    /// reports into the dashboard journal. Runs only while serving.
+    /// Routes every resource event the governor records into the dashboard
+    /// journal: a rejected settings file on every host, and a kernel kill
+    /// while the slice runs. Runs only while serving.
     pub fn start_resource_watcher(self: &Arc<Self>) {
-        if !self.resources.slice_enabled() {
-            return;
-        }
         {
             let weak = Arc::downgrade(self);
             self.resources.set_journal_hook(Arc::new(move |kind, text| {
@@ -819,6 +817,9 @@ impl App {
                     app.shared.journal.write(kind, text, None);
                 }
             }));
+        }
+        if !self.resources.slice_enabled() {
+            return;
         }
         let app = Arc::clone(self);
         tokio::spawn(async move {

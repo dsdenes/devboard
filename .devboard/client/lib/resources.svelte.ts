@@ -26,6 +26,11 @@ export interface ResourceLive {
 export interface ResourcesState {
   /** The values explicitly saved to disk; null while the server derives all four. */
   saved: ResourceSettings | null;
+  /**
+   * Why the saved settings file was refused, or null when nothing was saved or
+   * it read as a budget. The effective row is the derived budget either way.
+   */
+  settingsError: string | null;
   effective: ResourceSettings;
   live: ResourceLive;
 }
@@ -119,7 +124,14 @@ export function parseResourcesState(value: unknown): ResourcesState | undefined 
     if (row === undefined) return undefined;
     saved = row;
   }
-  return { saved, effective, live };
+  // A frame from a server that predates the reported refusal carries no
+  // reason; a reason of another type is a frame this client cannot trust.
+  let settingsError: string | null = null;
+  if (frame.settingsError !== null && frame.settingsError !== undefined) {
+    if (typeof frame.settingsError !== "string") return undefined;
+    settingsError = frame.settingsError;
+  }
+  return { saved, settingsError, effective, live };
 }
 
 /** True when both rows carry the same four figures. */
