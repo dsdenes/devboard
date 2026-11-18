@@ -6734,6 +6734,7 @@ fn decision_action(action: ReapAction) -> &'static str {
         ReapAction::WouldKill => "would-kill",
         ReapAction::Skipped => "skipped",
         ReapAction::RemovedRecord => "removed-record",
+        ReapAction::Survived => "survived",
     }
 }
 
@@ -7424,6 +7425,13 @@ pub async fn run(invocation: &WorkerInvocation) -> anyhow::Result<()> {
             } else if decision.action == ReapAction::Killed {
                 println!(
                     "cleanup: killed {} ({}): {}",
+                    decision.pid,
+                    decision_reason(decision.reason),
+                    decision.detail
+                );
+            } else if decision.action == ReapAction::Survived {
+                println!(
+                    "cleanup: survived {} ({}): {}",
                     decision.pid,
                     decision_reason(decision.reason),
                     decision.detail

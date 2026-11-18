@@ -988,6 +988,8 @@ pub enum ReapAction {
     WouldKill,
     Skipped,
     RemovedRecord,
+    /// Signalled, but observed still running when both graces ran out.
+    Survived,
 }
 
 /// One reaping pass's report.
@@ -1066,13 +1068,15 @@ fn wait_for_exit(pid: u32, alive: &dyn Fn(u32) -> bool, timeout_ms: u64) -> bool
 }
 
 /// Ends one child and its group: SIGTERM, then SIGKILL after the grace.
-fn terminate(pid: u32, alive: &dyn Fn(u32) -> bool, kill_grace_ms: u64) {
+/// Returns whether the child was observed gone; a child that outlives both
+/// grace windows is still running and keeps whatever handle names it.
+fn terminate(pid: u32, alive: &dyn Fn(u32) -> bool, kill_grace_ms: u64) -> bool {
     signal_process_group(pid, libc::SIGTERM);
     if wait_for_exit(pid, alive, kill_grace_ms) {
-        return;
+        return true;
     }
     signal_process_group(pid, libc::SIGKILL);
-    wait_for_exit(pid, alive, kill_grace_ms);
+    wait_for_exit(pid, alive, kill_grace_ms)
 }
 
 /// One reaping pass. Records are the first proof: a recorded child whose owner
@@ -1181,18 +1185,28 @@ pub fn reap_orphans(options: ReapOptions) -> ReapReport {
                 handled.insert(pid);
                 continue;
             }
-            terminate(pid, alive, kill_grace_ms);
-            remove_supervision_record(&path);
-            report.decisions.push(ReapDecision {
-                action: ReapAction::Killed,
-                pid,
-                reason: ReapReason::Record,
-                detail,
-            });
-            report.killed.push(pid);
-            records.retain(|entry| entry.0.pid != pid);
+            if terminate(pid, alive, kill_grace_ms) {
+                remove_supervision_record(&path);
+                report.decisions.push(ReapDecision {
+                    action: ReapAction::Killed,
+                    pid,
+                    reason: ReapReason::Record,
+                    detail,
+                });
+                report.killed.push(pid);
+                records.retain(|entry| entry.0.pid != pid);
+                acted = true;
+            } else {
+                // The child outlived both signals, so the record is the only
+                // handle a later pass has on it; keep it and claim nothing.
+                report.decisions.push(ReapDecision {
+                    action: ReapAction::Survived,
+                    pid,
+                    reason: ReapReason::Record,
+                    detail: format!("{detail}; survived SIGTERM and SIGKILL"),
+                });
+            }
             handled.insert(pid);
-            acted = true;
         }
         if !acted {
             break;
@@ -1262,14 +1276,24 @@ pub fn reap_orphans(options: ReapOptions) -> ReapReport {
             });
             continue;
         }
-        terminate(pid, alive, kill_grace_ms);
-        report.decisions.push(ReapDecision {
-            action: ReapAction::Killed,
-            pid,
-            reason: ReapReason::Scratch,
-            detail: detail.to_string(),
-        });
-        report.killed.push(pid);
+        if terminate(pid, alive, kill_grace_ms) {
+            report.decisions.push(ReapDecision {
+                action: ReapAction::Killed,
+                pid,
+                reason: ReapReason::Scratch,
+                detail: detail.to_string(),
+            });
+            report.killed.push(pid);
+        } else {
+            // Nothing else names this process, so the next pass must find it
+            // again; claiming a kill it outlived would hide the leak.
+            report.decisions.push(ReapDecision {
+                action: ReapAction::Survived,
+                pid,
+                reason: ReapReason::Scratch,
+                detail: format!("{detail}; survived SIGTERM and SIGKILL"),
+            });
+        }
     }
 
     report
@@ -1606,6 +1630,60 @@ mod tests {
         assert!(!live_process(pid), "the child is no longer running");
 
         let _status = child.wait().await.expect("a reaped child");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_recorded_child_that_outlives_both_signals_keeps_its_record() {
+        let root = scratch("survivor");
+        let state = root.join("state");
+        let mut child = supervised_spawn(
+            &sleeper(),
+            SupervisedSpawnOptions {
+                cwd: root.clone(),
+                env: None,
+                state_dir: Some(state.clone()),
+            },
+        )
+        .expect("a supervised child");
+        let pid = child.pid().expect("a pid");
+        let path = supervision_record_path(&state, pid);
+        let dead_owner = dead_pid();
+        let text = std::fs::read_to_string(&path).expect("a record");
+        let mut value: Value = serde_json::from_str(&text).expect("record JSON");
+        value["ownerPid"] = json!(dead_owner);
+        std::fs::write(&path, format!("{}\n", crate::jsjson::stringify(&value)))
+            .expect("an orphan record");
+
+        // The child never reports death, so both kill graces run out and the
+        // pass must keep the record instead of claiming a kill it did not see.
+        let survivor = pid;
+        let report = reap_orphans(ReapOptions {
+            kill_grace_ms: Some(20),
+            alive: Some(Box::new(move |probed: u32| probed == survivor)),
+            ..scope(&state, &root)
+        });
+        assert!(report.available);
+        assert!(
+            report.killed.is_empty(),
+            "a surviving child is not reported killed: {:?}",
+            report.decisions
+        );
+        assert!(report.removed_record_pids.is_empty());
+        assert!(
+            path.exists(),
+            "the record is the handle a later pass retries"
+        );
+        let decision = report
+            .decisions
+            .iter()
+            .find(|decision| decision.pid == pid)
+            .expect("a decision names the surviving child");
+        assert_eq!(decision.action, ReapAction::Survived);
+        assert_eq!(decision.reason, ReapReason::Record);
+        assert!(decision.detail.contains("survived SIGTERM and SIGKILL"));
+
+        let _status = child.wait().await.expect("a signalled child");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
