@@ -2578,7 +2578,7 @@ pub async fn release_documents(input: ReleaseInput) -> ReleaseResult {
                 Some(input.summary.clone()),
             )
             .await
-            .map_err(|detail| format!("could not open the documentation pull request: {detail}"))?;
+            .map_err(|detail| format!("could not deliver the documentation pull request: {detail}"))?;
             (input.activity)(&format!(
                 "opened pull request #{} ({})",
                 pull_request.number, pull_request.url

@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use devboard::delivery::{
-    bounded_reply, check_state, closing_keyword, deliver_issue_change, fresh_issue_branch,
-    issue_branch, open_record_for_issue, plan_maintenance, read_maintenance, run_maintenance,
-    CheckObservation, CommentDecision, CreatePull, DeliveryForge, DeliveryFuture,
+    bounded_reply, check_state, closing_keyword, deliver_branch, deliver_issue_change,
+    fresh_issue_branch, issue_branch, open_record_for_issue, plan_maintenance, read_maintenance,
+    run_maintenance, CheckObservation, CommentDecision, CreatePull, DeliveryForge, DeliveryFuture,
     MaintenanceAction, MaintenanceInput, MaintenanceOutcome, MaintenanceRecord, MaintenanceResult,
     PullSnapshot, ReviewComment,
 };
@@ -460,6 +460,98 @@ async fn a_replayed_implementation_reuses_the_open_pull_request() {
     assert_eq!(
         fixture.remote_branch(&first.branch).as_deref(),
         Some(head.as_str())
+    );
+}
+
+/// A regular file where the state directory belongs makes every record write
+/// fail, after the forge already holds the pull request.
+fn blocked_state(fixture: &Fixture) -> PathBuf {
+    let blocked = fixture.root.join("blocked-state");
+    std::fs::write(&blocked, "").expect("a regular file where the state directory belongs");
+    blocked
+}
+
+#[tokio::test]
+async fn a_delivered_pull_request_whose_record_cannot_be_written_is_an_error() {
+    let fixture = Fixture::new("record-unwritable");
+    let forge = FakeForge::new("github");
+    let base_tip = fixture.tip();
+    fixture.commit("change.txt", "the change\n", "feat: make the change");
+    let error = deliver_issue_change(
+        &fixture.repo,
+        &blocked_state(&fixture),
+        forge.as_ref(),
+        &fixture.issue(12),
+        "run-abc",
+        &base_tip,
+    )
+    .await
+    .expect_err("the unwritten record is reported");
+    assert_eq!(forge.creates(), 1, "the pull request was still opened");
+    assert!(
+        error.contains("pull request #7 (https://forge.test/acme/fixture/pulls/7)"),
+        "{error}"
+    );
+    assert!(
+        error.contains("maintenance record could not be written"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn an_adopted_pull_request_whose_record_cannot_be_written_is_an_error() {
+    let fixture = Fixture::new("record-unwritable-adopted");
+    let forge = FakeForge::new("github");
+    let base_tip = fixture.tip();
+    fixture.commit("change.txt", "the change\n", "feat: make the change");
+    let branch = issue_branch(12, "run-abc");
+    forge.set_snapshot(snapshot(9, "open", &branch, "mergeable"));
+    let error = deliver_issue_change(
+        &fixture.repo,
+        &blocked_state(&fixture),
+        forge.as_ref(),
+        &fixture.issue(12),
+        "run-abc",
+        &base_tip,
+    )
+    .await
+    .expect_err("the unwritten record is reported");
+    assert_eq!(forge.creates(), 0, "the existing pull request is adopted");
+    assert!(
+        error.contains("pull request #9 (https://forge.test/acme/fixture/pulls/9)"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_documentation_pull_request_whose_record_cannot_be_written_is_an_error() {
+    let fixture = Fixture::new("record-unwritable-branch");
+    let forge = FakeForge::new("github");
+    let head = fixture.commit("doc.md", "the document\n", "docs: write the document");
+    let error = deliver_branch(
+        &fixture.repo,
+        &fixture.repo,
+        &blocked_state(&fixture),
+        forge.as_ref(),
+        "devboard/design-cycle-1",
+        "main",
+        "docs(design): the summary".to_string(),
+        "The summary.\n".to_string(),
+        &head,
+        None,
+        Some("The summary.".to_string()),
+    )
+    .await
+    .expect_err("the unwritten record is reported");
+    assert_eq!(forge.creates(), 1, "the pull request was still opened");
+    assert_eq!(
+        fixture.remote_branch("devboard/design-cycle-1").as_deref(),
+        Some(head.as_str()),
+        "the branch stays pushed"
+    );
+    assert!(
+        error.contains("pull request #7 (https://forge.test/acme/fixture/pulls/7)"),
+        "{error}"
     );
 }
 

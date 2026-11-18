@@ -1550,6 +1550,21 @@ fn integration_branch(repo_dir: &Path) -> Result<String, String> {
     git_output(repo_dir, &["symbolic-ref", "--short", "HEAD"]).or_else(|_| Ok("main".to_string()))
 }
 
+/// The record that makes the worker maintain a pull request the forge already
+/// holds. A write that fails is reported with the request it names, because the
+/// request exists and keeps needing maintenance.
+fn record_delivery(
+    delivered: &DeliveredPullRequest,
+    written: std::io::Result<Vec<MaintenanceRecord>>,
+) -> Result<(), String> {
+    written.map(|_| ()).map_err(|error| {
+        format!(
+            "pull request #{} ({}) was delivered but its maintenance record could not be written: {error}",
+            delivered.number, delivered.url
+        )
+    })
+}
+
 /// Delivers one issue's local commits as a pushed branch and one ready pull
 /// request. The integration branch is left at `base_tip`; nothing is force
 /// pushed.
@@ -1590,7 +1605,7 @@ pub async fn deliver_issue_change(
         };
         let mut record = MaintenanceRecord::new(delivered.clone(), Some(issue.number), None);
         record.head_commit = delivered.head.clone();
-        let _ = upsert_maintenance(state_dir, repo_dir, record);
+        record_delivery(&delivered, upsert_maintenance(state_dir, repo_dir, record))?;
         return Ok(delivered);
     }
     if let Err(detail) = git_output(
@@ -1633,7 +1648,7 @@ pub async fn deliver_issue_change(
     };
     let mut record = MaintenanceRecord::new(delivered.clone(), Some(issue.number), None);
     record.head_commit = head;
-    let _ = upsert_maintenance(state_dir, repo_dir, record);
+    record_delivery(&delivered, upsert_maintenance(state_dir, repo_dir, record))?;
     Ok(delivered)
 }
 
@@ -1677,7 +1692,7 @@ pub async fn deliver_branch(
     };
     let mut record = MaintenanceRecord::new(delivered.clone(), issue, documentation);
     record.head_commit = head.to_string();
-    let _ = upsert_maintenance(state_dir, repo_dir, record);
+    record_delivery(&delivered, upsert_maintenance(state_dir, repo_dir, record))?;
     Ok(delivered)
 }
 
