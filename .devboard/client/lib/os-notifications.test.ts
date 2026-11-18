@@ -1,5 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
+  browserEnvironment,
   collectPendingQuestions,
   ENABLED_KEY,
   OsNotificationController,
@@ -8,6 +9,7 @@ import {
   type GoalDraftsQuestionSource,
   type GoalQuestionSource,
   type IssuesQuestionSource,
+  type NotificationPermission,
   type OsNotificationEnvironment,
   type OsNotificationMessage,
   type PendingQuestion,
@@ -49,6 +51,74 @@ class FakeChannel implements OsNotificationEnvironment {
     if (enabled) this.storage.values.set(ENABLED_KEY, "1");
     else this.storage.values.delete(ENABLED_KEY);
   }
+}
+
+/**
+ * Stands in for the browser's `Notification` global: the adapter reads the
+ * static permission, prompts through `requestPermission`, and constructs one
+ * instance per shown message.
+ */
+class FakeNotification {
+  static permission: NotificationPermission = "default";
+  static requestResult: NotificationPermission = "default";
+  static requestRejection: Error | null = null;
+  static constructRejection: Error | null = null;
+  static requests = 0;
+  static shown: { title: string; body: string | undefined }[] = [];
+
+  static reset(): void {
+    FakeNotification.permission = "default";
+    FakeNotification.requestResult = "default";
+    FakeNotification.requestRejection = null;
+    FakeNotification.constructRejection = null;
+    FakeNotification.requests = 0;
+    FakeNotification.shown = [];
+  }
+
+  static async requestPermission(): Promise<NotificationPermission> {
+    FakeNotification.requests += 1;
+    if (FakeNotification.requestRejection !== null) throw FakeNotification.requestRejection;
+    return FakeNotification.requestResult;
+  }
+
+  constructor(title: string, init?: { body?: string }) {
+    if (FakeNotification.constructRejection !== null) {
+      throw FakeNotification.constructRejection;
+    }
+    FakeNotification.shown.push({ title, body: init?.body });
+  }
+}
+
+class MemoryStorage {
+  private values = new Map<string, string>();
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+}
+
+function installNotification(value: unknown): void {
+  Object.defineProperty(globalThis, "Notification", {
+    value,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function installStorage(value: unknown): void {
+  Object.defineProperty(globalThis, "localStorage", {
+    value,
+    configurable: true,
+    writable: true,
+  });
 }
 
 function question(id: number | string, message: string): RunQuestion {
@@ -135,8 +205,15 @@ function granted(channel: FakeChannel): FakeChannel {
   return channel;
 }
 
+beforeEach(() => {
+  FakeNotification.reset();
+});
+
 afterEach(() => {
   notifications.clear();
+  // The adapter reads the browser globals live, so every test starts from none.
+  Reflect.deleteProperty(globalThis, "Notification");
+  Reflect.deleteProperty(globalThis, "localStorage");
 });
 
 test("before any grant the control reads off and names OS notifications", () => {
@@ -677,4 +754,119 @@ test("collecting ignores everything that is not a pending question", () => {
     }),
   );
   expect(pending).toHaveLength(0);
+});
+
+test("the real channel reads unsupported without the Notification API", async () => {
+  installNotification(undefined);
+  const environment = browserEnvironment();
+
+  expect(environment.permission()).toBe("unsupported");
+  expect(await environment.requestPermission()).toBe("unsupported");
+  environment.show({ title: "devboard", body: "Answer the question?" });
+  expect(FakeNotification.shown).toHaveLength(0);
+});
+
+test("the real channel reads the browser's granted and denied permission", () => {
+  installNotification(FakeNotification);
+  const environment = browserEnvironment();
+
+  FakeNotification.permission = "granted";
+  expect(environment.permission()).toBe("granted");
+
+  FakeNotification.permission = "denied";
+  expect(environment.permission()).toBe("denied");
+
+  FakeNotification.permission = "default";
+  expect(environment.permission()).toBe("default");
+});
+
+test("the real channel prompts and maps a dismissal to default", async () => {
+  installNotification(FakeNotification);
+  const environment = browserEnvironment();
+
+  FakeNotification.requestResult = "granted";
+  expect(await environment.requestPermission()).toBe("granted");
+
+  FakeNotification.requestResult = "denied";
+  expect(await environment.requestPermission()).toBe("denied");
+
+  FakeNotification.requestResult = "default";
+  expect(await environment.requestPermission()).toBe("default");
+
+  expect(FakeNotification.requests).toBe(3);
+});
+
+test("a refused prompt resolves default instead of rejecting", async () => {
+  installNotification(FakeNotification);
+  FakeNotification.requestRejection = new Error("permission request refused");
+  const environment = browserEnvironment();
+
+  expect(await environment.requestPermission()).toBe("default");
+  expect(FakeNotification.requests).toBe(1);
+});
+
+test("the real channel shows one notification only while permission is granted", () => {
+  installNotification(FakeNotification);
+  const environment = browserEnvironment();
+  const message = { title: "devboard · Goal lane", body: "Which file?" };
+
+  FakeNotification.permission = "granted";
+  environment.show(message);
+  expect(FakeNotification.shown).toEqual([{ title: message.title, body: message.body }]);
+
+  FakeNotification.permission = "default";
+  environment.show(message);
+  FakeNotification.permission = "denied";
+  environment.show(message);
+  expect(FakeNotification.shown).toHaveLength(1);
+});
+
+test("a refused notification construction does not escape", () => {
+  installNotification(FakeNotification);
+  FakeNotification.permission = "granted";
+  FakeNotification.constructRejection = new Error("notification refused");
+  const environment = browserEnvironment();
+
+  environment.show({ title: "devboard · Flow", body: "Answer the question?" });
+  expect(FakeNotification.shown).toHaveLength(0);
+});
+
+test("the enabled flag round-trips through localStorage", () => {
+  installNotification(FakeNotification);
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const environment = browserEnvironment();
+
+  expect(environment.readEnabled()).toBe(false);
+  environment.writeEnabled(true);
+  expect(storage.getItem(ENABLED_KEY)).toBe("1");
+  expect(environment.readEnabled()).toBe(true);
+  environment.writeEnabled(false);
+  expect(storage.getItem(ENABLED_KEY)).toBeNull();
+  expect(environment.readEnabled()).toBe(false);
+});
+
+test("a blocked storage leaves the channel reading off without throwing", () => {
+  installNotification(FakeNotification);
+  Object.defineProperty(globalThis, "localStorage", {
+    get() {
+      throw new Error("storage blocked");
+    },
+    configurable: true,
+  });
+  const environment = browserEnvironment();
+
+  expect(environment.readEnabled()).toBe(false);
+  environment.writeEnabled(true);
+  environment.writeEnabled(false);
+});
+
+test("an absent storage reads off without throwing", () => {
+  installNotification(FakeNotification);
+  installStorage(undefined);
+  const environment = browserEnvironment();
+
+  expect(environment.readEnabled()).toBe(false);
+  environment.writeEnabled(true);
+  environment.writeEnabled(false);
 });
