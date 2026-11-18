@@ -305,7 +305,7 @@ pub async fn check_with_source(app: &Arc<App>, source: &ManifestSource) -> Updat
                 UpdateOutcome::Installed
             }
             Err(error) => {
-                app.journal_error("update-error", &format!("update install failed: {error}"));
+                journal_install_failure(app, &error);
                 UpdateOutcome::Failed
             }
         };
@@ -317,9 +317,27 @@ pub async fn check_with_source(app: &Arc<App>, source: &ManifestSource) -> Updat
             UpdateOutcome::Installed
         }
         Err(error) => {
-            app.journal_error("update-error", &format!("update install failed: {error}"));
+            journal_install_failure(app, &error);
             UpdateOutcome::Failed
         }
+    }
+}
+
+/// Journals one failed install.
+///
+/// A release the publisher has not finished writing — its manifest names an
+/// artifact the release does not serve yet, or the forge could not answer — is
+/// retried on the next interval and recorded as activity. Any other cause is
+/// the update error the watchdog files an issue for.
+fn journal_install_failure(app: &App, error: &str) {
+    if is_transient_update_failure(error) {
+        app.shared.journal.write(
+            "activity",
+            &format!("update install delayed: {error}"),
+            None,
+        );
+    } else {
+        app.journal_error("update-error", &format!("update install failed: {error}"));
     }
 }
 

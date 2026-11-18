@@ -2868,36 +2868,44 @@ pub async fn publish(args: PublishArgs) -> Result<PublishReport> {
             .assets(verified.names.len()),
         );
 
-        write_gitea_release(&api, &git, &version, &tag, &commit, &verified, &log).await?;
-        progress.record(PublishProgressRecord::new(
-            "manifest",
-            format!("the Gitea release {tag} carries the manifest and its checksums"),
-        ));
-
-        // The public GitHub release carries the same manifest, so a host that
-        // cannot reach Gitea installs from GitHub alone.
+        // The release tag names an empty-tree commit: the built assets are all
+        // it points at, and the temporary build ref is deleted. GitHub's main
+        // is never advanced to the released commit.
+        //
+        // The tag move runs before either manifest is written. Deleting the
+        // release's tag ref turns the release into a draft, and a draft serves
+        // no asset download address, so a manifest written first would name
+        // artifacts that a dashboard reading it during that window cannot
+        // download.
         let release = api
             .github_release_by_tag(&tag)
             .await?
-            .ok_or_else(|| anyhow!("the GitHub release {tag} disappeared before its manifest"))?;
+            .ok_or_else(|| anyhow!("the GitHub release {tag} disappeared before its tag move"))?;
         let release_id = release
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| anyhow!("the GitHub release {tag} has no identifier"))?;
+        let empty = api.github_retag_empty(&tag, &version, release_id).await?;
+        api.github_delete_ref(&build_ref(&tag)).await?;
+        (log)(&format!(
+            "GitHub tag {tag} names the empty release commit {}; the build ref is gone",
+            short_sha(&empty)
+        ));
+
+        // The public GitHub release carries the same manifest, so a host that
+        // cannot reach Gitea installs from GitHub alone. It is uploaded before
+        // the Gitea release, so the manifest a Gitea host reads last names a
+        // release whose GitHub assets are already served.
         if find_asset(&release_assets(&release), MANIFEST_ASSET).is_none() {
             api.github_upload_release_asset(release_id, MANIFEST_ASSET, verified.manifest.clone())
                 .await?;
             (log)(&format!("uploaded {MANIFEST_ASSET} to the GitHub release"));
         }
 
-        // The release tag names an empty-tree commit: the built assets are all
-        // it points at, and the temporary build ref is deleted. GitHub's main
-        // is never advanced to the released commit.
-        let empty = api.github_retag_empty(&tag, &version, release_id).await?;
-        api.github_delete_ref(&build_ref(&tag)).await?;
-        (log)(&format!(
-            "GitHub tag {tag} names the empty release commit {}; the build ref is gone",
-            short_sha(&empty)
+        write_gitea_release(&api, &git, &version, &tag, &commit, &verified, &log).await?;
+        progress.record(PublishProgressRecord::new(
+            "manifest",
+            format!("the Gitea release {tag} carries the manifest and its checksums"),
         ));
 
         let instances = args

@@ -569,14 +569,33 @@ pub(crate) async fn download_release_asset(
             .map_err(|error| format!("cannot read {}: {error}", path.display()));
     }
     let client = source.client();
+    let mut missing = false;
     let github_error = match client.get(&asset.url).send().await {
         Ok(response) if response.status().is_success() => match response.bytes().await {
             Ok(bytes) if verify_sha256(&bytes, &asset.sha256) => return Ok(bytes.to_vec()),
             Ok(_) => "the downloaded artifact does not match its manifest digest".to_string(),
             Err(error) => error.to_string(),
         },
-        Ok(response) => format!("HTTP {}", response.status().as_u16()),
+        Ok(response) => {
+            missing = response.status() == reqwest::StatusCode::NOT_FOUND;
+            format!("HTTP {}", response.status().as_u16())
+        }
         Err(error) => error.to_string(),
+    };
+    // A manifest names the release that carries it, so a 404 on its artifact is
+    // that release still being written: the manifest is readable before every
+    // address of the release it names is served, and the next interval reads
+    // the artifact once the release settles. The failure carries the same
+    // phrase an unwritten manifest does, so the install is journaled as activity
+    // and retried instead of raising the update error the watchdog files an
+    // issue for.
+    let pending = if missing {
+        format!(
+            "; the release {} {RELEASE_STILL_BEING_WRITTEN}: its artifact is not downloadable yet",
+            release.tag
+        )
+    } else {
+        String::new()
     };
     let Some(base_url) = std::env::var("DEVBOARD_GITEA_URL")
         .ok()
@@ -584,7 +603,7 @@ pub(crate) async fn download_release_asset(
         .filter(|value| !value.is_empty())
     else {
         return Err(format!(
-            "GET {} failed ({github_error}); DEVBOARD_GITEA_URL is not set",
+            "GET {} failed ({github_error}){pending}; DEVBOARD_GITEA_URL is not set",
             asset.url
         ));
     };
@@ -601,7 +620,7 @@ pub(crate) async fn download_release_asset(
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(format!(
-                "GET {} failed ({github_error}); Gitea fallback failed: {error}",
+                "GET {} failed ({github_error}){pending}; Gitea fallback failed: {error}",
                 asset.url
             ))
         }

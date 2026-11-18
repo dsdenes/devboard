@@ -53,6 +53,21 @@ fn only_a_transport_failure_is_transient() {
     ));
 }
 
+/// The line a dashboard journaled when `publish` had written the manifest
+/// before the GitHub release served its archive. It names the release still
+/// being written, so the next interval retries the install and the watchdog
+/// files no issue. An artifact that downloaded but does not match its digest
+/// stays a real error.
+#[test]
+fn an_artifact_that_is_not_downloadable_yet_is_transient() {
+    assert!(devboard::updates::is_transient_update_failure(
+        "GET https://github.com/dsdenes/devboard/releases/download/v1.57.13/devboard-x86_64-unknown-linux-gnu.tar.xz failed (HTTP 404); the release v1.57.13 is still being written: its artifact is not downloadable yet; Gitea fallback failed: the Gitea release carries no devboard-x86_64-unknown-linux-gnu.tar.xz"
+    ));
+    assert!(!devboard::updates::is_transient_update_failure(
+        "the downloaded artifact does not match its manifest digest"
+    ));
+}
+
 /// A forge that answers 5xx is serving no release right now, not refusing the
 /// request: the same line the live dashboard journaled for a restarting Gitea.
 #[test]
@@ -586,5 +601,94 @@ async fn a_canonical_source_checkout_never_installs_or_replaces_on_a_check() {
     assert!(!repo.join(".devboard/bin").exists());
     let state = app.version_state();
     assert_eq!(state["latest"], "1.3.0");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A release whose manifest is readable before the GitHub release serves its
+/// archive: `publish` uploads the manifest while the release is still settling
+/// into its published form. The next interval reads the artifact the settled
+/// release serves, so the install is journaled as activity and retried instead
+/// of raising the update error the watchdog files an issue for.
+#[tokio::test]
+async fn an_install_that_precedes_its_artifact_is_a_transient_failure() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let root = dashboard_scratch("pending-artifact");
+    let repo = root.join("repo");
+    let app = dashboard_app(&root, "1.2.3", Some("1.2.3"));
+    let target = devboard::release::current_target().expect("a supported platform");
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("a stub listener");
+    let port = listener.local_addr().expect("an address").port();
+    let base = format!("http://127.0.0.1:{port}");
+    let manifest = serde_json::json!({
+        "version": "1.3.0",
+        "tag": "v1.3.0",
+        "assets": [{
+            "target": target,
+            "url": format!("{base}/assets/devboard-{target}.tar.xz"),
+            "sha256": "0".repeat(64),
+        }],
+    })
+    .to_string();
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).await.unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            let (status, body) = if request.contains("/devboard-manifest.json") {
+                ("200 OK", manifest.clone())
+            } else {
+                ("404 Not Found", String::new())
+            };
+            let head = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
+        }
+    });
+    let source = devboard::release::ManifestSource {
+        base_url: base.clone(),
+        repository: "dsdenes/devboard".to_string(),
+        token: None,
+        timeout_ms: 5_000,
+        local_dir: None,
+        forge: devboard::release::ReleaseForge::GitHub,
+        download_base: base.clone(),
+    };
+    // The artifact 404 is what this test proves; a configured Gitea would add
+    // its own fallback line to the same message.
+    let restore = std::env::var("DEVBOARD_GITEA_URL").ok();
+    std::env::remove_var("DEVBOARD_GITEA_URL");
+    let outcome = devboard::updates::check_with_source(&app, &source).await;
+    match restore {
+        Some(value) => std::env::set_var("DEVBOARD_GITEA_URL", value),
+        None => std::env::remove_var("DEVBOARD_GITEA_URL"),
+    }
+    handle.abort();
+    assert_eq!(outcome, devboard::updates::UpdateOutcome::Failed);
+    let journal = std::fs::read_to_string(devboard::journal::journal_file(
+        &repo.join(".devboard/.tmp"),
+        &repo,
+    ))
+    .expect("a journal record");
+    assert!(
+        journal.contains("update install delayed"),
+        "the pending artifact is retried on the next interval: {journal}"
+    );
+    assert!(
+        journal.contains("is still being written"),
+        "the record names the pending release: {journal}"
+    );
+    assert!(
+        !journal.contains("update-error"),
+        "a window the next interval closes files no update error: {journal}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
