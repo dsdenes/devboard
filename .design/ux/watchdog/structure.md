@@ -1,124 +1,148 @@
 # Watchdog page — structure
 
+The shipped surface is the shared agent page for the `watchdog` family plus the status bar's
+indicator. No `section.watchdog-page`, `.watchdog-body`, two-column grid, newest-cycle panel, or
+cycle-history table exists; no route or endpoint renders it.
+
 ## Regions
 
 ```
-section.watchdog-page                       scroll container, 16px padding, 12px gaps
-├─ header.page-header                       title + purpose + sync meta (C1, C2)
-├─ div.watchdog-page__alerts                only while an error exists (C8)
-└─ div.watchdog-body                        two columns while the page is >1300px
-   ├─ div.watchdog-main                     primary column
-   │  ├─ section.panel  newest cycle        full primary width (C3–C7)
-   │  │  ├─ header: "Newest cycle" + action badge + age
-   │  │  └─ body: 3-stat rail + reason line
-   │  └─ section.panel  filed issues        bounded list (C11–C16)
-   │     ├─ header: "Filed issues" + "<n> filed"
-   │     └─ body (flush): table, header sticky, own scroll
-   └─ section.panel  cycle history          bounded list (C9, C10)
-      ├─ header: "Cycle history"
-      └─ body (flush): ordered rows, own scroll
+section.agent-page[data-agent="watchdog"]        flex column; 16px padding; 8px gap; overflow hidden
+├─ section.agent-activity-bar                     pinned 30px row; expands to a 180px log
+├─ div.agent-page__scroll                        owns the scroll; 0 8px 8px padding; 12px gap
+│  ├─ header.page-header (data-testid=agent-header)
+│  │  ├─ h1 Watchdog + descriptor description
+│  │  ├─ meta row: peers badge, worker versions, forge badge + Last read
+│  │  └─ footer: agent settings (Cadence, Filing limits)
+│  ├─ p.agent-gate                               only when the project gates the family
+│  ├─ details.agent-prompt                        read-only prompt; absent message for Watchdog
+│  ├─ div.agent-blocked                          only while a legacy timer blocks Start
+│  ├─ p.agent-notice                             only while the server states one
+│  ├─ div.agent-page__alerts                     sync error and snapshot error paragraphs
+│  └─ div.agent-page__main > div.agent-page__column
+│     └─ section.panel.agent-page__issues        Filed issues + `<n> filed · <p> pending filing`
+│        └─ div.panel__body.panel__body--flush > AgentIssuesTable
 ```
 
-The body is a grid on the page container: while the page is wider than 1300px the primary column
-takes `minmax(0, 1.45fr)` and the history panel `minmax(340px, 0.9fr)`. It then fills the height
-left by the header and alerts, and both panels scroll inside it. At 1300px and below — including
-the supported 1024×720 floor — it becomes one column in DOM order: newest cycle, filed issues,
-cycle history; the page itself scrolls and each list keeps a capped height.
+The activity bar sits above `agent-page__scroll`, inside the page, so it never scrolls away; the
+scroll area below it owns the page's scrolling and the filed-issues panel flexes to fill it.
 
 ## Order and hierarchy
 
-- The header answers trust first: the sync badge and last-read time are the only meta.
-- The newest-cycle panel answers "what happened last": age in the header's trailing edge, action
-  as the one toned badge, then three stats (Started, Findings, Pending filings) and a single
-  reason line. Pending is the only warning-weight stat.
-- Filed issues precede history in reading order: the outcome of the runs matters more than the
-  chronology that produced it.
-- History sits as the right-hand aside so its 100 retained rows occupy a bounded, scannable
-  column instead of stretching a 1700px-wide strip.
-- Every panel is a level-1 `surface` with a 1px `border`; nothing is nested except rows.
+- The header answers trust first: the forge read's badge and `Last read` are the only health meta,
+  beside the family lifecycle's peers count and the live worker versions.
+- The activity bar answers "what happened last": its newest line and state dot, with the retained
+  history one click away in the same component.
+- The filed issues are the outcome of the cycles and follow the header. The table is the page's
+  main surface; its panel header states the filed count and the pending filings.
+- The settings footer and the prompt disclosure are supporting facts and stay collapsed or compact.
+- The page body is one column at every supported width. There is no second panel and no aside.
 
-## Stats rail
+## Activity bar
 
-Three equal cells on one row at ≥720px of panel width, wrapping to two columns then one on
-narrow panes. Each cell is a 10px/700 `overline` label over a 12px mono value. Cells are separated
-by `border-subtle` rules, not boxes.
+- One `surface` card with a 1px `border` and 4px radius; its row is at least 30px and holds, 8px
+  apart, the 8px state dot, the newest line at 12px (ellipsized; empty reads `No activity yet.`), an
+  optional `Question` pill, and the Start/Stop control in the trailing slot.
+- The toggle is the keyboard control; the whole row expands on a click. A change of the page
+  identity (`devboard:watchdog`) collapses it.
+- The expanded log is `background`, under a 1px `border` top edge, 6px 10px padding, and a 180px
+  max height that scrolls. It renders one 11.5px mono line per retained cycle, oldest first, and
+  follows the newest line only while the operator stays at the bottom.
+- A cycle line is `start · action · <window start> – <window end> · <n> finding(s) · <reason> ·
+  <issue URLs>`; the reason and the issue URLs are omitted when the cycle carries none. The line
+  is text, not a control, so the bar has no per-cycle anchors; the popover and the filed-issues
+  table carry the clickable links.
 
-| Cell | Value | Tone |
-|---|---|---|
-| Started | absolute `<time>` or `never` | foreground |
-| Findings | integer | foreground |
-| Pending filings | integer | warning only while > 0 |
+## Header meta
 
-The reason line uses `body-small` in `muted-foreground`, separated from the rail by a
-`border-subtle` rule; it is omitted when the report carries no reason.
+- A `badge` with the forge read: `ok`, `stale`, or `error`. `Last read` holds the localized time in
+  mono with the ISO value in its `title`; a never-read family reads `never` without a time element.
+- A peers badge renders only while the family runs: `no peer`, `1 peer`, or `<n> peers`.
+- Each live worker contributes a mono version chip; a worker that reports no version reads
+  `unknown`.
+- The footer is the shared agent settings band: `Cadence` (Every field in minutes, last run, next
+  run, `Save cadence`) and `Filing limits` (Per hour, Open issues, `Save limits`). Empty limit
+  fields are `unlimited`; the page refuses a non-integer or out-of-range value beside its group.
+- The prompt disclosure states `Watchdog runs no agent, so it has no prompt to show or edit.` Its
+  summary still carries the `Prompt` title and chevron, and it owns no editor.
 
 ## Filed issues table
 
-- Fixed table layout; columns: title (flexible), Category (110px), Filed (132px), State (86px),
-  Version (76px).
-- The title anchor is one line with ellipsis and the full text in its `title` tooltip; its text
-  stays `[watchdog] <category>: <line>` (README contract).
-- Header row is 27px, sticky inside the scrolling body, 11px/600 `label`-type uppercase
-  labels on `surface`.
-- Body rows are 27px with `5px 8px` cells, one `border-subtle` rule, and no vertical rules.
-- Category and time are mono-small; state is the existing outline badge; version is mono.
-- Hover tints only the row (`row-hover`); the title link takes `accent` and an underline.
-- In the two-column layout the panel body absorbs the remaining column height and scrolls; in
-  the stacked layout it is capped at `clamp(240px, 48vh, 520px)`. With no rows it renders one
-  padded muted line.
+- Columns: Title (flexible), Category (110px), Filed (132px), State (86px), Shipped (76px), in a
+  fixed-layout 12px table. Rows sort newest first by `createdAt`, then by URL.
+- The header is 11px/600 uppercase `label` type on `surface`, sticky inside the table's scroll; body
+  rows are 27px with `5px 8px` cells and one `border-subtle` rule. Hover tints the row.
+- The title anchor is one line with ellipsis and the full generated title (`[watchdog] <category>:
+  <line>`) in its tooltip; it opens the tracker in a new tab. Category and filed time are mono;
+  filed time keeps `<time datetime>` with the ISO value; the state is the shared outline badge; the
+  shipped version is mono with the row's note in its tooltip and `—` when absent.
+- Empty and unread states use the shared `.agent-issues__empty` stack: a 20px Lucide mark above a
+  13px/600 title and one 12px line, capped at 360px and padded 24px 16px. A fresh read with no rows
+  reads `No issues filed yet`; a family that was never read reads `The tracker has not been read
+  yet` with a Clock mark; a failed read reads `The tracker could not be read` with an alert mark.
+- Rows from a not-fresh read survive under one `agent-issues__sync` notice naming the last read and
+  the failure.
 
-## Cycle history
+## Status-bar indicator
 
-- One row per retained cycle, newest first; rows are compact by contract (no window, finding
-  count, or reason).
-- A row is a three-track grid: time (118px mono-small, tabular, muted), action (badge, auto), and
-  issue links (`minmax(0, 1fr)` with 6px gaps). The three tracks start at the same x on every
-  row, so 100 rows read as a column, not a ragged list.
-- Rows are 27px, `5px 10px` padding, a `border-subtle` rule, no hover fill (the row is not a
-  control; links own their hover).
-- The panel body fills the grid row and scrolls independently; in the stacked layout it is capped
-  at `clamp(280px, 58vh, 580px)`.
-- Empty state: one padded muted line `No cycle has run yet.`
+- One 20px status control in the right group: a 7px dot, the 10px `overline` label `watchdog`, and
+  `<action> · <age>` in 11px mono. The age is compact (`just now`, `4s ago`, `3m ago`, `2h ago`,
+  `5d ago`) and `never` with no cycle; the action reads `unknown` before the first snapshot and
+  `none` when the snapshot carries no cycle.
+- Dot states: `open` for `none`/`filed`/`commented`/`duplicate`, `closed` for `failed`, and
+  `connecting` for a capped, deferred, skipped, or unrecognized action and before the first
+  snapshot. The word beside the dot always carries the action.
+- The trigger opens a fixed `dialog` popover above the bar, 8px from the right, anchored to the
+  bottom: one summary line (`Cycle <ISO start> · <n> finding(s) · <p> pending`), one muted reason
+  line when the cycle carries one, then every filed issue as a link, or `No issues filed.` The
+  popover is capped at 520px wide and 50vh tall and scrolls; Escape or a second click closes it.
 
 ## States
 
 | State | Rendering |
 |---|---|
-| First load | Header with `GitHub read stale` and `never`; newest cycle `never`/`none`; empty history and table |
-| Healthy | Success sync badge, minutes-old cycle, pending `0`; neutral summary |
-| Sync error | Error sync badge plus one `error-surface` alert above the body; cycle and table keep last known data |
-| Pending filings > 0 | Pending stat turns warning, keeps its label and number |
-| Failed cycle | Action badge takes `error` tone; reason line names the failure |
-| No cycle | Age `never`, started `never`, action `none`, reason omitted, history empty line |
-| Long finding line | Title cell ellipsis with the full issue text as tooltip |
-| Many cycles / issues | Each list scrolls inside its panel; the header and stats stay in place |
-| Narrow page (≤1300px) | One column; panels keep their caps and never scroll horizontally |
+| Before the first snapshot | header badge `stale`, `Last read never`, no peers, Start disabled; bar `No activity yet.`; filed panel `The tracker has not been read yet` |
+| Healthy | badge `ok`, recent last read, newest cycle line with `none`/`filed` action, pending `0` |
+| Forge read stale | badge `stale`, no alert; rows keep their notice naming the last read |
+| Forge read error | badge `error`, one `role="alert"` paragraph with the server's reason above the panel; last known rows stay |
+| Snapshot error | the server's message in its own `role="alert"` paragraph |
+| Running | peers badge, worker version chips, pulsing state dot, Stop in the bar |
+| Stopped / failed | no peers badge; dot reads stopped or failed; Start renders unless the project gates the family |
+| Gated family | the reason replaces Start in the bar and a gate line renders under the header |
+| Legacy timer | the blocked block names the timer unit and offers the disable control |
+| No cycle | bar reads `No activity yet.`; indicator reads `none · never`; popover `No cycle reported yet.` |
+| Many rows | the table scrolls inside its panel; the bar log caps at 180px and scrolls |
+| Long values | title ellipsizes with the full text as its tooltip; a long cycle reason wraps in the log line |
+
+## Responsive
+
+- One column at every supported width; the page does not reflow into a grid. The page pads 16px and
+  gaps 8px; the scroll area pads `0 8px 8px` and gaps 12px; the main column gaps 12px.
+- At 1440×900 the measured page is 1063×874 CSS pixels; at the 1024×720 floor it is 647×694. Both
+  report `scrollWidth` equal to `clientWidth`, so the page never scrolls horizontally at its floor.
+- The table keeps all five columns at the floor. Its stylesheet drops Category, Filed, and Shipped
+  only below a 900px viewport, which the shell's 1024×720 guard already replaces with the viewport
+  guard, so that rule renders nothing in the shipped product.
+- The activity log keeps its 180px cap; the popover keeps 520px and 50vh caps; both scroll
+  internally. The table's wrapper scrolls horizontally if a locale widens a fixed track.
 
 ## Accessibility
 
-- One `<h1>` (Watchdog) and one `<h2>` per panel; the region keeps `aria-label="Watchdog"`.
-- The sync badge, action badge, state badges, and stats all carry words, not color alone.
-- Every issue and cycle link is a native anchor, Tab-reachable in reading order, opening in a
-  new tab with `rel="noopener noreferrer"`.
-- Focus stays the shared 2px `ring` with a 1px offset; tables use `<th scope="col">`.
-- Empty states are plain text, not focusable.
-- Times keep `<time datetime>`; mono numerals are tabular, not decorative.
+- One `h1` (`Watchdog`); the filed-issues panel is a `<section>` with an `aria-label` and an `h2`.
+- Every state word is present: the forge badge, the state badges, the dot's accessible name, and the
+  bar's `role="img"` dot label. Color is never the only signal.
+- The activity toggle is a button with `aria-expanded`; the expanded log is `role="log"`. The
+  status trigger is a button with `aria-haspopup="dialog"` and `aria-expanded`, and the popover is
+  `role="dialog"` named `Watchdog report`; Escape closes it.
+- Issue links are native anchors with `target="_blank"` and `rel="noopener noreferrer"`, and the
+  title anchor carries the full generated title. Table headers use `<th scope="col">`; times keep
+  `<time datetime>`; icons are `aria-hidden` or labelled.
 
-## Responsive priority
+## Rationale
 
-- The page is an inline-size container: the body uses two columns while the page is wider than
-  1300px and one column below that, so a resized sidebar changes the layout by available width,
-  not by viewport.
-- The primary column is its own container: below 900px it drops the table's Category, Filed, and
-  Version columns; the title (which already carries the category) keeps enough width to identify
-  the finding, and State stays.
-- 1024×720 is the supported floor; below it the shell's viewport guard replaces the workspace.
-
-## Rationale tied to IDs
-
-- C1/C2 own the header meta because every other fact depends on a successful read.
-- C3/C4/C5/C7 share one panel because they describe a single event; C6 rides with them as a
-  stat.
-- C9/C10 get their own bounded region because they are 100 retained rows of chronology (P1) and
-  must never push C11–C16 off the first screen.
-- C17 is dropped; C18 is dropped; C19–C22 stay out of the DOM.
+- The Watchdog filed issues, so its page is the family's page: one header, one settings footer, one
+  feed. A bespoke page shell duplicated the shared agent chrome and drifted from it.
+- The pinned bar is the one place the cycle history renders, so the history never pushes the filed
+  issues below the fold and the page keeps one scroll owner.
+- The status-bar popover stays the glance surface: it needs no page shell, a 50vh cap keeps 87
+  filed issues auditable, and the trigger's action and age answer the health question in place.

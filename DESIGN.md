@@ -668,30 +668,20 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   stating what will appear here. The stack is capped at 360px, uses 24px 16px padding and a 4px
   rhythm, and adds no frame, fill, shadow, or action; the agent page's pinned activity bar keeps
   the only Start/Stop control and the panel header keeps the count.
-- **Watchdog page** (`.watchdog-page`, `.watchdog-body`) — the Issues mode's watchdog surface: a
-  framed page header with the `Watchdog` title, its one-sentence purpose, and the GitHub read
-  badge with the mono last-read time (no mode eyebrow — the rail and sidebar already name it).
-  The body is two columns while the page container is wider than 1300px and one column below
-  that. The primary column stacks the newest-cycle panel over the filed-issues panel; the
-  cycle-history panel is the 0.9fr aside with a 340px floor. The newest-cycle panel puts the
-  action badge and the cycle age in its header, then a three-cell stat rail (Started, Findings,
-  Pending filings) with `border-subtle` dividers, a 10px/700 `overline` label over a 12px mono
-  value, and one
-  12px reason line under a `border-subtle` rule; a pending count above zero takes `warning` text
-  while keeping its word. The filed-issues table is fixed-layout at 12px with a sticky 11px/600
-  `label` header on `surface`, 110/132/86/76px category, filed, state, and version tracks, 27px
-  rows on 5px 8px cells, `border-subtle` row rules, and one-line ellipsis for the title and mono
-  cells; hover tints the row with `row-hover`, and the title link is `foreground` with no
-  underline until hover. The cycle-history list uses 118px, 86px, and flexible tracks per 27px
-  row on 5px 10px padding, with the time in 11.5px mono tabular `muted-foreground`, the action as
-  the shared outline badge, and `#<n>` links in 11.5px mono `accent`, 6px apart; the list has no
-  header and no row hover because only its links are controls. In the two-column layout both
-  panels fill the height under the header and their bodies own the scroll; in the stacked layout
-  the page scrolls and each body caps itself (`clamp(240px, 48vh, 520px)` for the table,
-  `clamp(280px, 58vh, 580px)` for history). Their empty states are one 12px muted padded line.
-  When the primary column is narrower than 900px the table drops its category, filed, and
-  version columns so the issue title keeps enough width to identify the finding; the title still
-  carries the category.
+- **Watchdog page** (`.agent-page` for `agentId="watchdog"` in `AgentPage.svelte`) — the Devboard
+  mode's background-agent page for the Watchdog family, composed from the shared agent page
+  rather than a page of its own. It renders the `Watchdog` header with the family description,
+  the peers badge while the family runs, one chip per live worker version, and the forge-read
+  badge beside `Last read`; the agent settings footer; the prompt disclosure that states the
+  Watchdog runs no agent; the pinned agent activity bar, whose expanded log is the retained cycle
+  history (oldest first, newest last, one mono line per cycle) under its 180px cap; and one
+  filed-issues panel whose `AgentIssuesTable` keeps the fixed 110/132/86/76px category, filed,
+  state, and shipped tracks, 27px rows, a sticky header, and the `[watchdog] <category>: <line>`
+  title anchor. The page is one column at every supported width, with 16px padding, an 8px gap, a
+  scroll area padded `0 8px 8px` on 12px gaps, and a panel body that owns its own scroll; the
+  table's 900px column-drop rule sits below the shell's 1024×720 guard, so it renders nothing.
+  The status bar's watchdog indicator states the newest action and age and opens a 520px-wide,
+  50vh-tall popover with the newest cycle, its reason, and every filed issue.
 - **Metric history panel** (`.complexity-history__body` in `DevboardComplexity.svelte`) — the
   complexity page's sparkline surface: the shared `.panel` frame with a 30px `panel__header`
   carrying the panel title `Metric history`, then one body row per project metric. Every row and

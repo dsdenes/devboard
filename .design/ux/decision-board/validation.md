@@ -37,8 +37,9 @@
 
 ## Console/network
 - No console entries on the worktree dashboard.
-- One `GET /api/watchdog` connection-refused entry was recorded while the dashboard restarted;
-  after the restart the endpoint returned 200 and no further failures appeared.
+- One retired Watchdog read was connection-refused while the dashboard restarted; that page and
+  its endpoint no longer exist, and the shipped Watchdog facts arrive in the pushed agent
+  snapshot.
 
 ## Checks
 - `bun run build`: pass.

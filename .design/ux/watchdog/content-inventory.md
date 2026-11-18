@@ -1,29 +1,43 @@
 # Watchdog page — content inventory
 
-Redesign of issue #362. The current page is evidence, not a constraint; hard contracts in
-`.devboard/README.md` («The Watchdog page») keep their test identifiers and row semantics.
+The shipped surface is the shared agent page for the `watchdog` family and the status bar's
+indicator. Sources are the pushed agent snapshot: `sync`, `lifecycle`, `peers`, `workers`,
+`cadence`, `limits`, `pending`, `issues[]`, and the retained `cycles[]`; the indicator reads the
+same snapshot. No page read, route, or endpoint supplies a fact.
 
-| ID | Information | Source | Journey | Enables decision/action | Keep? | Reason |
-|---|---|---|---|---|---|---|
-| C1 | Sync state (`GitHub read ok` / `stale` / `error`) | `sync.state` | 1, 4 | Trust or distrust every other fact; act on a rate limit | Keep | Primary trust signal; word, not color alone |
-| C2 | Last successful GitHub read | `sync.at` | 1, 4 | Judge freshness | Keep | One mono timestamp beside C1 |
-| C3 | Newest cycle start time and age | `cycle`, now | 1, 2 | Judge whether the watchdog is running | Keep | The page's first question |
-| C4 | Newest cycle action | `snapshot.action` | 1, 2 | Know what the last run did | Keep | One word badge, toned by state |
-| C5 | Newest cycle reason | `snapshot.reason` | 1, 3 | Understand a failure or a no-op | Keep | Only line that explains the action |
-| C6 | Newest cycle finding count | `snapshot.findings` | 1, 2 | Know whether work was produced | Keep | Compact stat |
-| C7 | Pending filings | `snapshot.pending` | 1, 2 | Detect a filing that never landed | Keep | One stat; also summarized in the filed panel |
-| C8 | Sync error text | `sync.error`, page error | 1, 4 | Diagnose the failure | Keep | Alert above the summary |
-| C9 | Retained cycle rows (time, action, links) | `cycles[]` | 3 | Spot failures, filed runs, cadence | Keep | Compact rows, one per retained run; contract |
-| C10 | Cycle issue links | `cycles[].issues` | 3 | Reach the exact issues a run produced | Keep | Anchor per issue, opening in a new tab |
-| C11 | Filed issue title anchor `[watchdog] category: line` | `issues[].category`, `.line` | 2, 4 | Recognize and open the issue | Keep | Documented anchor text |
-| C12 | Filed issue category | `issues[].category` | 2, 4 | Group or filter by failure class | Keep | Short mono column |
-| C13 | Filed issue time | `issues[].createdAt` | 2, 4 | Judge recency | Keep | Mono `<time>` |
-| C14 | Filed issue state | `issues[].state` | 2, 4 | Know open vs implemented | Keep | Badge with the word |
-| C15 | Filed issue shipped version | `issues[].version` | 2, 4 | Know which release carries the fix | Keep | Mono, `—` when absent |
-| C16 | Filed count | `issues.length` | 2 | See the result of the runs | Keep | Panel header |
-| C17 | Pending-filings count repeated in the filed panel subtitle | `snapshot.pending` | 1, 2 | — | Omit the repeat | Same fact as C7; one statement per screen |
-| C18 | `Issues` eyebrow above `Watchdog` | static | — | — | Remove | The rail and sidebar already name the mode |
-| C19 | Per-cycle window interval | `cycles[].window` | — | — | Omit | No journey needs it; the README forbids it in rows |
-| C20 | Per-cycle finding count | `cycles[].findings` | — | — | Omit | Findings belong to the newest-cycle summary |
-| C21 | Per-cycle reason | `cycles[].reason` | — | — | Omit | Would repeat the newest reason and add noise |
-| C22 | Retained-cycle count / "newest first" subtitle | static | — | — | — | Omit | An earlier operator request already removed it; the order is self-evident |
+| ID | Information | Source | Journey | Decision | Where it ships |
+|---|---|---|---|---|---|
+| D1 | Forge read state (`ok`/`stale`/`error`) | `sync.state` | 1, 3 | Keep | Header badge |
+| D2 | Last successful read | `sync.at` | 1, 3 | Keep | Header `Last read`, ISO in the tooltip |
+| D3 | Lifecycle and peer count | `lifecycle`, `peers` | 1, 5 | Keep | Bar dot, Start/Stop, peers badge |
+| D4 | Live worker versions | `workers[].version` | 1 | Keep | Header version chips |
+| D5 | Cadence, last run, next run | `cadence`, `limits` | 5 | Keep | Header settings footer |
+| D6 | Filing limits | `limits.maxPerHour`, `limits.maxPending` | 5 | Keep | Header settings footer |
+| D7 | Pending filings | `pending` | 1, 3 | Keep | Filed-issues subtitle |
+| D8 | Filed count | `issues.length` | 3 | Keep | Filed-issues subtitle |
+| D9 | Filed issue title `[watchdog] <category>: <line>` | `issues[].title` | 3, 4 | Keep | Table title anchor and popover link |
+| D10 | Filed issue category | `issues[].category` | 3 | Keep | Table column |
+| D11 | Filed time | `issues[].createdAt` | 3 | Keep | Table column, `<time datetime>` |
+| D12 | Tracker state | `issues[].state` | 3 | Keep | Table badge |
+| D13 | Shipped version | `issues[].version`, `issues[].note` | 3 | Keep | Table column with the note as tooltip |
+| D14 | Retained cycle history: start, action, window, finding count, reason, issue links | `cycles[]` | 2 | Keep | One line per cycle in the expanded activity log |
+| D15 | Newest action and age | `cycles[0]`, now | 4 | Keep | Status-bar indicator trigger |
+| D16 | Newest cycle summary, reason, and every filed issue | `cycles[0]`, `pending`, `issues[]` | 4 | Keep | Indicator popover |
+| D17 | Read failure, snapshot error, notice, project gate, legacy-timer block | `sync.error`, `error`, `notice`, `availability`, `timer` | 1, 5 | Keep | Alerts and blocks under the header |
+| D18 | "The Watchdog runs no agent" | descriptor `prompt.kind = absent` | — | Keep | Prompt disclosure; explains the absent editor |
+| D19 | Newest-cycle panel with its own stat rail | `cycles[0]` | — | Drop | D1, D2, D14, D15, and D16 state the same facts where they belong |
+| D20 | Two-column body with a separate cycle-history panel | `cycles[]` | — | Drop | One column; the activity log carries D14 |
+| D21 | Per-cycle table columns (`Started`, `Action`, `Issues`) as separate tracks | `cycles[]` | — | Drop | D14 is a single mono line; no second table |
+| D22 | Page REST read and page route | — | — | Drop | Does not exist; the snapshot is pushed and the sidebar opens the page |
+| D23 | `Issues` eyebrow above the title | static | — | Omit | The mode rail and sidebar already name the mode |
+| D24 | Run-directory contents, logs, fingerprints | — | — | Omit | No journey needs them |
+
+## Deduplication
+
+- Pending filings appear once, in the filed-issues subtitle (`<n> filed · <p> pending filing`); the
+  bar's cycle lines do not repeat the live queue.
+- The newest cycle is stated at three densities: the bar's line (action, window, findings, reason,
+  links), the indicator's `<action> · <age>`, and the popover's ISO start with counts. None of them
+  is a card or a stat rail.
+- The filed issues appear in the table with state and shipped version, and in the popover as links
+  for a glance; the popover never repeats the table's columns.

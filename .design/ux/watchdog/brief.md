@@ -1,87 +1,101 @@
 # Watchdog page — brief
 
-Issue: #362, redesign the selected element `#workspace-issues > section.watchdog-page`.
-Route `/`, Issues mode, Watchdog page.
+Status: describes the shipped surface (retargeted by issue #2102). The Watchdog has no page
+component of its own: the Devboard-mode background-agent page (`AgentPage.svelte`) renders it for
+the `watchdog` family, and the status bar's watchdog indicator is its always-visible companion.
+The retired `.watchdog-page` / `.watchdog-body` layout, its Issues-mode route, and its REST read do
+not exist and this packet specifies none of them.
 
 ## Page identity
 
-- Route: `/`, client-only Issues mode. The mode rail's `Issues` tab (Alt+2) is the entry; the
-  sidebar's `Watchdog` entry (`open-issues-watchdog`) opens this page in place of the Overview tab.
-- Title: `Watchdog`. No account model; the local operator of the dashboard.
-- The page reads only `GET /api/watchdog`; it never files, comments, closes, starts, or fixes.
+- Route: Devboard mode (`Alt+5`) → sidebar `Background agents` → `Watchdog`
+  (`data-command="open.devboard.watchdog"`, `data-testid="open-devboard-watchdog"`).
+  `DevboardWorkspace.svelte` renders `AgentPage agentId="watchdog"` in the mode's tab panel; the
+  workspace tab carries the descriptor's `watchdog` id and kind, and no URL route names the page.
+- Title: `Watchdog`, the descriptor's label, as the page's only `h1`. Subtitle: the descriptor's
+  description, `Watches dashboard evidence and files significant machine findings as issues.`
+- Data: the family's agent snapshot, pushed by the server over the dashboard WebSocket
+  (`agentsState` carrying every family, and `agentState` for one). The snapshot carries the
+  retained cycles, the filed-issue rows, pending filings, lifecycle, workers, cadence, and the
+  forge read. There is no watchdog page endpoint: opening the page sends one `refreshAgent`
+  command, and the server reads the tracker on its own 60-second cadence.
+- Auth/role: local operator. Start and Stop are the shared activity bar's one lifecycle control; the
+  page itself files, comments, closes, starts, stops, and fixes nothing.
 
 ## Primary goal
 
-Decide whether the repository watchdog is healthy right now: its last GitHub read succeeded, its
-newest cycle ran and what it did, and whether anything is waiting to be filed.
-
-Success signal: one glance at the top of the page answers "is it running, when did it last read,
-what did the newest cycle do, and is anything stuck?" with no scrolling.
+Decide whether the Watchdog is healthy and what its last cycle did. Observable success: the forge
+read state and its last read, the newest cycle's action and age, the retained cycle history, and
+every filed issue with its tracker state and shipped version are readable without opening a run
+directory.
 
 ## Secondary goals
 
-- Confirm that findings became GitHub issues, and whether those issues are still open.
-- Inspect the retained cycle history for a recent failure, a filed run, or a gap in cadence.
-- Trace a cycle row to the exact GitHub issues it produced.
+- Audit the retained cycles: which found nothing, which filed, which failed, and which issues each
+  one produced.
+- Review the filed issues with their category, filed time, state, and shipped version, and reach
+  the tracker in one click.
+- Adjust the family's cadence and filing limits without leaving the page.
 
-These never compete with the primary goal: history and the issue table sit below or beside the
-newest-cycle summary.
+These support the primary goal and do not compete with it.
 
 ## Arrival context
 
-- The operator arrives from the Issues sidebar, usually after automation feels wrong (nothing
-  filed, a rate-limit alert, a stalled cycle) or before trusting the fleet.
-- They know the repository and the mode; they do not know the latest cycle's outcome.
-- Desktop only, at least 1024×720. The workspace pane is wide (measured 1726px at 2101px viewport)
-  and the page must use it instead of stretching one narrow strip.
-- Urgency is high when a sync error or pending filing exists, low during routine checks.
+The operator arrives from the Devboard sidebar, usually after automation feels wrong (nothing
+filed, a stalled cycle, a rate-limit alert) or before trusting the family. They know the repository
+and the mode but not the newest action. The dashboard is local, so latency is low; the tracker
+projection is at most 60 seconds old and can fail independently of the page. The status-bar
+indicator is reachable from every mode, so the page is the deliberate stop and the indicator is the
+glance.
 
 ## Relationship to other pages
 
-- Upstream: the watchdog service writes run reports and the ledger under `<STATE_DIR>/watchdog/`;
-  the server projects GitHub state every 60 seconds.
-- Downstream: every issue link opens GitHub in a new tab; the status bar's watchdog indicator is
-  unchanged and opens its own popover.
-- Loop: a newly written cycle or ledger entry appears within the 15-second poll, without reload.
-- State left behind: the active Issues tab; the page itself owns no persisted state.
+Upstream: the status-bar watchdog indicator, whose popover states the newest cycle and every filed
+issue, and the Devboard sidebar's `Background agents` group. Downstream: each issue link opens the
+tracker in a new tab. The page persists nothing of its own; its settings are the family's persisted
+cadence and filing limits. The prompt disclosure stays because every agent page carries it, and it
+states that the Watchdog runs no agent.
 
 ## User journeys
 
-1. **Routine health check.** Trigger: open Watchdog. Steps: read the sync badge and last-read
-   time, read the newest cycle's age, action, findings, pending count, and reason. Success: the
-   status is `ok`, the age is minutes, and pending is `0`. Failure: `error` or `stale` badge with
-   the server's message above the summary; the page keeps the last known cycle facts. Recovery:
-   the next successful GitHub read clears the error in place.
-2. **Verify what a run filed.** Trigger: the newest action is `filed` or `commented`. Steps: read
-   the newest cycle, then find the issue in the filed table; follow the row to GitHub. Success:
-   the row names the issue, its category, filed time, and state. Failure: the table is empty while
-   the ledger reports pending filings; the pending count names the gap. Recovery: read the next
-   cycle row or the sync error.
-3. **Investigate a failure streak.** Trigger: automation looks wrong. Steps: scan cycle history
-   for `failed` rows and their issue links, then read the newest reason. Success: the failure rows
-   are visible without scrolling the whole document. Failure: history is truncated by the
-   retained window; the page states the newest-first order. Recovery: the cycle rows remain
-   scrollable inside their panel.
-4. **Return to an already-known issue.** Trigger: an operator remembers an issue number. Steps:
-   scan the filed table's newest-first rows, read the state badge and shipped version. Success:
-   the row still exists with its current GitHub state. Failure: GitHub read failed; the table
-   keeps the last known state and version, and the sync badge reports the error.
-5. **Keyboard pass.** Trigger: the operator uses Tab. Steps: reach the header, issue links, and
-   cycle links in reading order. Success: every link has a visible 2px ring; focus never enters
-   the empty states. Failure: no links exist; the page remains readable but unactionable.
+1. **Routine health check.** Open the page. Read the header's forge-read badge and `Last read`,
+   then the activity bar's newest line and state dot. Success: the badge reads `ok`, the last read
+   is minutes old, and the newest line states the action, window, and finding count. Failure: the
+   badge reads `stale` or `error` and the alert under the header carries the reason. Recovery: the
+   next successful read clears the alert in place.
+2. **Audit the cycle history.** Expand the activity bar. The retained cycles read oldest first with
+   the newest at the bottom, and the log follows the newest line while the operator stays at the
+   bottom. Success: one line per cycle with start, action, window, finding count, reason, and the
+   issues it filed. Failure: the log is empty, and the bar reads `No activity yet.`
+3. **Review a filed issue.** Scan the filed-issues table, read the state badge and the shipped
+   version, and follow the title to the tracker. Success: the row answers whether the issue is
+   still pending and which release shipped it. Failure: the read is not fresh, so the surviving
+   rows carry one notice naming the last read.
+4. **Glance from another mode.** Read `watchdog <action> · <age>` in the status bar, open the
+   popover for the newest cycle's ISO start, finding and pending counts, its reason, and the filed
+   issues, then press Escape or click the trigger again. The popover states no route.
+5. **Change cadence or limits.** Use the header footer: `Every` (1–1440 minutes, default 10),
+   `Per hour`, and `Open issues` (empty means unlimited; 1–100 otherwise). Success: the save
+   feedback confirms and the clocks update. Failure: a refusal renders beside the group that owns
+   the invalid field.
 
 ## Non-goals
 
-- Starting, stopping, re-running, or repairing the watchdog from this page.
-- Showing per-cycle finding text, windows, or reasons in history rows (the retained contract
-  keeps compact rows: time, action, issue links).
-- Changing the status-bar indicator, the popover, the sidebar, or the server projection.
-- Inventing a repository name, cadence, or health metric the API does not return.
+- A dedicated page shell, a section element, a route id, or a REST read for the Watchdog. The
+  shipped facts arrive only in the pushed agent snapshot.
+- A newest-cycle panel, a two-column body, or a cycle-history table beside the filed issues; the
+  shared page is one column and the bar's log carries the history.
+- Filing, commenting, closing, starting, stopping, or fixing anything from the page beyond the
+  shared Start/Stop control.
+- Replacing the status-bar indicator or its popover.
+- Showing run-directory contents, logs, fingerprints, or a per-cycle detail view.
 
-## Assumptions (inferred from code and README)
+## Assumptions
 
-- `cycles` is newest first, capped at 100, one row per retained run directory.
-- `snapshot.pending` is the number of fingerprints still waiting for a successful filing.
-- `sync.state` is `ok`, `stale` (a success older than 120 seconds with no later failure), or
-  `error`; `sync.at` is the last successful read or `null`.
-- The page polls every 15 seconds; the newest cycle and ledger rows appear without a reload.
+- One cycle every ten minutes by default; the cadence accepts 1 through 1440 minutes.
+- The server reads the tracker every 60 seconds, and a successful read older than 120 seconds
+  reads `stale`; a failed read reads `error` with its reason.
+- The server retains 100 cycles; the activity log lists them oldest first and the newest last.
+- A snapshot arrives only when the server pushes one; opening the page asks for one fresh refresh.
+- The supported viewport floor is 1024×720; below it the shell replaces the workspace with the
+  viewport guard.
