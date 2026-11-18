@@ -61,11 +61,13 @@ specific access level pins only its `--required` value, for example `--required 
 
 The JSON result carries `forge`, `host`, `project`, `login`, `source`, `active`, `permission`, and
 `canWrite`. Those fields are the run's entire knowledge of the forge: no further probe is needed.
-On Gitea, `host` is the configured HTTP address, port included, and the wrapper accepts it back as
-`--host`, so a result can be passed to another invocation unchanged. When the session context
-already contains that JSON with `canWrite: true`, the precondition is resolved: use it as-is and
-skip the check. Run the check at most once per session, and only when the context carries no such
-result.
+The document never carries the token, in any form; only `exec` hands one to a child.
+On Gitea, `host` is that address's host name and, when one applies, its port — the scheme is not
+part of it — and the wrapper accepts it back as `--host`, so a result can be passed to another
+invocation unchanged. A request URL needs the address itself, which the wrapper hands a child as
+`DEVBOARD_GITEA_URL`. When the session context already contains that JSON with `canWrite: true`,
+the precondition is resolved: use it as-is and skip the check. Run the check at most once per
+session, and only when the context carries no such result.
 
 When a prompt needs the token inside a child process, it names the canonical exec form for this
 checkout's own repository:
@@ -80,6 +82,13 @@ deciding the forge before the host name. A prompt passes no `--forge`, `--host`,
 there; an explicit target belongs only on a repository other than this checkout's `origin`, as it
 does for `check`. The wrapper injects the selected token into that child's environment only, never
 into an argument, a log line, or a reply.
+
+On Gitea that child is whichever command speaks HTTP — `sh -c 'curl …'` is the usual one — because
+nothing binds a Gitea identity to a forge CLI. The token reaches it there as `GITEA_TOKEN` and the
+configured address as `DEVBOARD_GITEA_URL`, scheme and port included, so a request reads both from
+its own environment: a prompt never expands a token in the shell it runs in, and the `project` the
+`check` returned plus that address compose the request URL. `gh` and `glab` stay reserved for their
+own forges and are never how a Gitea target is read or written, because they act on their own hosts.
 
 ## Forbidden
 

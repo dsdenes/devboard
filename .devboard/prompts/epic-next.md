@@ -161,7 +161,7 @@ pull request, and the remainder goes to Non-goals.
    Exit non-zero → halt, quoting the wrapper's message. Never switch the active account by hand,
    never retry another login, and never proceed with a read-only account: every later write
    would be refused.
-3. Every later `gh` or `glab` call in this run MUST run through the same selection. Write `<auth>`
+3. Every later tracker call in this run MUST run through the same selection. Write `<auth>`
    for the wrapper's `exec`, with the same resolved `<devboard>` as the `check` above and no
    target flags of its own:
 
@@ -169,11 +169,30 @@ pull request, and the remainder goes to Non-goals.
    <devboard> forge-auth exec --required write --
    ```
 
-   Then run `<auth> gh ...` or `<auth> glab ...`. A direct CLI call can silently use a different
-   account or a stale token; the wrapper is the only supported path. It puts the selected token
-   in the child environment, never in an argument or a reply: on Gitea, the API call reads
-   `GITEA_TOKEN` from that environment and never from a command line. The CLIs are only ever
-   called in non-interactive form: never let one prompt.
+   On GitHub and GitLab, run `<auth> gh ...` or `<auth> glab ...`. A direct CLI call can silently
+   use a different account or a stale token; the wrapper is the only supported path. It puts the
+   selected token in the child environment, never in an argument or a reply. The CLIs are only
+   ever called in non-interactive form: never let one prompt.
+
+   A Gitea target has no CLI: `gh` and `glab` act on their own hosts, so a Gitea target never runs
+   either. Its child is an HTTP request against the API, with the address and the token expanded
+   inside that child only:
+
+   ```sh
+   <auth> sh -c 'curl -fsS -H "Authorization: token $GITEA_TOKEN" \
+     "${DEVBOARD_GITEA_URL%/}/api/v1/repos/<project><path>"'
+
+   <auth> sh -c 'curl -fsS -X POST -H "Authorization: token $GITEA_TOKEN" \
+     -H "Content-Type: application/json" --data-binary @"<request-file>" \
+     "${DEVBOARD_GITEA_URL%/}/api/v1/repos/<project><path>"'
+   ```
+
+   The wrapper puts the address the `check` reported as `host` into the child as
+   `DEVBOARD_GITEA_URL`, scheme included, and the selected token as `GITEA_TOKEN`; the `%/` drops
+   a trailing slash an address may carry. Fill `<project>` from the `project` field of the `check`
+   output, name `<path>` per operation, and make `<request-file>` a JSON document. The single
+   quotes keep both variables unexpanded until the child runs, so neither reaches this session's
+   own shell, an argument, a log line, or a reply.
 
 ## Phase B — End goal
 
@@ -340,20 +359,24 @@ An issue is an epic when it is open and either carries a label named `epic` igno
 contains the marker `<!-- devboard-epic -->` in its body.
 
 1. List the repository's labels once — `<auth> gh label list --search epic --limit 100 --json
-   name`, or `<auth> glab label list --output json`. The match is the whole label name being equal
-   to `epic` ignoring case; a name that merely contains it (`type::epic`) is not a match, and
-   `--search` can return such near-misses, so filter what comes back. Zero matches means the label
-   does not exist: go to step 3.
+   name`, or `<auth> glab label list --output json`. On Gitea, the read lane of Phase A step 3
+   with `<path>` set to `/labels?limit=100` lists them, each document carrying `name` and `id`.
+   The match is the whole label name being equal to `epic` ignoring case; a name that merely
+   contains it (`type::epic`) is not a match, and `--search` can return such near-misses, so
+   filter what comes back. Zero matches means the label does not exist: go to step 3.
 2. Label exists → list the open issues carrying it, passing the exact spelling the repository
    stores (`Epic` when that is what it holds — GitLab label names are case-sensitive, and the
    wrong case silently returns zero, which must not be read as "no epics"):
    `<auth> gh issue list --label <name> --state open --json number,title,url --limit 100`, or
-   `<auth> glab issue list --label <name> --output json`.
+   `<auth> glab issue list --label <name> --output json`. On Gitea, the same read lane with
+   `<path>` set to `/issues?state=open&type=issues&labels=<name>&limit=100`.
 3. No such label → search open issue bodies for the marker, scoped to the project:
    `<auth> gh search issues --repo <project> --match body --state open 'devboard-epic' --json
    number,title,url --limit 100`, or `<auth> glab issue list --search devboard-epic --in
    description --output json`. If the CLI cannot search issue bodies at all → halt: the predicate
-   is unverifiable.
+   is unverifiable. On Gitea, where no CLI searches, page the open issues with
+   `/issues?state=open&type=issues&limit=50&page=<n>` until a page comes back short, and apply the
+   marker predicate to each `body` in this session.
 4. Record every open epic URL. Open epics are exclusions, not a halt: skip any selected candidate
    whose outcome duplicates, overlaps, or re-cuts one of them, and file the remaining candidates.
    Filing zero epics after these exclusions is a valid result. Never comment on an open issue,
@@ -363,9 +386,11 @@ contains the marker `<!-- devboard-epic -->` in its body.
    --search "<term>" --state open --json number,title,url,body --limit 100`, or `<auth> glab issue
    list --search <term> --in title --output json`, once per term), and skip that candidate when one
    of them names the same result — its title equal to that heading or stem after normalising case,
-   punctuation, and the words `epic` and `goal`, or its body citing the goal document's path. The
-   search is only a candidate fetch; that comparison is the predicate, and an unrelated open
-   issue is not a duplicate. Skipping every candidate leaves zero epics and is not a halt.
+   punctuation, and the words `epic` and `goal`, or its body citing the goal document's path. On
+   Gitea, page the open issues as step 3 does and match those terms against their titles and
+   bodies; no search index is consulted. The search is only a candidate fetch; that comparison is
+   the predicate, and an unrelated open issue is not a duplicate. Skipping every candidate leaves
+   zero epics and is not a halt.
 
 A forge search index can lag recent writes; a match counts regardless of age. Only candidates with
 no open-epic overlap and no duplicate goal are filed.
@@ -503,26 +528,33 @@ field, event, log, process, test, or internal mechanism means the section is not
 epic must let the implementer choose every technical detail.
 
 Write each body to a temp file outside the repository and pass it by file, so shell quoting cannot
-damage it; delete it afterwards.
+damage it; delete it afterwards. On Gitea that file is the API request document instead: a JSON
+object carrying `title`, `body`, and, when the repository has the label, its `id` under `labels`,
+so the body's newlines and quotes are JSON-escaped there rather than shell-escaped.
 
 Labels: `epic` — the exact case variant chosen in Phase F, or `epic` when the repository has none.
 If the label does not exist, create it with the CLI's defaults (`<auth> gh label create epic`, or
-`<auth> glab label create --name epic`), inventing no description or colour. Label creation
-rejected (permissions) → create the issue anyway, carrying the marker and no label, and say so in
-the reply.
+`<auth> glab label create --name epic`). On Gitea, send the write lane of Phase A step 3 with
+`<path>` set to `/labels` and a request document carrying the exact name and a neutral colour of
+`ededed`, because that API requires a colour. Invent no description. Label creation rejected
+(permissions) → create the issue anyway, carrying the marker and no label, and say so in the reply.
 
 No other label, tracker milestone, assignee, project, type, or template may be set or invented;
 forge issue templates are not used, because the body contract above is fixed. On GitLab, never use
 the native epic object and never pass `--epic`: the deliverable is a plain issue.
 
-Create each epic non-interactively from the repository root, so the CLI infers the project from
-`origin`:
+Create each epic non-interactively from the repository root, so the CLI — or the wrapper on
+Gitea — infers the project from `origin`:
 
 - `<auth> gh issue create --title <title> --body-file <file> --label <label>`
 - `<auth> glab issue create --title <title> --description-file <file> --label <label> --yes`
+- on Gitea, the write lane of Phase A step 3 with `<path>` set to `/issues` and its request file
+  the document above; that API takes label ids rather than names, so the `id` Phase F's listing or
+  the label creation returned is what its `labels` carries, and its response names the issue's
+  `number` and `html_url` for the reply
 
 Never open an editor or a browser, never let a prompt appear. Creation failure → halt, quoting the
-CLI's error.
+CLI's error or the API's response.
 
 ## Halting
 
