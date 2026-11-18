@@ -11,6 +11,7 @@
   import AgentActivityBar from "./lib/components/AgentActivityBar.svelte";
   import CommandButton from "./lib/components/CommandButton.svelte";
   import CommandNotice from "./lib/components/CommandNotice.svelte";
+  import DecisionBoard from "./lib/components/DecisionBoard.svelte";
   import DetailSplit from "./lib/components/DetailSplit.svelte";
   import Button from "./lib/components/ui/button.svelte";
 
@@ -762,24 +763,7 @@
     {@render overview()}
   {:else if tab.kind === "decisions"}
     <div class="scroll-column">
-      <section class="panel" data-testid="flow-decisions-section">
-        <div class="panel__header flow-decisions__header">
-          <div class="flow-decisions__identity">
-            <h2 class="panel__title flow-decisions__title">Decision board</h2>
-            <span
-              class="badge flow-decisions__state"
-              data-state={flow.decisions.trim().length > 0 ? "saved" : "empty"}
-              data-tone={flow.decisions.trim().length > 0 ? "success" : undefined}
-              data-testid="flow-decisions-state"
-            >
-              {flow.decisions.trim().length > 0 ? "Saved" : "No decisions yet"}
-            </span>
-          </div>
-        </div>
-        <div class="panel__body flow-decisions__body">
-          <pre class="flow-document__text mono" data-testid="flow-decisions" aria-label="Decision board">{flow.decisions}</pre>
-        </div>
-      </section>
+      <DecisionBoard decisions={flow.decisions} restoring={flow.restoring} />
     </div>
   {:else if tab.kind === "steering"}
     <div class="scroll-column">
