@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Decision board header — wireframe</title>
+    <title>Decision board — wireframe</title>
     <style>
       :root {
         color: #333;
@@ -33,7 +33,6 @@
         flex-wrap: wrap;
         gap: 16px;
         align-items: center;
-        justify-content: space-between;
         padding: 14px 20px;
       }
       .identity {
@@ -55,38 +54,37 @@
       .state.saved {
         border-style: solid;
       }
-      .state.dirty {
+      .state.restoring {
         border-style: double;
+        border-width: 3px;
         font-weight: 700;
-      }
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-      .action {
-        border: 2px solid #777;
-        padding: 6px 14px;
-        font-size: 13px;
-      }
-      .action.primary {
-        background: #e8e8e8;
-        font-weight: 700;
-      }
-      .action.disabled {
-        border-style: dashed;
-        color: #999;
       }
       .body {
         padding: 20px;
       }
-      .editor {
+      .document {
         border: 2px dashed #bbb;
-        min-height: 140px;
+        min-height: 120px;
         padding: 12px;
-        color: #888;
+        color: #444;
         font-family: ui-monospace, monospace;
         font-size: 12px;
+        line-height: 1.45;
+        margin: 0;
+        white-space: pre-wrap;
+      }
+      .document.empty {
+        color: #999;
+        font-style: italic;
+      }
+      .notice {
+        border: 2px dashed #bbb;
+        min-height: 60px;
+        padding: 12px;
+        color: #555;
+        font-size: 13px;
+        line-height: 1.45;
+        margin: 0;
       }
       .caption {
         color: #666;
@@ -94,48 +92,72 @@
         font-size: 11px;
         margin: 0 0 6px;
       }
+      .region {
+        color: #777;
+        font-family: ui-monospace, monospace;
+        font-size: 10px;
+        margin: 0 0 6px;
+      }
+      @media (max-width: 768px) {
+        body {
+          padding: 12px;
+        }
+        header,
+        .body {
+          padding: 12px;
+        }
+        h1 {
+          font-size: 18px;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
       <section>
-        <p class="caption" style="margin: 8px 20px 0">State: empty</p>
+        <p class="caption" style="margin: 8px 20px 0">State: empty · region_header P0</p>
         <header>
           <div class="identity">
             <h1>Decision board</h1>
             <span class="state">No decisions yet</span>
           </div>
-          <div class="actions">
-            <span class="action disabled">Save</span>
-          </div>
         </header>
-        <div class="body"><div class="editor">Markdown editor (unchanged)</div></div>
+        <div class="body">
+          <p class="region">region_editor P0 · read-only board bytes</p>
+          <div class="document empty">No board bytes</div>
+        </div>
       </section>
       <section>
-        <p class="caption" style="margin: 8px 20px 0">State: saved</p>
+        <p class="caption" style="margin: 8px 20px 0">State: saved · region_header P0</p>
         <header>
           <div class="identity">
             <h1>Decision board</h1>
             <span class="state saved">Saved</span>
           </div>
-          <div class="actions">
-            <span class="action disabled">Save</span>
-          </div>
         </header>
-        <div class="body"><div class="editor">Markdown editor (unchanged)</div></div>
+        <div class="body">
+          <p class="region">region_editor P0 · read-only board bytes</p>
+          <pre class="document"># Decisions
+
+- Sessions are stored on disk.
+- The decision board is read only.</pre>
+        </div>
       </section>
       <section>
-        <p class="caption" style="margin: 8px 20px 0">State: unsaved changes</p>
+        <p class="caption" style="margin: 8px 20px 0">State: restoring · region_header P0</p>
         <header>
           <div class="identity">
             <h1>Decision board</h1>
-            <span class="state dirty">Unsaved changes</span>
-          </div>
-          <div class="actions">
-            <span class="action primary">Save</span>
+            <span class="state restoring">Restoring</span>
           </div>
         </header>
-        <div class="body"><div class="editor">Markdown editor (unchanged)</div></div>
+        <div class="body">
+          <p class="region">region_editor P0 · restore notice</p>
+          <p class="notice">
+            This dashboard holds a Flow session that is still being restored. Its decision board
+            appears as soon as the restore finishes.
+          </p>
+        </div>
       </section>
     </main>
   </body>
