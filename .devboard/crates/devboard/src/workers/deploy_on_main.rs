@@ -599,6 +599,37 @@ fn append_activity(lines: &mut Vec<String>, text: &str) {
     lines.push(text.to_string());
 }
 
+/// Settles the runs a dead worker left `running` and returns the commit to
+/// retry. Only the worker writes the state file, so a run still `running` when
+/// a worker takes the lock belongs to a process that never settled it: the row
+/// fails, ends at this start, and names the run it was. The interrupted run's
+/// commit is returned so the advance it was deploying is retried instead of
+/// being lost with the process.
+fn settle_interrupted_runs(shared: &mut DeployState, now_ms: i64) -> Option<String> {
+    let ended_at = iso_from_millis(now_ms);
+    let mut interrupted = None;
+    for run in &mut shared.runs {
+        if run.state != DeployRunState::Running {
+            continue;
+        }
+        run.state = DeployRunState::Failed;
+        run.ended_at.get_or_insert_with(|| ended_at.clone());
+        run.detail = Some(format!(
+            "run {} was interrupted: the deploy worker exited before it settled",
+            run.id
+        ));
+        interrupted.get_or_insert_with(|| run.commit.clone());
+        append_activity(
+            &mut shared.activity,
+            &format!(
+                "deploy run {} interrupted: the worker exited before it settled",
+                run.id
+            ),
+        );
+    }
+    interrupted
+}
+
 #[derive(Clone, Debug)]
 pub struct DeployWorkerRecord {
     pub version: i64,
@@ -1265,6 +1296,9 @@ impl DeployWorker {
         // A history recorded before the count existed is completed here, and
         // the persisted state carries it from now on.
         backfill_commits(&self.repo_dir, &mut inner.shared.runs);
+        // A run a previous worker left `running` is settled here and its commit
+        // queued below, so an abnormal exit cancels no advance of `main`.
+        let interrupted = settle_interrupted_runs(&mut inner.shared, now);
         inner.last_commit = main_commit(&self.repo_dir);
         let acquisition = acquire_lock(
             &versioned_lock_path(&self.directory, self.harness_version.as_deref()),
@@ -1282,6 +1316,10 @@ impl DeployWorker {
             }
         };
         inner.lock = Some(lock);
+        if let Some(commit) = interrupted {
+            inner.pending_commit = Some(commit);
+            inner.pending_force = true;
+        }
         let started_at = iso_from_millis(now);
         inner.worker = Some(DeployWorkerRecord {
             version: WORKER_VERSION,

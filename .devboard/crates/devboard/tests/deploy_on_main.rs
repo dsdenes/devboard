@@ -21,8 +21,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::watch;
 
 use devboard::workers::deploy_on_main::{
-    deploy_directory, deploy_worktree_path, DeployRunInput, DeployRunResult, DeployState,
-    DeployWorker, DeployWorkerOptions, IssueRequest, RunDeployFn, RunFuture,
+    deploy_directory, deploy_worktree_path, DeployRunInput, DeployRunResult, DeployRunState,
+    DeployState, DeployWorker, DeployWorkerOptions, IssueRequest, RunDeployFn, RunFuture,
 };
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -905,4 +905,107 @@ async fn old_records_are_backfilled_and_the_deploy_snapshot_lists_the_history() 
         !fixture.directory().join("settings.json").exists(),
         "no deploy settings file is created"
     );
+}
+
+#[tokio::test]
+async fn a_run_left_running_by_a_dead_worker_is_settled_and_retried_once() {
+    let fixture = Fixture::new("interrupted", true);
+    let interrupted = fixture.commit("interrupted advance");
+    seed_history(
+        &fixture,
+        vec![seeded_run(
+            "run-dead",
+            "running",
+            &interrupted,
+            "2026-11-10T00:00:00.000Z",
+            None,
+        )],
+    );
+
+    let gate = Gate::new();
+    let (issue, _issues) = no_issues();
+    let worker = worker(&fixture, gate.runner(), issue);
+    let task = spawn_worker(&worker);
+    gate.wait_started(1).await;
+
+    let started = worker.current_state();
+    let dead = started
+        .runs
+        .iter()
+        .find(|run| run.id == "run-dead")
+        .expect("the interrupted row survives");
+    assert_eq!(dead.state.as_str(), "failed", "the dead row settles");
+    assert!(dead.ended_at.is_some(), "the settled row dates its end");
+    assert!(
+        dead.detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("run-dead"),
+        "{:?}",
+        dead.detail
+    );
+    assert!(
+        started
+            .activity
+            .iter()
+            .any(|line| line.contains("run-dead")),
+        "{:?}",
+        started.activity
+    );
+    assert_eq!(
+        gate.commits(),
+        vec![interrupted.clone()],
+        "exactly one retry starts, for the interrupted commit"
+    );
+    assert_eq!(
+        started
+            .runs
+            .iter()
+            .filter(|run| run.commit == interrupted)
+            .count(),
+        2,
+        "the settled row and its retry"
+    );
+
+    gate.release_all();
+    wait_settled(&worker, 2).await;
+    assert!(
+        worker
+            .current_state()
+            .runs
+            .iter()
+            .all(|run| run.state != DeployRunState::Running),
+        "no run stays live once the retry settles"
+    );
+    worker.stop().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+    let app = fixture_app(&fixture);
+    let (conn, mut inbox) = fixture_connection(&app).await;
+    devboard::agents_mode::replay(&app, &conn);
+    let all = drain(&mut inbox);
+    let deploy = all
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .flat_map(|frame| {
+            frame
+                .get("agents")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|agent| agent.get("id").and_then(Value::as_str) == Some("deploy-on-main"))
+        .expect("a deploy-on-main snapshot");
+    let deploys = deploy["deploys"].as_array().expect("a deploys array");
+    assert_eq!(deploys.len(), 2, "the settled row and its retry: {deploy}");
+    assert!(
+        deploys.iter().all(|row| row["state"] != "running"),
+        "the history lists no live row: {deploy}"
+    );
+    let dead_row = deploys
+        .iter()
+        .find(|row| row["id"] == "run-dead")
+        .expect("the settled row is listed");
+    assert_eq!(dead_row["state"], "failed");
+    assert!(dead_row["endedAt"].is_string(), "{dead_row}");
 }
