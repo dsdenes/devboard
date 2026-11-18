@@ -190,23 +190,24 @@ export interface DotEnvScope {
 }
 
 /**
- * Loads the nearest `.env` at or below the bounding root for the keys the
- * suite needs, without overriding a value the caller already set. A worktree's
- * own root often has none; the checkout that spawned it holds the same file.
- * A `.env` above that checkout is never read.
+ * Loads every `.env` at or below the bounding root, nearest first, taking each
+ * key from the first file that defines it, without overriding a value the
+ * caller already set. A worktree's own root often holds a partial `.env` that
+ * pins one value; the checkout that spawned it supplies the rest. A `.env`
+ * above that checkout is never read.
  */
 export function loadDotEnv(scope: DotEnvScope = {}): void {
   const env = scope.env ?? process.env;
-  const file = dotEnvCandidates(scope.start ?? harnessDir, scope.root ?? dotEnvRoot).find(
-    (candidate) => existsSync(candidate),
-  );
-  if (file === undefined) return;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
-    if (match === null) continue;
-    const [, key, raw] = match;
-    if (key === undefined || raw === undefined || env[key] !== undefined) continue;
-    env[key] = raw.replace(/^(['"])(.*)\1$/, "$2");
+  const candidates = dotEnvCandidates(scope.start ?? harnessDir, scope.root ?? dotEnvRoot);
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
+      if (match === null) continue;
+      const [, key, raw] = match;
+      if (key === undefined || raw === undefined || env[key] !== undefined) continue;
+      env[key] = raw.replace(/^(['"])(.*)\1$/, "$2");
+    }
   }
 }
 

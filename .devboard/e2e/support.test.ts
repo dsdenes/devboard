@@ -15,6 +15,7 @@ import path from "node:path";
 import {
   dotEnvCandidates,
   dotEnvRootFor,
+  giteaToken,
   giteaUrl,
   type GiteaIssue,
   loadDotEnv,
@@ -103,6 +104,27 @@ describe("the suite's .env search", () => {
     loadDotEnv({ start: harness, root: dotEnvRootFor(worktree), env });
     expect(env.DEVBOARD_GITEA_URL).toBe("http://worktree.test");
     expect(env.GITEA_TOKEN).toBe("caller-token");
+  });
+
+  test("fills a partial worktree .env from the checkout that spawned it", () => {
+    const checkout = tree("partial", "repo");
+    dotEnv(checkout, "GITEA_TOKEN=checkout-token\n");
+    const worktree = tree("partial", "repo", ".worktree", "issue-1");
+    dotEnv(worktree, "DEVBOARD_GITEA_URL=http://worktree.test\n");
+    const harness = tree("partial", "repo", ".worktree", "issue-1", ".devboard");
+    const saved = { url: process.env.DEVBOARD_GITEA_URL, token: process.env.GITEA_TOKEN };
+    delete process.env.DEVBOARD_GITEA_URL;
+    delete process.env.GITEA_TOKEN;
+    try {
+      loadDotEnv({ start: harness, root: dotEnvRootFor(worktree) });
+      expect(process.env.DEVBOARD_GITEA_URL).toBe("http://worktree.test");
+      expect(giteaToken()).toBe("checkout-token");
+    } finally {
+      if (saved.url === undefined) delete process.env.DEVBOARD_GITEA_URL;
+      else process.env.DEVBOARD_GITEA_URL = saved.url;
+      if (saved.token === undefined) delete process.env.GITEA_TOKEN;
+      else process.env.GITEA_TOKEN = saved.token;
+    }
   });
 
   test("a worktree resolves the checkout that spawned it", () => {
