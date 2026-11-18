@@ -93,6 +93,11 @@
 
     <main>
       <section class="card">
+        <span class="wf-ann">region_notice · C9 P0 / C10 P1 / C11 P2</span>
+        <p style="border-left:2px solid var(--ink);padding-left:6px">Error or interrupted line, when present.</p>
+      </section>
+
+      <section class="card">
         <span class="wf-ann">region_header · P0 · C1 C2 C3 C4 C5</span>
         <div class="row">
           <div class="col">
@@ -111,20 +116,24 @@
 
       <section class="card">
         <span class="wf-ann">region_run · P0 conditional · C6 C7 C8 C31</span>
-        <div class="row"><h2>Run in progress · run id</h2><button class="btn" type="button">Stop</button></div>
-        <p class="bar" style="height:72px;margin-top:8px"></p>
-        <p class="wf-ann" style="margin-top:6px">activity stream</p>
+        <div class="row">
+          <div class="col">
+            <h2>Discover run · run id · running</h2>
+            <p class="wf-ann">C6 start time</p>
+            <p>Started Oct 26, 2026, 8:18 PM</p>
+          </div>
+          <button class="btn" type="button">Stop</button>
+        </div>
+        <p class="wf-ann" style="margin-top:8px">C7 activity stream</p>
+        <p class="bar" style="height:72px;margin-top:4px"></p>
         <div class="col" style="margin-top:8px;border:1px dashed var(--line);padding:8px">
           <span class="wf-ann">C8 question, when elicited</span>
           <p>Question text</p>
           <div class="row"><button class="btn" type="button">Option A</button><button class="btn" type="button">Option B</button></div>
           <div class="row"><span class="bar" style="width:70%"></span><button class="btn" type="button">Answer</button></div>
         </div>
-      </section>
-
-      <section class="card">
-        <span class="wf-ann">region_notice · C9 P0 / C10 P1 / C11 P2</span>
-        <p style="border-left:2px solid var(--ink);padding-left:6px">Error or interrupted line, when present.</p>
+        <p class="wf-ann" style="margin-top:8px">C31 clone progress, when a remote clone is in flight</p>
+        <p class="bar" style="height:8px;margin-top:4px"></p>
       </section>
 
       <div class="cols">
