@@ -2684,6 +2684,16 @@ fn is_protected(directory: &Path, path: &Path, watchdog_run_dir: Option<&Path>) 
         directory.join("orchestrator").join("state.json"),
         directory.join("orchestrator").join("ledger.json"),
         directory.join("orchestrator").join("lock"),
+        // The host's own control records. The guard lock is what keeps one
+        // dashboard per host directory: the running process holds its flock
+        // for the whole process lifetime, so unlinking the path leaves that
+        // lock on an orphaned inode and admits a second dashboard. Its holder
+        // is proven by flock, never by age, so no age makes it a candidate,
+        // and the owner record beside it and the version marker discovery
+        // reads are kept the same way.
+        directory.join(crate::instances::GUARD_LOCK_FILE),
+        directory.join(crate::instances::GUARD_OWNER_FILE),
+        directory.join("version.json"),
     ]
     .into_iter()
     .collect();
@@ -2765,6 +2775,11 @@ fn is_protected(directory: &Path, path: &Path, watchdog_run_dir: Option<&Path>) 
         "coach",
         "goal-drafts",
         "worktree-cleanup",
+        // The launcher's control tree: its locks and log, the credentials it
+        // mints, the upgrade and published-bootstrap records, and its icons.
+        // The running dashboard and the next launcher start read them, and a
+        // deleted credentials file or bootstrap record is unrecoverable.
+        "desktop",
     ]
     .into_iter()
     .map(|name| directory.join(name))

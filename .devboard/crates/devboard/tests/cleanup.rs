@@ -4,12 +4,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+use devboard::instances::{
+    acquire_host_guard, GuardAdmission, GuardOwner, GUARD_LOCK_FILE, GUARD_OWNER_FILE,
+};
 use devboard::providers::{agent_directory, ProviderId};
 use devboard::workers::builds::{run_build_cleanup_with, BuildCandidateKind, TargetLock};
 use devboard::workers::watchdog::{
-    apparent_tree_bytes, covered_state_dirs, epoch_ms, run_cleanup, run_cleanup_with,
-    run_cleanup_with_sections, sweep_state_dir_with, CleanupSections, CleanupSource,
-    CoveredStateDir, Instance, ProviderRetention, PROVIDER_FLOOR_MS, PROVIDER_RETENTION_MS,
+    apparent_tree_bytes, covered_state_dirs, epoch_ms, own_started_at, run_cleanup,
+    run_cleanup_with, run_cleanup_with_sections, sweep_state_dir_with, CleanupSections,
+    CleanupSource, CoveredStateDir, Instance, ProviderRetention, PROVIDER_FLOOR_MS,
+    PROVIDER_RETENTION_MS,
 };
 use devboard::workers::worktrees::{run_worktree_cleanup, WorktreeCandidateKind};
 
@@ -692,6 +696,134 @@ fn durable_provider_and_worker_state_survives_every_sweep() {
     for path in &retained {
         assert!(path.exists(), "{} was swept", path.display());
     }
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn the_host_guard_its_owner_record_and_the_launcher_control_files_survive_every_sweep() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let directory = root("host-guard");
+    let host = directory.join("host");
+    let state = host.join(".devboard").join(".tmp");
+    std::fs::create_dir_all(&state).unwrap();
+    // The first start takes the host guard exactly as a dashboard does and
+    // holds it for its whole lifetime.
+    let admission = acquire_host_guard(
+        &host,
+        false,
+        &GuardOwner {
+            pid: std::process::id(),
+            port: 8080,
+            repo_dir: host.to_string_lossy().into_owned(),
+            state_dir: state.to_string_lossy().into_owned(),
+            started_at: own_started_at(),
+        },
+    )
+    .expect("the first start reaches the guard");
+    let GuardAdmission::Acquired(held) = admission else {
+        panic!("the first start takes the guard");
+    };
+    let records = [
+        state.join(GUARD_LOCK_FILE),
+        state.join(GUARD_OWNER_FILE),
+        state.join("version.json"),
+        state.join("desktop").join("credentials.json"),
+        state.join("desktop").join("published-bootstrap.json"),
+    ];
+    write_text(&records[2], "{\n  \"version\": \"1.0.0\"\n}\n");
+    write_text(&records[3], "{\n  \"token\": \"fixture\"\n}\n");
+    write_text(&records[4], "{\n  \"version\": \"1.0.0\"\n}\n");
+    let ancient = epoch_ms() - 30 * DAY_MS;
+    for path in &records {
+        set_mtime(path, ancient);
+    }
+    // An ordinary record of the same age is the control: the sweep still
+    // removes it, so retention is what keeps the five above, not a skipped
+    // pass.
+    let stale = state.join("stale.log");
+    write_text(&stale, "old\n");
+    set_mtime(&stale, ancient);
+
+    let report = sweep_state_dir_with(
+        &state,
+        epoch_ms(),
+        false,
+        None,
+        &ProviderRetention::default(),
+    );
+    for path in &records {
+        assert!(
+            !report
+                .candidates
+                .iter()
+                .any(|candidate| &candidate.path == path),
+            "{} is a cleanup candidate",
+            path.display()
+        );
+        assert!(path.exists(), "{} was swept", path.display());
+    }
+    assert!(
+        report
+            .removed
+            .iter()
+            .any(|candidate| candidate.path == stale),
+        "the control file of the same age shows the sweep still runs"
+    );
+
+    // The lock path still names the live inode, so a second start for this
+    // host directory is admitted nowhere.
+    let second = acquire_host_guard(&host, false, &GuardOwner::default())
+        .expect("the second start reaches the guard");
+    assert!(
+        matches!(second, GuardAdmission::Refused(_)),
+        "a second dashboard is admitted after the sweep"
+    );
+    drop(held);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn cleanup_dry_run_names_no_host_control_record() {
+    let directory = root("host-guard-cli");
+    let host = directory.join("host");
+    let state = host.join(".devboard").join(".tmp");
+    std::fs::create_dir_all(&state).unwrap();
+    let records = [
+        state.join("dashboard-guard.lock"),
+        state.join("dashboard-guard.json"),
+        state.join("version.json"),
+        state.join("desktop").join("credentials.json"),
+    ];
+    for path in &records {
+        write_text(path, "{\n}\n");
+        set_mtime(path, epoch_ms() - 30 * DAY_MS);
+    }
+    let stale = state.join("stale.log");
+    write_text(&stale, "old\n");
+    set_mtime(&stale, epoch_ms() - 30 * DAY_MS);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_devboard"))
+        .args(["cleanup", "--dry-run", "--root"])
+        .arg(&host)
+        .output()
+        .expect("cleanup runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "cleanup --dry-run failed: {stderr}"
+    );
+    for path in &records {
+        assert!(
+            !stdout.contains(&path.to_string_lossy().into_owned()),
+            "{} is a dry-run candidate: {stdout}",
+            path.display()
+        );
+    }
+    assert!(
+        stdout.contains(&stale.to_string_lossy().into_owned()),
+        "the dry run names the stale control file: {stdout}"
+    );
     let _ = std::fs::remove_dir_all(&directory);
 }
 
