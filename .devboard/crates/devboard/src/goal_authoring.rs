@@ -1214,6 +1214,14 @@ impl GoalAuthoring {
                 return;
             }
         };
+        if text.trim().is_empty() {
+            app.shared.broadcast(error_event(
+                "The goal revision ended without a non-empty goal.",
+            ));
+            app.shared
+                .broadcast(json!({"type": "goalRevisionStopped", "completed": false}));
+            return;
+        }
         if before.as_deref() == Some(text.as_str()) {
             app.shared.broadcast(error_event(
                 "The goal revision ended without changing the goal.",

@@ -572,7 +572,12 @@ impl Stub {
 
         if revising {
             if let Some(goal_file) = self.arguments.argument("goal") {
-                write_text(Path::new(goal_file), REVISED_GOAL)?;
+                let text = if self.arguments.contains("revise-goal-blank") {
+                    "  \n\t\n"
+                } else {
+                    REVISED_GOAL
+                };
+                write_text(Path::new(goal_file), text)?;
                 self.log(&format!("revised {goal_file}"));
                 self.stream("Revised the goal");
             }

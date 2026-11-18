@@ -421,6 +421,74 @@ async fn revision_carries_guidance_and_reports_the_revised_goal() {
     assert_eq!(log_lines(&scratch, "spawn ").len(), 1);
 }
 
+/// A revision whose peer leaves a blank document behind is refused exactly as
+/// goal creation refuses the same outcome: one named error and a stopped frame
+/// that reports neither completion nor the empty text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revision_refuses_a_blank_goal() {
+    let scratch = Scratch::new("revision-blank");
+    let goal = scratch.path().join("GOAL.md");
+    std::fs::write(&goal, "# Original goal\n").expect("the original goal");
+    let command = stub_command(
+        &scratch,
+        &[
+            "--revise-goal",
+            "--revise-goal-blank",
+            &format!("--goal={}", goal.display()),
+        ],
+    );
+    let app = app_with(&scratch, command).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::ReviseGoal { request: None })
+        .await;
+
+    frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "goalRevisionStarted",
+        FRAME_BUDGET,
+    )
+    .await;
+    let question = frame_matching(
+        &mut inbox,
+        |frame| frame["type"] == "question",
+        FRAME_BUDGET,
+    )
+    .await;
+    app.command(
+        &conn,
+        Command::Answer {
+            id: Some(question["id"].clone()),
+            value: Some(json!("Beta")),
+            lane: None,
+        },
+    )
+    .await;
+
+    let (stopped, before_stop) = collect_until(
+        &mut inbox,
+        |frame| frame["type"] == "goalRevisionStopped",
+        FRAME_BUDGET,
+    )
+    .await;
+    assert_eq!(
+        stopped,
+        json!({"type": "goalRevisionStopped", "completed": false})
+    );
+    let errors: Vec<&str> = before_stop
+        .iter()
+        .filter(|frame| frame["type"] == "error")
+        .filter_map(|frame| frame["message"].as_str())
+        .collect();
+    assert_eq!(
+        errors,
+        vec!["The goal revision ended without a non-empty goal."]
+    );
+    let text = std::fs::read_to_string(&goal).expect("the goal exists");
+    assert!(text.trim().is_empty(), "the peer left a blank goal");
+    assert_eq!(log_lines(&scratch, "spawn ").len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn preparation_writes_skills_and_the_delete_command_refuses_every_other_owner() {
     let scratch = Scratch::new("skills");
