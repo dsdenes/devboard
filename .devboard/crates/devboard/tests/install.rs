@@ -283,6 +283,40 @@ fn doctor_passes_then_fails_on_a_one_byte_managed_skill_edit() {
 }
 
 #[test]
+fn doctor_probes_the_skills_container_that_install_replaces() {
+    let scratch = Scratch::new("doctor-skills-link");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+    assert!(doctor(host).unwrap().ok());
+
+    // The host shares the whole managed tree through a link holding
+    // byte-identical copies. Every per-skill comparison still matches, so only
+    // a probe of the container itself sees the layout install repairs.
+    fs::rename(host.join(".omp/skills"), host.join("shared-skills")).unwrap();
+    std::os::unix::fs::symlink("../shared-skills", host.join(".omp/skills")).unwrap();
+
+    let report = doctor(host).unwrap();
+    assert!(!report.ok(), "{:?}", report.failures);
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure == ".omp/skills is not a real directory"),
+        "{:?}",
+        report.failures
+    );
+
+    cli_install::install(Some(host), false).unwrap();
+    let skills = fs::symlink_metadata(host.join(".omp/skills")).unwrap();
+    assert!(
+        skills.is_dir() && !skills.file_type().is_symlink(),
+        "install replaces the symlinked skills directory"
+    );
+    let report = doctor(host).unwrap();
+    assert!(report.ok(), "{:?}", report.failures);
+}
+
+#[test]
 fn install_restores_a_tracked_package_owned_skill() {
     let scratch = Scratch::new("tracked-marked-skill");
     let host = scratch.host();

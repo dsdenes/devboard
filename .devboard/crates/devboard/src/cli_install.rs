@@ -846,6 +846,24 @@ fn ensure_gitignore(host: &Path, names: &[String]) -> Result<Vec<String>> {
     Ok(added)
 }
 
+/// Probe one container a doctor comparison reads. A missing entry, a symlink,
+/// and a non-directory are failures named by `label`; only a real directory
+/// answers `true`, so no comparison ever follows a link out of the host.
+fn probe_container(label: &str, path: &Path, failures: &mut Vec<String>) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            failures.push(format!("{label} is missing"));
+            Ok(false)
+        }
+        Err(error) => Err(error).with_context(|| format!("doctor: probing {}", path.display())),
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+            failures.push(format!("{label} is not a real directory"));
+            Ok(false)
+        }
+        Ok(_) => Ok(true),
+    }
+}
+
 /// Compare every shipped managed skill with the host copy. A missing file, a
 /// differing byte, an extra entry, or a symlink is a failure; a skill the
 /// package does not ship is never inspected.
@@ -869,29 +887,16 @@ pub fn doctor_with_env(
         drift: Vec::new(),
     };
 
-    for skill in &package.skills {
-        let actual = omp.join("skills").join(&skill.name);
-        match fs::symlink_metadata(&actual) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                report
-                    .failures
-                    .push(format!(".omp/skills/{} is missing", skill.name));
+    let skills_dir = omp.join("skills");
+    if probe_container(".omp/skills", &skills_dir, &mut report.failures)? {
+        for skill in &package.skills {
+            let actual = skills_dir.join(&skill.name);
+            let label = format!(".omp/skills/{}", skill.name);
+            if !probe_container(&label, &actual, &mut report.failures)? {
                 continue;
             }
-            Err(error) => {
-                return Err(error).with_context(|| format!("doctor: probing {}", actual.display()))
-            }
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                report.failures.push(format!(
-                    ".omp/skills/{} is not a real directory",
-                    skill.name
-                ));
-                continue;
-            }
-            Ok(_) => {}
+            compare_tree(&label, &skill.files, &actual, &mut report.failures)?;
         }
-        let label = format!(".omp/skills/{}", skill.name);
-        compare_tree(&label, &skill.files, &actual, &mut report.failures)?;
     }
 
     for (label, prefix) in [
@@ -908,21 +913,8 @@ pub fn doctor_with_env(
             })
             .collect();
         let actual = omp.join(prefix.trim_end_matches('/'));
-        match fs::symlink_metadata(&actual) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                report.failures.push(format!("{label} is missing"));
-                continue;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("doctor: probing {}", actual.display()))
-            }
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                report
-                    .failures
-                    .push(format!("{label} is not a real directory"));
-                continue;
-            }
-            Ok(_) => {}
+        if !probe_container(label, &actual, &mut report.failures)? {
+            continue;
         }
         compare_tree(label, &expected, &actual, &mut report.failures)?;
     }
@@ -932,21 +924,8 @@ pub fn doctor_with_env(
         collect_files(dir, &mut expected);
         expected.sort_by(|left, right| left.0.cmp(&right.0));
         let actual = host.join(".devboard").join(relative);
-        match fs::symlink_metadata(&actual) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                report.failures.push(format!("{label} is missing"));
-                continue;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("doctor: probing {}", actual.display()))
-            }
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-                report
-                    .failures
-                    .push(format!("{label} is not a real directory"));
-                continue;
-            }
-            Ok(_) => {}
+        if !probe_container(label, &actual, &mut report.failures)? {
+            continue;
         }
         compare_tree(label, &expected, &actual, &mut report.failures)?;
     }
