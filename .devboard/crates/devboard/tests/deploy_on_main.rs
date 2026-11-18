@@ -54,6 +54,9 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         .args(args)
         .current_dir(cwd)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .output()
         .expect("git runs");
     assert!(

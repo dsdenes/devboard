@@ -69,12 +69,26 @@ pub fn prepare_repository(target: &Path) -> Result<(), String> {
 }
 
 /// Runs one git command in the fixture repository, naming the command and its
-/// stderr when it fails.
+/// stderr when it fails. The call is hermetic against the host's git
+/// configuration: signing stays off and the initial branch is `main` whatever
+/// the user's config says, no system config applies, and an inherited
+/// `GIT_DIR`, `GIT_WORK_TREE`, or `GIT_INDEX_FILE` cannot redirect the command
+/// away from the copied fixture, which `git -C` alone does not neutralize.
 fn git(repo: &Path, args: &[&str]) -> Result<(), String> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
         .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|error| format!("{}: git: {error}", repo.display()))?;
