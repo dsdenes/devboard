@@ -602,19 +602,56 @@ test("a stopped Discover run leaves its last question unpending", () => {
   expect(pending).toHaveLength(0);
 });
 
-test("a stopped Flow session leaves its last question unpending", () => {
+test("a stopped Flow session leaves its last session question unpending", () => {
   const pending = collectPendingQuestions(
     sources({
       flow: flowSource({
         sessionId: "s2",
         status: "stopped",
         question: question(9, "Which file?"),
-        conversation: { widgetId: "w1", question: question(11, "Rename the entity?") },
-        widgets: [{ id: "w1", concept: "Entity naming" }],
+        conversation: null,
       }),
     }),
   );
   expect(pending).toHaveLength(0);
+});
+
+test("a conversation question is pending on a stopped or idle Flow session", () => {
+  for (const status of ["stopped", "idle"]) {
+    const pending = collectPendingQuestions(
+      sources({
+        flow: flowSource({
+          sessionId: "s2",
+          status,
+          conversation: { widgetId: "w1", question: question(11, "Rename the entity?") },
+          widgets: [{ id: "w1", concept: "Entity naming" }],
+        }),
+      }),
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.key).toBe("flow:conversation:w1|11|Rename the entity?");
+    expect(pending[0]?.label).toBe("Flow conversation · Entity naming");
+  }
+});
+
+test("a conversation question on a stopped Flow session raises one notification", () => {
+  const channel = granted(new FakeChannel());
+  const controller = new OsNotificationController(channel);
+  controller.observe(
+    collectPendingQuestions(
+      sources({
+        flow: flowSource({
+          sessionId: "s2",
+          status: "stopped",
+          conversation: { widgetId: "w1", question: question(11, "Rename the entity?") },
+          widgets: [{ id: "w1", concept: "Entity naming" }],
+        }),
+      }),
+    ),
+  );
+  expect(channel.shown).toHaveLength(1);
+  expect(channel.shown[0]?.title).toContain("Flow conversation · Entity naming");
+  expect(channel.shown[0]?.body).toBe("Rename the entity?");
 });
 
 test("errors and in-app notifications raise no OS notification", () => {

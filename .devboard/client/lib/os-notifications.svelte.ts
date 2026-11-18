@@ -169,8 +169,11 @@ function flowQuestions(flow: FlowQuestionSource): PendingQuestion[] {
   if (creation !== null) {
     questions.push(pending(`flow:goal:${session}`, "Flow goal creation", creation));
   }
+  // The conversation outlives the implementation: the server keeps a widget
+  // conversation open when the run stops, so its own presence is the only
+  // liveness signal for the question it holds.
   const conversation = flow.conversation;
-  if (running && conversation !== null && conversation.question !== null) {
+  if (conversation !== null && conversation.question !== null) {
     const widget = flow.widgets.find((entry) => entry.id === conversation.widgetId);
     const label =
       widget === undefined ? "Flow conversation" : `Flow conversation · ${widget.concept}`;
