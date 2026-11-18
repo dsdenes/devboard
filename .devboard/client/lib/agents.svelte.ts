@@ -49,13 +49,19 @@ function applyActivity(lines: string[], entries: ActivityEntry[], replay: boolea
  * A snapshot carries the whole activity log, so it refreshes the client's copy
  * inside one scan too: the backend polls the log every 250 ms while the page
  * reads its snapshot every second. A snapshot the poll built before a delta
- * this socket already applied is a strict prefix of the client's newer lines,
- * so it never truncates them.
+ * this socket already applied is a line-wise prefix of the client's newer log,
+ * so it never truncates it: every complete line equals the client's line at
+ * that index, and the snapshot's last line — the unfinished tail the poll read
+ * — is a prefix of the client's last line, which an append delta may have
+ * extended in place. Only a rewritten or trimmed log replaces the client copy.
  */
 function snapshotActivity(lines: string[], entries: string[]): string[] {
-  const clientIsNewer =
-    lines.length > entries.length && entries.every((line, index) => line === lines[index]);
-  return clientIsNewer ? lines : [...entries];
+  if (lines.length < entries.length) return [...entries];
+  const last = entries.length - 1;
+  const snapshotBehind = entries.every((line, index) =>
+    index === last ? lines[index]!.startsWith(line) : line === lines[index],
+  );
+  return snapshotBehind ? lines : [...entries];
 }
 
 /** One comparable key for the three settings a save sends. */

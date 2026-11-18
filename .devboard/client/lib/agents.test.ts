@@ -244,6 +244,63 @@ test("a snapshot the poll has not caught up with keeps the newer streamed lines"
   expect(store.activity["dead-code"]).toEqual(["first line", "second line"]);
 });
 
+test("a snapshot the poll has not caught up with keeps a streamed line extension", () => {
+  const store = new AgentsStore();
+  const scan = () =>
+    snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId: "scan-1", entries: ["first line"] },
+    });
+
+  store.handleEvent({ type: "agentState", agent: scan() });
+  store.handleEvent({
+    type: "agentActivity",
+    id: "dead-code",
+    scanId: "scan-1",
+    entries: [{ text: " and more", append: true }],
+  });
+  // The snapshot the poll built before that delta carries the shorter line.
+  store.handleEvent({ type: "agentState", agent: scan() });
+
+  expect(store.activity["dead-code"]).toEqual(["first line and more"]);
+
+  store.handleEvent({
+    type: "agentActivity",
+    id: "dead-code",
+    scanId: "scan-1",
+    entries: [{ text: " again", append: true }],
+  });
+
+  expect(store.activity["dead-code"]).toEqual(["first line and more again"]);
+});
+
+test("a rewritten snapshot still replaces the newer streamed copy", () => {
+  const store = new AgentsStore();
+  store.handleEvent({
+    type: "agentState",
+    agent: snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId: "scan-1", entries: ["first line"] },
+    }),
+  });
+  store.handleEvent({
+    type: "agentActivity",
+    id: "dead-code",
+    scanId: "scan-1",
+    entries: [{ text: " and more", append: true }],
+  });
+
+  store.handleEvent({
+    type: "agentState",
+    agent: snapshot({
+      lifecycle: "running",
+      detail: { panel: "activity", scanId: "scan-1", entries: ["rewritten line"] },
+    }),
+  });
+
+  expect(store.activity["dead-code"]).toEqual(["rewritten line"]);
+});
+
 test("the expanded log grows while one scan is still running", async () => {
   installGlobals();
   openSocket();
