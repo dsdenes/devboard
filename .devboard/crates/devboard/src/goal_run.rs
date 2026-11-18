@@ -776,8 +776,8 @@ pub fn set_reset_active(app: &Arc<App>, active: bool) {
     }
 }
 
-/// True while an implementation reset is under way. Every non-read-only
-/// command is refused in that window.
+/// True while an implementation reset is under way. Every command the reset
+/// does not let answer is refused in that window.
 pub fn reset_is_active(app: &Arc<App>) -> bool {
     state_for(app)
         .map(|owner| lock(&owner.inner).reset_active)

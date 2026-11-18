@@ -628,6 +628,100 @@ fn ask_directory_empty(scratch: &Scratch) -> bool {
     conversations_clear && ask_run_directories(scratch).is_empty()
 }
 
+/// An implementation reset refuses mutations but never the cleanup a close is:
+/// the page drops the conversation id before it dispatches `closeAsk`, so a
+/// refusal would leave the cancelled ask running with its transcript on disk.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn a_close_during_an_implementation_reset_stops_the_ask() {
+    let _env = env_guard();
+    let scratch = Scratch::new("close-during-reset");
+    let log = scratch.path.join("agent.log");
+    save_subscriptions(
+        &scratch.state(),
+        &[StoredSubscription {
+            id: "subscription-1".to_string(),
+            provider: ProviderId::OpenCodeGo,
+            label: "Test".to_string(),
+            key: "test-key".to_string(),
+            enabled: true,
+            created_at: "2026-11-03T00:00:00.000Z".to_string(),
+            updated_at: "2026-11-03T00:00:00.000Z".to_string(),
+        }],
+    )
+    .expect("the credentials file is written");
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    // The owner admits its peer against this host's memory budget, and a
+    // whole-suite run can leave available memory below the reserve. The floor
+    // keeps admission independent of what else the suite is doing.
+    std::env::set_var("DEVBOARD_MEMORY_RESERVE_MB", "64");
+    let command = format!(
+        "{} acp-stub --ask --ask-delay-ms=700 --log={}",
+        env!("CARGO_BIN_EXE_devboard"),
+        log.display()
+    );
+    let app = app_for(&scratch, command);
+    let (conn, mut inbox) = connection();
+
+    app.command(
+        &conn,
+        Command::Ask {
+            conversation_id: Some(json!("conversation-1")),
+            question: Some(json!("What does the issues indicator show?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    assert!(
+        drain(&mut inbox)
+            .iter()
+            .any(|frame| frame["type"] == "inquiry" && frame["busy"] == json!(true)),
+        "the ask is admitted while its turn runs"
+    );
+    wait_for_log_marker(&log, "ask-prompt 1").await;
+    let path = transcript_path(&scratch, "conversation-1");
+    let spawned = log_lines(&log)
+        .iter()
+        .find_map(|line| {
+            line.strip_prefix("spawn ")
+                .and_then(|pid| pid.parse::<u32>().ok())
+        })
+        .expect("the log names the spawned peer");
+
+    devboard::goal_run::set_reset_active(&app, true);
+    app.command(
+        &conn,
+        Command::CloseAsk {
+            conversation_id: Some(json!("conversation-1")),
+        },
+    )
+    .await;
+    assert!(
+        drain(&mut inbox).is_empty(),
+        "a close during the reset answers no refusal and no frame"
+    );
+    assert!(!path.exists(), "the close removes the transcript file");
+    wait_for_process_exit(spawned).await;
+    wait_for_run_removal(&scratch).await;
+    assert!(
+        ask_directory_empty(&scratch),
+        "the close leaves neither the conversation file nor its run directory"
+    );
+
+    // The reset guard itself is unchanged: a real mutation still refuses.
+    app.command(&conn, Command::StartIssues).await;
+    assert_eq!(
+        drain(&mut inbox),
+        vec![json!({
+            "type": "error",
+            "message": "An implementation reset is active.",
+        })],
+        "a mutating command is still refused during the reset"
+    );
+}
+
 /// Every turn is its own REST request. A follow-up asked by a new handle after
 /// the first turn settled continues the conversation and answers its
 /// conversation, and the handle that asked the first turn sees none of it.

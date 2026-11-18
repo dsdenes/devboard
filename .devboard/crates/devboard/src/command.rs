@@ -312,7 +312,13 @@ impl Command {
     }
 
     /// Whether a reset in progress lets this command answer.
-    pub fn is_read_only(&self) -> bool {
+    ///
+    /// Most of these read state. `CloseAsk` also appears here because closing
+    /// a conversation is cleanup: it stops that conversation's peer and drops
+    /// its transcript, and touches no goal or implementation state, so a reset
+    /// that refused it would leave a cancelled ask running for good — the page
+    /// drops the conversation id before the request it refused.
+    pub fn answers_during_reset(&self) -> bool {
         matches!(
             self,
             Self::ListRecords
@@ -335,6 +341,7 @@ impl Command {
                 | Self::GetSkills
                 | Self::GetDiscover
                 | Self::GetInquiry { .. }
+                | Self::CloseAsk { .. }
                 | Self::GetProviders
         )
     }

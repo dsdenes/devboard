@@ -964,7 +964,7 @@ impl App {
     }
 
     async fn dispatch(&self, conn: &Conn, command: Command) -> Result<(), String> {
-        if !command.is_read_only() && crate::goal_run::reset_is_active(&self.arc_self()) {
+        if !command.answers_during_reset() && crate::goal_run::reset_is_active(&self.arc_self()) {
             let mut refusal = json!({
                 "type": "error",
                 "message": "An implementation reset is active.",
