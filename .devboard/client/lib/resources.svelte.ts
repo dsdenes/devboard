@@ -30,29 +30,42 @@ export interface ResourcesState {
   live: ResourceLive;
 }
 
-/** A non-negative finite figure; anything else is a value the server never sent. */
+/** A non-negative whole figure; anything else is a value the server never sent. */
 function isCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-/** One complete settings row, or `undefined` when any figure is malformed. */
-function settingsRow(value: unknown): ResourceSettings | undefined {
+/**
+ * One settings row, or `undefined` when a figure it carries is malformed.
+ * `base` completes the figures the row omits: the settings writer emits only
+ * the keys the file carries, so an absent figure is a default the effective
+ * budget already resolved rather than a value the server failed to send.
+ * Without a base every figure must be present, which is the effective row.
+ */
+function settingsRow(
+  value: unknown,
+  base?: ResourceSettings,
+): ResourceSettings | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const row = value as Record<string, unknown>;
+  const figure = (key: keyof ResourceSettings): number | undefined => {
+    const present = row[key];
+    if (present === undefined) return base?.[key];
+    return isCount(present) ? present : undefined;
+  };
+  const maxAgentPeers = figure("maxAgentPeers");
+  const memoryHighMb = figure("memoryHighMb");
+  const memoryMaxMb = figure("memoryMaxMb");
+  const memoryReserveMb = figure("memoryReserveMb");
   if (
-    !isCount(row.maxAgentPeers) ||
-    !isCount(row.memoryHighMb) ||
-    !isCount(row.memoryMaxMb) ||
-    !isCount(row.memoryReserveMb)
+    maxAgentPeers === undefined ||
+    memoryHighMb === undefined ||
+    memoryMaxMb === undefined ||
+    memoryReserveMb === undefined
   ) {
     return undefined;
   }
-  return {
-    maxAgentPeers: row.maxAgentPeers,
-    memoryHighMb: row.memoryHighMb,
-    memoryMaxMb: row.memoryMaxMb,
-    memoryReserveMb: row.memoryReserveMb,
-  };
+  return { maxAgentPeers, memoryHighMb, memoryMaxMb, memoryReserveMb };
 }
 
 /** One live-counters row, or `undefined` when any figure is malformed. */
@@ -98,7 +111,11 @@ export function parseResourcesState(value: unknown): ResourcesState | undefined 
   if (effective === undefined || live === undefined) return undefined;
   let saved: ResourceSettings | null = null;
   if (frame.saved !== null && frame.saved !== undefined) {
-    const row = settingsRow(frame.saved);
+    // The settings file may carry any subset of the four figures, so the
+    // saved row names the budget in force: what the file carries plus the
+    // remainder the effective row resolved. Only a present figure that is
+    // malformed drops the frame.
+    const row = settingsRow(frame.saved, effective);
     if (row === undefined) return undefined;
     saved = row;
   }

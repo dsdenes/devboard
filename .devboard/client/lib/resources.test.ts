@@ -95,7 +95,7 @@ const SAVED: ResourceSettings = {
 /** One `resourcesState` payload; a caller overrides one section at a time. */
 function frame(
   options: {
-    saved?: ResourceSettings | null;
+    saved?: unknown;
     effective?: ResourceSettings;
     live?: Record<string, unknown>;
   } = {},
@@ -303,4 +303,43 @@ test("only the pending save's own budget advances the confirmation revision", ()
     state: frame({ saved: SAVED, effective: SAVED }),
   });
   expect(store.confirmed).toBe(before + 1);
+});
+
+test("a saved row that omits figures completes them from the effective budget", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  const keys = ["maxAgentPeers", "memoryHighMb", "memoryMaxMb", "memoryReserveMb"] as const;
+
+  // The settings writer emits only the keys the file carries, so a single
+  // saved figure must still reach the page as the budget in force.
+  for (const key of keys) {
+    socket.deliver({
+      type: "resourcesState",
+      state: frame({ saved: { [key]: 7 } }),
+    });
+    expect(store.state?.saved).toEqual({ ...DERIVED, [key]: 7 });
+    expect(store.state?.effective).toEqual(DERIVED);
+    expect(store.state?.live.activeAgents).toBe(0);
+  }
+
+  socket.deliver({
+    type: "resourcesState",
+    state: frame({ saved: { maxAgentPeers: 2 } }),
+  });
+  expect(store.state?.saved).toEqual({ ...DERIVED, maxAgentPeers: 2 });
+});
+
+test("a saved figure that is present and malformed drops the frame", () => {
+  const store = new ResourcesStore();
+  const socket = opened(store);
+  socket.deliver({ type: "resourcesState", state: frame() });
+  const accepted = store.state;
+
+  for (const malformed of [null, -1, 2.5, "2", Number.NaN]) {
+    store.handleEvent({
+      type: "resourcesState",
+      state: frame({ saved: { maxAgentPeers: malformed, memoryHighMb: 1024 } }),
+    });
+    expect(store.state).toBe(accepted);
+  }
 });

@@ -42,15 +42,16 @@ const BUDGET = {
   memoryReserveMb: 24117,
 };
 
-/** One complete `resourcesState` frame; a caller overrides the live section. */
+/** One complete `resourcesState` frame; a caller overrides the saved or live section. */
 function deliver(
   effective: typeof BUDGET,
   live: Record<string, unknown> = {},
+  saved: Record<string, unknown> | null = null,
 ): Promise<void> {
   resources.handleEvent({
     type: "resourcesState",
     state: {
-      saved: null,
+      saved,
       effective,
       live: {
         activeAgents: 0,
@@ -188,4 +189,22 @@ test("an unanswered save keeps its ceiling when a poll lands with the old budget
     jest.useRealTimers();
     sends.restore();
   }
+});
+
+test("a saved row that carries one figure still renders the form and the live panel", async () => {
+  const view = render(DevboardResources);
+  await tick();
+
+  // A settings file holding only `maxAgentPeers` is the shape the server
+  // documents; the page must not stay at "Loading the resource budget…".
+  await deliver({ ...BUDGET, maxAgentPeers: 2 }, { activeAgents: 1 }, { maxAgentPeers: 2 });
+
+  expect(view.getByTestId("resource-origin").textContent).toContain("Saved settings");
+  expect((view.getByTestId("resource-max-agents") as HTMLInputElement).value).toBe("2");
+  expect((view.getByTestId("resource-memory-high") as HTMLInputElement).value).toBe("38587");
+  expect((view.getByTestId("resource-memory-max") as HTMLInputElement).value).toBe("48234");
+  expect((view.getByTestId("resource-reserve") as HTMLInputElement).value).toBe("24117");
+  expect(view.getByTestId("resource-saved").textContent).toContain("2 agents");
+  expect(view.getByTestId("resource-live-agents").textContent).toBe("1");
+  expect(view.queryByText("Loading the resource budget…")).toBeNull();
 });
