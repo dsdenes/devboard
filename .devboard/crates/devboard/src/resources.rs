@@ -480,17 +480,56 @@ impl CapGroup {
     }
 }
 
-/// Why a start was deferred. Deferral is never a failure.
+/// One cap deferral: the live slots that hold the cap, the cap they reached,
+/// and the starters they belong to.
+///
+/// The fields are private and one live-slot snapshot builds all of them, so
+/// the counts always sum to [`Self::active`], every count is positive, and the
+/// message can never describe a cap that is not full.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapDeferral {
+    active: u32,
+    cap: u32,
+    /// The live slots grouped by the starter that created each one, ordered by
+    /// count descending, then starter ascending.
+    groups: Vec<CapGroup>,
+}
+
+impl CapDeferral {
+    /// The cap deferral for one admission attempt, built from the live slots
+    /// that attempt counted.
+    fn new(cap: u32, cap_slots: &[Value]) -> Self {
+        Self {
+            active: cap_slots.len() as u32,
+            cap,
+            groups: cap_groups(cap_slots),
+        }
+    }
+
+    /// The live slots that held the cap, none of them exempt.
+    pub fn active(&self) -> u32 {
+        self.active
+    }
+
+    /// The configured cap the snapshot reached.
+    pub fn cap(&self) -> u32 {
+        self.cap
+    }
+
+    /// The live slots grouped by the starter that created each one.
+    pub fn groups(&self) -> &[CapGroup] {
+        &self.groups
+    }
+}
+
+/// Why a start waits. A deferral is never a failure: the caller keeps its work
+/// queued and a later attempt may admit it.
+///
+/// A slot record that cannot be written is not a capacity fact, so it never
+/// arrives as a deferral; it is [`AdmissionError::SlotWrite`] instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeferReason {
-    Cap {
-        active: u32,
-        cap: u32,
-        /// The live slots grouped by the starter that created each one,
-        /// ordered by count descending, then starter ascending. The counts
-        /// sum to `active`; every count is positive.
-        groups: Vec<CapGroup>,
-    },
+    Cap(CapDeferral),
     Memory {
         available_mb: u64,
         reserve_mb: u64,
@@ -509,7 +548,7 @@ pub enum DeferReason {
 impl DeferReason {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Cap { .. } => "capacity",
+            Self::Cap(_) => "capacity",
             Self::Memory { .. } => "reserve",
             Self::Lock { .. } => "lock",
         }
@@ -517,18 +556,17 @@ impl DeferReason {
 
     pub fn message(&self) -> String {
         match self {
-            Self::Cap {
-                active,
-                cap,
-                groups,
-            } => {
-                let groups = groups
+            Self::Cap(deferral) => {
+                let groups = deferral
+                    .groups()
                     .iter()
                     .map(CapGroup::message)
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "{active} agent peer(s) already run at the cap of {cap} ({groups}); the start is deferred"
+                    "{} agent peer(s) already run at the cap of {} ({groups}); the start is deferred",
+                    deferral.active(),
+                    deferral.cap()
                 )
             }
             Self::Memory {
@@ -545,15 +583,12 @@ impl DeferReason {
 
     pub fn to_json(&self) -> Value {
         match self {
-            Self::Cap {
-                active,
-                cap,
-                groups,
-            } => json!({
+            Self::Cap(deferral) => json!({
                 "reason": "capacity",
-                "active": active,
-                "cap": cap,
-                "groups": groups
+                "active": deferral.active(),
+                "cap": deferral.cap(),
+                "groups": deferral
+                    .groups()
                     .iter()
                     .map(|group| json!({
                         "starter": group.starter,
@@ -578,6 +613,70 @@ impl DeferReason {
                 "message": self.message(),
             }),
         }
+    }
+}
+
+/// A slot record the governor could not write: the directory it belongs in and
+/// the I/O error that refused the write.
+///
+/// The failure is the state directory's, not the cap's, so it carries both the
+/// path an operator has to fix and the error the kernel reported.
+#[derive(Debug)]
+pub struct SlotWriteError {
+    directory: PathBuf,
+    error: std::io::Error,
+}
+
+impl SlotWriteError {
+    /// The slot directory the record belongs in.
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    /// The I/O error the write reported.
+    pub fn error(&self) -> &std::io::Error {
+        &self.error
+    }
+
+    pub fn message(&self) -> String {
+        format!(
+            "could not write the agent slot in {}: {}",
+            self.directory.display(),
+            self.error
+        )
+    }
+}
+
+impl std::fmt::Display for SlotWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
+    }
+}
+
+/// Why a start was not admitted.
+///
+/// A [`DeferReason`] waits for capacity and is retried; a slot record that
+/// cannot be written is a failure of the state directory and is never retried
+/// as though the cap were full.
+#[derive(Debug)]
+pub enum AdmissionError {
+    Deferred(DeferReason),
+    SlotWrite(SlotWriteError),
+}
+
+impl AdmissionError {
+    /// The reason one attempt was not admitted, for a status line or a log.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Deferred(reason) => reason.message(),
+            Self::SlotWrite(error) => error.message(),
+        }
+    }
+}
+
+impl std::fmt::Display for AdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
     }
 }
 
@@ -745,6 +844,9 @@ pub struct Governor {
     slice_wrap: AtomicBool,
     last_oom_kills: AtomicU64,
     deferral_stamp: Mutex<BTreeMap<String, u64>>,
+    /// The slot failure the journal already carries, so one unchanged broken
+    /// state directory records one error line instead of one per retry.
+    slot_error_journaled: Mutex<Option<String>>,
     journal: Mutex<Option<Arc<dyn Fn(&str, &str) + Send + Sync>>>,
 }
 
@@ -817,6 +919,7 @@ impl Governor {
             slice_wrap: AtomicBool::new(options.slice),
             last_oom_kills: AtomicU64::new(0),
             deferral_stamp: Mutex::new(BTreeMap::new()),
+            slot_error_journaled: Mutex::new(None),
             journal: Mutex::new(None),
         });
         if options.slice && apply {
@@ -1119,7 +1222,12 @@ impl Governor {
     /// A Discover start is outside the cap: its slot is created while every
     /// cap slot is held. The memory reserve still defers it like any other
     /// start, and its slot is marked so the cap never counts it.
-    pub fn try_acquire(&self, kind: &str, starter: &str, label: &str) -> Result<Slot, DeferReason> {
+    pub fn try_acquire(
+        &self,
+        kind: &str,
+        starter: &str,
+        label: &str,
+    ) -> Result<Slot, AdmissionError> {
         self.refresh_settings();
         let settings = self.settings();
         let exempt = cap_exempt(kind);
@@ -1128,45 +1236,57 @@ impl Governor {
         // that cannot be taken defers the start: admitting without it would
         // void the serialization this section exists for.
         let lock_path = self.directory.join(LOCK_FILE);
-        let _guard = file_lock(&lock_path).map_err(|error| DeferReason::Lock {
-            path: lock_path.display().to_string(),
-            cause: error.to_string(),
+        let _guard = file_lock(&lock_path).map_err(|error| {
+            AdmissionError::Deferred(DeferReason::Lock {
+                path: lock_path.display().to_string(),
+                cause: error.to_string(),
+            })
         })?;
         let (cap_slots, _) = self.split_live_slots();
         let active = cap_slots.len() as u32;
         if !exempt && active >= settings.max_agent_peers {
-            return Err(DeferReason::Cap {
-                active,
-                cap: settings.max_agent_peers,
-                groups: cap_groups(&cap_slots),
-            });
+            return Err(AdmissionError::Deferred(DeferReason::Cap(
+                CapDeferral::new(settings.max_agent_peers, &cap_slots),
+            )));
         }
         if let Some(available) = self.memory.available_mb() {
             if available < settings.memory_reserve_mb {
-                return Err(DeferReason::Memory {
+                return Err(AdmissionError::Deferred(DeferReason::Memory {
                     available_mb: available,
                     reserve_mb: settings.memory_reserve_mb,
-                });
+                }));
             }
         }
-        self.create_slot(kind, starter, label, exempt)
-            .ok_or_else(|| DeferReason::Cap {
-                active,
-                cap: settings.max_agent_peers,
-                groups: cap_groups(&cap_slots),
-            })
+        let slot = self
+            .create_slot(kind, starter, label, exempt)
+            .map_err(|error| self.note_slot_write(error))?;
+        // A slot written after a failed one proves the directory writable, so
+        // a later failure of the same shape records its own line again.
+        if let Ok(mut journaled) = self.slot_error_journaled.lock() {
+            *journaled = None;
+        }
+        Ok(slot)
     }
 
     /// Waits until one slot is free. This is how an in-process start (a goal
     /// lane, a run owner, the Release Train peer) defers without failing.
-    pub async fn wait_for_admission(&self, kind: &str, starter: &str, label: &str) -> Slot {
+    ///
+    /// A slot record the state directory refuses is returned instead of waited
+    /// on: no retry admits a start that cannot write its slot.
+    pub async fn wait_for_admission(
+        &self,
+        kind: &str,
+        starter: &str,
+        label: &str,
+    ) -> Result<Slot, SlotWriteError> {
         loop {
             match self.try_acquire(kind, starter, label) {
-                Ok(slot) => return slot,
-                Err(reason) => {
+                Ok(slot) => return Ok(slot),
+                Err(AdmissionError::Deferred(reason)) => {
                     self.record_deferral(kind, label, &reason);
                     tokio::time::sleep(Duration::from_millis(ADMISSION_POLL_MS)).await;
                 }
+                Err(AdmissionError::SlotWrite(error)) => return Err(error),
             }
         }
     }
@@ -1249,6 +1369,34 @@ impl Governor {
         read_json_lines(&self.directory.join(DEFERRALS_FILE))
     }
 
+    /// Journals one slot write that failed, once per unchanged directory and
+    /// I/O reason, and hands the failure back as an admission error.
+    ///
+    /// A state directory the process cannot write is an error in the journal,
+    /// never a cap deferral: the deferral log keeps naming capacity the
+    /// governor actually saw, and the line names the path and the I/O reason an
+    /// operator has to fix.
+    fn note_slot_write(&self, error: SlotWriteError) -> AdmissionError {
+        let key = format!("{}: {}", error.directory().display(), error.error());
+        let already = self
+            .slot_error_journaled
+            .lock()
+            .map(|journaled| journaled.as_deref() == Some(key.as_str()))
+            .unwrap_or(true);
+        if !already {
+            if let Ok(mut journaled) = self.slot_error_journaled.lock() {
+                *journaled = Some(key);
+            }
+            if let Some(hook) = self.journal.lock().ok().and_then(|hook| hook.clone()) {
+                hook(
+                    "server-error",
+                    &format!("{}; the start failed", error.message()),
+                );
+            }
+        }
+        AdmissionError::SlotWrite(error)
+    }
+
     /* -------------------------------------------------------------------- */
     /* Slots                                                                 */
     /* -------------------------------------------------------------------- */
@@ -1306,9 +1454,16 @@ impl Governor {
         (cap, exempt)
     }
 
-    fn create_slot(&self, kind: &str, starter: &str, label: &str, exempt: bool) -> Option<Slot> {
+    fn create_slot(
+        &self,
+        kind: &str,
+        starter: &str,
+        label: &str,
+        exempt: bool,
+    ) -> Result<Slot, SlotWriteError> {
+        let directory = self.slots_directory();
         let id = uuid::Uuid::new_v4().to_string();
-        let path = self.slots_directory().join(format!("{id}.json"));
+        let path = directory.join(format!("{id}.json"));
         let pid = std::process::id();
         let mut record = json!({
             "id": id,
@@ -1322,8 +1477,9 @@ impl Governor {
         if exempt {
             record["exempt"] = Value::Bool(true);
         }
-        write_json_atomically(&path, &record).ok()?;
-        Some(Slot {
+        write_json_atomically(&path, &record)
+            .map_err(|error| SlotWriteError { directory, error })?;
+        Ok(Slot {
             path,
             id,
             starter: starter.to_string(),

@@ -430,10 +430,14 @@ async fn resources_command(args: &[String]) -> anyhow::Result<()> {
                     drop(slot);
                     Ok(())
                 }
-                Err(reason) => {
+                Err(devboard::resources::AdmissionError::Deferred(reason)) => {
                     governor.record_deferral(&kind, &label, &reason);
                     println!("deferred: {}", reason.message());
                     std::process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("{}", error.message());
+                    std::process::exit(1);
                 }
             }
         }
@@ -470,11 +474,12 @@ async fn resources_command(args: &[String]) -> anyhow::Result<()> {
                             started += 1;
                             max_active = max_active.max(running.len());
                         }
-                        Err(reason) => {
+                        Err(devboard::resources::AdmissionError::Deferred(reason)) => {
                             deferred += 1;
                             governor.record_deferral("stress", "stress", &reason);
                             break;
                         }
+                        Err(error) => anyhow::bail!("{}", error.message()),
                     }
                 }
                 let mut index = 0;

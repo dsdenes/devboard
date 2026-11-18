@@ -7043,12 +7043,20 @@ impl IssuesWorker {
                     let label = format!("issue #{}", issue.number);
                     match governor.try_acquire("issue", "Issues", &label) {
                         Ok(slot) => Some(slot),
-                        Err(reason) => {
+                        Err(crate::resources::AdmissionError::Deferred(reason)) => {
                             governor.record_deferral("issue", &label, &reason);
                             deferral = Some(format!(
                                 "issue #{} deferred: {}",
                                 issue.number,
                                 reason.message()
+                            ));
+                            break;
+                        }
+                        Err(error) => {
+                            deferral = Some(format!(
+                                "issue #{} not started: {}",
+                                issue.number,
+                                error.message()
                             ));
                             break;
                         }

@@ -495,7 +495,8 @@ impl AcpConnection {
                     Some(Arc::new(
                         governor
                             .wait_for_admission(&options.kind, &options.starter, &label)
-                            .await,
+                            .await
+                            .map_err(|error| AcpError::new(error.to_string()))?,
                     ))
                 }
                 None => None,

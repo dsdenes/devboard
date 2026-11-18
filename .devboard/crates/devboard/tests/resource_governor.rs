@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use devboard::resources::{
     apply_slice_properties_for, current_in_slice, slice_cgroup_path_for, stop_slice_for,
-    DeferReason, Governor, GovernorOptions, MemoryReader, Settings, Slot,
+    AdmissionError, DeferReason, Governor, GovernorOptions, MemoryReader, Settings, Slot,
 };
 
 /// The slice this test process owns; it is separate from the production
@@ -301,11 +301,12 @@ async fn concurrency_cap_defers_the_next_issue() {
                     children.push((number, slot, child));
                     max_active = max_active.max(children.len());
                 }
-                Err(reason) => {
+                Err(AdmissionError::Deferred(reason)) => {
                     deferrals += 1;
                     governor.record_deferral("issue", &label, &reason);
                     break;
                 }
+                Err(error) => panic!("the cap loop never fails a slot write: {}", error.message()),
             }
         }
         wait_children(&mut children);
@@ -332,6 +333,103 @@ async fn concurrency_cap_defers_the_next_issue() {
         .as_str()
         .unwrap_or("")
         .contains("deferred"));
+    // A cap deferral names the slots that held it: a positive count, groups
+    // that are each positive, and counts that sum to the active count. A
+    // deferral for a cap that is not full is the bug this assert removes.
+    let active = deferral["active"].as_u64().expect("the active count") as u32;
+    assert!(active > 0, "a cap deferral names at least one peer");
+    let groups = deferral["groups"]
+        .as_array()
+        .expect("the cap groups")
+        .iter()
+        .map(|group| group["count"].as_u64().expect("a positive count") as u32)
+        .collect::<Vec<_>>();
+    assert!(!groups.is_empty(), "a cap deferral names its groups");
+    assert!(groups.iter().all(|count| *count > 0), "no empty group");
+    assert_eq!(
+        groups.iter().sum::<u32>(),
+        active,
+        "the groups sum to the active count"
+    );
+    assert!(
+        !deferral["detail"].as_str().unwrap_or("").starts_with("0 "),
+        "the message never reads `0 ... at the cap`: {}",
+        deferral["detail"]
+    );
+}
+
+/// A slot directory the process cannot write fails the start instead of
+/// deferring it. The cap is not full, so the admission error carries the
+/// directory and the I/O reason, no deferral line claims capacity, and the
+/// dashboard journal records the failure once. A waiter ends on the failure
+/// rather than sleeping and retrying forever.
+#[tokio::test]
+async fn an_unwritable_slot_directory_fails_the_start_instead_of_deferring() {
+    let directory = scratch("slot-write");
+    let governor = in_memory_governor(
+        &directory,
+        FakeMemory::new(96_000, 90_000, 8),
+        &[("DEVBOARD_MAX_AGENT_PEERS", "4")],
+    );
+    let recorded: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let recorded = Arc::clone(&recorded);
+        governor.set_journal_hook(Arc::new(move |kind, text| {
+            recorded
+                .lock()
+                .unwrap()
+                .push((kind.to_string(), text.to_string()));
+        }));
+    }
+    // A file where the slot directory belongs: every slot write fails.
+    let resources = directory.join("resources");
+    let slots = resources.join("slots");
+    std::fs::create_dir_all(&resources).expect("the resources directory");
+    std::fs::write(&slots, "not a directory").expect("a file where the slots belong");
+
+    let error = match governor.try_acquire("issue", "Issues", "issue #1") {
+        Err(AdmissionError::SlotWrite(error)) => error,
+        other => panic!("an unwritable slot directory must fail the start, got {other:?}"),
+    };
+    assert_eq!(error.directory(), slots.as_path());
+    let io_reason = error.error().to_string();
+    assert!(!io_reason.is_empty(), "the error keeps the I/O reason");
+    assert!(
+        governor.read_deferrals().is_empty(),
+        "a write failure is never a deferral: {:?}",
+        governor.read_deferrals()
+    );
+
+    // The journal carries the failure once, naming the directory and the I/O
+    // reason, and a second attempt of the same shape adds no line.
+    let lines = recorded.lock().unwrap().clone();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one unchanged failure records one line: {lines:?}"
+    );
+    assert_eq!(lines[0].0, "server-error");
+    assert!(
+        lines[0].1.contains(&slots.display().to_string()),
+        "{}",
+        lines[0].1
+    );
+    assert!(lines[0].1.contains(&io_reason), "{}", lines[0].1);
+    assert!(governor.try_acquire("issue", "Issues", "issue #1").is_err());
+    assert_eq!(
+        recorded.lock().unwrap().len(),
+        1,
+        "the same failure journals once"
+    );
+
+    // A waiter ends on the failure instead of polling forever.
+    let waited = tokio::time::timeout(
+        Duration::from_secs(5),
+        governor.wait_for_admission("issue", "Issues", "issue #1"),
+    )
+    .await
+    .expect("the waiter ends instead of polling forever");
+    assert!(waited.is_err(), "the waiter reports the write failure");
 }
 
 #[test]
@@ -344,10 +442,13 @@ fn a_failed_admission_lock_defers_and_creates_no_slot() {
     );
     let lock = directory.join("resources").join("lock");
     std::fs::create_dir_all(&lock).expect("a directory where the lock file belongs");
-    let reason = governor
+    let error = governor
         .try_acquire("peer", "Auto Scout", "scan 1")
         .expect_err("a start whose lock cannot be taken is deferred");
-    let DeferReason::Lock { path, cause } = &reason else {
+    let AdmissionError::Deferred(reason) = &error else {
+        panic!("a failed lock is a deferral, not a write failure: {error:?}");
+    };
+    let DeferReason::Lock { path, cause } = reason else {
         panic!("the deferral names the lock, not the cap: {reason:?}");
     };
     assert_eq!(Path::new(path), lock, "the deferral names the lock path");
@@ -357,7 +458,7 @@ fn a_failed_admission_lock_defers_and_creates_no_slot() {
         0,
         "no slot is created without the lock"
     );
-    governor.record_deferral("peer", "scan 1", &reason);
+    governor.record_deferral("peer", "scan 1", reason);
     let deferrals = governor.read_deferrals();
     assert_eq!(deferrals.len(), 1, "one failed lock records one deferral");
     assert_eq!(deferrals[0]["reason"], "lock");
@@ -377,7 +478,7 @@ fn one_lock_admits_exactly_one_of_two_concurrent_starts_at_a_cap_of_one() {
         &[("DEVBOARD_MAX_AGENT_PEERS", "1")],
     );
     let barrier = Arc::new(std::sync::Barrier::new(2));
-    let results: Vec<Result<Slot, DeferReason>> = std::thread::scope(|scope| {
+    let results: Vec<Result<Slot, AdmissionError>> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..2u32)
             .map(|number| {
                 let governor = Arc::clone(&governor);
@@ -396,7 +497,7 @@ fn one_lock_admits_exactly_one_of_two_concurrent_starts_at_a_cap_of_one() {
     let admitted = results.iter().filter(|result| result.is_ok()).count();
     let deferred = results
         .iter()
-        .filter(|result| matches!(result, Err(DeferReason::Cap { .. })))
+        .filter(|result| matches!(result, Err(AdmissionError::Deferred(DeferReason::Cap(_)))))
         .count();
     assert_eq!(admitted, 1, "one free slot admits one start");
     assert_eq!(deferred, 1, "the other start is deferred by the cap");
@@ -558,10 +659,10 @@ fn admission_defers_below_reserve() {
     );
     memory.set_available(1_000);
     match governor.try_acquire("goal", "Goal", "lane") {
-        Err(DeferReason::Memory {
+        Err(AdmissionError::Deferred(DeferReason::Memory {
             available_mb,
             reserve_mb,
-        }) => {
+        })) => {
             assert_eq!(available_mb, 1_000);
             assert_eq!(reserve_mb, 2_048);
             governor.record_deferral(
@@ -583,7 +684,7 @@ fn admission_defers_below_reserve() {
     memory.set_available(500);
     assert!(matches!(
         governor.try_acquire("goal", "Goal", "lane"),
-        Err(DeferReason::Memory { .. })
+        Err(AdmissionError::Deferred(DeferReason::Memory { .. }))
     ));
     memory.set_available(4_096);
     governor
@@ -1123,7 +1224,7 @@ fn dashboard_survives_slice_kill() {
     assert!(
         matches!(
             governor.try_acquire("goal", "Goal", "after-kill"),
-            Err(DeferReason::Memory { .. })
+            Err(AdmissionError::Deferred(DeferReason::Memory { .. }))
         ),
         "a low memory snapshot still defers"
     );

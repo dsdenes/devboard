@@ -3461,20 +3461,26 @@ impl ScoutWorker {
         let label = format!("{} ({})", self.agent_command, self.repo_dir.display());
         match governor.try_acquire("peer", SCOUT_STARTER, &label) {
             Ok(slot) => Ok(Some(Arc::new(slot))),
-            Err(reason) => {
+            Err(crate::resources::AdmissionError::Deferred(reason)) => {
                 governor.record_deferral("peer", &label, &reason);
-                self.record_scan_deferral(&reason, now);
+                self.record_scan_deferral(&reason.message(), now);
+                Err(())
+            }
+            // The governor journaled the state directory's failure; the scan
+            // still did not begin, so it is held and retried, never failed.
+            Err(error) => {
+                self.record_scan_deferral(&error.message(), now);
                 Err(())
             }
         }
     }
 
-    /// Records one deferred start: the status line names the budget that bound
-    /// and the state names when the next attempt is due. The scan itself never
-    /// began, so no failure and no error notification follows it.
-    fn record_scan_deferral(&self, reason: &crate::resources::DeferReason, now: i64) {
+    /// Records one held start: the status line names why the start did not
+    /// begin, and the state names when the next attempt is due. The scan
+    /// itself never began, so no failure and no error notification follows it.
+    fn record_scan_deferral(&self, reason: &str, now: i64) {
         let next_attempt_at = Some(iso_from_millis(now + self.sync_ms as i64));
-        let text = format!("{DEFERRED_PREFIX}{}", reason.message());
+        let text = format!("{DEFERRED_PREFIX}{reason}");
         let mut runtime = lock_unpoisoned(&self.runtime);
         let mut changed = false;
         if runtime.state.notice.as_deref() != Some(text.as_str()) {

@@ -15,7 +15,9 @@ use devboard::detached_run::{
 };
 use devboard::journal::Journal;
 use devboard::providers::{save_subscriptions, ProviderId, StoredSubscription};
-use devboard::resources::{CapGroup, DeferReason, Governor, GovernorOptions, MemoryReader};
+use devboard::resources::{
+    AdmissionError, CapGroup, DeferReason, Governor, GovernorOptions, MemoryReader,
+};
 use devboard::supervision::live_process;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -3103,15 +3105,11 @@ async fn a_discover_start_is_admitted_at_the_peer_cap() {
     // The same moment, a non-Discover start is deferred with the cap's own
     // grouped message naming its holder.
     match app.resources.try_acquire("issue", "Issues", "issue #2") {
-        Err(DeferReason::Cap {
-            active,
-            cap,
-            groups,
-        }) => {
-            assert_eq!((active, cap), (1, 1));
+        Err(AdmissionError::Deferred(DeferReason::Cap(deferral))) => {
+            assert_eq!((deferral.active(), deferral.cap()), (1, 1));
             assert_eq!(
-                groups,
-                vec![CapGroup {
+                deferral.groups(),
+                [CapGroup {
                     starter: "Issues".to_string(),
                     count: 1,
                 }]
@@ -3258,10 +3256,10 @@ async fn a_discover_start_is_admitted_at_the_peer_cap() {
     );
     for kind in ["discover", "issue"] {
         match governor.try_acquire(kind, "Run owner", "omp acp (repo)") {
-            Err(DeferReason::Memory {
+            Err(AdmissionError::Deferred(DeferReason::Memory {
                 available_mb,
                 reserve_mb,
-            }) => {
+            })) => {
                 assert_eq!((available_mb, reserve_mb), (1_000, 24_000));
             }
             other => panic!("{kind} below the reserve must defer on memory: {other:?}"),
