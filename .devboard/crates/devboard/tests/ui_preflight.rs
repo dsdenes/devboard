@@ -462,6 +462,44 @@ fn an_a2ui_config_version_is_read_verbatim() {
 }
 
 #[test]
+fn an_a2ui_config_without_a_version_pin_falls_back_to_the_version_file() {
+    for (name, config) in [
+        ("a2ui-config-no-version", r#"{"catalogId":"acme"}"#),
+        ("a2ui-config-null-version", r#"{"version":null}"#),
+    ] {
+        let fixture = Fixture::new(name);
+        fixture.write(".design/a2ui/config.json", config);
+        fixture.write(".design/a2ui/version", "v1.0\n");
+        let result = fixture.preflight();
+        assert_eq!(
+            result["checks"]["a2ui"],
+            json!({
+                "status": "provided-by-skill",
+                "version": "1.0",
+                "note": "Step 3 writes A2UI JSONL plus a standalone wireframe.",
+            }),
+            "{config}"
+        );
+    }
+}
+
+#[test]
+fn an_a2ui_config_version_wins_over_the_version_file() {
+    let fixture = Fixture::new("a2ui-config-wins");
+    fixture.write(".design/a2ui/config.json", r#"{"version":"0.9.1"}"#);
+    fixture.write(".design/a2ui/version", "v1.0\n");
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["a2ui"],
+        json!({
+            "status": "provided-by-skill",
+            "version": "0.9.1",
+            "note": "Step 3 writes A2UI JSONL plus a standalone wireframe.",
+        })
+    );
+}
+
+#[test]
 fn an_unsupported_a2ui_version_disables_the_gate() {
     let fixture = Fixture::new("a2ui-invalid");
     fixture.write(".design/a2ui/config.json", r#"{"version":"2.0"}"#);

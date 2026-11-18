@@ -773,7 +773,7 @@ fn story_file(path: &str) -> bool {
 fn a2ui_check(report: &mut Report, root: &Path) {
     let config_path = root.join(".design/a2ui/config.json");
     let version_path = root.join(".design/a2ui/version");
-    let mut raw = "0.9.1".to_string();
+    let mut raw: Option<String> = None;
     if config_path.is_file() {
         let parsed = std::fs::read_to_string(&config_path)
             .map_err(|error| error.to_string())
@@ -789,7 +789,7 @@ fn a2ui_check(report: &mut Report, root: &Path) {
             Ok(Value::Object(object)) => {
                 if let Some(version) = object.get("version").filter(|version| !version.is_null()) {
                     match version.as_str() {
-                        Some(text) => raw = text.to_string(),
+                        Some(text) => raw = Some(text.to_string()),
                         None => {
                             a2ui_invalid(
                                 report,
@@ -813,9 +813,10 @@ fn a2ui_check(report: &mut Report, root: &Path) {
                 return;
             }
         }
-    } else if version_path.is_file() {
+    }
+    if raw.is_none() && version_path.is_file() {
         match std::fs::read_to_string(&version_path) {
-            Ok(text) => raw = text.trim().to_string(),
+            Ok(text) => raw = Some(text.trim().to_string()),
             Err(error) => {
                 a2ui_unverified(
                     report,
@@ -825,6 +826,7 @@ fn a2ui_check(report: &mut Report, root: &Path) {
             }
         }
     }
+    let raw = raw.unwrap_or_else(|| "0.9.1".to_string());
     let version = match raw.strip_prefix('v').or_else(|| raw.strip_prefix('V')) {
         Some(stripped) => stripped,
         None => raw.as_str(),
