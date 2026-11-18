@@ -412,33 +412,134 @@ fn maintenance_path(state_dir: &Path, repo_dir: &Path) -> PathBuf {
     maintenance_directory(state_dir, repo_dir).join("maintenance.json")
 }
 
+/// One maintenance file a read could not consume in full.
+#[derive(Clone, Debug)]
+pub struct MaintenanceDamage {
+    pub path: PathBuf,
+    /// What kept the read from consuming the whole file, including the record
+    /// rows it skipped.
+    pub detail: String,
+}
+
+impl MaintenanceDamage {
+    /// One line naming the file and the concrete cause.
+    pub fn summary(&self) -> String {
+        format!("{}: {}", self.path.display(), self.detail)
+    }
+}
+
+/// Every record one read recovered, beside the damage that kept it from
+/// consuming the whole file.
+#[derive(Debug, Default)]
+pub struct MaintenanceLoad {
+    pub records: Vec<MaintenanceRecord>,
+    pub damage: Option<MaintenanceDamage>,
+}
+
 /// Reads every maintenance record for one repository.
-pub fn read_maintenance(state_dir: &Path, repo_dir: &Path) -> Vec<MaintenanceRecord> {
-    let text = match std::fs::read_to_string(maintenance_path(state_dir, repo_dir)) {
+///
+/// A file that cannot be consumed in full keeps the records it did yield and
+/// reports the damage, so no caller mistakes a partial read for an empty
+/// queue and no writer replaces rows it never read.
+pub fn read_maintenance(state_dir: &Path, repo_dir: &Path) -> MaintenanceLoad {
+    let path = maintenance_path(state_dir, repo_dir);
+    let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(_) => return Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return MaintenanceLoad::default()
+        }
+        Err(error) => {
+            return MaintenanceLoad {
+                records: Vec::new(),
+                damage: Some(MaintenanceDamage {
+                    path,
+                    detail: format!("could not read the file: {error}"),
+                }),
+            }
+        }
     };
     let value: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
-        Err(_) => return Vec::new(),
+        Err(error) => {
+            return MaintenanceLoad {
+                records: Vec::new(),
+                damage: Some(MaintenanceDamage {
+                    path,
+                    detail: format!("the file is not valid JSON: {error}"),
+                }),
+            }
+        }
     };
     let Some(rows) = value.get("records").and_then(Value::as_array) else {
-        return Vec::new();
+        return MaintenanceLoad {
+            records: Vec::new(),
+            damage: Some(MaintenanceDamage {
+                path,
+                detail: "the file holds no records array".to_string(),
+            }),
+        };
     };
-    rows.iter().filter_map(record_from_json).collect()
+    let mut records = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        match record_from_json(row) {
+            Ok(record) => records.push(record),
+            Err(detail) => skipped.push(format!("row {} {detail}", index + 1)),
+        }
+    }
+    let damage = (!skipped.is_empty()).then(|| MaintenanceDamage {
+        path,
+        detail: format!(
+            "{} of {} record rows could not be parsed: {}",
+            skipped.len(),
+            rows.len(),
+            skipped.join("; ")
+        ),
+    });
+    MaintenanceLoad { records, damage }
 }
 
-fn record_from_json(value: &Value) -> Option<MaintenanceRecord> {
-    let row = value.as_object()?;
-    let pull_request = row.get("pullRequest")?.as_object()?;
-    let number = pull_request.get("number")?.as_u64()?;
-    let url = pull_request.get("url")?.as_str()?.to_string();
-    let state = pull_request.get("state")?.as_str()?.to_string();
-    let branch = pull_request.get("branch")?.as_str()?.to_string();
-    let base = pull_request.get("base")?.as_str()?.to_string();
-    let head = pull_request.get("head")?.as_str()?.to_string();
-    Some(MaintenanceRecord {
-        id: row.get("id")?.as_str()?.to_string(),
+fn record_from_json(value: &Value) -> Result<MaintenanceRecord, String> {
+    let row = value.as_object().ok_or("is not an object")?;
+    let pull_request = row
+        .get("pullRequest")
+        .and_then(Value::as_object)
+        .ok_or("holds no pullRequest object")?;
+    let number = pull_request
+        .get("number")
+        .and_then(Value::as_u64)
+        .ok_or("has no integer pullRequest.number")?;
+    let url = pull_request
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("has no string pullRequest.url")?
+        .to_string();
+    let state = pull_request
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or("has no string pullRequest.state")?
+        .to_string();
+    let branch = pull_request
+        .get("branch")
+        .and_then(Value::as_str)
+        .ok_or("has no string pullRequest.branch")?
+        .to_string();
+    let base = pull_request
+        .get("base")
+        .and_then(Value::as_str)
+        .ok_or("has no string pullRequest.base")?
+        .to_string();
+    let head = pull_request
+        .get("head")
+        .and_then(Value::as_str)
+        .ok_or("has no string pullRequest.head")?
+        .to_string();
+    Ok(MaintenanceRecord {
+        id: row
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("has no string id")?
+            .to_string(),
         pull_request: DeliveredPullRequest {
             number,
             url,
@@ -452,7 +553,11 @@ fn record_from_json(value: &Value) -> Option<MaintenanceRecord> {
             .get("documentation")
             .and_then(Value::as_str)
             .map(str::to_string),
-        head_commit: row.get("headCommit")?.as_str()?.to_string(),
+        head_commit: row
+            .get("headCommit")
+            .and_then(Value::as_str)
+            .ok_or("has no string headCommit")?
+            .to_string(),
         last_handled_comment: row.get("lastHandledComment").and_then(Value::as_u64),
         check_state: row
             .get("checkState")
@@ -511,19 +616,39 @@ pub fn write_maintenance(
     crate::state::write_file_atomically_sync(&path, &format!("{text}\n"))
 }
 
+/// Reads the whole queue, replaces or appends one record, and rewrites it.
+///
+/// A read that could not consume the file refuses the write: the file keeps
+/// every row it holds, including the rows this read could not parse.
+fn write_maintenance_record(
+    state_dir: &Path,
+    repo_dir: &Path,
+    record: MaintenanceRecord,
+) -> Result<Vec<MaintenanceRecord>, String> {
+    let load = read_maintenance(state_dir, repo_dir);
+    if let Some(damage) = load.damage {
+        return Err(format!(
+            "refused to write the maintenance queue: {}",
+            damage.summary()
+        ));
+    }
+    let mut records = load.records;
+    match records.iter_mut().find(|existing| existing.id == record.id) {
+        Some(existing) => *existing = record,
+        None => records.push(record),
+    }
+    write_maintenance(state_dir, repo_dir, &records)
+        .map_err(|error| format!("could not write the maintenance record: {error}"))?;
+    Ok(records)
+}
+
 /// Inserts or replaces one record by its pull request number.
 pub fn upsert_maintenance(
     state_dir: &Path,
     repo_dir: &Path,
     record: MaintenanceRecord,
-) -> std::io::Result<Vec<MaintenanceRecord>> {
-    let mut records = read_maintenance(state_dir, repo_dir);
-    match records.iter_mut().find(|existing| existing.id == record.id) {
-        Some(existing) => *existing = record,
-        None => records.push(record),
-    }
-    write_maintenance(state_dir, repo_dir, &records)?;
-    Ok(records)
+) -> Result<Vec<MaintenanceRecord>, String> {
+    write_maintenance_record(state_dir, repo_dir, record)
 }
 
 /// The open record for one issue, if an agent already opened a pull request
@@ -534,6 +659,7 @@ pub fn open_record_for_issue(
     issue: u64,
 ) -> Option<MaintenanceRecord> {
     read_maintenance(state_dir, repo_dir)
+        .records
         .into_iter()
         .find(|record| record.issue == Some(issue) && record.is_open())
 }
@@ -545,6 +671,7 @@ pub fn open_record_for_documentation(
     entry: &str,
 ) -> Option<MaintenanceRecord> {
     read_maintenance(state_dir, repo_dir)
+        .records
         .into_iter()
         .find(|record| record.documentation.as_deref() == Some(entry) && record.is_open())
 }
@@ -554,6 +681,7 @@ pub fn open_record_for_documentation(
 pub fn fresh_issue_branch(state_dir: &Path, repo_dir: &Path, number: u64, run_id: &str) -> String {
     let base = issue_branch(number, run_id);
     let used: Vec<String> = read_maintenance(state_dir, repo_dir)
+        .records
         .into_iter()
         .map(|record| record.pull_request.branch)
         .collect();
@@ -624,6 +752,65 @@ mod tests {
             DeliveryMode::Merge
         );
         assert_eq!(effective(saved, ProjectKind::Host), saved);
+    }
+
+    #[test]
+    fn a_damaged_maintenance_file_reports_damage_and_refuses_a_write() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("maintenance-damaged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        let state = root.join("state");
+        std::fs::create_dir_all(&repo).expect("a repository");
+        std::fs::create_dir_all(&state).expect("a state directory");
+        let valid = MaintenanceRecord::new(
+            DeliveredPullRequest {
+                number: 7,
+                url: "https://forge.test/acme/app/pulls/7".to_string(),
+                state: "open".to_string(),
+                branch: "devboard/issue-5-run".to_string(),
+                base: "main".to_string(),
+                head: "abcdef".to_string(),
+            },
+            Some(5),
+            None,
+        );
+        let damaged_row = json!({
+            "id": "8",
+            "pullRequest": {"number": 8, "url": "https://forge.test/acme/app/pulls/8"},
+        });
+        let path = maintenance_path(&state, &repo);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the delivery directory");
+        let text = crate::jsjson::stringify(
+            &json!({"version": 1, "records": [record_to_json(&valid), damaged_row]}),
+        );
+        std::fs::write(&path, format!("{text}\n")).expect("the damaged file");
+        let before = std::fs::read_to_string(&path).expect("the bytes");
+
+        let load = read_maintenance(&state, &repo);
+        let damage = load.damage.expect("the damage");
+        assert_eq!(damage.path, path);
+        assert!(damage.detail.contains("row 2"), "{}", damage.detail);
+        assert_eq!(load.records.len(), 1, "the valid record survives the read");
+        assert_eq!(load.records[0].pull_request.number, 7);
+
+        let mut third = valid.clone();
+        third.id = "9".to_string();
+        third.pull_request.number = 9;
+        third.pull_request.url = "https://forge.test/acme/app/pulls/9".to_string();
+        let error = upsert_maintenance(&state, &repo, third).expect_err("the write is refused");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the untouched file"),
+            before,
+            "the refused write leaves the damaged bytes in place"
+        );
+        let load = read_maintenance(&state, &repo);
+        assert_eq!(load.records.len(), 1);
+        assert_eq!(load.records[0].pull_request.number, 7);
+        std::fs::remove_dir_all(&root).ok();
     }
 }
 
@@ -1934,14 +2121,7 @@ pub async fn run_maintenance(
             updated.state = "merged".to_string();
             updated.pull_request.state = "merged".to_string();
             updated.head_commit = snapshot.head.clone();
-            let mut records = read_maintenance(state_dir, repo_dir);
-            if let Some(existing) = records.iter_mut().find(|entry| entry.id == updated.id) {
-                *existing = updated.clone();
-            } else {
-                records.push(updated.clone());
-            }
-            write_maintenance(state_dir, repo_dir, &records)
-                .map_err(|error| format!("could not write the maintenance record: {error}"))?;
+            write_maintenance_record(state_dir, repo_dir, updated.clone())?;
             let _ = record_maintenance_run(
                 state_dir,
                 repo_dir,
@@ -1955,14 +2135,7 @@ pub async fn run_maintenance(
             let mut updated = record.clone();
             updated.state = "closed".to_string();
             updated.pull_request.state = "closed".to_string();
-            let mut records = read_maintenance(state_dir, repo_dir);
-            if let Some(existing) = records.iter_mut().find(|entry| entry.id == updated.id) {
-                *existing = updated.clone();
-            } else {
-                records.push(updated.clone());
-            }
-            write_maintenance(state_dir, repo_dir, &records)
-                .map_err(|error| format!("could not write the maintenance record: {error}"))?;
+            write_maintenance_record(state_dir, repo_dir, updated.clone())?;
             let _ = record_maintenance_run(
                 state_dir,
                 repo_dir,
@@ -1986,14 +2159,7 @@ pub async fn run_maintenance(
             updated.check_state = check_state(&checks);
             updated.mergeable_state = snapshot.mergeable.clone();
             if updated != record {
-                let mut records = read_maintenance(state_dir, repo_dir);
-                if let Some(existing) = records.iter_mut().find(|entry| entry.id == updated.id) {
-                    *existing = updated;
-                } else {
-                    records.push(updated);
-                }
-                write_maintenance(state_dir, repo_dir, &records)
-                    .map_err(|error| format!("could not write the maintenance record: {error}"))?;
+                write_maintenance_record(state_dir, repo_dir, updated)?;
             }
             return Ok(MaintenanceOutcome::NoChange);
         }
@@ -2124,14 +2290,7 @@ pub async fn run_maintenance(
         None => check_state(&checks),
     };
     updated.mergeable_state = snapshot.mergeable.clone();
-    let mut records = read_maintenance(state_dir, repo_dir);
-    if let Some(existing) = records.iter_mut().find(|entry| entry.id == updated.id) {
-        *existing = updated.clone();
-    } else {
-        records.push(updated.clone());
-    }
-    write_maintenance(state_dir, repo_dir, &records)
-        .map_err(|error| format!("could not write the maintenance record: {error}"))?;
+    write_maintenance_record(state_dir, repo_dir, updated.clone())?;
     let _ = record_maintenance_run(
         state_dir,
         repo_dir,

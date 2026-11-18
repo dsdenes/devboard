@@ -1009,7 +1009,7 @@ async fn a_merged_pull_request_closes_the_issue() {
         .expect("the merge");
     assert_eq!(outcome, MaintenanceOutcome::Merged);
     assert_eq!(forge.closed_issues(), vec![12]);
-    let records = read_maintenance(&fixture.state, &fixture.repo);
+    let records = read_maintenance(&fixture.state, &fixture.repo).records;
     assert_eq!(records[0].state, "merged");
     assert!(open_record_for_issue(&fixture.state, &fixture.repo, 12).is_none());
     // No further maintenance run starts for the terminal record.
@@ -1058,7 +1058,7 @@ async fn a_closed_unmerged_pull_request_requeues_the_issue() {
         "a closed-unmerged issue stays open"
     );
     assert!(open_record_for_issue(&fixture.state, &fixture.repo, 12).is_none());
-    let records = read_maintenance(&fixture.state, &fixture.repo);
+    let records = read_maintenance(&fixture.state, &fixture.repo).records;
     assert_eq!(records[0].state, "closed");
     let next = fresh_issue_branch(&fixture.state, &fixture.repo, 12, "run-abc");
     assert_ne!(next, delivered.branch, "the closed branch is never reused");

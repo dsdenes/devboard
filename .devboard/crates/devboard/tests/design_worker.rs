@@ -1913,7 +1913,7 @@ async fn pull_request_mode_opens_a_documentation_pull_request() {
         !lines.iter().any(|line| line.contains("pushed to main")),
         "no direct-to-main push is claimed: {lines:?}"
     );
-    let records = devboard::delivery::read_maintenance(&fixture.state, &fixture.repo);
+    let records = devboard::delivery::read_maintenance(&fixture.state, &fixture.repo).records;
     assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].documentation.as_deref(),

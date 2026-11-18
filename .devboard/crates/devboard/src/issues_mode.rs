@@ -7878,8 +7878,21 @@ impl IssuesWorker {
     async fn maintain_pull_requests(&mut self) {
         self.next_maintenance_due =
             std::time::Instant::now() + Duration::from_millis(MAINTENANCE_INTERVAL_MS);
-        let records = crate::delivery::read_maintenance(&self.state_dir, &self.repo_dir);
-        let open: Vec<_> = records
+        let load = crate::delivery::read_maintenance(&self.state_dir, &self.repo_dir);
+        if let Some(damage) = load.damage {
+            crate::journal::Journal::open(&self.state_dir, &self.repo_dir, 0).write(
+                "server-error",
+                &format!(
+                    "issues: this maintenance cycle is skipped; the queue could not be read \
+                     completely: {}",
+                    damage.summary()
+                ),
+                Some("issues"),
+            );
+            return;
+        }
+        let open: Vec<_> = load
+            .records
             .into_iter()
             .filter(|record| record.is_open())
             .collect();
@@ -9534,6 +9547,60 @@ mod tests {
             worker.active.is_empty(),
             "the delivered marker starts no second run"
         );
+    }
+
+    #[tokio::test]
+    async fn a_damaged_maintenance_queue_journals_one_line_and_starts_no_peer() {
+        let (repo, state) = unit_root("pr-maintenance-damaged");
+        let mut worker = worker(&repo, &state);
+        crate::delivery::upsert_maintenance(
+            &state,
+            &repo,
+            MaintenanceRecord::new(
+                DeliveredPullRequest {
+                    number: 7,
+                    url: "https://forge.test/acme/app/pulls/7".to_string(),
+                    state: "open".to_string(),
+                    branch: "devboard/issue-5-run".to_string(),
+                    base: "main".to_string(),
+                    head: "abcdef".to_string(),
+                },
+                Some(5),
+                None,
+            ),
+        )
+        .expect("the maintenance record");
+        let path = state
+            .join("delivery")
+            .join(crate::journal::repo_key(&repo))
+            .join("maintenance.json");
+        let mut file: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the queue"))
+                .expect("JSON");
+        file.get_mut("records")
+            .and_then(Value::as_array_mut)
+            .expect("the rows")
+            .push(json!({"id": "8", "pullRequest": {"number": 8}}));
+        std::fs::write(&path, format!("{}\n", crate::jsjson::stringify(&file)))
+            .expect("the damaged queue");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = Arc::clone(&calls);
+        worker.maintain_override = Some(Arc::new(move |_input| {
+            recorded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async { Err("a damaged queue starts no maintenance peer".to_string()) })
+        }));
+        worker.maintain_pull_requests().await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "no maintenance peer starts"
+        );
+        let journal = std::fs::read_to_string(crate::journal::journal_file(&state, &repo))
+            .expect("the journal");
+        let lines: Vec<&str> = journal.lines().collect();
+        assert_eq!(lines.len(), 1, "{journal}");
+        assert!(lines[0].contains("\"server-error\""), "{journal}");
+        assert!(lines[0].contains("maintenance.json"), "{journal}");
     }
 
     #[tokio::test]
