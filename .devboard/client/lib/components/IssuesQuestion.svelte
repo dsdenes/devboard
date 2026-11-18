@@ -85,6 +85,11 @@
    * it for the retry. Returns whether a frame was sent.
    */
   function submit(value: string): boolean {
+    // One answer in flight is the question's rule, not the Answer button's:
+    // Enter reaches this function through the form, and a choice has its own
+    // button, so both would otherwise dispatch a second answer for the same
+    // question while the draft is still here.
+    if (answerPending.busy) return false;
     const trimmed = value.trim();
     if (trimmed.length === 0) return false;
     answerPending.start();
@@ -115,6 +120,7 @@
           evidence={() => answerRevision()}
           scope={() => subject}
           command={() => submit(option.label)}
+          disabled={answerPending.busy}
           data-testid={choiceTestid}
           data-run={runId}
           data-command={command}

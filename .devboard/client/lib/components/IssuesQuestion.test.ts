@@ -122,6 +122,14 @@ async function submitForm(input: HTMLInputElement): Promise<void> {
   await tick();
 }
 
+/** The `answerIssues` frames the socket was handed since `from`. */
+function answerFrames(from: number): unknown[] {
+  return socket.sent
+    .slice(from)
+    .map((data) => JSON.parse(data) as { type?: string })
+    .filter((message) => message.type === "answerIssues");
+}
+
 test("a switch to another agent's question clears the draft and answers the new subject", async () => {
   const original = issues.submitAgentAnswer;
   const answers = captureAnswers();
@@ -209,4 +217,56 @@ test("a server refusal frame releases the Answer control and keeps the typed ans
   expect(submit.getAttribute("aria-busy")).toBeNull();
   expect(input.value).toBe("answer still unsent");
   expect(view.container.textContent).not.toContain("Answer received no answer.");
+});
+
+test("a second Enter while one answer is in flight sends no second frame", async () => {
+  const { input, submit } = await mount("run-a", QUESTION_A, () =>
+    issues.answerRevision("run-a"),
+  );
+  const start = socket.sent.length;
+
+  await type(input, "first answer");
+  await submitForm(input);
+  expect(answerFrames(start)).toHaveLength(1);
+  expect(submit.getAttribute("aria-busy")).toBe("true");
+
+  // Enter reaches `submit()` through the form, not through the busy button.
+  await submitForm(input);
+  expect(answerFrames(start)).toHaveLength(1);
+  expect(input.value).toBe("first answer");
+
+  // The answering frame settles the latch, so the retry dispatches again.
+  issues.handleEvent({
+    type: "error",
+    message: "That question is no longer waiting for an answer.",
+  });
+  await tick();
+  expect(submit.getAttribute("aria-busy")).toBeNull();
+
+  await submitForm(input);
+  expect(answerFrames(start)).toHaveLength(2);
+});
+
+test("a second choice while one answer is in flight sends no second frame", async () => {
+  const question: RunQuestion = {
+    id: 9,
+    message: "Which draft should the agent keep?",
+    options: [
+      { label: "Keep", description: "Keep the draft.", recommended: false },
+      { label: "Discard", description: "Discard the draft.", recommended: false },
+    ],
+  };
+
+  const { view } = await mount("run-a", question, () => issues.answerRevision("run-a"));
+  const start = socket.sent.length;
+  const choices = view.getAllByTestId("issues-agent-choice") as HTMLButtonElement[];
+
+  await fireEvent.click(choices[0]!);
+  await tick();
+  expect(answerFrames(start)).toHaveLength(1);
+  expect(choices[1]!.disabled).toBe(true);
+
+  await fireEvent.click(choices[1]!);
+  await tick();
+  expect(answerFrames(start)).toHaveLength(1);
 });
