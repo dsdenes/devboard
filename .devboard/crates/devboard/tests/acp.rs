@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboard::acp::{
     next_activity, AcpConnection, AcpConnectionOptions, AcpEvent, AcpId, AcpQuestion,
@@ -443,4 +443,145 @@ async fn deny_cancels_elicitations_and_read_only_surfaces_them() {
     );
     let log = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(log.lines().any(|line| line == "answer Beta"));
+}
+
+/// Writes one shell peer under the test directory and returns the command that
+/// runs it, so the command splitter sees a bare program with one argument.
+#[cfg(unix)]
+fn script_peer(scratch: &Scratch, name: &str, body: &str) -> String {
+    let path = scratch.path().join(name);
+    std::fs::write(&path, format!("{body}\n")).expect("the peer script is written");
+    format!("/bin/sh {}", path.display())
+}
+
+#[cfg(unix)]
+fn peer_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// Waits until the peer script reports that its signal handling is installed,
+/// so a close never races the shell's own startup.
+#[cfg(unix)]
+async fn wait_for_ready(scratch: &Scratch, name: &str) {
+    let path = scratch.path().join(name);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !path.exists() {
+        assert!(Instant::now() < deadline, "the peer never became ready");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_peer_exit(pid: u32, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while peer_alive(pid) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
+}
+
+/// A peer that ignores SIGTERM and drains its session until stdin reaches end
+/// of file is ended by the close: the connection drops the pipe's write end.
+#[cfg(unix)]
+#[tokio::test]
+async fn close_sends_stdin_eof_to_a_peer_that_ignores_sigterm() {
+    let scratch = Scratch::new("close-stdin");
+    let command = script_peer(
+        &scratch,
+        "drain.sh",
+        "trap '' TERM\necho ready > ready.txt\nexec cat",
+    );
+    let options = AcpConnectionOptions::new(command, scratch.path().to_string_lossy());
+    let (connection, _events) = AcpConnection::connect(options)
+        .await
+        .expect("the peer starts");
+    let pid = connection.pid().expect("the peer has a pid");
+    wait_for_ready(&scratch, "ready.txt").await;
+    connection.close();
+    assert!(
+        wait_for_peer_exit(pid, Duration::from_millis(1_000)).await,
+        "the peer waited for a stdin EOF the close never sent"
+    );
+}
+
+/// A peer that exits on SIGTERM ends on that signal, without waiting for the
+/// escalation deadline.
+#[cfg(unix)]
+#[tokio::test]
+async fn close_ends_a_peer_that_exits_on_sigterm_before_the_deadline() {
+    let scratch = Scratch::new("close-sigterm");
+    let command = script_peer(&scratch, "term.sh", "echo ready > ready.txt\nexec sleep 60");
+    let options = AcpConnectionOptions::new(command, scratch.path().to_string_lossy());
+    let (connection, _events) = AcpConnection::connect(options)
+        .await
+        .expect("the peer starts");
+    let pid = connection.pid().expect("the peer has a pid");
+    wait_for_ready(&scratch, "ready.txt").await;
+    connection.close();
+    assert!(
+        wait_for_peer_exit(pid, Duration::from_millis(1_000)).await,
+        "the peer outlived SIGTERM and waited for the escalation deadline"
+    );
+}
+
+/// A peer that ignores SIGTERM and never reads stdin has no exit of its own,
+/// so the close's deadline has to SIGKILL its process group.
+#[cfg(unix)]
+#[tokio::test]
+async fn close_sigkills_a_peer_that_ignores_signals_and_stdin_eof() {
+    let scratch = Scratch::new("close-kill");
+    let command = script_peer(
+        &scratch,
+        "stubborn.sh",
+        "trap '' TERM\necho ready > ready.txt\nexec sleep 60",
+    );
+    let options = AcpConnectionOptions::new(command, scratch.path().to_string_lossy());
+    let (connection, _events) = AcpConnection::connect(options)
+        .await
+        .expect("the peer starts");
+    let pid = connection.pid().expect("the peer has a pid");
+    wait_for_ready(&scratch, "ready.txt").await;
+    connection.close();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        peer_alive(pid),
+        "the peer should still be alive inside the grace period"
+    );
+    assert!(
+        wait_for_peer_exit(pid, Duration::from_secs(5)).await,
+        "the peer survived the SIGKILL deadline"
+    );
+}
+
+/// A peer whose stdout already reached end of file is not yet ended: the
+/// close still has to send its stdin EOF and reach the escalation deadline.
+#[cfg(unix)]
+#[tokio::test]
+async fn close_ends_a_peer_whose_stdout_already_closed() {
+    let scratch = Scratch::new("close-stdout-eof");
+    let command = script_peer(
+        &scratch,
+        "silent.sh",
+        "trap '' TERM\nexec 1>&-\necho ready > ready.txt\n\
+         while IFS= read -r line; do :; done",
+    );
+    let options = AcpConnectionOptions::new(command, scratch.path().to_string_lossy());
+    let (connection, _events) = AcpConnection::connect(options)
+        .await
+        .expect("the peer starts");
+    let pid = connection.pid().expect("the peer has a pid");
+    wait_for_ready(&scratch, "ready.txt").await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !connection.closed() {
+        assert!(Instant::now() < deadline, "stdout EOF never settled");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    connection.close();
+    assert!(
+        wait_for_peer_exit(pid, Duration::from_millis(1_000)).await,
+        "a close after stdout EOF left the peer running"
+    );
 }

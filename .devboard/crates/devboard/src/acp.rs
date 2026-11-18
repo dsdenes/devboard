@@ -17,6 +17,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -28,6 +29,13 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 pub const PROTOCOL_VERSION: u64 = 1;
 const CLIENT_NAME: &str = "devboard-adr-ui";
 const CLIENT_VERSION: &str = "0.1.0";
+
+/// How long a closed peer's process group gets after `SIGTERM` before the
+/// connection sends `SIGKILL`.
+const CLOSE_GRACE: Duration = Duration::from_millis(1_500);
+
+/// How often the close escalation re-checks the child before its deadline.
+const CLOSE_POLL: Duration = Duration::from_millis(10);
 
 /// One selectable answer a question offers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,11 +531,6 @@ impl AcpConnection {
             return Err(AcpError::new("Agent stdio was not piped."));
         };
         let pid = child.id().unwrap_or(0);
-        // Reap the child once it exits. The connection only keeps the pid,
-        // because every signal goes to the process group.
-        tokio::spawn(async move {
-            let _ = child.wait().await;
-        });
 
         let (events, receiver) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
@@ -542,6 +545,7 @@ impl AcpConnection {
             next_request_id: AtomicU64::new(1),
             closed: AtomicBool::new(false),
             closing: AtomicBool::new(false),
+            exited: AtomicBool::new(false),
             session_id: StdMutex::new(None),
             activity_stream: StdMutex::new(None),
             pid,
@@ -550,6 +554,17 @@ impl AcpConnection {
 
         tokio::spawn(read_stdout(inner.clone(), stdout));
         tokio::spawn(read_stderr(inner.clone(), stderr));
+        // Reap the child once it exits and record it, so no later signal aims
+        // at a pid the kernel may have handed to another process. The
+        // connection only keeps the pid, because every signal goes to the
+        // child's process group.
+        tokio::spawn({
+            let inner = Arc::clone(&inner);
+            async move {
+                let _ = child.wait().await;
+                inner.exited.store(true, Ordering::SeqCst);
+            }
+        });
 
         let guard = (pid != 0).then(|| ProcessGuard {
             pid,
@@ -703,17 +718,26 @@ impl AcpConnection {
 
     /// Ends the peer and its process group. A stopped child is resumed first,
     /// because it would not process SIGTERM until it runs again.
+    ///
+    /// The close also sends what the peer may be waiting for: its stdin
+    /// reaches end of file because the pipe's write end is dropped, and a peer
+    /// that ignores SIGTERM is SIGKILLed with its group once [`CLOSE_GRACE`]
+    /// passes without the child's exit. Both happen on the connection's own
+    /// deadline, so no caller has to escalate after `close` returns, and a
+    /// close still ends a peer whose stdout already reached end of file.
     pub fn close(&self) {
-        if self.inner.closed.swap(true, Ordering::SeqCst) {
+        self.inner.closed.store(true, Ordering::SeqCst);
+        if self.inner.closing.swap(true, Ordering::SeqCst) {
             return;
         }
-        self.inner.closing.store(true, Ordering::SeqCst);
         let pid = self.inner.pid;
-        if pid != 0 {
+        if pid != 0 && !self.inner.exited.load(Ordering::SeqCst) {
             signal_process(pid, signal_continue());
             signal_group(pid, signal_terminate());
             signal_process(pid, signal_terminate());
         }
+        let inner = Arc::clone(&self.inner);
+        let _ = std::thread::spawn(move || end_peer(inner));
     }
 }
 
@@ -729,6 +753,8 @@ struct Inner {
     next_request_id: AtomicU64,
     closed: AtomicBool,
     closing: AtomicBool,
+    /// The child was waited on, so its pid is gone for good.
+    exited: AtomicBool,
     session_id: StdMutex<Option<String>>,
     activity_stream: StdMutex<Option<ActivityStream>>,
     pid: u32,
@@ -1022,13 +1048,46 @@ struct ProcessGuard {
 
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
-        let exited = self
-            .inner
-            .upgrade()
-            .is_none_or(|inner| inner.closed.load(Ordering::SeqCst));
-        if !exited {
+        let finished = self.inner.upgrade().is_none_or(|inner| {
+            // `close` records the close before signalling and escalates on its
+            // own deadline, and a child that already exited needs nothing.
+            inner.closed.load(Ordering::SeqCst) || inner.exited.load(Ordering::SeqCst)
+        });
+        if !finished {
             signal_group(self.pid, signal_kill());
         }
+    }
+}
+
+/// Sends a closing peer the end of file it may be waiting for on stdin, then
+/// SIGKILLs its group when the child is still alive at the deadline.
+fn end_peer(inner: Arc<Inner>) {
+    let deadline = Instant::now() + CLOSE_GRACE;
+    // Dropping the pipe's write end is what delivers end of file. The write
+    // side is only locked by an in-flight frame, so this rarely waits; a
+    // writer that cannot finish before the deadline is ended with the group.
+    loop {
+        match inner.stdin.try_lock() {
+            Ok(mut stdin) => {
+                stdin.take();
+                break;
+            }
+            Err(_) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(CLOSE_POLL);
+            }
+        }
+    }
+    while Instant::now() < deadline {
+        if inner.exited.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(CLOSE_POLL);
+    }
+    if inner.pid != 0 && !inner.exited.load(Ordering::SeqCst) {
+        signal_group(inner.pid, signal_kill());
     }
 }
 
