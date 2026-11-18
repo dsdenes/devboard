@@ -3173,7 +3173,8 @@ fn merged_pull_requests() -> Vec<StubPullRequest> {
         StubPullRequest {
             number: 12,
             title: "feat(orders): keep empty order totals at zero",
-            body: "## Summary\n- Return zero for an empty order.\n- Cover the empty case.\n\nCloses #40",
+            body: "## Summary\n- Return zero for an empty order.\n- Cover the empty case.\n- \
+                   Keep /etc/sysctl.d/99-io-tuning.conf out of the build image.\n\nCloses #40",
             merged_at: "2026-05-04T10:00:00.000Z",
             additions: 12,
             deletions: 3,

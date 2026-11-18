@@ -2671,10 +2671,11 @@ pub(crate) fn validate_skill_text(
             ));
         }
     }
-    if has_secret(&description) || has_secret(&role) || has_secret(&parsed.body) {
+    let authored = authored_body(&parsed.body);
+    if has_secret(&description) || has_secret(&role) || has_secret(&authored) {
         return Err(invalid(path, "must not carry a secret value"));
     }
-    if contains_absolute_host_path(&parsed.body) {
+    if contains_absolute_host_path(&authored) {
         return Err(invalid(path, "must not carry an absolute host path"));
     }
     if parsed.body.trim().is_empty() {
@@ -2731,6 +2732,29 @@ pub(crate) fn validate_skill_text(
         text: text.to_string(),
         body: parsed.body,
     })
+}
+
+/// The authored part of a skill body: every line before the `## Exemplars`
+/// heading, and every non-quoted line after it. The quoted exemplars — marker
+/// titles and body lines alike — are forge text the contribution prompt
+/// requires verbatim, so the secret and absolute-path guards, which keep
+/// authored prose from leaking a host path or credential, never read them.
+/// A body with no exemplar heading is authored throughout.
+fn authored_body(body: &str) -> String {
+    static EXEMPLARS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^## Exemplars\s*$").expect("an exemplars heading"));
+    let mut authored: Vec<&str> = Vec::new();
+    let mut quoted = false;
+    for line in body.split('\n') {
+        if !quoted && EXEMPLARS.is_match(line) {
+            quoted = true;
+        }
+        if quoted && (line == ">" || line.starts_with("> ")) {
+            continue;
+        }
+        authored.push(line);
+    }
+    authored.join("\n")
 }
 
 #[derive(Clone, Copy)]
@@ -2974,25 +2998,29 @@ pub struct StagedContribution {
     pub testing: Vec<ParsedFact>,
 }
 
-fn contribution_string(value: &Value, path: &str, max: usize) -> Result<String, String> {
+fn contribution_text(value: &Value, path: &str, max: usize) -> Result<String, String> {
     let Some(text) = value.as_str() else {
         return Err(invalid(path, "must be a string"));
     };
     if text.chars().count() > max {
         return Err(invalid(path, format!("must be at most {max} characters")));
     }
-    if has_secret(text) {
-        return Err(invalid(path, "must not carry a secret value"));
-    }
-    if contains_absolute_host_path(text) {
-        return Err(invalid(path, "must not carry an absolute host path"));
-    }
     Ok(text.to_string())
 }
 
-fn contribution_line(value: &Value, path: &str, max: usize) -> Result<String, String> {
-    let text = contribution_string(value, path, max)?;
-    if !single_line(&text) {
+fn contribution_string(value: &Value, path: &str, max: usize) -> Result<String, String> {
+    let text = contribution_text(value, path, max)?;
+    if has_secret(&text) {
+        return Err(invalid(path, "must not carry a secret value"));
+    }
+    if contains_absolute_host_path(&text) {
+        return Err(invalid(path, "must not carry an absolute host path"));
+    }
+    Ok(text)
+}
+
+fn contribution_single_line(text: &str, path: &str) -> Result<String, String> {
+    if !single_line(text) {
         return Err(invalid(path, "must be a single line"));
     }
     let trimmed = text.trim();
@@ -3000,6 +3028,20 @@ fn contribution_line(value: &Value, path: &str, max: usize) -> Result<String, St
         return Err(invalid(path, "must not be empty"));
     }
     Ok(trimmed.to_string())
+}
+
+fn contribution_line(value: &Value, path: &str, max: usize) -> Result<String, String> {
+    let text = contribution_string(value, path, max)?;
+    contribution_single_line(&text, path)
+}
+
+/// A merged pull request's title and body are the forge's own text, quoted
+/// verbatim into the contribution skill and its document, so the secret and
+/// absolute-path guards, which keep authored prose from leaking a host path
+/// or credential, never read them. Only the shape and the bounds are checked.
+fn contribution_forge_line(value: &Value, path: &str, max: usize) -> Result<String, String> {
+    let text = contribution_text(value, path, max)?;
+    contribution_single_line(&text, path)
 }
 
 fn contribution_int(value: &Value, path: &str, min: i64, max: i64) -> Result<i64, String> {
@@ -3097,7 +3139,7 @@ fn contribution_timestamp(value: &Value, path: &str) -> Result<String, String> {
     }
 }
 
-fn contribution_body(value: &Value, path: &str) -> Result<String, String> {
+fn contribution_body_text(value: &Value, path: &str) -> Result<String, String> {
     let Some(text) = value.as_str() else {
         return Err(invalid(path, "must be a string"));
     };
@@ -3106,6 +3148,11 @@ fn contribution_body(value: &Value, path: &str) -> Result<String, String> {
     if text.chars().count() > 20_000 {
         return Err(invalid(path, "must be at most 20000 characters"));
     }
+    Ok(text)
+}
+
+fn contribution_body(value: &Value, path: &str) -> Result<String, String> {
+    let text = contribution_body_text(value, path)?;
     if has_secret(&text) {
         return Err(invalid(path, "must not carry a secret value"));
     }
@@ -3113,6 +3160,12 @@ fn contribution_body(value: &Value, path: &str) -> Result<String, String> {
         return Err(invalid(path, "must not carry an absolute host path"));
     }
     Ok(text)
+}
+
+/// The forge text counterpart of `contribution_body`: a merged pull request's
+/// body is quoted verbatim, so the guards never read it.
+fn contribution_forge_body(value: &Value, path: &str) -> Result<String, String> {
+    contribution_body_text(value, path)
 }
 
 fn contribution_file_path(value: &Value, path: &str) -> Result<String, String> {
@@ -3246,8 +3299,8 @@ fn parse_merged_pull_request(value: &Value, index: usize) -> Result<MergedPullRe
     };
     Ok(MergedPullRequest {
         number: contribution_int(field("number"), &format!("{path}.number"), 1, 1_000_000_000)?,
-        title: contribution_line(field("title"), &format!("{path}.title"), 300)?,
-        body: contribution_body(field("body"), &format!("{path}.body"))?,
+        title: contribution_forge_line(field("title"), &format!("{path}.title"), 300)?,
+        body: contribution_forge_body(field("body"), &format!("{path}.body"))?,
         merged_at: contribution_timestamp(field("mergedAt"), &format!("{path}.mergedAt"))?,
         additions: contribution_int(
             field("additions"),
@@ -10638,5 +10691,178 @@ mod contribution_read_tests {
             .expect("published artifacts")
             .contribution
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod skill_guard_tests {
+    use super::*;
+
+    const LABEL: &str = "skills/discover-contribution/SKILL.md";
+
+    fn contribution(body: &str) -> String {
+        [
+            "---",
+            "name: discover-contribution",
+            "description: Names how a change should be proposed here.",
+            "metadata:",
+            "  devboard-managed: \"true\"",
+            "  devboard-family: \"discover\"",
+            "  devboard-skill: contribution",
+            "---",
+            "",
+            body,
+            "",
+        ]
+        .join("\n")
+    }
+
+    fn refused(body: &str) -> String {
+        validate_skill_text("discover-contribution", &contribution(body), LABEL)
+            .map(|_| ())
+            .expect_err("the document is refused")
+    }
+
+    /// The contribution prompt requires the last three merged pull requests
+    /// quoted verbatim, so a host whose merged bodies name a system path or a
+    /// token shape must still stage the skill, and the quote must survive
+    /// unchanged.
+    #[test]
+    fn a_quoted_exemplar_carries_a_host_path_and_a_token_shape() {
+        let quote = "Wrote /etc/sysctl.d/99-io-tuning.conf with \
+                     ghp_0123456789abcdefghijklmnopqrstuvwxyz.";
+        let body = format!(
+            "# Author a pull request this repository accepts\n\n\
+             - Read `.omp/discover/contribution.json` before writing a pull request.\n\n\
+             ## Exemplars\n\
+             > PR #42 — fix(sysctl): tune the dirty-page drop-in\n\
+             > {quote}"
+        );
+        let staged = validate_skill_text("discover-contribution", &contribution(&body), LABEL)
+            .expect("the quoted exemplar stages");
+        assert!(
+            staged.body.contains(&format!("> {quote}")),
+            "the quote survives unchanged: {}",
+            staged.body
+        );
+    }
+
+    #[test]
+    fn an_authored_bullet_still_refuses_a_secret() {
+        let body = "# Author a pull request this repository accepts\n\n\
+                    - Use ghp_0123456789abcdefghijklmnopqrstuvwxyz as the credential.\n\n\
+                    ## Exemplars\n\
+                    > PR #42 — fix(api): keep the empty total at zero\n\
+                    > The first body line.";
+        assert!(
+            refused(body).contains("must not carry a secret value"),
+            "{}",
+            refused(body)
+        );
+    }
+
+    #[test]
+    fn an_authored_bullet_still_refuses_a_host_path() {
+        let body = "# Author a pull request this repository accepts\n\n\
+                    - Read /home/operator/project/file.rs before editing.\n\n\
+                    ## Exemplars\n\
+                    > PR #42 — fix(api): keep the empty total at zero\n\
+                    > The first body line.";
+        assert!(
+            refused(body).contains("must not carry an absolute host path"),
+            "{}",
+            refused(body)
+        );
+    }
+
+    /// The exemption starts at the heading: a quote above it is authored text,
+    /// and no exemplar comparison ever reads it.
+    #[test]
+    fn a_quote_above_the_heading_is_still_scanned() {
+        let body = "# Author a pull request this repository accepts\n\n\
+                    - Read `.omp/discover/contribution.json` before writing a pull request.\n\n\
+                    > /etc/sysctl.d/99-io-tuning.conf\n\n\
+                    ## Exemplars\n\
+                    > PR #42 — fix(api): keep the empty total at zero\n\
+                    > The first body line.";
+        assert!(
+            refused(body).contains("must not carry an absolute host path"),
+            "{}",
+            refused(body)
+        );
+    }
+
+    /// The quote is compared with the merged sample byte for byte, so redacting
+    /// what the guards now let through still fails.
+    #[test]
+    fn a_redacted_exemplar_quote_fails_the_verbatim_comparison() {
+        let body = "# Author a pull request this repository accepts\n\n\
+                    - Read `.omp/discover/contribution.json` before writing a pull request.\n\n\
+                    ## Exemplars\n\
+                    > PR #42 — fix(sysctl): tune the drop-in\n\
+                    > Wrote <redacted> before editing.";
+        let sample = json!([{
+            "number": 42,
+            "title": "fix(sysctl): tune the drop-in",
+            "body": "Wrote /etc/sysctl.d/99-io-tuning.conf before editing.",
+        }]);
+        let error = validate_contribution_skill(body, LABEL, &sample, None)
+            .expect_err("the redacted quote is refused");
+        assert!(
+            error.contains("exemplar 1 must quote PR #42 verbatim"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod contribution_document_guard_tests {
+    use super::*;
+
+    fn merged(body: &str, branch: &str) -> Value {
+        json!({
+            "number": 42,
+            "title": "fix(sysctl): tune the drop-in",
+            "body": body,
+            "mergedAt": "2026-05-04T10:00:00.000Z",
+            "additions": 4,
+            "deletions": 1,
+            "filesChanged": 1,
+            "files": ["src/sysctl.ts"],
+            "testFiles": 0,
+            "documentationFiles": 0,
+            "labels": [],
+            "draft": false,
+            "approvals": 1,
+            "checks": ["ci/test"],
+            "commits": [{"subject": "fix(sysctl): tune the drop-in", "body": ""}],
+            "branch": branch,
+            "mergeMethod": "squash",
+            "references": [],
+        })
+    }
+
+    /// The document carries the same forge text the skill quotes verbatim, so a
+    /// merged body naming a system path must parse and stay unchanged.
+    #[test]
+    fn a_merged_body_carries_a_host_path_and_a_token_shape() {
+        let body = "Wrote /etc/sysctl.d/99-io-tuning.conf with \
+                    ghp_0123456789abcdefghijklmnopqrstuvwxyz.";
+        let parsed = parse_merged_pull_request(&merged(body, "fix/drop-in"), 0)
+            .expect("the merged record parses");
+        assert_eq!(parsed.body, body);
+    }
+
+    /// The guards keep reading every authored field of the document.
+    #[test]
+    fn an_authored_branch_still_refuses_a_host_path() {
+        let error =
+            parse_merged_pull_request(&merged("The first body line.", "/home/operator/project"), 0)
+                .map(|_| ())
+                .expect_err("the branch is refused");
+        assert!(
+            error.contains("must not carry an absolute host path"),
+            "{error}"
+        );
     }
 }

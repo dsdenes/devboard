@@ -1950,9 +1950,12 @@ recently merged pull requests (fewer when the sample is smaller), each introduce
 from the merged statistics, the required description structure and section order, the tone,
 length, and vocabulary targets, the exact commands and test evidence, issue linking, commit and
 branch conventions, the review and CI gates, and the documentation or changelog expectation, and
-name `.omp/discover/contribution.json`. With no merged evidence the body states that the
-pull-request-derived rules and exemplars are unknown and why, and carries only the git-derived
-rules. The skill is read-only on its page exactly like the other Discover skills:
+name `.omp/discover/contribution.json`. The secret and absolute-host-path guards read the authored
+bullets and every other authored field; they never read a merged pull request's quoted title or
+body, in the skill or in `contribution.json`, so a merged body that names a system path or carries
+a token shape publishes verbatim and no redaction is possible. With no merged evidence the body
+states that the pull-request-derived rules and exemplars are unknown and why, and carries only the
+git-derived rules. The skill is read-only on its page exactly like the other Discover skills:
 `contribution-skill` in the **Skills** group renders the same `discover-skill-text` region and
 status, an edited live skill survives a re-crawl, an unedited one is replaced by the new
 baseline, and a deleted one shows `Live file missing` with its generated baseline. Two runs against

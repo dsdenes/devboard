@@ -253,7 +253,9 @@ Confirm all of the following:
 - [ ] The skill frontmatter carries the exact name, a non-empty description, and the three
       markers; the body is one `#` heading plus imperative bullets and the exemplar quotes.
 - [ ] The exemplars are exactly the three most recently merged pull requests, copied verbatim.
-- [ ] No token, credential, absolute path, or URL with user info appears in either file.
+- [ ] No token, credential, absolute path, or URL with user info appears in either file, apart
+      from the quoted exemplar block, which stays verbatim because the merged pull request wrote
+      it.
 - [ ] Nothing was written outside `<staging-dir>`; `GOAL.md`, `adrs/`, host source, `.omp/discover`,
       `.omp/skills`, and the forge are untouched.
 

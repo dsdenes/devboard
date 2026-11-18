@@ -1727,6 +1727,54 @@ async fn a_staged_skill_is_refused_exactly_as_publication_refuses_it() {
         document.contains("devboard-skill: contribution"),
         "the staged document carries the contribution role: {document}"
     );
+
+    let quote = "Wrote /etc/sysctl.d/99-io-tuning.conf and pasted \
+                 ghp_0123456789abcdefghijklmnopqrstuvwxyz.";
+    let frames = drive(
+        &context,
+        &[
+            call(
+                97,
+                "discover-contribution",
+                "Names the contribution rules.",
+                &format!(
+                    "# Contribution\n\n- Read `.omp/discover/contribution.json` before writing \
+                     a pull request.\n\n\
+                     ## Exemplars\n\
+                     > PR #42 — fix(sysctl): tune the dirty-page drop-in\n\
+                     > {quote}"
+                ),
+            ),
+            call(
+                98,
+                "discover-contribution",
+                "Names the contribution rules.",
+                "# Contribution\n\n- Use ghp_0123456789abcdefghijklmnopqrstuvwxyz as the \
+                 credential.\n\n\
+                 ## Exemplars\n\
+                 > PR #42 — fix(sysctl): tune the dirty-page drop-in\n\
+                 > The first body line.",
+            ),
+        ],
+    )
+    .await;
+    let quoted = tool_result(&frames, 97);
+    assert_eq!(quoted["name"], "discover-contribution");
+    let document = std::fs::read_to_string(staging.join("skills/discover-contribution/SKILL.md"))
+        .expect("the staged skill");
+    assert!(
+        document.contains(&format!("> {quote}")),
+        "the quoted exemplar lands unchanged: {document}"
+    );
+    let refused_secret = reply(&frames, 98);
+    assert_eq!(
+        refused_secret["result"]["isError"], true,
+        "an authored bullet carrying a secret is still refused"
+    );
+    let text = refused_secret["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text");
+    assert!(text.contains("must not carry a secret value"), "{text}");
 }
 
 #[tokio::test]

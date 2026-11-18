@@ -348,6 +348,15 @@ async fn discover_project_publishes_every_slice_and_replays() {
         !root.join("discover/staging").exists(),
         "staging is removed"
     );
+    let contribution_skill =
+        std::fs::read_to_string(root.join("skills/discover-contribution/SKILL.md"))
+            .expect("the published contribution skill");
+    assert!(
+        contribution_skill
+            .contains("> - Keep /etc/sysctl.d/99-io-tuning.conf out of the build image."),
+        "a merged body naming a system path publishes and is quoted verbatim: \
+         {contribution_skill}"
+    );
     let manifest: Value = serde_json::from_str(
         &std::fs::read_to_string(root.join("discover/manifest.json")).unwrap(),
     )
