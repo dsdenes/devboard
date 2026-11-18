@@ -2349,25 +2349,27 @@ impl Drop for StopPublish {
     }
 }
 
+/// How far a recorded lock `startedAt` may sit from the live process's own
+/// start instant and still name the same process.
+const LOCK_START_TOLERANCE_MS: i64 = 2_000;
+
 fn process_started_at(pid: u32) -> Option<i64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let suffix: Vec<&str> = stat[close + 2..].split(' ').collect();
-    let start_ticks: f64 = suffix.get(19)?.parse().ok()?;
-    let uptime_text = std::fs::read_to_string("/proc/uptime").ok()?;
-    let uptime_seconds: f64 = uptime_text.split(' ').next()?.parse().ok()?;
-    Some(now_millis() - (uptime_seconds * 1000.0) as i64 + (start_ticks * 1000.0 / 100.0) as i64)
+    crate::supervision::process_started_at(pid)
 }
 
 fn owner_alive(owner: &LockOwner) -> bool {
+    owner_alive_at(owner, process_started_at)
+}
+
+fn owner_alive_at(owner: &LockOwner, started_at: impl Fn(u32) -> Option<i64>) -> bool {
     if !pid_alive(owner.pid) {
         return false;
     }
     let Some(recorded) = parse_millis(&owner.started_at) else {
         return false;
     };
-    match process_started_at(owner.pid) {
-        Some(actual) => (actual - recorded).abs() <= 2_000,
+    match started_at(owner.pid) {
+        Some(actual) => (actual - recorded).abs() <= LOCK_START_TOLERANCE_MS,
         None => true,
     }
 }
@@ -2402,6 +2404,46 @@ fn live_lock_owner(path: &Path) -> Option<LockOwner> {
         Some(owner)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod lock_owner_tests {
+    use super::*;
+
+    /// A lock names its owner's pid and start instant, and the hosted kernel's
+    /// USER_HZ rate is what turns that start tick into the instant. A 250 Hz
+    /// host must still read its own live worker as live; a hardcoded 100 Hz
+    /// read projected a start far outside the tolerance and read it as dead.
+    #[test]
+    fn owner_alive_accepts_the_start_instant_of_the_kernels_own_rate() {
+        let pid = std::process::id();
+        let started = crate::supervision::process_started_at_with_rate(pid, 250.0)
+            .expect("a live pid has a start instant");
+        let owner = LockOwner {
+            pid,
+            started_at: iso_from_millis(started),
+            state_dir: String::new(),
+            harness_version: None,
+        };
+
+        assert!(
+            owner_alive_at(&owner, |pid| {
+                crate::supervision::process_started_at_with_rate(pid, 250.0)
+            }),
+            "a 250 Hz start instant names the live owner"
+        );
+
+        // Converting the same start tick at 100 Hz moves the instant by the
+        // difference between the rates. Once that exceeds the tolerance, the
+        // lock reads dead — the defect the shared rate removes.
+        let at_100 = crate::supervision::process_started_at_with_rate(pid, 100.0)
+            .expect("a live pid has a start instant");
+        if (at_100 - started).abs() > LOCK_START_TOLERANCE_MS {
+            assert!(!owner_alive_at(&owner, |pid| {
+                crate::supervision::process_started_at_with_rate(pid, 100.0)
+            }));
+        }
     }
 }
 

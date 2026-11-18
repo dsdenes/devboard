@@ -779,16 +779,7 @@ fn cgroup_processes(directory: &Path, depth: usize) -> Vec<u32> {
 }
 
 fn process_age_ms(pid: u32) -> Option<i64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = stat.rfind(')')?;
-    let start_ticks: i64 = stat[close + 1..].split_whitespace().nth(19)?.parse().ok()?;
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if hz <= 0 {
-        return None;
-    }
-    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
-    let uptime_ms = (uptime.split_whitespace().next()?.parse::<f64>().ok()? * 1000.0) as i64;
-    Some((uptime_ms - start_ticks * 1000 / hz).max(0))
+    crate::supervision::process_age_ms(pid).map(|age| age as i64)
 }
 
 fn read_argv(pid: u32) -> Vec<String> {

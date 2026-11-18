@@ -34,8 +34,24 @@ pub const SUPERVISION_KILL_GRACE_MS: u64 = 2_000;
 pub const SUPERVISION_DIRECTORY: &str = "supervision";
 /// The one interval the watchdog schedules the reaper on.
 pub const SUPERVISION_INTERVAL_MS: u64 = 30_000;
-/// Linux reports a process start in USER_HZ ticks per second.
-const CLOCK_TICKS_PER_SECOND: f64 = 100.0;
+/// Linux counts a process start in USER_HZ ticks per second, and that rate is
+/// not always 100: arm64 kernels commonly report 250. The kernel's own answer
+/// is read once and reused, so no module carries a copy of the rate that can
+/// disagree with it.
+fn clock_ticks_per_second() -> Option<f64> {
+    static HZ: LazyLock<Option<f64>> = LazyLock::new(|| {
+        #[cfg(unix)]
+        {
+            let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+            if hz > 0 {
+                return Some(hz as f64);
+            }
+        }
+        None
+    });
+    *HZ
+}
+
 /// The record schema version written by every spawn path.
 const RECORD_VERSION: i64 = 1;
 
@@ -290,11 +306,44 @@ pub fn process_argv(pid: u32) -> Option<Vec<String>> {
     )
 }
 
+/// Milliseconds between boot and a process start, from the start tick the
+/// kernel reports, the uptime that tick is counted against, and the USER_HZ
+/// rate the tick is counted in.
+pub fn boot_offset_ms(start_ticks: i64, uptime_seconds: f64, hz: f64) -> f64 {
+    (uptime_seconds * 1000.0 - start_ticks as f64 * 1000.0 / hz).max(0.0)
+}
+
 /// True when a process started less than `ms` ago.
 pub fn process_age_ms(pid: u32) -> Option<f64> {
     let stat = process_stat(pid)?;
-    let uptime = uptime_seconds()?;
-    Some((uptime * 1000.0 - stat.start_ticks as f64 * 1000.0 / CLOCK_TICKS_PER_SECOND).max(0.0))
+    let hz = clock_ticks_per_second()?;
+    Some(boot_offset_ms(stat.start_ticks, uptime_seconds()?, hz))
+}
+
+/// The instant a process started, in milliseconds since the epoch, converted
+/// with the kernel's own USER_HZ rate.
+pub fn process_started_at(pid: u32) -> Option<i64> {
+    process_started_at_with_rate(pid, clock_ticks_per_second()?)
+}
+
+/// The instant a process started, converted with an explicit USER_HZ rate.
+/// Production always reads the kernel's rate; a test pins the rate of a kernel
+/// it does not run on.
+pub(crate) fn process_started_at_with_rate(pid: u32, hz: f64) -> Option<i64> {
+    if !hz.is_finite() || hz <= 0.0 {
+        return None;
+    }
+    let stat = process_stat(pid)?;
+    let age = boot_offset_ms(stat.start_ticks, uptime_seconds()?, hz) as i64;
+    Some(now_millis() - age)
+}
+
+/// The current wall-clock instant in milliseconds since the epoch.
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Writes one JSON document atomically with a trailing newline.
@@ -1454,6 +1503,58 @@ mod tests {
         ]
     }
 
+    /// One `/proc/<pid>/stat` line whose starttime field is `start_ticks`, so
+    /// the conversion sees the same field layout the kernel writes. The suffix
+    /// after the command starts at field 3, so state is index 0 and starttime,
+    /// field 22, is index 19.
+    fn stat_line(start_ticks: i64) -> String {
+        format!(
+            "4242 (devboard worker) S {}{start_ticks} 0 0 0\n",
+            "0 ".repeat(18)
+        )
+    }
+
+    #[test]
+    fn a_start_tick_converts_with_the_kernel_rate_not_a_constant() {
+        // The kernel has been up 100_000 s and the process started 10_000 ms
+        // before that reading. The starttime field counts USER_HZ ticks, so the
+        // same instant is a different number at 100 Hz and at 250 Hz.
+        let uptime_text = "100000.00 1234.56\n";
+        let uptime: f64 = uptime_text
+            .split(' ')
+            .next()
+            .expect("the uptime field")
+            .parse()
+            .expect("a parsed uptime");
+        let start_ticks_at = |hz: f64| ((uptime - 10.0) * hz) as i64;
+        let now = 1_700_000_000_000_i64;
+        let real_start = now - 10_000;
+
+        for hz in [100.0, 250.0] {
+            let ticks = start_ticks_at(hz);
+            let stat = parse_stat(4242, &stat_line(ticks)).expect("a parsed stat line");
+            assert_eq!(
+                stat.start_ticks, ticks,
+                "the fixture names its own start tick"
+            );
+            let started = now - boot_offset_ms(stat.start_ticks, uptime, hz) as i64;
+            assert!(
+                (started - real_start).abs() <= 2_000,
+                "{hz} Hz converts {ticks} ticks to {started}, not {real_start}"
+            );
+        }
+
+        // The retired constant read the 250 Hz line as 100 Hz and projected a
+        // start the lock's two-second tolerance must reject.
+        let ticks = start_ticks_at(250.0);
+        let stat = parse_stat(4242, &stat_line(ticks)).expect("a parsed stat line");
+        let wrong = now - boot_offset_ms(stat.start_ticks, uptime, 100.0) as i64;
+        assert!(
+            (wrong - real_start).abs() > 2_000,
+            "a hardcoded 100 Hz must not pass for a 250 Hz kernel: {wrong} vs {real_start}"
+        );
+    }
+
     fn scope(state: &Path, repo: &Path) -> ReapOptions {
         ReapOptions {
             scopes: vec![SupervisionScope {
@@ -1727,7 +1828,8 @@ mod tests {
 
         // A recycled owner is provably newer only once the kernel's start clock
         // has ticked past the child, so the spawn below carries a greater tick.
-        while uptime_seconds().expect("the kernel uptime") * CLOCK_TICKS_PER_SECOND
+        while uptime_seconds().expect("the kernel uptime")
+            * clock_ticks_per_second().expect("the kernel's USER_HZ")
             <= child_ticks as f64 + 1.0
         {
             std::thread::sleep(Duration::from_millis(5));
