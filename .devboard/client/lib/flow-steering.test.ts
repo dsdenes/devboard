@@ -33,6 +33,35 @@ function steeringNote(text: string): Record<string, unknown> {
   };
 }
 
+/** One `flowSnapshot` frame with the note list the server answers. */
+function snapshot(notes: unknown[]): { type: string } & Record<string, unknown> {
+  return {
+    type: "flowSnapshot",
+    status: "running",
+    sessionId: "issue-2100",
+    goal: "The stored session",
+    decisions: "",
+    worktree: null,
+    branch: null,
+    baseRevision: null,
+    files: [],
+    widgets: [],
+    steering: notes,
+    checkpoints: [],
+    verification: null,
+    blockers: [],
+    pr: null,
+    prError: null,
+    leftover: null,
+    question: null,
+    goalCreation: null,
+    conversation: null,
+    activity: [],
+    notice: null,
+    history: [],
+  };
+}
+
 test("a dispatch the connection never delivered keeps the drafted note", () => {
   const flow = drafting();
   connection.send = (() => false) as typeof connection.send;
@@ -63,6 +92,30 @@ test("a flowSteering frame clears the draft only when it carries the sent text",
 
   flow.handleEvent({ type: "flowSteering", notes: [steeringNote("An earlier note"), steeringNote(NOTE)] });
   expect(flow.steeringDraft).toBe("");
+});
+
+test("the server's confirming snapshot clears the sent note a lost frame never settled", () => {
+  const flow = drafting();
+  connection.send = (() => true) as typeof connection.send;
+
+  flow.sendSteering();
+  expect(flow.pendingSteering).toBe(NOTE);
+
+  flow.handleEvent(snapshot([steeringNote("An earlier note"), steeringNote(NOTE)]));
+
+  expect(flow.pendingSteering).toBeNull();
+  expect(flow.steeringDraft).toBe("");
+});
+
+test("a snapshot without the sent note keeps the draft pending", () => {
+  const flow = drafting();
+  connection.send = (() => true) as typeof connection.send;
+
+  flow.sendSteering();
+  flow.handleEvent(snapshot([steeringNote("An earlier note")]));
+
+  expect(flow.pendingSteering).toBe(NOTE);
+  expect(flow.steeringDraft).toBe(NOTE);
 });
 
 test("a restoring session dispatches nothing and keeps the typed note", () => {

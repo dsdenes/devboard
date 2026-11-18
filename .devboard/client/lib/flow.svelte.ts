@@ -77,8 +77,9 @@ export class FlowStore {
   refuseReason = $state("");
 
   /** The note this dashboard sent and the server has not confirmed yet. The
-   *  draft survives until a `flowSteering` frame carries that exact text, so a
-   *  refused send never discards the operator's words. */
+   *  draft survives until a `flowSteering` frame or a reconnect snapshot
+   *  carries that exact text, so a refused send never discards the operator's
+   *  words. */
   pendingSteering: string | null = null;
 
   /** The answer this dashboard sent and the server has not confirmed yet. The
@@ -180,6 +181,7 @@ export class FlowStore {
     this.files = message.files;
     this.widgets = message.widgets;
     this.steering = message.steering;
+    this.#settleSteering();
     this.checkpoints = message.checkpoints;
     this.verification = message.verification;
     this.blockers = message.blockers;
@@ -251,9 +253,9 @@ export class FlowStore {
   }
 
   /** Dispatches one answer; false when nothing left the page. The draft and
-   *  its question stay until a frame shows the server took the answer, exactly
-   *  as `sendSteering` keeps its note until the confirming `flowSteering`
-   *  frame, so a refusal never discards the operator's words. */
+   *  its question stay until a frame or snapshot shows the server took the
+   *  answer, exactly as `sendSteering` keeps its note until the confirming
+   *  steering list, so a refusal never discards the operator's words. */
   answerQuestion(pending: RunQuestion, value: string, target: AnswerTarget): boolean {
     const trimmed = value.trim();
     if (trimmed.length === 0) return false;
@@ -293,6 +295,20 @@ export class FlowStore {
     if (!text.includes(sent.text)) return;
     this.pendingConclusion = null;
     this.conclusionDraft = "";
+  }
+
+  /** Settles a dispatched note once the server's note list carries it: the
+   *  draft belongs to a note the server took. Both the `flowSteering` frame
+   *  and a reconnect snapshot install that list, so a frame lost to the
+   *  reconnect never leaves the sent note in the composer for a second send.
+   *  A list without that exact text keeps the draft, so a refused or still
+   *  undelivered send keeps the operator's words. */
+  #settleSteering(): void {
+    const pending = this.pendingSteering;
+    if (pending === null) return;
+    if (!this.steering.some((note) => note.text === pending)) return;
+    this.pendingSteering = null;
+    this.steeringDraft = "";
   }
 
   sendConversation(): void {
@@ -437,11 +453,7 @@ export class FlowStore {
     }
     if (type === "flowSteering" && Array.isArray(message.notes)) {
       this.steering = message.notes as FlowSteeringNote[];
-      const pending = this.pendingSteering;
-      if (pending !== null && this.steering.some((note) => note.text === pending)) {
-        this.pendingSteering = null;
-        this.steeringDraft = "";
-      }
+      this.#settleSteering();
       return;
     }
     if (type === "flowDecisions" && typeof message.text === "string") {
