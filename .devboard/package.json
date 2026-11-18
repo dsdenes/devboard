@@ -7,6 +7,7 @@
     "build": "vite build && bun scripts/embed-client.mjs",
     "dev": "vite",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "icons": "python3 scripts/generate-icons.py",
     "test": "bun scripts/test-workspace.mjs",
     "test:client": "bun scripts/test-client.mjs",
     "adr:lint": "adr lint --dir ../adrs",
