@@ -711,6 +711,60 @@ fn both_installers_keep_a_tracked_stale_wrapper() {
 }
 
 #[test]
+fn doctor_drifts_a_tracked_stale_package_file_and_fails_an_untracked_one() {
+    let scratch = Scratch::new("doctor-tracked-stale");
+    let host = scratch.host();
+    cli_install::install(Some(host), false).unwrap();
+
+    // A file the package no longer ships but the host tracks is the host's
+    // content: install keeps it, so doctor reports the identical drift line
+    // instead of failing the host for having it.
+    let stale = [
+        ".omp/commands/retired.md",
+        ".devboard/prompts/retired.md",
+        ".devboard/extensions/retired.js",
+    ];
+    for relative in stale {
+        let path = host.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"host-owned\n").unwrap();
+        git(host, &["add", "-f", relative]);
+    }
+
+    let report = doctor(host).unwrap();
+    assert!(report.ok(), "{:?}", report.failures);
+    for relative in stale {
+        let drift = format!("{relative} is tracked by the host; left unchanged");
+        assert!(
+            report.drift.iter().any(|entry| entry == &drift),
+            "{relative} is missing from {:?}",
+            report.drift
+        );
+        assert!(
+            !report
+                .failures
+                .iter()
+                .any(|failure| failure.contains(relative)),
+            "{:?}",
+            report.failures
+        );
+    }
+
+    // An untracked extra is what install deletes, so doctor keeps failing it.
+    fs::write(host.join(".omp/commands/extra.md"), b"untracked\n").unwrap();
+    let report = doctor(host).unwrap();
+    assert!(!report.ok());
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure == ".omp/commands/extra.md is not shipped by the package"),
+        "{:?}",
+        report.failures
+    );
+}
+
+#[test]
 fn install_sh_refuses_a_symlinked_prefix() {
     let scratch = Scratch::new("scripted-prefix");
     let host = scratch.host();

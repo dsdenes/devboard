@@ -1023,15 +1023,23 @@ pub fn doctor_with_env(
         }
     }
 
-    // A differing package file the host tracks is the host's content, not an
-    // install failure: it is reported as drift, exactly like AGENTS.md.
+    // A package file the host tracks is the host's content, not an install
+    // failure: it is reported as drift, exactly like AGENTS.md. That covers an
+    // entry the package no longer ships as well, because install preserves a
+    // tracked one and removes only an untracked one, so the host's own stale
+    // file is the same drift sentence install printed and never a broken
+    // payload.
     let mut failures = Vec::new();
     for failure in std::mem::take(&mut report.failures) {
-        if let Some(label) = failure.strip_suffix(" differs from the installed copy") {
+        let label = failure
+            .strip_suffix(" differs from the installed copy")
+            .or_else(|| failure.strip_suffix(" is not shipped by the package"));
+        if let Some(label) = label {
             // The `devboard-` prefixed skills are package-owned: the package
-            // always wins their name, so a tracked difference is a failure,
-            // never host drift. Any other differing package file a host tracks
-            // is the host's content and is reported as drift.
+            // always wins their name, so a tracked difference or a tracked
+            // extra entry there is a failure, never host drift. Any other
+            // package file a host tracks is the host's content and is
+            // reported as drift.
             let marked_skill = label
                 .strip_prefix(".omp/skills/")
                 .is_some_and(|skill| skill.starts_with(MANAGED_SKILL_PREFIX));
