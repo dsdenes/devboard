@@ -22,6 +22,15 @@
         : "Disconnected",
   );
 
+  /** The word plus the reason the page has one: the tooltip is not a protocol. */
+  const connectionTitle = $derived(
+    connection.state === "open"
+      ? "The server is answering requests."
+      : connection.state === "connecting"
+        ? "Contacting the server."
+        : (connection.lastError ?? "The server is not answering requests."),
+  );
+
   /**
    * The status bar names the project, not its directory path: the sidebar owns
    * the full path, and a home-relative path is unreadable at 11px in a 26px bar.
@@ -98,7 +107,7 @@
 
 <footer class="status-bar" data-testid="status-bar">
   <div class="status-group">
-    <span class="status-item" title={`WebSocket ${connection.state}`}>
+    <span class="status-item" title={connectionTitle}>
       <span class="status-dot" data-state={connection.state} aria-hidden="true"></span>
       <span data-testid="status-connection">{connectionLabel}</span>
     </span>

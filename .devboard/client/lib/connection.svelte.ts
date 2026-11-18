@@ -18,6 +18,9 @@ interface Envelope {
 /** A reconnect retry after the transport closed under a live page. */
 const RETRY_INTERVAL_MS = 1000;
 
+/** The one reason a request that never answered is reported with. */
+const UNREACHABLE = "Could not reach the server.";
+
 /** Commands a surface repeats on a timer; their repeat is never an action. */
 const POLL_COMMANDS: Record<string, true> = {
   getVersion: true,
@@ -137,6 +140,20 @@ export class ConnectionStore {
 
   get open(): boolean {
     return this.state === "open";
+  }
+
+  /**
+   * True while the page may issue reads. A degraded transport still reads:
+   * the next answer is what reports the connection live again, so gating the
+   * plan on `open` would freeze the page in `Disconnected` and nothing would
+   * ever read the recovery.
+   */
+  get readable(): boolean {
+    // `state` is read before the short-circuit on `disposed`: the poll plan's
+    // effect tracks this getter, and a getter that skipped the reactive field
+    // would leave every query disabled the moment the connection opens.
+    const connected = this.state !== "connecting";
+    return connected && !this.disposed;
   }
 
   onMessage(handler: (message: Envelope) => void): void {
@@ -295,13 +312,29 @@ export class ConnectionStore {
 
   /** A command settled without reaching the server: the connection is lost. */
   noticeTransportFailure(): void {
-    this.lastError = "Could not reach the server.";
+    this.lastError = UNREACHABLE;
     this.lost();
+  }
+
+  /**
+   * A read or a command answered: the transport is live again, so the footer
+   * stops saying `Disconnected`. Only a degraded state changes, so an ordinary
+   * answer costs an interrupted request nothing.
+   */
+  noticeTransportAnswer(): void {
+    if (this.state === "open") return;
+    this.state = "open";
+    this.notifiedLoss = false;
+    if (this.lastError === UNREACHABLE) this.lastError = null;
   }
 
   private lost(): void {
     if (this.awaitingRestart) return;
-    this.lastError = "Could not reach the server.";
+    this.lastError = UNREACHABLE;
+    // The footer renders `state`, so a transport that physically failed moves
+    // it off `open`; reads keep running through `readable`, and the next
+    // answer calls `noticeTransportAnswer`.
+    this.state = "closed";
     if (!this.notifiedLoss) {
       this.notifiedLoss = true;
       notifications.push("Connection", "warning", "Connection lost. Reconnecting…");

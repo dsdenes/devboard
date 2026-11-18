@@ -197,7 +197,7 @@ export interface PlannedQuery {
   command: PollClaim["command"];
   /** The finest nonzero cadence among the claiming surfaces; 0 for a one-shot. */
   interval: number;
-  /** True while the connection is open and a surface shows the resource. */
+  /** True while the page may read and a surface shows the resource. */
   enabled: boolean;
   /** True when the resource is a document read once, not a cadence. */
   once: boolean;
@@ -244,7 +244,9 @@ export function plannedQueries(): PlannedQuery[] {
       entry.once = entry.once && oneShot;
     }
   }
-  const open = connection.open;
+  // A degraded transport still reads: the next answer is what reports the
+  // connection live again, so the plan follows `readable`, not `open`.
+  const readable = connection.readable;
   const queries: PlannedQuery[] = [];
   for (const [key, entry] of grouped) {
     let interval = 0;
@@ -257,7 +259,7 @@ export function plannedQueries(): PlannedQuery[] {
       key,
       command: entry.command,
       interval,
-      enabled: open && (interval > 0 || entry.once),
+      enabled: readable && (interval > 0 || entry.once),
       once: entry.once,
       onFailure: readFailure(entry.command),
     });

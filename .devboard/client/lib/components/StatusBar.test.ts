@@ -6,7 +6,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 // Static imports evaluate before the DOM globals exist, so the component and
 // the stores load after registration.
 const { cleanup, fireEvent, render, within } = await import("@testing-library/svelte");
-const { tick } = await import("svelte");
+const { flushSync, tick } = await import("svelte");
 const { default: StatusBar } = await import("./StatusBar.svelte");
 const { connection } = await import("../connection.svelte");
 const { applyFrames } = await import("../frames");
@@ -14,6 +14,8 @@ const { applyFrames } = await import("../frames");
 afterEach(() => {
   cleanup();
   connection.version = null;
+  connection.state = "connecting";
+  connection.lastError = null;
 });
 
 const REPLACEMENT_FAILURE = "The replacement could not start: the port was taken.";
@@ -148,4 +150,30 @@ test("a dashboard running the newest release renders no drift", async () => {
   const versions = within(container).getByTestId("status-versions");
   expect(versions.getAttribute("data-stale")).toBe("false");
   expect(within(container).queryByTestId("status-version-drift")).toBeNull();
+});
+
+test("a lost transport renders Disconnected and the next answer restores Connected", () => {
+  // Files in the suite run concurrently over one connection store, so each
+  // state change is flushed synchronously: the render asserted is the state set.
+  connection.lastError = null;
+  connection.state = "open";
+  const { container } = render(StatusBar);
+  flushSync();
+  const word = within(container).getByTestId("status-connection");
+  const dot = container.querySelector<HTMLElement>(".status-dot");
+  if (dot === null) throw new Error("no status dot");
+  expect(word.textContent).toBe("Connected");
+  expect(dot.getAttribute("data-state")).toBe("open");
+
+  connection.noticeTransportFailure();
+  flushSync();
+  expect(word.textContent).toBe("Disconnected");
+  expect(dot.getAttribute("data-state")).toBe("closed");
+  expect(dot.parentElement?.getAttribute("title")).toBe("Could not reach the server.");
+
+  connection.noticeTransportAnswer();
+  flushSync();
+  expect(word.textContent).toBe("Connected");
+  expect(dot.getAttribute("data-state")).toBe("open");
+  expect(dot.parentElement?.getAttribute("title")).toBe("The server is answering requests.");
 });

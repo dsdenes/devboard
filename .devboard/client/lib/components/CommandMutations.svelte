@@ -26,6 +26,8 @@
       mutationFn: (command: Command) => sendCommand(command),
       onSuccess: (frames: Envelope[]) => {
         applyFrames(frames);
+        // The answer itself proves the transport is live again.
+        connection.noticeTransportAnswer();
         for (const resource of invalidatedResources(type)) {
           void queryClient.invalidateQueries({ queryKey: [resource] });
         }

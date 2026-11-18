@@ -1,9 +1,10 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
+  import { connection } from "../connection.svelte";
   import { applyFrames } from "../frames";
   import type { PlannedQuery } from "../poll-plan";
   import { queryKeyFor } from "../query-keys";
-  import { readResource } from "../rest-transport";
+  import { readResource, TransportError } from "../rest-transport";
 
   interface Props {
     resource: PlannedQuery;
@@ -24,8 +25,14 @@
         try {
           const frames = await readResource(resource.command);
           applyFrames(frames);
+          connection.noticeTransportAnswer();
           return frames;
         } catch (error) {
+          // A request that never reached the server is the connection's own
+          // loss, not this resource's answer: the footer must say so.
+          if (error instanceof TransportError && error.status === null) {
+            connection.noticeTransportFailure();
+          }
           // A read that never answered carries no frame for the store that
           // shows it, so the plan's own failure report is the only thing its
           // surface can display and its only way to stop waiting.

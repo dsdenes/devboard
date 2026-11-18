@@ -592,6 +592,20 @@ test("cadence of a fresh Issues connect reads only what is on screen", async () 
   ]);
 });
 
+test("a degraded transport keeps reading and the next answer restores the state", async () => {
+  const page = await openPage("issues", ISSUES_OVERVIEW);
+  const before = page.paths.length;
+  connection.noticeTransportFailure();
+  expect(connection.state).toBe("closed");
+  // The footer's failure is not a stopped page: the plan still reads, and the
+  // answer to that read is what reports the connection live again.
+  expect(plannedQueries().filter((query) => query.enabled).length).toBeGreaterThan(0);
+
+  await page.clock.advance(5_000);
+  expect(page.paths.length).toBeGreaterThan(before);
+  expect(connection.state).toBe("open");
+});
+
 const ISSUES_RUNS: WorkspaceTab = { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" };
 
 const ISSUES_DRAFTS: WorkspaceTab = {
