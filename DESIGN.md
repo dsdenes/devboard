@@ -811,16 +811,6 @@ The shipped primitives live in `.devboard/client/lib/components/ui/`: `button.sv
   text, and an `error` outline; disabled is 45% opacity. The bar's 8px dot states the run state
   and its start time in its tooltip, and its label names the run, so the control adds no eyebrow,
   run tag, or run-identifier chip; the page header above keeps the identity and actions.
-- **Discover dependency graph** (`.discover-diagram__canvas` in `MermaidDiagram.svelte`) — the
-  bounded-context map sits in a 1px `border-subtle` canvas on `background` with a 4px radius and
-  8px padding; the canvas owns both scroll axes and caps at `clamp(220px, 40vh, 400px)`. One 11px
-  `muted-foreground` legend states the arrow direction. Node labels stay at 12px: a graph opens
-  fitted only while the fit holds a 0.9 scale, otherwise it opens at actual size and scrolls, so a
-  wide graph never renders microscopic text. A graph whose fit falls below the readable floor
-  carries one ghost 24px control in the bar above the canvas, labelled `Actual size` while fitted
-  and `Fit width` otherwise; a graph that fits shows no control. Nodes are `surface-raised` rounded
-  rectangles with a `border-strong` 1px outline; edges and arrowheads use `muted-foreground`. The
-  canvas is a tab stop only while it scrolls, and its focus ring is the shared 2px `ring`.
 - **Glossary filter toolbar** (`.discover-glossary-controls`) — one bounded `surface-raised`
   toolbar with 4px padding and 8px gaps: a search field up to 240px, a 26×14px switch for
   `Significant only`, a 1px `border` divider, and a 120px floor slider whose value renders in a
