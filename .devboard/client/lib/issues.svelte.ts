@@ -143,12 +143,17 @@ export class IssuesStore {
   }
 
   /**
-   * The header's origin label. A missing snapshot is not evidence that the
-   * checkout has no origin, so only a received snapshot may say so.
+   * The header's origin label. A received snapshot names the checkout's
+   * repository when the projection resolved one. When it resolved none, the
+   * label claims only what a null repository proves — the origin is
+   * unresolved — because a checkout with no origin, an origin this build
+   * cannot parse to `owner/name`, and a worker that has not published a state
+   * yet all arrive that way, and the product resolves GitHub, GitLab, and
+   * Gitea from the same origin.
    */
   get repoLabel(): string {
     if (this.repo !== null) return this.repo;
-    return this.snapshot === null ? "…" : "No GitHub origin";
+    return this.snapshot === null ? "…" : "Origin not resolved";
   }
 
   get enabled(): boolean {
