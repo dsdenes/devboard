@@ -1,5 +1,6 @@
 import { afterEach, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { Event as DomEvent } from "happy-dom";
 import { SKILL_TABS } from "../discover-format";
 import type { DiscoverStatePayload } from "../types";
 
@@ -520,6 +521,99 @@ test("Run all disables the remote strip's switch, remove, and clear", () => {
     }
   } finally {
     connection.state = previous;
+  }
+});
+
+const SECOND = "https://github.com/acme/second";
+
+/** Two retained projects, the first one active, so a switch has a real target. */
+function twoRetainedRemoteState(): DiscoverStatePayload {
+  const payload = remoteState();
+  payload.retained = [
+    ...payload.retained,
+    { url: SECOND, owner: "acme", repo: "second", completedAt: "2026-01-02T00:00:00.000Z" },
+  ];
+  return payload;
+}
+
+/** An open socket that keeps every frame a rendered control dispatches. */
+function recordSends(): { sent: unknown[]; restore: () => void } {
+  const previousSend = connection.send;
+  const previousState = connection.state;
+  const sent: unknown[] = [];
+  connection.send = ((command: unknown) => {
+    sent.push(command);
+    return true;
+  }) as typeof connection.send;
+  connection.state = "open";
+  return {
+    sent,
+    restore: () => {
+      connection.send = previousSend;
+      connection.state = previousState;
+    },
+  };
+}
+
+test("choosing another retained project sends one switch frame with that URL", async () => {
+  const sends = recordSends();
+  try {
+    discover.state = twoRetainedRemoteState();
+    const view = render(DiscoverOverview);
+    const select = view.container.querySelector<HTMLSelectElement>(
+      '[data-testid="discover-remote-select"]',
+    )!;
+
+    select.value = SECOND;
+    // The DOM runtime's own event: Svelte's delegated handler still runs.
+    select.dispatchEvent(new DomEvent("change", { bubbles: true }) as unknown as Event);
+    await tick();
+
+    expect(select.value).toBe(SECOND);
+    expect(sends.sent).toEqual([{ type: "switchDiscoverRemote", url: SECOND }]);
+  } finally {
+    sends.restore();
+  }
+});
+
+test("one row's Remove sends one frame naming that row's URL alone", async () => {
+  const sends = recordSends();
+  try {
+    discover.state = twoRetainedRemoteState();
+    const view = render(DiscoverOverview);
+    const buttons = [
+      ...view.container.querySelectorAll('[data-testid="discover-remote-remove"]'),
+    ];
+    expect(buttons.map((button) => button.getAttribute("data-url"))).toEqual([
+      "https://github.com/acme/retained",
+      SECOND,
+    ]);
+
+    await fireEvent.click(buttons[1]!);
+    await tick();
+
+    expect(sends.sent).toEqual([{ type: "removeDiscoverRemote", url: SECOND }]);
+  } finally {
+    sends.restore();
+  }
+});
+
+test("the footer's Clear remote target sends one clear frame", async () => {
+  const sends = recordSends();
+  try {
+    discover.state = remoteState();
+    discover.remoteUrl = "https://github.com/acme/draft";
+    const view = render(DiscoverOverview);
+
+    await fireEvent.click(
+      view.container.querySelector('[data-testid="discover-remote-clear"]')!,
+    );
+    await tick();
+
+    expect(sends.sent).toEqual([{ type: "clearDiscoverRemote" }]);
+    expect(discover.remoteUrl).toBe("");
+  } finally {
+    sends.restore();
   }
 });
 

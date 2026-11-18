@@ -87,6 +87,59 @@ describe("discover remote change controls", () => {
   });
 });
 
+describe("discover remote change senders", () => {
+  const retainedUrl = "https://github.com/acme/retained";
+  const otherUrl = "https://github.com/acme/other";
+
+  function recording(changes: Partial<DiscoverStatePayload> = {}) {
+    const socket = new RecordingSocket();
+    const discover = new DiscoverStore(socket as unknown as ConnectionStore);
+    discover.handleEvent({ type: "discoverState", state: payload(changes) });
+    return { discover, socket };
+  }
+
+  test("an idle strip sends each change command under the server's own name", () => {
+    const { discover, socket } = recording();
+
+    discover.switchRemote(otherUrl);
+    expect(socket.sent).toEqual([{ type: "switchDiscoverRemote", url: otherUrl }]);
+
+    discover.removeRemote(retainedUrl);
+    expect(socket.sent).toEqual([
+      { type: "switchDiscoverRemote", url: otherUrl },
+      { type: "removeDiscoverRemote", url: retainedUrl },
+    ]);
+
+    discover.remoteUrl = "https://github.com/acme/draft";
+    discover.clearRemote();
+    expect(socket.sent).toEqual([
+      { type: "switchDiscoverRemote", url: otherUrl },
+      { type: "removeDiscoverRemote", url: retainedUrl },
+      { type: "clearDiscoverRemote" },
+    ]);
+    expect(discover.remoteUrl).toBe("");
+  });
+
+  test("switching to the project already selected sends nothing", () => {
+    const { discover, socket } = recording({
+      target: { kind: "remote", url: retainedUrl, owner: "acme", repo: "retained", checkout: false },
+    });
+
+    discover.switchRemote(retainedUrl);
+
+    expect(socket.sent).toEqual([]);
+  });
+
+  test("an empty URL sends neither a switch nor a remove", () => {
+    const { discover, socket } = recording();
+
+    discover.switchRemote("");
+    discover.removeRemote("");
+
+    expect(socket.sent).toEqual([]);
+  });
+});
+
 describe("discover remote start", () => {
   function recording(changes: Partial<DiscoverStatePayload> = {}) {
     const socket = new RecordingSocket();
