@@ -768,6 +768,227 @@ async fn an_in_flight_clone_keeps_the_selected_strip_target() {
     .await;
 }
 
+/// Waits until the injected clone runner has been entered `expected` times.
+async fn wait_for_clones(
+    clones: &Arc<Mutex<Vec<devboard::discover_mode::CloneRequest>>>,
+    expected: usize,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if clones.lock().unwrap().len() >= expected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the clone runner is entered"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Every directory the scratch root holds besides the run-claim bookkeeping.
+fn scratch_directories(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name != ".runs")
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Parks the clone until the test releases it, so two starts are dispatched
+/// while the first one's clone is genuinely in flight.
+fn parked_clone_runner(
+    clones: &Arc<Mutex<Vec<devboard::discover_mode::CloneRequest>>>,
+    release: &Arc<tokio::sync::Notify>,
+) {
+    let recorded = Arc::clone(clones);
+    let parked = Arc::clone(release);
+    devboard::discover_mode::set_clone_runner(Some(Arc::new(
+        move |request| -> devboard::discover_mode::CloneFuture {
+            recorded.lock().unwrap().push(request.clone());
+            let parked = Arc::clone(&parked);
+            let cwd = request.cwd.clone();
+            let name = request.argv.last().cloned().unwrap_or_default();
+            Box::pin(async move {
+                parked.notified().await;
+                clone_checkout(&cwd.join(name));
+                devboard::discover_mode::CloneResult {
+                    code: 0,
+                    stderr: String::new(),
+                    timed_out: false,
+                }
+            })
+        },
+    )));
+}
+
+/// The clone reservation is recorded under the same lock that refuses one, so
+/// two `discoverRemote` frames dispatched back to back clone once and refuse
+/// the second start instead of cloning twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_remote_starts_clone_once_and_refuse_once() {
+    let _clone_guard = CLONE_LOCK.lock().await;
+    let scratch = Scratch::new("overlap-remote");
+    let repo = fixture_repo(&scratch, "repo", true);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let scratch_root = state.join("discover-remote");
+    std::fs::create_dir_all(&scratch_root).expect("a scratch root");
+    let log = scratch.path().join("agent.log");
+    let command = format!("{} --discover --log={}", stub_agent(), log.display());
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+
+    let clones: Arc<Mutex<Vec<devboard::discover_mode::CloneRequest>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    parked_clone_runner(&clones, &release);
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    let url = "https://github.com/acme/fresh".to_string();
+    app.command(&conn, Command::DiscoverRemote { url: url.clone() })
+        .await;
+    app.command(&conn, Command::DiscoverRemote { url }).await;
+
+    let frames = frames_until(
+        &mut inbox,
+        |frame| {
+            frame.get("type").and_then(Value::as_str) == Some("discoverError")
+                && frame["message"] == json!("A repository clone is already active.")
+        },
+        Duration::from_secs(60),
+    )
+    .await;
+    assert_eq!(
+        by_type(&frames, "discoverError").len(),
+        1,
+        "the second start is refused: {frames:?}"
+    );
+    wait_for_clones(&clones, 1).await;
+    assert_eq!(
+        clones.lock().unwrap().len(),
+        1,
+        "one requested discovery clones once"
+    );
+
+    release.notify_one();
+    frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(120),
+    )
+    .await;
+    assert_eq!(
+        scratch_directories(&scratch_root),
+        Vec::<String>::new(),
+        "the one start's checkout is released, not leaked"
+    );
+    devboard::discover_mode::set_clone_runner(None);
+}
+
+/// The run slot is claimed under the same lock that refuses one, so two
+/// `discoverProject` frames dispatched back to back clone once and refuse the
+/// second start instead of interleaving two Run all sequences.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_run_all_starts_clone_once_and_refuse_once() {
+    let _clone_guard = CLONE_LOCK.lock().await;
+    let scratch = Scratch::new("overlap-run-all");
+    let repo = fixture_repo(&scratch, "repo", true);
+    let state = repo.join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    let scratch_root = state.join("discover-remote");
+    std::fs::create_dir_all(&scratch_root).expect("a scratch root");
+    retained_project(
+        &scratch_root,
+        "acme",
+        "retained",
+        "https://github.com/acme/retained",
+    );
+    let log = scratch.path().join("agent.log");
+    let command = format!("{} --discover --log={}", stub_agent(), log.display());
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+
+    let clones: Arc<Mutex<Vec<devboard::discover_mode::CloneRequest>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    parked_clone_runner(&clones, &release);
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(
+        &conn,
+        Command::SwitchDiscoverRemote {
+            url: "https://github.com/acme/retained".to_string(),
+        },
+    )
+    .await;
+    let switched = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    assert_eq!(state_of(&switched)["target"]["kind"], json!("remote"));
+
+    app.command(&conn, Command::DiscoverProject).await;
+    app.command(&conn, Command::DiscoverProject).await;
+
+    let frames = frames_until(
+        &mut inbox,
+        |frame| {
+            // The winner holds the run claim, and its clone claim once the
+            // checkout is cloning; either refusal is the one start slot.
+            frame.get("type").and_then(Value::as_str) == Some("discoverError")
+                && matches!(
+                    frame["message"].as_str(),
+                    Some("A repository clone is active. Wait for it to finish.")
+                        | Some("A Discover run is already active.")
+                )
+        },
+        Duration::from_secs(60),
+    )
+    .await;
+    assert_eq!(
+        by_type(&frames, "discoverError").len(),
+        1,
+        "the second start is refused: {frames:?}"
+    );
+    wait_for_clones(&clones, 1).await;
+    assert_eq!(
+        clones.lock().unwrap().len(),
+        1,
+        "one requested discovery clones once"
+    );
+
+    release.notify_one();
+    frames_until(
+        &mut inbox,
+        |frame| frame.get("type").and_then(Value::as_str) == Some("discoverStopped"),
+        Duration::from_secs(120),
+    )
+    .await;
+    assert_eq!(
+        scratch_directories(&scratch_root),
+        vec!["acme~retained".to_string()],
+        "no checkout is left behind"
+    );
+    devboard::discover_mode::set_clone_runner(None);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn discover_refusals_report_the_exact_messages() {
     let scratch = Scratch::new("refusals");

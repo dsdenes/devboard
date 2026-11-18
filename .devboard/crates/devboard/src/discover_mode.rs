@@ -7653,11 +7653,16 @@ struct Checkout {
     target: RemoteRepository,
 }
 
+/// The one clone the mode allows at a time. It is recorded in the same locked
+/// section that refuses a second clone, before any filesystem work or URL
+/// parse, so no start can pass the check while another is still setting up.
 #[derive(Clone)]
 struct Cloning {
     url: String,
-    target: RemoteRepository,
-    staging: PathBuf,
+    /// The parsed target, known once the URL parses.
+    target: Option<RemoteRepository>,
+    /// The staging directory, known once this process names it.
+    staging: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -7986,7 +7991,7 @@ fn in_flight_target(state: &ModeState) -> Option<&RemoteRepository> {
     state
         .cloning
         .as_ref()
-        .map(|cloning| &cloning.target)
+        .and_then(|cloning| cloning.target.as_ref())
         .or_else(|| state.checkout.as_ref().map(|checkout| &checkout.target))
 }
 
@@ -8756,20 +8761,28 @@ fn discover_active(state: &ModeState) -> bool {
     state.run.is_some() || state.all_active || state.starting
 }
 
-fn start_refusal(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) -> bool {
-    let state = lock(&mode.state);
+/// Claims the mode's one run slot in the locked section that refuses it, so a
+/// second start can never pass the check before this one records its claim.
+/// The claim is released by `run_agent` when it installs the run, and by every
+/// caller's early return.
+fn start_refusal(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>) -> bool {
+    let mut state = lock(&mode.state);
     if state.cloning.is_some() {
         drop(state);
-        notify_discover_failure(
-            Some(conn),
+        report_discover_failure(
+            app,
+            mode,
+            conn,
             "A repository clone is active. Wait for it to finish.",
         );
         return true;
     }
     if state.all_active {
         drop(state);
-        notify_discover_failure(
-            Some(conn),
+        report_discover_failure(
+            app,
+            mode,
+            conn,
             "Run all is active. Wait for it to finish or stop it.",
         );
         return true;
@@ -8779,15 +8792,27 @@ fn start_refusal(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) -> bool {
     let resuming = state.interrupted && state.run.is_some();
     if state.starting || (state.run.is_some() && !resuming) {
         drop(state);
-        notify_discover_failure(Some(conn), "A Discover run is already active.");
+        report_discover_failure(app, mode, conn, "A Discover run is already active.");
         return true;
     }
+    state.starting = true;
     drop(state);
     if let Some(busy) = busy_reason(app) {
-        notify_discover_failure(Some(conn), &format!("A Discover run cannot start: {busy}"));
+        release_run_claim(mode);
+        report_discover_failure(
+            app,
+            mode,
+            conn,
+            &format!("A Discover run cannot start: {busy}"),
+        );
         return true;
     }
     false
+}
+
+/// Releases a run claim whose start returned before installing the run.
+fn release_run_claim(mode: &Arc<Mode>) {
+    lock(&mode.state).starting = false;
 }
 
 fn remote_unavailable(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn) -> bool {
@@ -8926,14 +8951,15 @@ async fn run_agent(
                     descriptor.label
                 ),
             );
-            if target.remote.is_some() {
+            {
                 let mut state = lock(&mode.state);
                 state.starting = false;
                 state.all_active = false;
-                drop(state);
-                clear_remote_checkout(app, mode);
-                push_state(app, mode);
             }
+            if target.remote.is_some() {
+                clear_remote_checkout(app, mode);
+            }
+            push_state(app, mode);
             return false;
         }
     }
@@ -9269,6 +9295,24 @@ fn finish_discover_command(
     }));
 }
 
+/// Drops a clone reservation and everything it named, then reports why.
+fn fail_clone(
+    app: &Arc<App>,
+    mode: &Arc<Mode>,
+    conn: Option<&Conn>,
+    remote_root: &Path,
+    staging: &Path,
+    staging_name: &str,
+    message: String,
+) -> bool {
+    lock(&mode.state).cloning = None;
+    let _ = fs::remove_dir_all(staging);
+    release_scratch_entry(remote_root, staging_name);
+    report_discover_failure(app, mode, conn, &message);
+    push_state(app, mode);
+    false
+}
+
 async fn clone_remote_project(
     app: &Arc<App>,
     mode: &Arc<Mode>,
@@ -9282,34 +9326,42 @@ async fn clone_remote_project(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if let Err(error) = fs::create_dir_all(&remote_root) {
-        report_discover_failure(
-            app,
-            mode,
-            conn,
-            &format!("Could not prepare the Discover scratch root: {error}"),
-        );
-        return false;
-    }
-    if !claim_scratch_entry(&remote_root, &staging_name) {
-        report_discover_failure(
-            app,
-            mode,
-            conn,
-            &format!(
-                "Could not prepare the Discover scratch root: the scratch root is not writable: {}",
-                remote_root.display()
-            ),
-        );
-        return false;
-    }
+    // Name the clone in the locked section that owns the mode's start slot,
+    // before any scratch work: a claim taken by `start_remote` is filled in
+    // here, and a claim taken by a run start is this clone's alone, because
+    // that start already holds `starting`.
     {
         let mut state = lock(&mode.state);
         state.cloning = Some(Cloning {
             url: target.url.clone(),
-            target: target.clone(),
-            staging: staging.clone(),
+            target: Some(target.clone()),
+            staging: Some(staging.clone()),
         });
+    }
+    if let Err(error) = fs::create_dir_all(&remote_root) {
+        return fail_clone(
+            app,
+            mode,
+            conn,
+            &remote_root,
+            &staging,
+            &staging_name,
+            format!("Could not prepare the Discover scratch root: {error}"),
+        );
+    }
+    if !claim_scratch_entry(&remote_root, &staging_name) {
+        return fail_clone(
+            app,
+            mode,
+            conn,
+            &remote_root,
+            &staging,
+            &staging_name,
+            format!(
+                "Could not prepare the Discover scratch root: the scratch root is not writable: {}",
+                remote_root.display()
+            ),
+        );
     }
     app.shared
         .journal
@@ -9321,15 +9373,15 @@ async fn clone_remote_project(
     let result = runner(request.clone()).await;
 
     let clone_failed = |message: String| -> bool {
-        {
-            let mut state = lock(&mode.state);
-            state.cloning = None;
-        }
-        let _ = fs::remove_dir_all(&staging);
-        release_scratch_entry(&remote_root, &staging_name);
-        report_discover_failure(app, mode, conn, &message);
-        push_state(app, mode);
-        false
+        fail_clone(
+            app,
+            mode,
+            conn,
+            &remote_root,
+            &staging,
+            &staging_name,
+            message,
+        )
     };
     if result.timed_out {
         let seconds = request.timeout_ms.div_ceil(1000) as i64;
@@ -9407,17 +9459,21 @@ async fn resolve_discover_root(
 }
 
 async fn start_all(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>, claimed: bool) {
-    if !claimed {
-        if let Some(conn) = conn {
-            if start_refusal(app, mode, conn) {
-                return;
-            }
-        }
+    if !claimed && start_refusal(app, mode, conn) {
+        return;
     }
     let Some(target) = resolve_discover_root(app, mode, conn).await else {
+        release_run_claim(mode);
         return;
     };
-    let generation = lock(&mode.state).claim_all_sequence();
+    let generation = {
+        let mut state = lock(&mode.state);
+        let generation = state.claim_all_sequence();
+        // The run-all marker now owns the start slot; `starting` means only
+        // the clone-to-first-run handoff from here on.
+        state.starting = false;
+        generation
+    };
     push_state(app, mode);
     let mut last = DISCOVER_RUN_ORDER[0];
     for id in DISCOVER_RUN_ORDER {
@@ -9459,10 +9515,11 @@ async fn start_agent(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn, agent: &Valu
         notify_discover_failure(Some(conn), &format!("Unknown Discover agent: {id}."));
         return;
     }
-    if start_refusal(app, mode, conn) {
+    if start_refusal(app, mode, Some(conn)) {
         return;
     }
     let Some(target) = resolve_discover_root(app, mode, Some(conn)).await else {
+        release_run_claim(mode);
         return;
     };
     let published = run_agent(
@@ -9648,8 +9705,11 @@ async fn start_remote(
     } else if !lock(&mode.state).remote_available {
         return;
     }
+    // Record the clone in the same locked section that refuses one. The URL's
+    // target and staging are filled in before the scratch-root work starts, so
+    // no second start can pass this check while the first is still parsing.
     {
-        let state = lock(&mode.state);
+        let mut state = lock(&mode.state);
         if state.cloning.is_some() {
             drop(state);
             report_discover_failure(app, mode, conn, "A repository clone is already active.");
@@ -9661,36 +9721,33 @@ async fn start_remote(
             report_discover_failure(app, mode, conn, "A Discover run is already active.");
             return;
         }
+        state.cloning = Some(Cloning {
+            url: url.to_string(),
+            target: None,
+            staging: None,
+        });
     }
+    let abandon = |message: String| {
+        lock(&mode.state).cloning = None;
+        report_discover_failure(app, mode, conn, &message);
+    };
     if let Some(busy) = busy_reason(app) {
-        report_discover_failure(
-            app,
-            mode,
-            conn,
-            &format!("A repository clone cannot start: {busy}"),
-        );
+        abandon(format!("A repository clone cannot start: {busy}"));
         return;
     }
     let repo_dir = app.config().repo_dir.clone();
     let remote_root = lock(&mode.state).remote_root.clone();
     if !is_inside_repository(&repo_dir, &remote_root) {
-        report_discover_failure(
-            app,
-            mode,
-            conn,
-            "The Discover scratch root is outside the repository. STATE_DIR must name a directory inside the repository.",
+        abandon(
+            "The Discover scratch root is outside the repository. STATE_DIR must name a directory inside the repository."
+                .to_string(),
         );
         return;
     }
     let parsed = match parse_remote_url(url) {
         Ok(parsed) => parsed,
         Err(reason) => {
-            report_discover_failure(
-                app,
-                mode,
-                conn,
-                &format!("Could not clone the repository: {reason}."),
-            );
+            abandon(format!("Could not clone the repository: {reason}."));
             return;
         }
     };
@@ -9704,6 +9761,7 @@ async fn start_remote(
             return;
         }
         let Some(target) = resolve_discover_root(app, mode, conn).await else {
+            release_run_claim(mode);
             return;
         };
         let published = run_agent(
@@ -9822,13 +9880,14 @@ pub fn shutdown(app: &Arc<App>) {
         remove_staging(&run.cwd, &run.run_id);
     }
     if let Some(cloning) = cloning {
-        let _ = fs::remove_dir_all(&cloning.staging);
-        let name = cloning
-            .staging
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        release_scratch_entry(&remote_root, &name);
+        if let Some(staging) = &cloning.staging {
+            let _ = fs::remove_dir_all(staging);
+            let name = staging
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            release_scratch_entry(&remote_root, &name);
+        }
     }
     if let Some(checkout) = checkout {
         let _ = fs::remove_dir_all(&checkout.dir);
