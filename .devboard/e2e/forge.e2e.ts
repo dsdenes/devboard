@@ -28,6 +28,7 @@ import {
   scratchRoot,
   sleep,
   staticDir,
+  stopChild,
   waitFor,
 } from "./support.ts";
 
@@ -147,22 +148,6 @@ async function startDashboard(
   return { baseUrl, child };
 }
 
-async function stopDashboard(dashboard: Dashboard): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  if (dashboard.child.exitCode !== null) {
-    resolve();
-    return promise;
-  }
-  dashboard.child.once("exit", () => resolve());
-  dashboard.child.kill("SIGTERM");
-  const timer = setTimeout(() => {
-    dashboard.child.kill("SIGKILL");
-    resolve();
-  }, 15_000);
-  timer.unref();
-  return promise;
-}
-
 async function openIssues(page: Page, baseUrl: string): Promise<void> {
   await page.goto(`${baseUrl}/`);
   await expect(page.locator('[data-testid="app-shell"]')).toBeVisible({ timeout: 30_000 });
@@ -253,7 +238,7 @@ test("an origin that names no forge refuses and names the origin", async ({ page
     expect(text).toContain("has no `origin` remote");
     expect(forgeRecorderLines().slice(before.length)).toEqual([]);
   } finally {
-    await stopDashboard(dashboard);
+    await stopChild(dashboard.child);
     rmSync(path.join(scratchRoot, "forge", "no-origin"), { recursive: true, force: true });
   }
 });
@@ -281,7 +266,7 @@ test("a refused Gitea connection names the forge and the cause", async ({ page }
     expect(text.toLowerCase()).toContain("connection refused");
     expect(forgeRecorderLines().slice(before.length)).toEqual([]);
   } finally {
-    await stopDashboard(dashboard);
+    await stopChild(dashboard.child);
     rmSync(path.join(scratchRoot, "forge", "refused-gitea-state"), {
       recursive: true,
       force: true,
