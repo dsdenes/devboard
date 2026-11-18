@@ -174,8 +174,9 @@ export class IssuesStore {
     return this.snapshot?.paused === true;
   }
 
+  /** Tracker order, as delivered: the queue is unordered by design. */
   get queue(): QueuedIssue[] {
-    return [...(this.snapshot?.queue ?? [])].sort((left, right) => left.number - right.number);
+    return this.snapshot?.queue ?? [];
   }
 
   get runs(): IssuesRunSummary[] {
