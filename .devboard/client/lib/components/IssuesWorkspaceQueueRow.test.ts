@@ -1,7 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { readFileSync } from "node:fs";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
+
+// The row's geometry lives in the client's global stylesheet, which only
+// `main.ts` imports. Mounting the same sheet makes the tracks this file reads
+// the tracks the page ships, so a reverted rule fails here.
+const sheet = document.createElement("style");
+sheet.textContent = readFileSync(new URL("../../app.css", import.meta.url), "utf8");
+document.head.append(sheet);
 
 interface FakeEnvelope {
   data: string;
@@ -160,6 +168,15 @@ test("a goal and running row keeps both badges inside one trailing meta group", 
   expect(states[0]?.getAttribute("data-testid")).toBe("issues-running-marker");
   expect(states[0]?.textContent?.trim()).toBe("running");
   expect(badges(meta).length).toBe(2);
+
+  // The stylesheet is the rest of the contract: three tracks with the leading
+  // number track at 44px keep the state word beside the title on the first
+  // line, and the meta group must not wrap. Reverting the column list to the
+  // pre-fix `68px minmax(0, 1fr) auto` is the 56px row the queue was fixed for.
+  const rowStyle = getComputedStyle(row);
+  expect(rowStyle.display).toBe("grid");
+  expect(rowStyle.gridTemplateColumns).toBe("44px minmax(0, 1fr) auto");
+  expect(getComputedStyle(meta).whiteSpace).toBe("nowrap");
 
   // The only flexible track ellipsizes; the full title stays in `title`.
   expect(children[1]?.getAttribute("title")).toBe(LONG_TITLE);
