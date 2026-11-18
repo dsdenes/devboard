@@ -24,7 +24,7 @@
   import { statusTone, verificationTone } from "../status-tone";
   import { layout } from "../layout.svelte";
   import type { WorkspaceTab } from "../layout.svelte";
-  import type { DiscoverSkillState, DiscoverTab, Mode } from "../types";
+  import type { DiscoverSkillState, DiscoverTab, Lane, Mode } from "../types";
 
   interface Props {
     openTab: (mode: Mode, tab: WorkspaceTab) => void;
@@ -34,6 +34,17 @@
   let { openTab, focusLater }: Props = $props();
 
   const active = $derived(layout.activeTab[layout.mode]);
+  /**
+   * The lane list's single Tab stop: the open lane, or the first lane while no
+   * lane is open, so a keyboard operator reaches the list in one key press.
+   */
+  const laneTabStop = $derived(
+    active !== null && active.startsWith("lane:")
+      ? active
+      : goal.lanes[0] === undefined
+        ? null
+        : `lane:${goal.lanes[0].id}`,
+  );
   const issueQueue = $derived(queueCounts(issues.queue));
   const modeLabel = $derived(
     layout.mode === "goal"
@@ -151,6 +162,48 @@
 
   function open(mode: Mode, id: string, kind: string, resourceId: string, title: string): void {
     openTab(mode, { id, kind, resourceId, title });
+  }
+
+  /** Opens a lane and keeps focus on its tab, so focus and selection move together. */
+  function focusLane(lane: Lane): void {
+    open("goal", `lane:${lane.id}`, "lane", lane.id, goal.laneLabel(lane));
+    document.getElementById(`lane-tab-${lane.id}`)?.focus();
+  }
+
+  /**
+   * The lane list declares the tabs pattern, so it owns that pattern's inputs:
+   * the arrows, Home, and End move focus and the open lane together, and each
+   * handled key stops the page from scrolling with it.
+   */
+  function handleLanesKeydown(event: KeyboardEvent): void {
+    const lanes = goal.lanes;
+    if (lanes.length === 0) return;
+    const focusedTab =
+      event.target instanceof HTMLElement ? event.target.closest('[role="tab"]') : null;
+    const focusedId = focusedTab?.getAttribute("data-lane") ?? null;
+    const focused = lanes.findIndex((lane) => lane.id === focusedId);
+    const selected = lanes.findIndex((lane) => isActive(`lane:${lane.id}`));
+    const index = focused !== -1 ? focused : selected !== -1 ? selected : 0;
+    const last = lanes.length - 1;
+    const next =
+      event.key === "ArrowDown" || event.key === "ArrowRight"
+        ? index === last
+          ? 0
+          : index + 1
+        : event.key === "ArrowUp" || event.key === "ArrowLeft"
+          ? index === 0
+            ? last
+            : index - 1
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : null;
+    if (next === null) return;
+    const nextLane = lanes[next];
+    if (nextLane === undefined) return;
+    event.preventDefault();
+    focusLane(nextLane);
   }
 </script>
 
@@ -283,14 +336,24 @@
             <span>{goal.runningLanes} running · {goal.lanes.length}</span>
           {/if}
         </div>
-        <div role="tablist" aria-label="Agent lanes">
+        <!-- The lane tabs carry the roving tabindex, so the tablist itself is not a focus target. -->
+        <!-- svelte-ignore a11y_interactive_supports_focus -->
+        <div
+          role="tablist"
+          aria-label="Agent lanes"
+          aria-orientation="vertical"
+          onkeydown={handleLanesKeydown}
+        >
           {#each goal.lanes as lane (lane.id)}
             {@const label = goal.laneLabel(lane)}
             <Button
               bare
               class="sidebar-item"
               role="tab"
+              id={`lane-tab-${lane.id}`}
+              aria-controls="lane-panel"
               aria-selected={isActive(`lane:${lane.id}`)}
+              tabindex={laneTabStop === `lane:${lane.id}` ? 0 : -1}
               aria-label={`${label} (${lane.status})`}
               data-testid="lane-tab"
               data-lane={lane.id}

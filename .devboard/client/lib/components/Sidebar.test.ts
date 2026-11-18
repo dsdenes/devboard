@@ -232,6 +232,13 @@ function expectOnlyRunning(
   }
 }
 
+/** Dispatches one bubbling keydown and reports whether the handler cancelled it. */
+function pressKey(element: Element, key: string): boolean {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  element.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
 function badgeText(element: Element | null): string {
   if (element === null) return "";
   const run = element.querySelector(
@@ -455,6 +462,100 @@ test("the Goal lanes group keeps its lane tabs owned by one tablist", async () =
   expect(document.querySelector('[data-testid="lane-tab"]')?.getAttribute("aria-selected")).toBe(
     "true",
   );
+});
+
+test("the Goal lane tablist keeps one roving tab stop and answers arrow, Home, and End", async () => {
+  goal.lanes = [
+    {
+      id: "lane-a",
+      kind: "implementation",
+      epic: { number: 1, title: "Epic one", url: "" },
+      record: null,
+      attempt: 1,
+      status: "running",
+      activity: [],
+      question: null,
+    },
+    {
+      id: "lane-b",
+      kind: "implementation",
+      epic: { number: 2, title: "Epic two", url: "" },
+      record: null,
+      attempt: 1,
+      status: "running",
+      activity: [],
+      question: null,
+    },
+    {
+      id: "lane-c",
+      kind: "implementation",
+      epic: { number: 3, title: "Epic three", url: "" },
+      record: null,
+      attempt: 1,
+      status: "paused",
+      activity: [],
+      question: null,
+    },
+  ];
+  layout.mode = "goal";
+  const opened: string[] = [];
+  render(Sidebar, {
+    props: {
+      openTab: (_mode, tab) => {
+        opened.push(tab.id);
+        layout.activeTab.goal = tab.id;
+      },
+    },
+  });
+  await tick();
+  const tabs = (): HTMLButtonElement[] => [
+    ...document.querySelectorAll<HTMLButtonElement>('[data-testid="lane-tab"]'),
+  ];
+
+  // With no lane open, the first lane carries the single Tab stop.
+  expect(tabs().map((tab) => tab.getAttribute("tabindex"))).toEqual(["0", "-1", "-1"]);
+  expect(tabs().map((tab) => tab.getAttribute("aria-controls"))).toEqual([
+    "lane-panel",
+    "lane-panel",
+    "lane-panel",
+  ]);
+
+  layout.activeTab.goal = "lane:lane-b";
+  await tick();
+  expect(tabs().map((tab) => tab.getAttribute("tabindex"))).toEqual(["-1", "0", "-1"]);
+
+  const first = tabs()[0];
+  const second = tabs()[1];
+  const last = tabs()[2];
+  if (first === undefined || second === undefined || last === undefined) {
+    throw new Error("the lane tablist rendered fewer than three tabs");
+  }
+  second.focus();
+  expect(document.activeElement).toBe(second);
+
+  expect(pressKey(second, "ArrowDown")).toBe(true);
+  expect(document.activeElement).toBe(last);
+  expect(opened.at(-1)).toBe("lane:lane-c");
+
+  expect(pressKey(last, "ArrowDown")).toBe(true);
+  expect(document.activeElement).toBe(first);
+  expect(opened.at(-1)).toBe("lane:lane-a");
+
+  expect(pressKey(first, "ArrowUp")).toBe(true);
+  expect(document.activeElement).toBe(last);
+  expect(opened.at(-1)).toBe("lane:lane-c");
+
+  expect(pressKey(last, "Home")).toBe(true);
+  expect(document.activeElement).toBe(first);
+  expect(opened.at(-1)).toBe("lane:lane-a");
+
+  expect(pressKey(first, "End")).toBe(true);
+  expect(document.activeElement).toBe(last);
+  expect(opened.at(-1)).toBe("lane:lane-c");
+
+  const openedCount = opened.length;
+  expect(pressKey(last, "Tab")).toBe(false);
+  expect(opened.length).toBe(openedCount);
 });
 
 test("the Goal entries read only the Goal store", async () => {

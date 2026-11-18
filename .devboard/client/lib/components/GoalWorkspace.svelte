@@ -966,7 +966,7 @@
           {/snippet}
         </PageHeader>
 
-        <section class="panel" data-testid="lane-panel" data-lane={lane.id}>
+        <section id="lane-panel" class="panel" data-testid="lane-panel" data-lane={lane.id}>
           <div class="panel__header">
             <p class="panel__title" data-testid="lane-identity">
               {#if panel.identity.text.length > 0}
