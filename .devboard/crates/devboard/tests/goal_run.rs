@@ -1079,3 +1079,144 @@ async fn a_reset_refusal_echoes_a_provider_changes_request_id() {
     let frame = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
     assert!(frame.get("requestId").is_none());
 }
+
+#[tokio::test]
+async fn a_lifecycle_start_reports_an_unreadable_goal() {
+    let _guard = serial().lock().await;
+    let scratch = Scratch::new("lifecycle-unreadable-goal");
+    let goal = scratch.path().join("GOAL.md");
+    std::fs::create_dir(&goal).expect("a goal path that is a directory");
+
+    let app = app_with(&scratch, stub_command(&scratch, &[])).await;
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::StartLifecycle).await;
+
+    let frame = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
+    let message = frame["message"].as_str().expect("an error message");
+    assert!(
+        message.starts_with(&format!("Could not read the goal at {}:", goal.display())),
+        "the read failure names the path and the cause: {message}"
+    );
+    assert!(
+        !message.contains("The goal is not set"),
+        "an unreadable document is never reported as a missing goal: {message}"
+    );
+    // The refusal is the command's whole answer: no second error follows it and
+    // no lifecycle run starts behind it.
+    let mut trailing = Vec::new();
+    while let Ok(Some(text)) = tokio::time::timeout(Duration::from_millis(300), inbox.recv()).await
+    {
+        trailing.push(parse(&text));
+    }
+    assert!(
+        !trailing
+            .iter()
+            .any(|frame| frame["type"] == "error" || frame["type"] == "lifecycleState"),
+        "a refused start answers exactly one error: {trailing:?}"
+    );
+}
+
+fn git_in(dir: &Path, arguments: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(arguments)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git {arguments:?} succeeds");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completed_reset_never_broadcasts_an_unreadable_goal() {
+    let _serial = serial().lock().await;
+    let scratch = Scratch::new("reset-unreadable-goal");
+    let repo = scratch.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("the fixture repository exists");
+    git_in(&repo, &["init", "-q", "--initial-branch=main"]);
+    git_in(&repo, &["config", "user.email", "fixture@example.test"]);
+    git_in(&repo, &["config", "user.name", "Reset Fixture"]);
+    git_in(&repo, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(repo.join("README.md"), "# Fixture\n").expect("a tracked file");
+    std::fs::write(repo.join("GOAL.md"), "# The goal\n").expect("goal written");
+    git_in(&repo, &["add", "-A"]);
+    git_in(&repo, &["commit", "-q", "-m", "chore: fixture"]);
+    let origin = scratch.path().join("origin.git");
+    git_in(
+        &repo,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            origin.to_str().expect("a UTF-8 path"),
+        ],
+    );
+    git_in(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin.to_str().expect("a UTF-8 path"),
+        ],
+    );
+    git_in(&repo, &["push", "-q", "-u", "origin", "main"]);
+    // The document the reset completes with is unreadable, not absent.
+    std::fs::remove_file(repo.join("GOAL.md")).expect("the goal file is replaced");
+    std::fs::create_dir(repo.join("GOAL.md")).expect("a goal path that is a directory");
+    std::fs::write(repo.join("GOAL.md/inner.md"), "not a goal\n").expect("a fixture");
+
+    let config = Config {
+        hostname: "127.0.0.1".to_string(),
+        port: 0,
+        adrs_dir: repo.join("adrs"),
+        repo_dir: repo.clone(),
+        goal_file: repo.join("GOAL.md"),
+        static_dir: None,
+        agent_command: stub_command(&scratch, &[]),
+        state_dir: scratch.path().join("state"),
+        allowed_hosts: Vec::new(),
+        feedback: None,
+    };
+    let app = App::new(
+        config,
+        Journal::open(&scratch.path().join("state"), &repo, 0),
+    );
+    let (conn, mut inbox) = connected(&app).await;
+
+    app.command(&conn, Command::ResetImplementation).await;
+
+    let frames = collect_until(
+        &mut inbox,
+        |frame| frame["type"] == "implementationResetStopped" && frame["completed"] == true,
+        30_000,
+    )
+    .await;
+    let error = frame_matching(&mut inbox, |frame| frame["type"] == "error", 10_000).await;
+    let message = error["message"].as_str().expect("an error message");
+    assert!(
+        message.starts_with(&format!(
+            "Could not read the goal at {}:",
+            repo.join("GOAL.md").display()
+        )),
+        "the read failure names the path and the cause: {message}"
+    );
+    assert!(
+        !frames.iter().any(|frame| {
+            frame["type"] == "error" && frame["message"].as_str().unwrap_or("").contains("Reset")
+        }),
+        "the reset itself completed: {frames:?}"
+    );
+    let mut trailing = Vec::new();
+    while let Ok(Some(text)) = tokio::time::timeout(Duration::from_millis(300), inbox.recv()).await
+    {
+        trailing.push(parse(&text));
+    }
+    assert!(
+        !frames
+            .iter()
+            .chain(trailing.iter())
+            .any(|frame| frame["type"] == "goal"),
+        "an unreadable document is never broadcast as the goal: {trailing:?}"
+    );
+}

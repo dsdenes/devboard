@@ -1556,18 +1556,25 @@ impl GoalRun {
             inner.lifecycle_start_request
         };
 
-        let goal_settled = tokio::fs::read_to_string(&app.config().goal_file)
-            .await
-            .map(|text| !text.trim().is_empty())
-            .unwrap_or(false);
+        let goal = crate::goal::read_goal_optional(&app.config().goal_file).await;
         if !self.request_current(request) {
             return;
         }
-        if !goal_settled {
-            target.send(error_event(
-                "The goal is not set. Save a non-empty goal before starting the lifecycle.",
-            ));
-            return;
+        match goal {
+            Ok(Some(text)) if !text.trim().is_empty() => {}
+            Ok(_) => {
+                target.send(error_event(
+                    "The goal is not set. Save a non-empty goal before starting the lifecycle.",
+                ));
+                return;
+            }
+            Err(error) => {
+                target.send(error_event(format!(
+                    "Could not read the goal at {}: {error}",
+                    app.config().goal_file.display()
+                )));
+                return;
+            }
         }
 
         match prepared_skill_count(app).await {
@@ -4156,9 +4163,7 @@ delete.",
             return;
         }
 
-        let text = tokio::fs::read_to_string(&goal_file)
-            .await
-            .unwrap_or_default();
+        let goal = crate::goal::read_goal_optional(&goal_file).await;
         {
             let mut inner = lock(&self.inner);
             inner.reset_active = false;
@@ -4175,7 +4180,16 @@ delete.",
         self.publish_lifecycle(app, true);
         app.shared
             .broadcast(json!({"type": "records", "records": [], "next": null}));
-        app.shared.broadcast(json!({"type": "goal", "text": text}));
+        // An unreadable document is never broadcast as a goal: the page keeps
+        // the text it has and the error names the path and the cause.
+        match goal {
+            Ok(Some(text)) => app.shared.broadcast(json!({"type": "goal", "text": text})),
+            Ok(None) => app.shared.broadcast(json!({"type": "goal", "text": ""})),
+            Err(error) => app.shared.broadcast(error_event(format!(
+                "Could not read the goal at {}: {error}",
+                goal_file.display()
+            ))),
+        }
     }
 
     fn fail_reset(self: &Arc<Self>, app: &Arc<App>, message: &str, commit: Option<&str>) {

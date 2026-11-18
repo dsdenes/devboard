@@ -12,6 +12,20 @@ pub async fn read_goal(path: &Path) -> std::io::Result<String> {
     tokio::fs::read_to_string(path).await
 }
 
+/// Reads the goal document, mapping an absent one to `None`.
+///
+/// The callers that treat "no goal yet" as a value rather than an error use
+/// this: it is [`read_goal`]'s rule with only `NotFound` answered as `None`, so
+/// a broken document is still returned as the read produced it and is never
+/// reported as an absent or empty goal.
+pub async fn read_goal_optional(path: &Path) -> std::io::Result<Option<String>> {
+    match read_goal(path).await {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Replaces the goal document wholesale, staging beside it and renaming into
 /// place so a reader never observes a partial document.
 pub async fn write_goal(path: &Path, text: &str) -> std::io::Result<()> {
@@ -43,6 +57,59 @@ mod tests {
             .await
             .expect_err("an absent goal document is an error");
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn an_absent_document_reads_as_no_goal() {
+        let root = scratch("optional-absent");
+        let path = root.join(GOAL_FILE_NAME);
+        assert_eq!(
+            read_goal_optional(&path)
+                .await
+                .expect("an absent document is no goal, not an error"),
+            None
+        );
+        std::fs::write(&path, "").expect("an empty document");
+        assert_eq!(
+            read_goal_optional(&path)
+                .await
+                .expect("an empty document is a document"),
+            Some(String::new()),
+            "an empty document is present, never absent"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_document_that_is_a_directory_is_never_reported_absent() {
+        let root = scratch("optional-directory");
+        let path = root.join(GOAL_FILE_NAME);
+        std::fs::create_dir(&path).expect("a goal path that is a directory");
+        let error = read_goal_optional(&path)
+            .await
+            .expect_err("a directory is not a goal document");
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "a directory in the document's place is not an absent document: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn bytes_that_are_not_utf8_are_never_reported_absent() {
+        let root = scratch("optional-bytes");
+        let path = root.join(GOAL_FILE_NAME);
+        std::fs::write(&path, [0xff, 0xfe, 0x80]).expect("a fixture");
+        let error = read_goal_optional(&path)
+            .await
+            .expect_err("bytes that are not UTF-8 are not a goal document");
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "an undecodable document is not an absent document: {error}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
