@@ -73,6 +73,15 @@
       0,
     ),
   );
+  /** Every recorded term, the rejected ones included: the subtitle's denominator. */
+  const recordedTerms = $derived(
+    discover.contexts.reduce(
+      (total, context) => total + (Array.isArray(context.concepts) ? context.concepts.length : 0),
+      0,
+    ),
+  );
+  /** The recorded terms a crawl decision rejected; no filter can bring one back. */
+  const invalidatedTerms = $derived(recordedTerms - totalTerms);
   const visibleTerms = $derived(
     discover.filteredContexts.reduce((total, context) => total + context.concepts.length, 0),
   );
@@ -281,6 +290,23 @@
         <div class="panel__body">
           <p class="empty" data-testid="discover-glossary-unpublished">
             No glossary is published. Start the Glossary Agent to collect one.
+          </p>
+        </div>
+      </section>
+    {:else if totalTerms === 0 && invalidatedTerms > 0}
+      <section class="panel discover-filter-empty" data-testid="discover-glossary-invalidated">
+        <div class="panel__body discover-filter-empty__body">
+          <p class="empty">
+            Every recorded term was invalidated. The glossary is published with no active term
+            left, and no search or significance filter can restore one.
+          </p>
+        </div>
+      </section>
+    {:else if totalTerms === 0}
+      <section class="panel">
+        <div class="panel__body">
+          <p class="empty" data-testid="discover-glossary-termless">
+            No term is recorded in the published glossary.
           </p>
         </div>
       </section>

@@ -594,3 +594,32 @@ test("a published glossary keeps the no-match state and its Clear filters contro
   );
   expect(filteredEmpty?.querySelector("button")?.textContent?.trim()).toBe("Clear filters");
 });
+
+const INVALIDATED_GLOSSARY: Glossary = {
+  boundedContext: "billing",
+  titles: [{ language: "en", text: "Billing" }],
+  concepts: [
+    {
+      id: "invoice",
+      prefLabels: [{ language: "en", text: "Invoice" }],
+      definitions: [{ language: "en", text: "A demand for payment." }],
+      status: "invalidated",
+      origin: "observed",
+      kind: "term",
+    },
+  ],
+};
+
+test("an all-invalidated glossary reports the rejection instead of a filter", async () => {
+  await show(
+    { id: "glossary", kind: "glossary", resourceId: "glossary", title: "Glossary" },
+    payload({ glossaries: [INVALIDATED_GLOSSARY] }),
+  );
+  expect(document.querySelector('[data-testid="discover-glossary-empty"]')).toBeNull();
+  expect(document.querySelector('[data-testid="discover-glossary-unpublished"]')).toBeNull();
+  const invalidated = document.querySelector('[data-testid="discover-glossary-invalidated"]');
+  expect(invalidated?.textContent).toContain("Every recorded term was invalidated.");
+  expect(invalidated?.querySelector("button")).toBeNull();
+  const subtitle = document.body.textContent?.replace(/\s+/g, " ") ?? "";
+  expect(subtitle).toContain("0 of 0 terms with no significance scores published");
+});
