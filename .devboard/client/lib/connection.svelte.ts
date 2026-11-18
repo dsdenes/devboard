@@ -1,7 +1,7 @@
 import { notifications } from "./notifications.svelte";
 import { slowUiAction, type SlowUiActionOrigin } from "./slow-ui-action";
 import { REST_OPERATIONS } from "./rest-map";
-import { answeringPid, replacementAnswers, restartServer } from "./rest-transport";
+import { answeringPid, readResource, replacementAnswers, restartServer } from "./rest-transport";
 import { mutationFor } from "./command-mutations";
 import type { Command } from "./rest-transport";
 import { frameQueryKey } from "./query-keys";
@@ -37,6 +37,29 @@ function isVersionState(value: Record<string, unknown>): boolean {
     (value.latest === null || typeof value.latest === "string") &&
     typeof value.stale === "boolean"
   );
+}
+
+/** The replacement one `versionState` frame reports, with its shown reason. */
+type ReplacementState = NonNullable<VersionState["replacement"]>;
+
+/** The replacement a `versionState` frame reports, or `null` when it names none. */
+function replacementOf(message: Record<string, unknown>): ReplacementState | null {
+  if (!isObject(message.replacement)) return null;
+  const replacement = message.replacement;
+  return {
+    running:
+      replacement.running === null || typeof replacement.running === "string"
+        ? (replacement.running as string | null)
+        : null,
+    installed:
+      replacement.installed === null || typeof replacement.installed === "string"
+        ? (replacement.installed as string | null)
+        : null,
+    error:
+      typeof replacement.error === "string"
+        ? replacement.error
+        : "The replacement could not start.",
+  };
 }
 
 /**
@@ -299,24 +322,7 @@ export class ConnectionStore {
       this.refusals[message.command] = (this.refusals[message.command] ?? 0) + 1;
     }
     if (isVersionState(message)) {
-      const replacement = isObject(message.replacement)
-        ? {
-            running:
-              message.replacement.running === null ||
-              typeof message.replacement.running === "string"
-                ? (message.replacement.running as string | null)
-                : null,
-            installed:
-              message.replacement.installed === null ||
-              typeof message.replacement.installed === "string"
-                ? (message.replacement.installed as string | null)
-                : null,
-            error:
-              typeof message.replacement.error === "string"
-                ? message.replacement.error
-                : "The replacement could not start.",
-          }
-        : null;
+      const replacement = replacementOf(message);
       this.version = {
         running: message.running as string | null,
         installed: message.installed as string | null,
@@ -416,6 +422,12 @@ export class ConnectionStore {
    * reloads only once the answering pid changes. A version frame naming a
    * replacement failure clears `restarting`, which ends the watch with no
    * reload and reports the failure through the frame handler.
+   *
+   * The page has no socket, so a failure the server recorded after the last
+   * version poll would reach the page only on the next poll, which runs on the
+   * same 30 seconds as this deadline. Before the watch reports its timeout it
+   * reads `/version` once: a recorded failure is the outcome, and only a
+   * server that names none did not answer.
    */
   private async waitForRestart(): Promise<void> {
     const before = this.restartPid ?? (await answeringPid());
@@ -431,8 +443,30 @@ export class ConnectionStore {
       await retry.promise;
     }
     if (!this.restarting) return;
-    this.report("The replacement did not answer within 30 seconds.");
+    const failure = await this.recordedReplacementFailure();
+    if (!this.restarting) return;
+    this.report(failure ?? "The replacement did not answer within 30 seconds.");
     this.connect();
+  }
+
+  /**
+   * The replacement failure the server holds, or `null` when it names none.
+   * A read that cannot reach the server reports no failure: the watch's own
+   * timeout is then the answer.
+   */
+  private async recordedReplacementFailure(): Promise<string | null> {
+    let frames: Envelope[];
+    try {
+      frames = await readResource({ type: "getVersion" });
+    } catch {
+      return null;
+    }
+    for (const frame of frames) {
+      if (!isVersionState(frame)) continue;
+      const replacement = replacementOf(frame);
+      if (replacement !== null) return replacement.error;
+    }
+    return null;
   }
 
   private report(message: string): void {

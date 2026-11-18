@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { notifications } from "./notifications.svelte";
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 
@@ -15,6 +16,7 @@ const original = {
   location: (globalThis as unknown as Record<string, unknown>).location,
   document: (globalThis as unknown as Record<string, unknown>).document,
   setTimeout: globalThis.setTimeout,
+  now: Date.now,
 };
 
 function setGlobal(key: string, value: unknown): void {
@@ -28,6 +30,7 @@ function restore(): void {
   setGlobal("location", original.location);
   setGlobal("document", original.document);
   setGlobal("setTimeout", original.setTimeout);
+  Date.now = original.now;
 }
 
 function fakeDocument(): Document {
@@ -242,5 +245,124 @@ test("a reported replacement failure clears the restart latch and resumes pollin
   timers.advance();
   await settle();
   expect(reloads).toBe(0);
+  store.dispose();
+});
+
+test("a failure recorded after the watch's deadline reports its reason, not the timeout", async () => {
+  const failure = "The replacement could not start: the port was never announced.";
+  const frame = versionFrame({
+    replacement: { running: "1.45.1", installed: "1.46.0", error: failure },
+  });
+  const requests: Request[] = [];
+  let versionReads = 0;
+  let reloads = 0;
+  setGlobal("location", {
+    protocol: "http:",
+    host: "test.invalid",
+    reload: () => {
+      reloads += 1;
+    },
+  });
+  setGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    requests.push({ url, method });
+    if (url === "/ready") {
+      if (method === "HEAD") return new Response(null, { status: 503 });
+      return new Response(JSON.stringify({ pid: 100 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/version") {
+      versionReads += 1;
+      return new Response(JSON.stringify({ frames: [frame] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  const timers = deferredTimers();
+  let now = original.now();
+  Date.now = () => now;
+  const store = connection;
+  notifications.clear();
+  store.state = "open";
+  store.requestRestart();
+  await settle();
+  expect(store.restarting).toBe(true);
+
+  // The old process keeps answering and no frame reaches the page: the watch
+  // reaches its own deadline with the server's failure already recorded.
+  now += 30_001;
+  timers.advance();
+  await settle();
+  expect(versionReads).toBe(1);
+  expect(store.awaitingRestart).toBe(false);
+  expect(store.restarting).toBe(false);
+  const errors = notifications.items.filter((item) => item.severity === "error");
+  expect(errors.map((item) => item.text)).toEqual([failure]);
+  expect(reloads).toBe(0);
+
+  // The late frame reports nothing a second time and never contradicts it.
+  receive(frame);
+  await settle();
+  expect(
+    notifications.items.filter((item) => item.severity === "error").map((item) => item.text),
+  ).toEqual([failure]);
+  store.dispose();
+});
+
+test("a server that names no replacement failure still reports the timeout", async () => {
+  const requests: Request[] = [];
+  let versionReads = 0;
+  setGlobal("location", {
+    protocol: "http:",
+    host: "test.invalid",
+    reload: () => undefined,
+  });
+  setGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    requests.push({ url, method });
+    if (url === "/ready") {
+      if (method === "HEAD") return new Response(null, { status: 503 });
+      return new Response(JSON.stringify({ pid: 100 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/server-restarts") return new Response(null, { status: 202 });
+    if (url === "/version") versionReads += 1;
+    return new Response(JSON.stringify({ frames: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  const timers = deferredTimers();
+  let now = original.now();
+  Date.now = () => now;
+  const store = connection;
+  notifications.clear();
+  store.state = "open";
+  store.requestRestart();
+  await settle();
+  expect(store.restarting).toBe(true);
+
+  now += 30_001;
+  timers.advance();
+  await settle();
+  expect(versionReads).toBe(1);
+  expect(store.restarting).toBe(false);
+  expect(store.awaitingRestart).toBe(false);
+  expect(store.state).toBe("open");
+  expect(notifications.items.map((item) => item.text)).toEqual([
+    "The replacement did not answer within 30 seconds.",
+  ]);
   store.dispose();
 });
