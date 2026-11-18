@@ -1641,6 +1641,40 @@ fn auth_environment_pins_the_selected_identity() {
     assert!(auth_environment(&tokenless, &base).is_err());
 }
 
+#[test]
+fn a_gitea_identity_strips_every_other_forges_token() {
+    let base = environment(&[
+        ("GH_TOKEN", "ambient-gh"),
+        ("GITHUB_TOKEN", "ambient-github"),
+        ("GITLAB_TOKEN", "ambient-gitlab"),
+        ("GITEA_TOKEN", "ambient-gitea"),
+    ]);
+    let gitea = ResolvedAuth {
+        forge: Forge::Gitea,
+        host: "localhost".to_string(),
+        project: "owner/name".to_string(),
+        login: "alice".to_string(),
+        token: Some("selected".to_string()),
+        source: "gitea account".to_string(),
+        base_url: Some("https://gitea.test".to_string()),
+        active: true,
+        permission: Permission::Push,
+        can_write: true,
+    };
+    let environment = auth_environment(&gitea, &base).expect("gitea env");
+    assert_eq!(
+        environment.get("GITEA_TOKEN").map(String::as_str),
+        Some("selected")
+    );
+    for key in ["GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN"] {
+        assert_eq!(
+            environment.get(key),
+            None,
+            "a Gitea child must not carry {key}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Retry schedule
 

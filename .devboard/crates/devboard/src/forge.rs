@@ -4086,8 +4086,15 @@ pub fn auth_environment(
             environment.insert("GITLAB_HOST".to_string(), auth.host.clone());
         }
         Forge::Gitea => {
-            for key in GITEA_TOKEN_KEYS {
-                environment.remove(key);
+            // A Gitea identity admits any child command, so the child must not
+            // inherit another forge's token: it would act on that forge with a
+            // credential this wrapper never verified.
+            for key in GITEA_TOKEN_KEYS
+                .iter()
+                .chain(GITHUB_TOKEN_KEYS.iter())
+                .chain(GITLAB_TOKEN_KEYS.iter())
+            {
+                environment.remove(*key);
             }
             if let Some(token) = auth.token.as_deref().filter(|token| !token.is_empty()) {
                 environment.insert("GITEA_TOKEN".to_string(), token.to_string());
