@@ -123,6 +123,35 @@ test("a restoring Flow session disables the steering command despite a typed not
   expect(command?.disabled?.()).toBe("Wait for the stored Flow session to finish restoring.");
 });
 
+test("opening the selected run surfaces Runs before asking for its history", () => {
+  const calls: string[] = [];
+  const withRun = {
+    ...context,
+    issues: {
+      ...context.issues,
+      selectedRun: "run-1",
+      openRun: (runId: string) => calls.push(`openRun ${runId}`),
+    },
+    layout: {
+      ...context.layout,
+      setMode: (mode: string) => calls.push(`setMode ${mode}`),
+    },
+    openTab: (mode: string, tab: { id: string }) => calls.push(`openTab ${mode} ${tab.id}`),
+  } as unknown as CommandContext;
+  const command = buildCommands(withRun).find((entry) => entry.id === "issues.run.open");
+
+  expect(command?.disabled?.()).toBeNull();
+  command?.run();
+
+  expect(calls).toEqual(["setMode issues", "openTab issues runs", "openRun run-1"]);
+});
+
+test("the run command reports a missing selection", () => {
+  const command = buildCommands(context).find((entry) => entry.id === "issues.run.open");
+
+  expect(command?.disabled?.()).toBe("No run is selected.");
+});
+
 /**
  * The same minimal context, with every store and callback turned into one
  * counted effect: a field the stub does not model answers a recording no-op, so

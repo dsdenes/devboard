@@ -365,7 +365,13 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
     group: "Issues",
     disabled: () => disabledWhen(issues.selectedRun === null, "No run is selected."),
     run: () => {
-      if (issues.selectedRun !== null) issues.openRun(issues.selectedRun);
+      const runId = issues.selectedRun;
+      if (runId === null) return;
+      // Only the Runs page renders a run's detail, so the command opens that
+      // surface before it asks for the history the page shows.
+      layout.setMode("issues");
+      ctx.openTab("issues", { id: "runs", kind: "runs", resourceId: "runs", title: "Runs" });
+      issues.openRun(runId);
     },
   });
 
