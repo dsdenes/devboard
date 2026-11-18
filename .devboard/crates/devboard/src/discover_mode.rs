@@ -6669,22 +6669,31 @@ fn read_significance(repo_dir: &Path, relative_path: &str, glossaries: &[Glossar
     Value::Object(published)
 }
 
-fn read_contribution_artifact(repo_dir: &Path, relative_path: &str) -> Option<Value> {
-    let source = fs::read_to_string(repo_dir.join(relative_path)).ok()?;
-    let raw: Value = serde_json::from_str(&source).ok()?;
+fn read_contribution_artifact(repo_dir: &Path, relative_path: &str) -> Result<Value, String> {
+    let source = fs::read_to_string(repo_dir.join(relative_path))
+        .map_err(|error| format!("{relative_path} is unreadable: {error}"))?;
+    let raw: Value = serde_json::from_str(&source)
+        .map_err(|error| format!("{relative_path} is not valid JSON: {error}"))?;
     if raw.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
-        return None;
+        return Err(format!("{relative_path} has an unsupported schemaVersion"));
     }
-    if !is_record(raw.get("freshness")?) || !raw.get("sections")?.is_array() {
-        return None;
+    if !raw.get("freshness").map(is_record).unwrap_or(false) {
+        return Err(format!("{relative_path} has no freshness header"));
     }
-    if raw.get("sections")?.as_array()?.len() != CONTRIBUTION_SECTION_IDS.len() {
-        return None;
+    let Some(sections) = raw.get("sections").and_then(Value::as_array) else {
+        return Err(format!("{relative_path} has no sections list"));
+    };
+    if sections.len() != CONTRIBUTION_SECTION_IDS.len() {
+        return Err(format!(
+            "{relative_path} has {} sections, expected {}",
+            sections.len(),
+            CONTRIBUTION_SECTION_IDS.len()
+        ));
     }
-    if !raw.get("sample")?.is_array() {
-        return None;
+    if !raw.get("sample").map(Value::is_array).unwrap_or(false) {
+        return Err(format!("{relative_path} has no sample list"));
     }
-    Some(raw)
+    Ok(raw)
 }
 
 fn read_published(repo_dir: &Path) -> Result<Option<PublishedRead>, String> {
@@ -6753,11 +6762,14 @@ fn read_published(repo_dir: &Path) -> Result<Option<PublishedRead>, String> {
         None => Value::Object(Map::new()),
     };
     let decisions = read_decisions(repo_dir)?;
-    let contribution = manifest
+    let contribution = match manifest
         .get("paths")
         .and_then(|paths| paths.get("contribution"))
         .and_then(Value::as_str)
-        .and_then(|path| read_contribution_artifact(repo_dir, path));
+    {
+        Some(path) => Some(read_contribution_artifact(repo_dir, path)?),
+        None => None,
+    };
     Ok(Some(PublishedRead {
         manifest,
         sheet,
@@ -10505,5 +10517,126 @@ mod sequence_tests {
         let claimed = state.claim_all_sequence();
         assert!(state.all_sequence_current(claimed));
         assert!(!state.all_sequence_current(stopped));
+    }
+}
+
+#[cfg(test)]
+mod contribution_read_tests {
+    use super::*;
+
+    const PATH: &str = ".omp/discover/contribution.json";
+
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!(
+                "discover-contribution-{label}-{}",
+                std::process::id()
+            ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root");
+        root
+    }
+
+    fn write_file(path: PathBuf, text: &str) {
+        std::fs::create_dir_all(path.parent().expect("a parent directory"))
+            .expect("the parent directory");
+        std::fs::write(path, text).expect("a written file");
+    }
+
+    /// A manifest whose sheet digest is null keeps the sheet read out of the
+    /// way, so each test exercises the contribution path alone.
+    fn publish_manifest(root: &Path, contribution: Option<&str>) {
+        let mut paths = json!({
+            "manifest": ".omp/discover/manifest.json",
+            "sheet": ".omp/discover/sheet.json",
+            "decisions": ".omp/discover/decisions.json",
+            "glossaries": [],
+        });
+        if let Some(path) = contribution {
+            paths["contribution"] = Value::String(path.to_string());
+        }
+        let manifest = json!({
+            "schemaVersion": 1,
+            "fingerprint": "fingerprint",
+            "publishedAt": "2026-11-18T00:00:00Z",
+            "runId": "run",
+            "sheetDigest": Value::Null,
+            "glossaryDigests": {},
+            "skills": [],
+            "paths": paths,
+        });
+        write_file(
+            discover_root(root).join("manifest.json"),
+            &render_json(&manifest),
+        );
+    }
+
+    fn valid_contribution() -> Value {
+        let sections: Vec<Value> = CONTRIBUTION_SECTION_IDS
+            .iter()
+            .map(|id| json!({"id": id, "label": id, "facts": []}))
+            .collect();
+        json!({
+            "schemaVersion": 1,
+            "freshness": {
+                "project": "checkout",
+                "commit": "0123456789abcdef",
+                "dirty": false,
+                "discoveredAt": "2026-11-18T00:00:00Z",
+            },
+            "sections": sections,
+            "sample": [],
+        })
+    }
+
+    #[test]
+    fn a_valid_artifact_is_published() {
+        let root = scratch("valid");
+        publish_manifest(&root, Some(PATH));
+        write_file(root.join(PATH), &render_json(&valid_contribution()));
+
+        let read = read_artifacts(&root);
+        assert_eq!(read.error, None);
+        let contribution = read
+            .artifacts
+            .expect("published artifacts")
+            .contribution
+            .expect("a contribution document");
+        assert_eq!(contribution.get("schemaVersion"), Some(&json!(1)));
+    }
+
+    #[test]
+    fn a_damaged_artifact_names_its_path_in_the_read_error() {
+        let root = scratch("damaged");
+        publish_manifest(&root, Some(PATH));
+        write_file(root.join(PATH), "{}");
+
+        let read = read_artifacts(&root);
+        assert!(read.artifacts.is_none());
+        let error = read.error.expect("a read error");
+        assert!(
+            error.starts_with(PATH),
+            "the error names the artifact path: {error}"
+        );
+        assert!(
+            error.contains("unsupported schemaVersion"),
+            "the error names the concrete cause: {error}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_without_a_contribution_path_reads_no_contribution_and_no_error() {
+        let root = scratch("absent");
+        publish_manifest(&root, None);
+
+        let read = read_artifacts(&root);
+        assert_eq!(read.error, None);
+        assert!(read
+            .artifacts
+            .expect("published artifacts")
+            .contribution
+            .is_none());
     }
 }

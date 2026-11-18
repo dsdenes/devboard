@@ -5,6 +5,7 @@
   import PageHeader from "./ui/page-header.svelte";
 
   const contribution = $derived(discover.contribution);
+  const readError = $derived(discover.noticeError);
   const sections = $derived(contribution?.sections ?? []);
   const freshness = $derived(contribution?.freshness ?? null);
   const discoveredLabel = $derived(
@@ -100,9 +101,15 @@
   {#if contribution === null}
     <section class="panel">
       <div class="panel__body">
-        <p class="empty" data-testid="discover-contribution-empty">
-          No contribution sheet is published. Start the Contribution Agent to collect one.
-        </p>
+        {#if readError !== null}
+          <p class="message" data-severity="error" data-testid="discover-contribution-error">
+            {readError}
+          </p>
+        {:else}
+          <p class="empty" data-testid="discover-contribution-empty">
+            No contribution sheet is published. Start the Contribution Agent to collect one.
+          </p>
+        {/if}
       </div>
     </section>
   {:else}

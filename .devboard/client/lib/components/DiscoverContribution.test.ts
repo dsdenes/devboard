@@ -168,6 +168,20 @@ test("an unpublished contribution shows the empty state and no page-level freshn
   expect(view.queryByTestId("discover-freshness")).toBeNull();
 });
 
+test("a damaged contribution artifact names its read error instead of the empty state", () => {
+  const payload = state();
+  payload.contribution = null;
+  payload.error =
+    ".omp/discover/contribution.json is not valid JSON: expected value at line 1 column 2";
+  discover.state = payload;
+  const view = render(DiscoverContribution);
+
+  expect(view.getByTestId("discover-contribution-error").textContent).toContain(
+    ".omp/discover/contribution.json is not valid JSON",
+  );
+  expect(view.queryByTestId("discover-contribution-empty")).toBeNull();
+});
+
 test("a published contribution stamps its own discovery time, not the page-level crawl", () => {
   const payload = state();
   payload.freshness = {
