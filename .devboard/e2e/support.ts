@@ -6,7 +6,7 @@
  * Gitea. Nothing here points a harness path at the checkout under test.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -331,6 +331,32 @@ export function pidAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Stops one fixture dashboard on a bound.
+ *
+ * A child that already exited — a panic, an OOM kill, a process that died
+ * before teardown — resolves at once: its `exit` event fired before any
+ * listener existed, so waiting on it would hang until the test timeout. The
+ * `exit` listener is attached before the signal so an exit during the wait is
+ * observed, and a child that ignores SIGTERM is escalated to SIGKILL on the
+ * deadline.
+ */
+export function stopChild(child: ChildProcess, timeoutMs = 15_000): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  if (child.exitCode !== null || child.signalCode !== null) {
+    resolve();
+    return promise;
+  }
+  child.once("exit", () => resolve());
+  child.kill("SIGTERM");
+  const timer = setTimeout(() => {
+    child.kill("SIGKILL");
+    resolve();
+  }, timeoutMs);
+  timer.unref();
+  return promise;
 }
 
 /** Every JSON file under a directory, in a deterministic order. */

@@ -39,6 +39,7 @@ import {
   scratchRoot,
   sleep,
   staticDir,
+  stopChild,
   SUITE_FAMILIES,
   tmpDir,
   waitFor,
@@ -359,22 +360,6 @@ async function startDashboard(prepared: Prepared): Promise<ChildProcess> {
   return child;
 }
 
-function stopDashboard(child: ChildProcess): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  if (child.exitCode !== null) {
-    resolve();
-    return promise;
-  }
-  child.once("exit", () => resolve());
-  child.kill("SIGTERM");
-  const timer = setTimeout(() => {
-    child.kill("SIGKILL");
-    resolve();
-  }, 15_000);
-  timer.unref();
-  return promise;
-}
-
 export default async function globalSetup(): Promise<() => Promise<void>> {
   loadDotEnv();
   mkdirSync(tmpDir, { recursive: true });
@@ -390,7 +375,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   }
   const dashboard = await startDashboard(prepared);
   return async () => {
-    await stopDashboard(dashboard);
+    await stopChild(dashboard);
     const pattern = `devboard worker .*--repo ${escapePattern(prepared.repoDir)}`;
     for (const match of processesMatching(pattern)) {
       try {

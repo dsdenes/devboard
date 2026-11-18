@@ -9,18 +9,26 @@
  * 300px sidebar, both transient save notes, the server's persisted mode after
  * each save, and that each mode survives a reload. The disabled harness-source
  * checkout is covered by the client suite.
+ *
+ * The fixture dashboard is stopped on a bound, so a dashboard that crashed or
+ * was killed before teardown ends the spec at its own assertion instead of a
+ * timeout; its stderr names the cause in the `.tmp/e2e` log and, when it died
+ * early, in the spec's own output.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { binary, harnessDir, scratchRoot, staticDir } from "./support.ts";
+import { binary, harnessDir, scratchRoot, staticDir, stopChild, tmpDir } from "./support.ts";
 
 const HOST_ROOT = path.join(scratchRoot, "delivery-host");
+const DASHBOARD_LOG = path.join(tmpDir, "delivery-mode-dashboard.log");
+/** The stderr kept in memory to name a dashboard that died before teardown. */
+const STDERR_TAIL_BYTES = 4096;
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -56,13 +64,19 @@ async function waitForReady(baseUrl: string): Promise<void> {
 }
 
 /** One dashboard over a host fixture; the harness manifest is absent. */
-async function startHost(): Promise<{ child: ChildProcess; baseUrl: string }> {
+async function startHost(): Promise<{
+  child: ChildProcess;
+  baseUrl: string;
+  stderr: () => string;
+}> {
   rmSync(HOST_ROOT, { recursive: true, force: true });
   const repo = path.join(HOST_ROOT, "repo");
   const state = path.join(HOST_ROOT, "state");
   const adrs = path.join(repo, "adrs");
   mkdirSync(adrs, { recursive: true });
   mkdirSync(state, { recursive: true });
+  mkdirSync(tmpDir, { recursive: true });
+  writeFileSync(DASHBOARD_LOG, "");
   writeFileSync(path.join(repo, "GOAL.md"), "# Host goal\n\nA fixture.\n");
   writeFileSync(path.join(repo, "tracked.txt"), "original\n");
   const port = await freePort();
@@ -87,10 +101,21 @@ async function startHost(): Promise<{ child: ChildProcess; baseUrl: string }> {
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
-  child.stderr?.on("data", () => {});
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    appendFileSync(DASHBOARD_LOG, chunk);
+    stderr = (stderr + chunk.toString("utf8")).slice(-STDERR_TAIL_BYTES);
+  });
   const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForReady(baseUrl);
-  return { child, baseUrl };
+  try {
+    await waitForReady(baseUrl);
+  } catch (error) {
+    // A dashboard that never became ready would otherwise outlive the spec.
+    await stopChild(child);
+    rmSync(HOST_ROOT, { recursive: true, force: true });
+    throw error;
+  }
+  return { child, baseUrl, stderr: () => stderr };
 }
 
 async function open(page: Page, baseUrl: string): Promise<void> {
@@ -147,7 +172,7 @@ async function expectLabelUnclipped(page: Page): Promise<void> {
 
 test("the Delivery mode switch flips both ways and persists", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 720 });
-  const { child, baseUrl } = await startHost();
+  const { child, baseUrl, stderr } = await startHost();
   try {
     await open(page, baseUrl);
     const group = page.locator('[data-testid="sidebar-delivery-mode"]');
@@ -235,10 +260,18 @@ test("the Delivery mode switch flips both ways and persists", async ({ page }) =
     await expect(toggle(page)).toHaveAttribute("aria-checked", "false");
     expect(await serverMode(baseUrl)).toBe("merge");
   } finally {
-    child.kill("SIGTERM");
-    const { promise, resolve } = Promise.withResolvers<void>();
-    child.once("exit", resolve);
-    await promise;
+    // A dashboard that died before teardown already emitted `exit`; waiting
+    // for another one would hang to the test timeout, so stopChild returns at
+    // once and the captured stderr names why it died.
+    const exited = child.exitCode !== null || child.signalCode !== null;
+    await stopChild(child);
+    if (exited) {
+      const cause =
+        child.exitCode !== null ? `code ${child.exitCode}` : `signal ${child.signalCode}`;
+      process.stderr.write(
+        `the fixture dashboard exited before teardown (${cause}); its stderr:\n${stderr()}\n`,
+      );
+    }
     rmSync(HOST_ROOT, { recursive: true, force: true });
   }
 });

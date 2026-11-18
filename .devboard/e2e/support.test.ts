@@ -8,6 +8,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -18,7 +19,10 @@ import {
   type GiteaIssue,
   loadDotEnv,
   openIssues,
+  pidAlive,
   repoRoot,
+  sleep,
+  stopChild,
   tmpDir,
 } from "./support.ts";
 
@@ -218,4 +222,42 @@ describe("the suite's board read", () => {
       board.stop();
     }
   });
+});
+describe("the suite's dashboard stop", () => {
+  test("returns at once for a dashboard that already exited", async () => {
+    const child = spawn("sleep", ["60"], { stdio: "ignore" });
+    const { promise: exited, resolve } = Promise.withResolvers<void>();
+    child.once("exit", () => resolve());
+    child.kill("SIGKILL");
+    await exited;
+    const started = Date.now();
+    await stopChild(child);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(child.signalCode).toBe("SIGKILL");
+  });
+
+  test("signals a live dashboard and returns when it exits", async () => {
+    const child = spawn("sleep", ["60"], { stdio: "ignore" });
+    const started = Date.now();
+    await stopChild(child);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(child.signalCode).toBe("SIGTERM");
+  });
+
+  test(
+    "escalates to SIGKILL when the dashboard ignores SIGTERM",
+    async () => {
+      const child = spawn("bash", ["-c", 'trap "" TERM; exec sleep 60'], { stdio: "ignore" });
+      const started = Date.now();
+      await stopChild(child, 500);
+      expect(Date.now() - started).toBeLessThan(10_000);
+      const pid = child.pid ?? 0;
+      const deadline = Date.now() + 5_000;
+      while (pidAlive(pid) && Date.now() < deadline) {
+        await sleep(20);
+      }
+      expect(pidAlive(pid)).toBe(false);
+    },
+    15_000,
+  );
 });
