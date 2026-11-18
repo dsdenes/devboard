@@ -70,10 +70,6 @@
       "reason": "the instant the worker last ran"
     },
     {
-      "name": "timestamp",
-      "reason": "the instant a journal or usage record was produced"
-    },
-    {
       "name": "runId",
       "reason": "a per-run identifier generated at start"
     },
@@ -102,16 +98,9 @@
       "reason": "an absolute worktree path that differs per checkout"
     },
     {
-      "name": "cwd",
-      "reason": "an absolute child working directory that differs per checkout"
-    },
-    {
       "name": "path",
+      "at": "frames",
       "reason": "a project path relative to the home directory, which differs per checkout"
-    },
-    {
-      "name": "sessionDir",
-      "reason": "an absolute per-session directory that differs per checkout"
     },
     {
       "name": "running",

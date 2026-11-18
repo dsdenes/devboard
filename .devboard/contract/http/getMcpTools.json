@@ -70,7 +70,9 @@
                 "until": {
                   "type": "string"
                 },
-                "cwd": {},
+                "cwd": {
+                  "type": "string"
+                },
                 "limit": {
                   "type": "integer",
                   "minimum": 1,
@@ -350,11 +352,15 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "sessionDir": {},
+                "sessionDir": {
+                  "type": "string"
+                },
                 "id": {
                   "type": "string"
                 },
-                "timestamp": {},
+                "timestamp": {
+                  "type": "string"
+                },
                 "summary": {
                   "type": "string"
                 },
@@ -410,7 +416,9 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "sessionDir": {},
+                "sessionDir": {
+                  "type": "string"
+                },
                 "ids": {
                   "type": "array",
                   "items": {
@@ -433,7 +441,9 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "sessionDir": {},
+                "sessionDir": {
+                  "type": "string"
+                },
                 "command": {
                   "type": "string"
                 },
@@ -445,7 +455,9 @@
                     "not-run"
                   ]
                 },
-                "timestamp": {},
+                "timestamp": {
+                  "type": "string"
+                },
                 "output": {
                   "type": "string"
                 }
@@ -464,7 +476,9 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "sessionDir": {},
+                "sessionDir": {
+                  "type": "string"
+                },
                 "widgets": {
                   "type": "array",
                   "maxItems": 200,
@@ -576,7 +590,9 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "path": {}
+                "path": {
+                  "type": "string"
+                }
               },
               "required": [
                 "path"

@@ -236,6 +236,44 @@ fn the_allowlist_names_every_field_it_excludes() {
     }
 }
 
+/// The allowlist never reaches the tool catalog: a name that also names a
+/// catalog property replaces that property's declared schema with `{}` at
+/// record time, and the comparison then asserts only its type. Every recorded
+/// property keeps its schema, and no allowlist entry applies under a tool's
+/// `inputSchema.properties`.
+#[test]
+fn the_allowlist_never_reaches_a_tool_catalog_schema() {
+    let allowlist = allowlist();
+    let corpus = corpus();
+    let recording = corpus.get("getMcpTools").expect("the tool catalog row");
+    let mut properties = 0;
+    for frame in recording.body["frames"]
+        .as_array()
+        .expect("the frames envelope")
+    {
+        for tool in frame["tools"].as_array().expect("the tool list") {
+            let name = tool["name"].as_str().expect("a tool name");
+            let schema = tool["inputSchema"]["properties"]
+                .as_object()
+                .expect("a tool input schema's properties");
+            for (property, declared) in schema {
+                assert!(
+                    !allowlist.contains(property, Some("properties")),
+                    "{name}.{property} is a catalog property the allowlist also ignores"
+                );
+                assert!(
+                    declared
+                        .as_object()
+                        .is_some_and(|declared| !declared.is_empty()),
+                    "{name}.{property} is recorded as {declared}, not its declared schema"
+                );
+                properties += 1;
+            }
+        }
+    }
+    assert!(properties > 0, "the recorded catalog names tool properties");
+}
+
 /// The row whose answer carries the Discover state, with its recorded error
 /// fields.
 fn discover_row() -> http_table::Case {
