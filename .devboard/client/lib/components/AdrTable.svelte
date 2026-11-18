@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createTable, FlexRender } from "@tanstack/svelte-table";
   import { tableFeatures } from "@tanstack/table-core";
+  import { connection } from "../connection.svelte";
   import { goal } from "../goal.svelte";
   import { recordStatusTone } from "../record-status";
   import type { AdrRecord } from "../types";
@@ -104,6 +105,7 @@
                 class="cursor-pointer"
                 label="Start"
                 evidence={() => goal.runState}
+                refusal={() => connection.refusalRevision("startRun")}
                 command={() => onstart(record)}
                 data-testid="start"
                 data-file={record.file}

@@ -601,6 +601,7 @@
               variant="outline"
               label="Prepare skills"
               evidence={() => goal.skillsPrepActive}
+              refusal={() => connection.refusalRevision("prepareSkills")}
               command={() => goal.prepareSkills()}
               data-command="goal.skills.prepare"
               data-testid="prepare-skills"
@@ -613,6 +614,7 @@
             variant="secondary"
             label={goal.goalReady ? "Recreate goal" : "Create goal"}
             evidence={() => goal.creationActive}
+            refusal={() => connection.refusalRevision("createGoal")}
             command={() => goal.createGoal()}
             data-command="goal.create"
             data-testid="create-goal"
@@ -642,6 +644,7 @@
               variant="secondary"
               label="Revise goal"
               evidence={() => goal.revisionActive}
+              refusal={() => connection.refusalRevision("reviseGoal")}
               command={() => goal.reviseGoal()}
               data-command="goal.revise"
               data-testid="revise-goal"
@@ -672,6 +675,7 @@
             variant="secondary"
             label="Prepare skills again"
             evidence={() => goal.skillsPrepActive}
+            refusal={() => connection.refusalRevision("prepareSkills")}
             command={() => goal.prepareSkills()}
             data-command="goal.skills.prepare"
             data-testid="prepare-skills-overlay"
@@ -1107,6 +1111,7 @@
   confirmCommand="goal.reset.confirm"
   cancelCommand="goal.reset.cancel"
   evidence={() => goal.resetStatus}
+  refusal={() => connection.refusalRevision("resetImplementation")}
   onconfirm={() => goal.confirmReset()}
   oncancel={() => goal.cancelReset()}
 />
@@ -1123,6 +1128,7 @@
   confirmCommand="goal.skills.delete.confirm"
   cancelCommand="goal.skills.delete.cancel"
   evidence={() => goal.skills}
+  refusal={() => connection.refusalRevision("deleteSkill")}
   onconfirm={() => {
     if (deleteTarget !== null) goal.deleteSkill(deleteTarget);
     deleteTarget = null;

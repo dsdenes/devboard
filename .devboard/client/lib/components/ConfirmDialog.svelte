@@ -15,6 +15,8 @@
     cancelCommand?: string;
     /** Reactive read of the server state that confirms the command. */
     evidence?: () => unknown;
+    /** Reactive read of the server's refusal revision for the confirm command. */
+    refusal?: () => unknown;
     onconfirm: () => void;
     oncancel: () => void;
   }
@@ -30,6 +32,7 @@
     confirmCommand,
     cancelCommand,
     evidence,
+    refusal,
     onconfirm,
     oncancel,
   }: Props = $props();
@@ -58,6 +61,7 @@
             variant={destructive ? "destructive" : "default"}
             label={confirmLabel}
             evidence={evidence}
+            refusal={refusal}
             command={onconfirm}
             data-command={confirmCommand}
           />
