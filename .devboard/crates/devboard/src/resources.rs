@@ -461,6 +461,15 @@ pub enum DeferReason {
         available_mb: u64,
         reserve_mb: u64,
     },
+    /// The admission lock could not be taken, so the count and the slot
+    /// write would not be serialized. The start is deferred rather than
+    /// admitted without that guarantee.
+    Lock {
+        /// The lock file that could not be opened.
+        path: String,
+        /// The concrete cause the operating system reported.
+        cause: String,
+    },
 }
 
 impl DeferReason {
@@ -468,6 +477,7 @@ impl DeferReason {
         match self {
             Self::Cap { .. } => "capacity",
             Self::Memory { .. } => "reserve",
+            Self::Lock { .. } => "lock",
         }
     }
 
@@ -492,6 +502,9 @@ impl DeferReason {
                 reserve_mb,
             } => format!(
                 "{available_mb} MB is available and the reserve is {reserve_mb} MB; the start is deferred"
+            ),
+            Self::Lock { path, cause } => format!(
+                "the admission lock {path} could not be taken ({cause}); the start is deferred"
             ),
         }
     }
@@ -522,6 +535,12 @@ impl DeferReason {
                 "reason": "reserve",
                 "availableMb": available_mb,
                 "reserveMb": reserve_mb,
+                "message": self.message(),
+            }),
+            Self::Lock { path, cause } => json!({
+                "reason": "lock",
+                "path": path,
+                "cause": cause,
                 "message": self.message(),
             }),
         }
@@ -1071,8 +1090,14 @@ impl Governor {
         let settings = self.settings();
         let exempt = cap_exempt(kind);
         // The count and the slot creation happen under one lock so two
-        // processes cannot both see a free slot at the cap boundary.
-        let _guard = file_lock(&self.directory.join(LOCK_FILE));
+        // processes cannot both see a free slot at the cap boundary. A lock
+        // that cannot be taken defers the start: admitting without it would
+        // void the serialization this section exists for.
+        let lock_path = self.directory.join(LOCK_FILE);
+        let _guard = file_lock(&lock_path).map_err(|error| DeferReason::Lock {
+            path: lock_path.display().to_string(),
+            cause: error.to_string(),
+        })?;
         let (cap_slots, _) = self.split_live_slots();
         let active = cap_slots.len() as u32;
         if !exempt && active >= settings.max_agent_peers {
@@ -2006,24 +2031,29 @@ impl Drop for FileLock {
     }
 }
 
-fn file_lock(path: &Path) -> Option<FileLock> {
+/// Takes the slot directory's admission lock, naming the cause when it cannot.
+///
+/// The failure is reported rather than swallowed: a caller that continued
+/// without the guard would serialize neither the live count nor the slot
+/// write. A platform without `flock` has no lock to take and no failure to
+/// report, so the guard is a documented no-op there.
+fn file_lock(path: &Path) -> std::io::Result<FileLock> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok()?;
+        fs::create_dir_all(parent)?;
     }
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(path)
-        .ok()?;
+        .open(path)?;
     #[cfg(unix)]
     unsafe {
         if libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) != 0 {
-            return None;
+            return Err(std::io::Error::last_os_error());
         }
     }
-    Some(FileLock { file })
+    Ok(FileLock { file })
 }
 
 /* ------------------------------------------------------------------------ */

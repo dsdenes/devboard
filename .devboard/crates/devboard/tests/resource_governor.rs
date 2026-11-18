@@ -335,6 +335,79 @@ async fn concurrency_cap_defers_the_next_issue() {
 }
 
 #[test]
+fn a_failed_admission_lock_defers_and_creates_no_slot() {
+    let directory = scratch("lock-failure");
+    let governor = in_memory_governor(
+        &directory,
+        FakeMemory::new(96_000, 90_000, 32),
+        &[("DEVBOARD_MAX_AGENT_PEERS", "4")],
+    );
+    let lock = directory.join("resources").join("lock");
+    std::fs::create_dir_all(&lock).expect("a directory where the lock file belongs");
+    let reason = governor
+        .try_acquire("peer", "Auto Scout", "scan 1")
+        .expect_err("a start whose lock cannot be taken is deferred");
+    let DeferReason::Lock { path, cause } = &reason else {
+        panic!("the deferral names the lock, not the cap: {reason:?}");
+    };
+    assert_eq!(Path::new(path), lock, "the deferral names the lock path");
+    assert!(!cause.is_empty(), "the deferral names the concrete cause");
+    assert_eq!(
+        governor.active_agents(),
+        0,
+        "no slot is created without the lock"
+    );
+    governor.record_deferral("peer", "scan 1", &reason);
+    let deferrals = governor.read_deferrals();
+    assert_eq!(deferrals.len(), 1, "one failed lock records one deferral");
+    assert_eq!(deferrals[0]["reason"], "lock");
+    assert_eq!(deferrals[0]["path"], lock.display().to_string());
+    assert!(deferrals[0]["detail"]
+        .as_str()
+        .unwrap_or("")
+        .contains(&lock.display().to_string()));
+}
+
+#[test]
+fn one_lock_admits_exactly_one_of_two_concurrent_starts_at_a_cap_of_one() {
+    let directory = scratch("lock-serializes");
+    let governor = in_memory_governor(
+        &directory,
+        FakeMemory::new(96_000, 90_000, 32),
+        &[("DEVBOARD_MAX_AGENT_PEERS", "1")],
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let results: Vec<Result<Slot, DeferReason>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2u32)
+            .map(|number| {
+                let governor = Arc::clone(&governor);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    governor.try_acquire("peer", "Auto Scout", &format!("scan {number}"))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("the starter thread"))
+            .collect()
+    });
+    let admitted = results.iter().filter(|result| result.is_ok()).count();
+    let deferred = results
+        .iter()
+        .filter(|result| matches!(result, Err(DeferReason::Cap { .. })))
+        .count();
+    assert_eq!(admitted, 1, "one free slot admits one start");
+    assert_eq!(deferred, 1, "the other start is deferred by the cap");
+    assert_eq!(
+        governor.active_agents(),
+        1,
+        "only the admitted start holds a slot"
+    );
+}
+
+#[test]
 fn slots_record_the_starter_and_status_exposes_it() {
     let directory = scratch("slot-starters");
     let governor = in_memory_governor(
