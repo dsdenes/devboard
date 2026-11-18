@@ -357,14 +357,33 @@ fn failure(id: Option<&Value>, code: i64, message: &str) -> String {
     format!("{}\n", crate::jsjson::stringify(&Value::Object(record)))
 }
 
+/// Redacts every string leaf before the value is JSON-encoded: a secret is
+/// matched in its unescaped form, so a value holding `"` or `\` is still the
+/// same secret the Markdown delivery path redacts.
+fn redact_value(value: &Value, pairs: &[(String, String)]) -> Value {
+    match value {
+        Value::String(text) => Value::String(crate::redact::redact_secrets(text, pairs, &[])),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|item| redact_value(item, pairs)).collect())
+        }
+        Value::Object(record) => Value::Object(
+            record
+                .iter()
+                .map(|(key, item)| (key.clone(), redact_value(item, pairs)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 fn tool_text(value: &Value, context: &McpContext) -> String {
-    let pretty = serde_json::to_string_pretty(value).unwrap_or_default();
     let pairs: Vec<(String, String)> = context
         .environment
         .iter()
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    crate::redact::redact_secrets(&pretty, &pairs, &[])
+    let redacted = redact_value(value, &pairs);
+    serde_json::to_string_pretty(&redacted).unwrap_or_default()
 }
 
 fn js_string(value: &Value) -> String {

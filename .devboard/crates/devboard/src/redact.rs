@@ -64,13 +64,17 @@ mod tests {
 
     #[test]
     fn token_shapes_and_named_environment_values_are_redacted() {
-        let environment = vec![("GITEA_TOKEN".to_string(), "s3cret-value".to_string())];
+        let environment = vec![
+            ("GITEA_TOKEN".to_string(), "s3cret-value".to_string()),
+            ("NPM_TOKEN".to_string(), "abc\"def-12345678".to_string()),
+        ];
         let redacted = redact_secrets(
-            "used s3cret-value and ghp_aaaaaaaaaaaaaaaaaaaaaaaa",
+            "used s3cret-value and abc\"def-12345678 and ghp_aaaaaaaaaaaaaaaaaaaaaaaa",
             &environment,
             &[],
         );
         assert!(!redacted.contains("s3cret-value"));
+        assert!(!redacted.contains("abc\"def-12345678"));
         assert!(!redacted.contains("ghp_"));
         assert!(redacted.contains("<redacted>"));
     }

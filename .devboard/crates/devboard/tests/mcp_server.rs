@@ -269,6 +269,50 @@ async fn the_stdio_server_answers_initialize_list_and_the_core_tools() {
     assert_eq!(counts["verification_run"], 1);
 }
 
+/// A credential holding a quote is JSON-escaped inside the encoded result, so
+/// the redactor runs on the string leaves before encoding: both the raw and the
+/// escaped form are absent and the replacement is present.
+#[tokio::test]
+async fn a_json_escaped_credential_is_redacted_in_tool_text() {
+    let mut context = fixture("escaped-secret");
+    let secret = "abc\"def-12345678";
+    context.environment = HashMap::from([("GITEA_TOKEN".to_string(), secret.to_string())]);
+    write_transcript(&context);
+    let path = context
+        .state_dir
+        .join("providers")
+        .join("agents")
+        .join("scout")
+        .join("sessions")
+        .join("a.jsonl");
+    let echo = json!({
+        "type": "message",
+        "timestamp": "2026-01-01T00:00:05.000Z",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": format!("token {secret} seen")}],
+        },
+    });
+    let mut transcript = std::fs::read_to_string(&path).expect("the transcript");
+    transcript.push('\n');
+    transcript.push_str(&serde_json::to_string(&echo).expect("the echo line"));
+    std::fs::write(&path, transcript).expect("the transcript");
+    let requests = vec![json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "agent_session_read", "arguments": {"id": "session-1"}}
+    })];
+    let frames = drive(&context, &requests).await;
+    let encoded = reply(&frames, 1)["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool text")
+        .to_string();
+    assert!(!encoded.contains(secret), "{encoded}");
+    assert!(!encoded.contains("abc\\\"def-12345678"), "{encoded}");
+    assert!(encoded.contains("token <redacted> seen"), "{encoded}");
+}
+
 /// The kinds the server validates are the kinds the reader keeps: a
 /// `resource-kill` record the governor writes is findable by `journal_search`.
 #[tokio::test]
