@@ -24,6 +24,7 @@ pub mod deadline;
 pub mod delivery;
 pub mod detached_run;
 pub mod discover_mode;
+pub mod family_intent;
 pub mod feedback;
 pub mod flow_mode;
 pub mod forge;
