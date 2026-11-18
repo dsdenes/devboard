@@ -7683,6 +7683,10 @@ struct ModeState {
     snapshot: WorkspaceCache,
     statuses: Vec<AgentStatus>,
     all_active: bool,
+    /// The generation of the Run all sequence that owns the mode. A stop, an
+    /// abort, and a newer claim each end the sequence holding the previous
+    /// generation, so its loop can tell a cancelled sequence from its own.
+    all_generation: u64,
     all_failed: Option<String>,
     target: Option<RemoteRepository>,
     checkout: Option<Checkout>,
@@ -7709,6 +7713,49 @@ struct StoredDiscover {
 }
 
 impl ModeState {
+    fn new(repo_dir: &Path, state_dir: &Path) -> Self {
+        ModeState {
+            run: None,
+            interrupted: false,
+            snapshot: WorkspaceCache::new(repo_dir.to_path_buf()),
+            statuses: DISCOVER_AGENTS
+                .iter()
+                .map(|_| AgentStatus::idle())
+                .collect(),
+            all_active: false,
+            all_generation: 0,
+            all_failed: None,
+            target: None,
+            checkout: None,
+            cloning: None,
+            starting: false,
+            request: 0,
+            restored: None,
+            notice: None,
+            host_repository: origin_repository(repo_dir),
+            remote_available: crate::version::is_harness_source_checkout(repo_dir),
+            remote_root: remote_scratch_root(state_dir),
+            last_busy: Some(None),
+        }
+    }
+
+    /// Claims the mode for one Run all sequence and returns its generation.
+    fn claim_all_sequence(&mut self) -> u64 {
+        self.reset_statuses();
+        self.all_active = true;
+        self.all_generation += 1;
+        self.all_generation
+    }
+
+    /// True while the Run all sequence claimed under `generation` still owns
+    /// the mode. The transition between two agents leaves `all_active` true
+    /// and the run slot empty, so a stop that arrives there is visible only
+    /// here: `still_current` names one agent's run and says nothing about the
+    /// sequence that run belonged to.
+    fn all_sequence_current(&self, generation: u64) -> bool {
+        self.all_active && self.all_generation == generation
+    }
+
     fn status(&self, id: &str) -> AgentStatus {
         self.statuses
             .get(
@@ -7756,30 +7803,10 @@ fn mode_for(app: &Arc<App>) -> Arc<Mode> {
             }
         }
     }
+    let config = app.config();
     let mode = Arc::new(Mode {
         app: Arc::downgrade(app),
-        state: Mutex::new(ModeState {
-            run: None,
-            interrupted: false,
-            snapshot: WorkspaceCache::new(app.config().repo_dir.clone()),
-            statuses: DISCOVER_AGENTS
-                .iter()
-                .map(|_| AgentStatus::idle())
-                .collect(),
-            all_active: false,
-            all_failed: None,
-            target: None,
-            checkout: None,
-            cloning: None,
-            starting: false,
-            request: 0,
-            restored: None,
-            notice: None,
-            host_repository: origin_repository(&app.config().repo_dir),
-            remote_available: crate::version::is_harness_source_checkout(&app.config().repo_dir),
-            remote_root: remote_scratch_root(&app.config().state_dir),
-            last_busy: Some(None),
-        }),
+        state: Mutex::new(ModeState::new(&config.repo_dir, &config.state_dir)),
     });
     lock(&MODES).push((Arc::downgrade(app), Arc::clone(&mode)));
     mode
@@ -8857,6 +8884,7 @@ async fn run_agent(
     conn: Option<&Conn>,
     agent: &str,
     run_mode: &'static str,
+    sequence: Option<u64>,
     target: &DiscoverTarget,
     resumed: Option<&StoredDiscover>,
     attach: bool,
@@ -8917,6 +8945,11 @@ async fn run_agent(
         .unwrap_or_default();
     let request = {
         let mut state = lock(&mode.state);
+        if sequence.is_some_and(|generation| !state.all_sequence_current(generation)) {
+            drop(state);
+            remove_staging(&target.root, &run_id);
+            return false;
+        }
         state.request += 1;
         let request = state.request;
         state.set_status(
@@ -9384,19 +9417,35 @@ async fn start_all(app: &Arc<App>, mode: &Arc<Mode>, conn: Option<&Conn>, claime
     let Some(target) = resolve_discover_root(app, mode, conn).await else {
         return;
     };
-    {
-        let mut state = lock(&mode.state);
-        state.reset_statuses();
-        state.all_active = true;
-    }
+    let generation = lock(&mode.state).claim_all_sequence();
     push_state(app, mode);
     let mut last = DISCOVER_RUN_ORDER[0];
     for id in DISCOVER_RUN_ORDER {
+        // A stop, an abort, or a newer claim between two agents ends this
+        // sequence: the transition state it pushes is `active: false` and
+        // `runningAll: true`, which is exactly the state Stop accepts.
+        if !lock(&mode.state).all_sequence_current(generation) {
+            return;
+        }
         last = id;
-        let published = run_agent(app, mode, conn, id, "all", &target, None, false).await;
+        let published = run_agent(
+            app,
+            mode,
+            conn,
+            id,
+            "all",
+            Some(generation),
+            &target,
+            None,
+            false,
+        )
+        .await;
         if !published {
             return;
         }
+    }
+    if !lock(&mode.state).all_sequence_current(generation) {
+        return;
     }
     finish_discover_command(app, mode, &target, "all", last);
 }
@@ -9416,7 +9465,18 @@ async fn start_agent(app: &Arc<App>, mode: &Arc<Mode>, conn: &Conn, agent: &Valu
     let Some(target) = resolve_discover_root(app, mode, Some(conn)).await else {
         return;
     };
-    let published = run_agent(app, mode, Some(conn), id, "single", &target, None, false).await;
+    let published = run_agent(
+        app,
+        mode,
+        Some(conn),
+        id,
+        "single",
+        None,
+        &target,
+        None,
+        false,
+    )
+    .await;
     if !published {
         return;
     }
@@ -9652,6 +9712,7 @@ async fn start_remote(
             conn,
             &resumed.agent,
             "single",
+            None,
             &target,
             Some(&resumed),
             false,
@@ -9707,6 +9768,7 @@ async fn resume_discover_run(app: Arc<App>, mode: Arc<Mode>, stored: StoredDisco
             None,
             &stored.agent,
             "single",
+            None,
             &target,
             Some(&stored),
             attach,
@@ -10332,5 +10394,55 @@ mod warning_tests {
             live_warnings(&root, &artifacts),
             vec![warning(GENERATED, EDITED)]
         );
+    }
+}
+
+#[cfg(test)]
+mod sequence_tests {
+    use super::*;
+
+    fn state(label: &str) -> ModeState {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("discover-sequence-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch root");
+        ModeState::new(&root, &root)
+    }
+
+    /// The state the agent transition pushes is `active: false` and
+    /// `runningAll: true` — the last moment a Stop is accepted with no run to
+    /// close. The sequence keeps the mode until that stop lands, and the loop
+    /// that only read its agent's run used to step into the next agent there.
+    #[test]
+    fn a_stop_at_the_agent_transition_ends_the_sequence() {
+        let mut state = state("stop");
+        let generation = state.claim_all_sequence();
+        assert!(state.run.is_none(), "the transition holds no agent run");
+        assert!(
+            state.all_sequence_current(generation),
+            "the sequence steps on while it still owns the mode"
+        );
+
+        state.request += 1;
+        state.all_active = false; // what StopDiscover does
+        assert!(
+            !state.all_sequence_current(generation),
+            "the stop ends the sequence before its next agent"
+        );
+    }
+
+    /// A stop leaves the generation behind, so a new Run all claimed while the
+    /// cancelled loop sits between two agents owns the mode: that loop must not
+    /// start an agent into the sequence it no longer owns.
+    #[test]
+    fn a_newer_claim_supersedes_the_stopped_sequence() {
+        let mut state = state("claim");
+        let stopped = state.claim_all_sequence();
+        state.all_active = false;
+        let claimed = state.claim_all_sequence();
+        assert!(state.all_sequence_current(claimed));
+        assert!(!state.all_sequence_current(stopped));
     }
 }

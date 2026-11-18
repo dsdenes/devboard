@@ -946,6 +946,101 @@ async fn run_all_pushes_the_remote_strip_flag_before_any_run_exists() {
     );
 }
 
+/// The state Run all pushes between two agents says `active: false` and
+/// `runningAll: true`, and that is the state Stop is accepted in. A stop
+/// pressed there ends the sequence: no later agent of it succeeds, no state
+/// keeps reporting the sequence running, and the loop publishes no completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_between_run_all_agents_ends_the_sequence() {
+    let scratch = Scratch::new("run-all-stop-transition");
+    let repo = fixture_repo(&scratch, "repo", false);
+    let state = scratch.path().join("state");
+    std::fs::create_dir_all(&state).expect("a state directory");
+    provider(&state);
+    let command = format!("{} --discover", stub_agent());
+    std::env::set_var("DEVBOARD_OPENCODE_GO_USAGE_BASE_URL", "http://127.0.0.1:1");
+    let app = App::new(
+        config(&repo, &state, command),
+        Journal::open(&state, &repo, 0),
+    );
+
+    let (conn, mut inbox) = connect(&app);
+    app.register(conn.clone()).await;
+    app.open(&conn).await;
+    let _ = drain(&mut inbox).await;
+
+    app.command(&conn, Command::DiscoverProject).await;
+    // The first agent's transition: its slice is published, its run is gone,
+    // and the sequence still reports itself running.
+    let before_stop = frames_until(
+        &mut inbox,
+        |frame| {
+            frame.get("type").and_then(Value::as_str) == Some("discoverState")
+                && frame["state"]["active"] == json!(false)
+                && frame["state"]["runningAll"] == json!(true)
+                && frame["state"]["agents"][0]["state"] == json!("succeeded")
+        },
+        Duration::from_secs(120),
+    )
+    .await;
+    assert!(
+        by_type(&before_stop, "discoverStarted")
+            .iter()
+            .any(|frame| frame["agent"] == json!("sheet")),
+        "the first agent ran before the transition: {before_stop:?}"
+    );
+
+    app.command(&conn, Command::StopDiscover).await;
+    let stop = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    assert_eq!(stop["type"], json!("discoverStopped"));
+    assert_eq!(stop["completed"], json!(false), "the stop owns the answer");
+
+    // Nothing the stopped sequence owns may publish after the stop: no later
+    // agent of it succeeds, no state keeps `runningAll` set, and no completion
+    // is broadcast.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut after_stop = Vec::new();
+    loop {
+        match tokio::time::timeout_at(deadline, inbox.recv()).await {
+            Err(_) | Ok(None) => break,
+            Ok(Some(text)) => {
+                after_stop.push(serde_json::from_str::<Value>(&text).expect("a JSON frame"));
+            }
+        }
+    }
+    assert!(
+        by_type(&after_stop, "discoverStopped")
+            .iter()
+            .all(|frame| frame["completed"] == json!(false)),
+        "a stopped sequence publishes no completion: {after_stop:?}"
+    );
+    for frame in by_type(&after_stop, "discoverState") {
+        assert_eq!(
+            frame["state"]["runningAll"],
+            json!(false),
+            "the sequence reports itself ended: {frame:?}"
+        );
+    }
+
+    app.command(&conn, Command::GetDiscover).await;
+    let last = next_frame(&mut inbox, Duration::from_secs(10)).await;
+    let payload = state_of(&last);
+    assert_eq!(payload["runningAll"], json!(false));
+    assert_eq!(payload["active"], json!(false));
+    let succeeded: Vec<&str> = payload["agents"]
+        .as_array()
+        .expect("the agent rows")
+        .iter()
+        .filter(|row| row["state"] == json!("succeeded"))
+        .map(|row| row["id"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        succeeded,
+        vec!["sheet"],
+        "the stopped sequence started no further agent: {payload:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_state_section_round_trips_a_target() {
     let scratch = Scratch::new("section");
