@@ -20,7 +20,6 @@ import type { Page } from "@playwright/test";
 import {
   binary,
   forgeRecorderDir,
-  forgeRecorderForgeLines,
   forgeRecorderLines,
   harnessDir,
   loadDotEnv,
@@ -156,7 +155,7 @@ async function openIssues(page: Page, baseUrl: string): Promise<void> {
 }
 
 test("the family warm-ups start no forge CLI on the Gitea origin", async () => {
-  expect(forgeRecorderForgeLines()).toEqual([]);
+  expect(forgeRecorderLines()).toEqual([]);
 });
 
 interface IssuesFrame {

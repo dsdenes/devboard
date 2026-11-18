@@ -251,11 +251,6 @@ export function forgeRecorderLines(): string[] {
   return lines;
 }
 
-/** The recorder lines that are a forge operation, not a release-artifact read. */
-export function forgeRecorderForgeLines(): string[] {
-  return forgeRecorderLines().filter((line) => !line.startsWith("auth token"));
-}
-
 export async function waitFor<T>(
   label: string,
   produce: () => T | Promise<T>,
