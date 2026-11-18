@@ -777,6 +777,151 @@ async fn concurrent_refreshes_share_one_upstream_fetch() {
     }
 }
 
+/// A usage transport that holds the replaced key's fetch until it is released
+/// and answers every other key at once.
+fn gated_usage_transport(
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    held_percent: u32,
+    edited_percent: u32,
+) -> Transport {
+    Arc::new(move |request| -> TransportFuture {
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        let held = request.key == "old-key-0001";
+        Box::pin(async move {
+            let percent = if held {
+                entered.notify_one();
+                release.notified().await;
+                held_percent
+            } else {
+                edited_percent
+            };
+            Ok(UsageResponse {
+                status: 200,
+                body: json!({
+                    "usage": {
+                        "rolling": {"percent": percent, "status": "ok"},
+                        "weekly": {"percent": percent, "status": "ok"},
+                        "monthly": {"percent": percent, "status": "ok"}
+                    }
+                })
+                .to_string(),
+            })
+        })
+    })
+}
+
+fn gated_service(
+    label: &str,
+    held_percent: u32,
+    edited_percent: u32,
+) -> (
+    Arc<ProviderService>,
+    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Notify>,
+) {
+    let root = fixture_root(label);
+    let state = root.join("state");
+    save_subscriptions(
+        &state,
+        &[subscription("go", ProviderId::OpenCodeGo, "old-key-0001")],
+    )
+    .expect("credentials");
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let transport = gated_usage_transport(
+        Arc::clone(&entered),
+        Arc::clone(&release),
+        held_percent,
+        edited_percent,
+    );
+    let mut options = ProviderOptions {
+        env: Some(HashMap::new()),
+        transport: Some(transport),
+        ..ProviderOptions::default()
+    };
+    options.usage_base_urls.insert(
+        ProviderId::OpenCodeGo,
+        "http://stub.test/zen/go".to_string(),
+    );
+    let service = Arc::new(ProviderService::with_options(
+        &state,
+        root.join("repo"),
+        options,
+    ));
+    (service, entered, release)
+}
+
+/// Edits the subscription's key while one refresh's fetch for the replaced key
+/// is still open.
+async fn edit_key_during_refresh(
+    service: &Arc<ProviderService>,
+    entered: &tokio::sync::Notify,
+    release: &tokio::sync::Notify,
+    new_key: &str,
+) {
+    let refreshing = {
+        let service = Arc::clone(service);
+        tokio::spawn(async move { service.refresh(true).await })
+    };
+    entered.notified().await;
+    service
+        .save(SaveProviderInput {
+            id: Some("go".to_string()),
+            provider: Some(json!("opencode-go")),
+            label: Some(json!("replaced")),
+            key: Some(json!(new_key)),
+        })
+        .await
+        .expect("the edited key is accepted");
+    release.notify_one();
+    refreshing.await.expect("the refresh");
+}
+
+/// A refresh that started before an edit replaced a subscription's key must
+/// never cache the replaced key's report under the subscription id.
+#[tokio::test]
+async fn a_refresh_overlapping_a_key_edit_keeps_the_new_keys_report() {
+    let (service, entered, release) = gated_service("key-edit-headroom", 100, 10);
+    edit_key_during_refresh(&service, &entered, &release, "new-key-0002").await;
+
+    let mut view = service.view();
+    let go = view.subscriptions.remove(0);
+    assert_eq!(go.status, UsageStatus::Ok);
+    assert!(
+        (go.remaining_fraction.expect("headroom") - 0.9).abs() < 1e-9,
+        "the settled view reports the new key's headroom, not the replaced key's"
+    );
+
+    let binding = service.select().await.expect("the new key is eligible");
+    assert!(
+        (binding.remaining_fraction.expect("headroom") - 0.9).abs() < 1e-9,
+        "selection ranks the new key, not the replaced key"
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_overlapping_a_key_edit_cannot_revive_an_exhausted_key() {
+    let (service, entered, release) = gated_service("key-edit-exhausted", 10, 100);
+    edit_key_during_refresh(&service, &entered, &release, "new-key-0002").await;
+
+    let mut view = service.view();
+    let go = view.subscriptions.remove(0);
+    assert_eq!(go.status, UsageStatus::Exhausted);
+    assert_eq!(go.remaining_fraction, Some(0.0));
+
+    let refused = service
+        .select()
+        .await
+        .expect_err("the exhausted key is ineligible");
+    assert!(
+        refused.message.contains("above 1% remaining"),
+        "{}",
+        refused.message
+    );
+}
+
 #[test]
 fn injected_transport_errors_stay_unknown() {
     let root = fixture_root("transport-error");

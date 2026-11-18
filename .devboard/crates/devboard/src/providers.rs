@@ -2138,7 +2138,18 @@ impl UsageCache {
 
     /// Reads every subscription whose cached usage is older than the TTL, or
     /// all of them when the operator forces a refresh.
-    pub async fn refresh(&self, subscriptions: &[StoredSubscription], force: bool) {
+    ///
+    /// `live` reads the credential store's current list. A report is applied
+    /// only while that list still holds the key the fetch read, so a refresh
+    /// that started before an edit replaced a key drops the replaced key's
+    /// report instead of caching it under the subscription id. That read
+    /// happens under the same cache lock a save's `forget` and `store` take,
+    /// and a save writes the credential store before either, so a save that
+    /// lands while the fetch runs always wins.
+    pub async fn refresh<F>(&self, subscriptions: &[StoredSubscription], force: bool, live: F)
+    where
+        F: Fn() -> Vec<StoredSubscription>,
+    {
         let now = (self.now_ms)();
         let pending: Vec<StoredSubscription> = {
             let cached = lock(&self.cached);
@@ -2160,10 +2171,9 @@ impl UsageCache {
         }
         let results = futures_util::future::join_all(futures).await;
         let mut cached = lock(&self.cached);
+        let live = live();
         for (id, key, report) in results {
-            let current = subscriptions
-                .iter()
-                .find(|subscription| subscription.id == id);
+            let current = live.iter().find(|subscription| subscription.id == id);
             if current.map(|subscription| subscription.key.as_str()) == Some(key.as_str()) {
                 cached.insert(id, report);
             }
@@ -2443,7 +2453,9 @@ impl ProviderService {
     pub async fn refresh(&self, force: bool) {
         self.credentials.reconcile();
         let subscriptions = self.credentials.list();
-        self.usage.refresh(&subscriptions, force).await;
+        self.usage
+            .refresh(&subscriptions, force, || self.credentials.list())
+            .await;
         self.publish_selection();
     }
 
