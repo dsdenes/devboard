@@ -1255,10 +1255,11 @@ fn number_value(value: Option<f64>) -> Value {
 /// The original script used `Bun.YAML.parse`. The harness carries no YAML
 /// dependency, so this reader covers block mappings and sequences (a sequence
 /// may sit at its key's own indent), plain, quoted, and block scalars, flow
-/// `[]`/`{}` empties, the YAML 1.2 core scalars, and the document framing a
-/// serializer emits: a `%YAML`/`%TAG` directive, a `---` start marker, and a
-/// `...` end marker. Anchors, aliases, tags, merge keys, and non-empty flow
-/// collections are not supported.
+/// collections including nested ones written on one line, the YAML 1.2 core
+/// scalars, and the document framing a serializer emits: a `%YAML`/`%TAG`
+/// directive, a `---` start marker, and a `...` end marker. Anchors, aliases,
+/// tags, merge keys, and a flow collection continued past its line are not
+/// supported, and each is reported by name rather than as a scalar.
 struct YamlLine {
     indent: usize,
     content: String,
@@ -1329,6 +1330,12 @@ fn parse_yaml(text: &str) -> Result<Value, String> {
 }
 
 fn parse_yaml_value(lines: &[YamlLine], index: &mut usize, indent: usize) -> Result<Value, String> {
+    if let Some(line) = lines.get(*index) {
+        if line.content.starts_with('{') || line.content.starts_with('[') {
+            *index += 1;
+            return yaml_scalar(&line.content);
+        }
+    }
     let sequence = lines
         .get(*index)
         .map(|line| yaml_sequence_entry(&line.content))
@@ -1360,6 +1367,9 @@ fn parse_yaml_mapping(
         let Some((key, raw)) = split_key(&line.content) else {
             return Err(format!("invalid YAML line: {}", line.content));
         };
+        if key == "<<" {
+            return Err("unsupported YAML construct: merge key".to_string());
+        }
         *index += 1;
         let value = if raw.is_empty() {
             yaml_mapping_value_or_null(lines, index, indent)?
@@ -1401,7 +1411,12 @@ fn parse_yaml_sequence(
             continue;
         }
         let quoted = rest.starts_with('"') || rest.starts_with('\'');
-        let split = if quoted { None } else { split_key(&rest) };
+        let flow = rest.starts_with('{') || rest.starts_with('[');
+        let split = if quoted || flow {
+            None
+        } else {
+            split_key(&rest)
+        };
         let Some((key, raw)) = split else {
             out.push(yaml_scalar(&rest)?);
             continue;
@@ -1414,6 +1429,9 @@ fn parse_yaml_sequence(
         } else {
             yaml_scalar(&raw)?
         };
+        if key == "<<" {
+            return Err("unsupported YAML construct: merge key".to_string());
+        }
         object.insert(key, value);
         let field_indent = lines
             .get(*index)
@@ -1503,6 +1521,13 @@ fn yaml_scalar(raw: &str) -> Result<Value, String> {
     if text.is_empty() {
         return Ok(Value::Null);
     }
+    match text.chars().next() {
+        Some('{') | Some('[') => return yaml_flow(text),
+        Some('&') => return Err("unsupported YAML construct: anchor".to_string()),
+        Some('*') => return Err("unsupported YAML construct: alias".to_string()),
+        Some('!') => return Err("unsupported YAML construct: tag".to_string()),
+        _ => {}
+    }
     if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
         return serde_json::from_str::<String>(text)
             .map(Value::String)
@@ -1513,8 +1538,6 @@ fn yaml_scalar(raw: &str) -> Result<Value, String> {
     }
     match text {
         "null" | "Null" | "NULL" | "~" => return Ok(Value::Null),
-        "[]" => return Ok(Value::Array(Vec::new())),
-        "{}" => return Ok(Value::Object(Map::new())),
         "true" | "True" | "TRUE" => return Ok(Value::Bool(true)),
         "false" | "False" | "FALSE" => return Ok(Value::Bool(false)),
         _ => {}
@@ -1536,4 +1559,203 @@ fn yaml_number(text: &str) -> Option<Number> {
         return Number::from_f64(value);
     }
     None
+}
+
+/// A flow collection written inline: `{k: v, ...}` to an object and `[a, b]`
+/// to an array, recursing into nested flow values.
+fn yaml_flow(text: &str) -> Result<Value, String> {
+    let mut reader = FlowReader::new(text);
+    let value = reader.value()?;
+    reader.skip_whitespace();
+    let rest = reader.rest();
+    if !rest.is_empty() && !rest.starts_with('#') {
+        return Err(format!(
+            "unexpected YAML content after flow collection: {rest}"
+        ));
+    }
+    Ok(value)
+}
+
+struct FlowReader<'a> {
+    text: &'a str,
+    position: usize,
+}
+
+impl<'a> FlowReader<'a> {
+    fn new(text: &'a str) -> Self {
+        FlowReader { text, position: 0 }
+    }
+
+    fn rest(&self) -> &'a str {
+        &self.text[self.position..]
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.rest().chars().next()
+    }
+
+    fn bump(&mut self) {
+        if let Some(ch) = self.peek() {
+            self.position += ch.len_utf8();
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(' ') | Some('\t')) {
+            self.bump();
+        }
+    }
+
+    fn value(&mut self) -> Result<Value, String> {
+        self.skip_whitespace();
+        match self.peek() {
+            None => Err("unterminated YAML flow collection".to_string()),
+            Some('{') => self.mapping(),
+            Some('[') => self.sequence(),
+            Some('"') | Some('\'') => yaml_scalar(&self.take_quoted()?),
+            Some('&') => Err("unsupported YAML construct: anchor".to_string()),
+            Some('*') => Err("unsupported YAML construct: alias".to_string()),
+            Some('!') => Err("unsupported YAML construct: tag".to_string()),
+            Some(_) => yaml_scalar(self.take_plain(false)),
+        }
+    }
+
+    fn mapping(&mut self) -> Result<Value, String> {
+        self.bump();
+        let mut out = Map::new();
+        loop {
+            self.skip_whitespace();
+            match self.peek() {
+                None => return Err("unterminated YAML flow mapping".to_string()),
+                Some('}') => {
+                    self.bump();
+                    return Ok(Value::Object(out));
+                }
+                _ => {}
+            }
+            let key = self.key()?;
+            self.skip_whitespace();
+            let value = match self.peek() {
+                Some(':') => {
+                    self.bump();
+                    self.value()?
+                }
+                Some(',') | Some('}') => Value::Null,
+                None => return Err("unterminated YAML flow mapping".to_string()),
+                Some(ch) => {
+                    return Err(format!(
+                        "invalid YAML flow mapping: expected ':' after key {key:?}, found {ch:?}"
+                    ))
+                }
+            };
+            if key == "<<" {
+                return Err("unsupported YAML construct: merge key".to_string());
+            }
+            out.insert(key, value);
+            self.skip_whitespace();
+            match self.peek() {
+                Some(',') => self.bump(),
+                Some('}') => {
+                    self.bump();
+                    return Ok(Value::Object(out));
+                }
+                None => return Err("unterminated YAML flow mapping".to_string()),
+                Some(ch) => {
+                    return Err(format!(
+                        "invalid YAML flow mapping: expected ',' or '}}', found {ch:?}"
+                    ))
+                }
+            }
+        }
+    }
+
+    fn sequence(&mut self) -> Result<Value, String> {
+        self.bump();
+        let mut out = Vec::new();
+        loop {
+            self.skip_whitespace();
+            match self.peek() {
+                None => return Err("unterminated YAML flow sequence".to_string()),
+                Some(']') => {
+                    self.bump();
+                    return Ok(Value::Array(out));
+                }
+                _ => {}
+            }
+            out.push(self.value()?);
+            self.skip_whitespace();
+            match self.peek() {
+                Some(',') => self.bump(),
+                Some(']') => {
+                    self.bump();
+                    return Ok(Value::Array(out));
+                }
+                None => return Err("unterminated YAML flow sequence".to_string()),
+                Some(ch) => {
+                    return Err(format!(
+                        "invalid YAML flow sequence: expected ',' or ']', found {ch:?}"
+                    ))
+                }
+            }
+        }
+    }
+
+    fn key(&mut self) -> Result<String, String> {
+        self.skip_whitespace();
+        let raw = match self.peek() {
+            None => return Err("unterminated YAML flow mapping".to_string()),
+            Some('{') | Some('[') => {
+                return Err("unsupported YAML construct: collection key".to_string())
+            }
+            Some('&') => return Err("unsupported YAML construct: anchor".to_string()),
+            Some('*') => return Err("unsupported YAML construct: alias".to_string()),
+            Some('!') => return Err("unsupported YAML construct: tag".to_string()),
+            Some('"') | Some('\'') => self.take_quoted()?,
+            Some(_) => self.take_plain(true).to_string(),
+        };
+        let value = yaml_scalar(&raw)?;
+        Ok(match value {
+            Value::String(text) => text,
+            other => js_string(&other),
+        })
+    }
+
+    fn take_plain(&mut self, key: bool) -> &'a str {
+        let start = self.position;
+        while let Some(ch) = self.peek() {
+            if matches!(ch, ',' | '}' | ']') || (key && ch == ':') {
+                break;
+            }
+            self.bump();
+        }
+        self.text[start..self.position].trim()
+    }
+
+    fn take_quoted(&mut self) -> Result<String, String> {
+        let Some(quote) = self.peek() else {
+            return Err("unterminated YAML string".to_string());
+        };
+        let start = self.position;
+        self.bump();
+        while let Some(ch) = self.peek() {
+            if ch == quote {
+                self.bump();
+                if quote == '\'' && self.peek() == Some('\'') {
+                    self.bump();
+                    continue;
+                }
+                return Ok(self.text[start..self.position].to_string());
+            }
+            if ch == '\\' && quote == '"' {
+                self.bump();
+                if self.peek().is_none() {
+                    break;
+                }
+                self.bump();
+                continue;
+            }
+            self.bump();
+        }
+        Err("unterminated YAML string".to_string())
+    }
 }

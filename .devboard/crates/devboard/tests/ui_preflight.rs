@@ -751,6 +751,125 @@ components:
 }
 
 #[test]
+fn an_openui_yaml_catalog_with_a_flow_mapping_props_passes() {
+    let fixture = Fixture::new("openui-yaml-flow-props");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props: {variant: {type: string, enum: [primary, secondary]}}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn an_openui_yaml_catalog_with_a_flow_mapping_components_is_checked_as_a_mapping() {
+    let fixture = Fixture::new("openui-yaml-flow-components");
+    fixture.design_stack();
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components: {Button: {description: A button, props: {size: {type: string}}}}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(
+        result["checks"]["openui"],
+        json!({
+            "status": "pass",
+            "path": "openui.yaml",
+            "componentCount": 1,
+            "problems": [],
+        })
+    );
+    assert_eq!(result["applicable"], json!(true));
+    assert_eq!(result["missing"], json!([]));
+}
+
+#[test]
+fn an_openui_yaml_construct_the_reader_cannot_parse_names_itself() {
+    let fixture = Fixture::new("openui-yaml-unparsed-construct");
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components: &base
+  Button:
+    description: A button
+    props: {}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["openui"]["status"], json!("invalid"));
+    assert_eq!(
+        result["checks"]["openui"]["reason"],
+        json!("unsupported YAML construct: anchor")
+    );
+    let missing = result["missing"]
+        .as_array()
+        .expect("missing entries")
+        .iter()
+        .find(|entry| entry["id"] == json!("openui"))
+        .expect("the openui entry");
+    let detail = missing["detail"].as_str().expect("the detail");
+    assert!(!detail.contains(".props"), "detail: {detail}");
+
+    let fixture = Fixture::new("openui-yaml-flow-unterminated");
+    fixture.write(
+        "openui.yaml",
+        "\
+name: Kit
+version: \"1.0\"
+description: Components
+components:
+  Button:
+    description: A button
+    props: {variant: {type: string}
+",
+    );
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["openui"]["status"], json!("invalid"));
+    let reason = result["checks"]["openui"]["reason"]
+        .as_str()
+        .expect("the reason");
+    assert!(
+        reason.contains("unterminated YAML flow mapping"),
+        "reason: {reason}"
+    );
+    let missing = result["missing"]
+        .as_array()
+        .expect("missing entries")
+        .iter()
+        .find(|entry| entry["id"] == json!("openui"))
+        .expect("the openui entry");
+    let detail = missing["detail"].as_str().expect("the detail");
+    assert!(!detail.contains(".props"), "detail: {detail}");
+}
+
+#[test]
 fn openui_problems_match_the_catalog_schema() {
     let fixture = Fixture::new("openui-problems");
     fixture.write(
