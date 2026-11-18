@@ -2707,6 +2707,9 @@ struct AgentsMode {
     /// The next time each family's durable intent may be acted on, and the
     /// backoff a failed automatic start is on.
     reconcile: Mutex<HashMap<&'static str, ReconcileState>>,
+    /// Families whose pre-control-plane state has already been read once to
+    /// seed an intent, so an off family is never re-walked every pass.
+    seeded: Mutex<HashSet<&'static str>>,
     /// The served checkout the project kind is read from.
     repo_dir: PathBuf,
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -3265,6 +3268,7 @@ impl AgentsMode {
             settle_until: Mutex::new(0),
             project_kind: Mutex::new(crate::project_kind::of(&repo_dir)),
             reconcile: Mutex::new(HashMap::new()),
+            seeded: Mutex::new(HashSet::new()),
             repo_dir: repo_dir.clone(),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
         })
@@ -3701,6 +3705,14 @@ impl AgentsMode {
     fn seed_intent(&self, adapter: &Adapter) -> Option<FamilyIntent> {
         if !adapter.auto_starts() {
             return None;
+        }
+        {
+            let Ok(mut seeded) = self.seeded.lock() else {
+                return None;
+            };
+            if !seeded.insert(adapter.id()) {
+                return None;
+            }
         }
         let snapshot = adapter.snapshot(0);
         let enabled = snapshot
