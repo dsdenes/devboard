@@ -388,6 +388,7 @@
                 busyLabel="Saving…"
                 scope={() => agentId}
                 evidence={() => agents.settingsEcho(agentId)}
+                refusal={() => connection.refusalRevision("setAgentSettings")}
                 command={() => saveSettings(`agent.cadence.${agentId}`)}
                 data-testid="agent-save-cadence"
                 data-command={`issues.${agentId}.settings.cadence`}
@@ -404,6 +405,7 @@
                 busyLabel="Saving…"
                 scope={() => agentId}
                 evidence={() => agents.settingsEcho(agentId)}
+                refusal={() => connection.refusalRevision("setAgentSettings")}
                 command={() => saveSettings(`agent.limits.${agentId}`)}
                 data-testid="agent-save-limits"
                 data-command={`issues.${agentId}.settings.limits`}

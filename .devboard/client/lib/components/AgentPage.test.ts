@@ -628,6 +628,69 @@ test("a frame echoing the saved settings ends Save cadence with no ceiling notic
   }
 });
 
+test("a refused Save cadence settles on the refusal instead of claiming no answer", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const cadence = within(view.container).getByTestId("agent-save-cadence");
+    await fireEvent.click(cadence);
+    expect(cadence.getAttribute("aria-busy")).toBe("true");
+
+    // A refused write answers under the route's success status, and that answer
+    // names the command it refused. The settings echo cannot advance — the
+    // server republished the unchanged snapshot — so the refusal is the answer.
+    connection.receiveFrame({
+      type: "error",
+      command: "setAgentSettings",
+      message: "Could not save the settings: the state directory is read-only.",
+    });
+    await tick();
+    expect(cadence.getAttribute("aria-busy")).toBeNull();
+    expect(cadence.textContent?.trim()).toBe("Save cadence");
+
+    jest.advanceTimersByTime(10_000);
+    await tick();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
+test("a refused Save limits settles on the refusal instead of claiming no answer", async () => {
+  const previous = connection.state;
+  connection.state = "open";
+  const socket = recordSettingsSends();
+  jest.useFakeTimers();
+  try {
+    const view = present(releaseSnapshot({ attached: true, owned: true, notice: null }));
+    const limits = within(view.container).getByTestId("agent-save-limits");
+    await fireEvent.click(limits);
+    expect(limits.getAttribute("aria-busy")).toBe("true");
+
+    connection.receiveFrame({
+      type: "error",
+      command: "setAgentSettings",
+      message: "Could not save the settings: the worker command could not be reached.",
+    });
+    await tick();
+    expect(limits.getAttribute("aria-busy")).toBeNull();
+    expect(limits.textContent?.trim()).toBe("Save limits");
+
+    jest.advanceTimersByTime(10_000);
+    await tick();
+    expect(within(view.container).queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+    socket.restore();
+    connection.state = previous;
+  }
+});
+
 test("a Save latch armed on one agent's page does not follow the reused control", async () => {
   const previous = connection.state;
   connection.state = "open";
