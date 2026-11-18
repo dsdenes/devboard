@@ -5,8 +5,10 @@
  * bundle still loads, and the notification region holds no error entry. After
  * the final cycle the process table holds no worker for the fixture
  * repository and exactly one dashboard serves it. The soak files nothing: the
- * open set after the five cycles equals the snapshot taken before them, so an
- * issue of any shape that was not already open is a failure.
+ * snapshot it compares against is the board's complete open set — every page
+ * the tracker serves, not only its newest page — so the open set after the
+ * five cycles equals the one taken before them, and an issue of any shape that
+ * was not already open is a failure.
  */
 
 import { expect, test } from "@playwright/test";

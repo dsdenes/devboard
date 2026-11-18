@@ -15,7 +15,9 @@ import {
   dotEnvCandidates,
   dotEnvRootFor,
   giteaUrl,
+  type GiteaIssue,
   loadDotEnv,
+  openIssues,
   repoRoot,
   tmpDir,
 } from "./support.ts";
@@ -120,6 +122,100 @@ describe("the suite's .env search", () => {
     for (const candidate of candidates) {
       const relative = path.relative(root, candidate);
       expect(relative.startsWith("..")).toBe(false);
+    }
+  });
+});
+
+/**
+ * The board read walks every page the tracker serves.
+ *
+ * The soak's proof is only as wide as the read behind it: a board holding more
+ * open issues than one page must return all of them, and a page that repeats
+ * itself must end the walk instead of looping.
+ */
+describe("the suite's board read", () => {
+  const saved = {
+    url: process.env.DEVBOARD_GITEA_URL,
+    token: process.env.GITEA_TOKEN,
+  };
+
+  afterAll(() => {
+    if (saved.url === undefined) delete process.env.DEVBOARD_GITEA_URL;
+    else process.env.DEVBOARD_GITEA_URL = saved.url;
+    if (saved.token === undefined) delete process.env.GITEA_TOKEN;
+    else process.env.GITEA_TOKEN = saved.token;
+  });
+
+  function boardIssue(number: number): GiteaIssue {
+    return {
+      number,
+      title: `issue ${number}`,
+      body: "",
+      state: "open",
+      html_url: `https://board.test/issues/${number}`,
+    };
+  }
+
+  /** A tracker stub serving `rows(page)` and recording every page it is asked for. */
+  function stubBoard(
+    rows: (page: number) => GiteaIssue[],
+    total: number,
+  ): { requests: URLSearchParams[]; stop: () => void } {
+    const requests: URLSearchParams[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        const url = new URL(request.url);
+        requests.push(url.searchParams);
+        const page = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
+        return Response.json(rows(page), {
+          headers: { "X-Total-Count": String(total) },
+        });
+      },
+    });
+    process.env.DEVBOARD_GITEA_URL = server.url.origin;
+    process.env.GITEA_TOKEN = "suite-token";
+    return { requests, stop: () => server.stop(true) };
+  }
+
+  test("returns every open issue across every page", async () => {
+    const numbers = Array.from({ length: 120 }, (_, index) => index + 1);
+    const board = stubBoard(
+      (page) => numbers.slice((page - 1) * 50, page * 50).map(boardIssue),
+      numbers.length,
+    );
+    try {
+      const issues = await openIssues();
+      expect(issues.map((issue) => issue.number)).toEqual(numbers);
+      expect(board.requests.map((params) => params.get("page"))).toEqual(["1", "2", "3"]);
+      expect(board.requests.every((params) => params.get("limit") === "50")).toBe(true);
+      expect(board.requests.every((params) => params.get("state") === "open")).toBe(true);
+    } finally {
+      board.stop();
+    }
+  });
+
+  test("stops on a short final page instead of asking for another", async () => {
+    const board = stubBoard((page) => (page === 1 ? [boardIssue(1), boardIssue(2)] : []), 2);
+    try {
+      expect((await openIssues()).map((issue) => issue.number)).toEqual([1, 2]);
+      expect(board.requests).toHaveLength(1);
+    } finally {
+      board.stop();
+    }
+  });
+
+  test("stops when a page repeats itself instead of looping", async () => {
+    const rows = Array.from({ length: 50 }, (_, index) => boardIssue(index + 1));
+    const board = stubBoard(() => rows, rows.length);
+    try {
+      expect((await openIssues()).map((issue) => issue.number)).toEqual(
+        rows.map((issue) => issue.number),
+      );
+      expect(board.requests).toHaveLength(2);
+    } finally {
+      board.stop();
     }
   });
 });

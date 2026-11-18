@@ -376,15 +376,41 @@ async function gitea(pathname: string, init: RequestInit = {}): Promise<Response
   });
 }
 
-/** Every open issue on the board the harness reports to. */
+/** The page size one board read asks for; the forge clamps anything larger. */
+const ISSUE_PAGE_SIZE = 50;
+
+/** The most issue pages one board read walks before it stops asking. */
+const ISSUE_MAX_PAGES = 100;
+
+/**
+ * Every open issue on the board the harness reports to.
+ *
+ * The walk reads page after page until the forge serves a page shorter than
+ * the one asked for, so a board holding more open issues than one page returns
+ * all of them rather than only the newest page. A page that adds no new number
+ * is a server that ignored `page`, and it ends the walk instead of looping.
+ */
 export async function openIssues(): Promise<GiteaIssue[]> {
-  const response = await gitea(
-    `/repos/${repository()}/issues?state=open&type=issues&limit=200`,
-  );
-  if (!response.ok) {
-    throw new Error(`the board read failed (${response.status}): ${await response.text()}`);
+  const issues: GiteaIssue[] = [];
+  const seen = new Set<number>();
+  for (let page = 1; page <= ISSUE_MAX_PAGES; page += 1) {
+    const response = await gitea(
+      `/repos/${repository()}/issues?state=open&type=issues&limit=${ISSUE_PAGE_SIZE}&page=${page}`,
+    );
+    if (!response.ok) {
+      throw new Error(`the board read failed (${response.status}): ${await response.text()}`);
+    }
+    const entries = (await response.json()) as GiteaIssue[];
+    let added = 0;
+    for (const issue of entries) {
+      if (seen.has(issue.number)) continue;
+      seen.add(issue.number);
+      issues.push(issue);
+      added += 1;
+    }
+    if (entries.length < ISSUE_PAGE_SIZE || added === 0) break;
   }
-  return (await response.json()) as GiteaIssue[];
+  return issues;
 }
 
 export async function readIssue(number: number): Promise<GiteaIssue> {
