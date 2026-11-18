@@ -1017,3 +1017,127 @@ fn an_update_syncs_from_the_installed_binary_first() {
     assert!(host.join(".omp/commands/setup-devboard.md").is_file());
     let _ = fs::remove_file(&marker);
 }
+
+/// A local release whose artifact is a real tar.xz carrying one executable
+/// `devboard` entry, so `install_release` runs its whole unpack and stage path.
+fn installable_release(host: &Path, version: &str) -> PathBuf {
+    let release = host.join(".test-release");
+    fs::create_dir_all(&release).unwrap();
+    let target = devboard::release::current_target().unwrap();
+    let mut archive = Vec::new();
+    {
+        let encoder = xz2::write::XzEncoder::new(&mut archive, 6);
+        let mut builder = tar::Builder::new(encoder);
+        let script = b"#!/bin/sh\nexit 0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "devboard", &script[..])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+    fs::write(release.join(format!("devboard-{target}.tar.xz")), &archive).unwrap();
+    fs::write(
+        release.join("devboard-manifest.json"),
+        serde_json::to_string(&serde_json::json!({
+            "version": version,
+            "tag": format!("v{version}"),
+            "assets": [{
+                "target": target,
+                "url": format!("https://github.test/devboard-{target}.tar.xz"),
+                "sha256": "",
+            }],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    release
+}
+
+/// The `update` command against one fixture host, with every inherited forge
+/// variable removed so the fixture's own release directory is the only source.
+fn update(host: &Path, release: &Path) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_devboard"));
+    command
+        .arg("update")
+        .arg(host)
+        .env("DEVBOARD_RELEASE_URL", release.display().to_string());
+    for key in [
+        "DEVBOARD_GITEA_URL",
+        "GITEA_URL",
+        "GITEA_TOKEN",
+        "DEVBOARD_GITEA_TOKEN",
+        "DEVBOARD_GITHUB_API_URL",
+        "DEVBOARD_RELEASE_REPO",
+    ] {
+        command.env_remove(key);
+    }
+    command.output().expect("the update command runs")
+}
+
+#[test]
+fn update_refuses_the_canonical_checkout_before_writing_the_release() {
+    let scratch = Scratch::new("update-source");
+    let host = scratch.host();
+    // The checked-in package.json is what makes this fixture the canonical
+    // harness source checkout, which update never writes into.
+    fs::write(
+        host.join(".devboard/package.json"),
+        br#"{"name":"@dsdenes/devboard","version":"0.0.1"}"#,
+    )
+    .unwrap();
+    let release = installable_release(host, "99.0.0");
+    let before = snapshot(host);
+
+    let output = update(host, &release);
+
+    assert!(
+        !output.status.success(),
+        "the canonical checkout is refused"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("canonical harness source checkout"),
+        "{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("update: installed"),
+        "nothing installed: {stdout}"
+    );
+    assert_eq!(snapshot(host), before, "the checkout stayed byte-identical");
+    assert!(!host.join(".devboard/bin").exists());
+    assert!(!host.join(".devboard/devboard.json").exists());
+}
+
+#[test]
+fn update_installs_the_release_into_an_installed_host() {
+    let scratch = Scratch::new("update-installed");
+    let host = scratch.host();
+    let release = installable_release(host, "99.0.0");
+    // A recorded live dashboard keeps the command from starting one: this
+    // fixture proves the install, not a server.
+    fs::create_dir_all(host.join(".devboard/.tmp")).unwrap();
+    fs::write(
+        host.join(".devboard/.tmp/version.json"),
+        format!("{{\"pid\":{},\"port\":9}}", std::process::id()),
+    )
+    .unwrap();
+
+    let output = update(host, &release);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("update: installed 99.0.0"), "{stdout}");
+    assert_eq!(
+        devboard::release::installed_version(&host.join(".devboard")),
+        Some("99.0.0".to_string())
+    );
+    assert!(host.join(".devboard/bin/devboard").is_file());
+}

@@ -641,6 +641,7 @@ async fn install_command(args: &[String]) -> anyhow::Result<()> {
 async fn update_command(args: &[String]) -> anyhow::Result<()> {
     let options = parse_install_options(args, "usage: devboard update [host] [--port N]")?;
     let host = devboard::cli_install::resolve_host(options.host.as_deref())?;
+    devboard::cli_install::refuse_source_checkout(&host)?;
     devboard::cli_install::refuse_symlinked_prefix(&host)?;
     let source = devboard::updates::manifest_source_from_env(&host.join(".devboard/.tmp"))
         .ok_or_else(|| {

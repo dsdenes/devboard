@@ -308,6 +308,18 @@ pub fn refuse_symlinked_prefix(host: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `update` never writes into the canonical harness source checkout; `install`
+/// refuses that same host one step later, after the release has already landed.
+pub fn refuse_source_checkout(host: &Path) -> Result<()> {
+    if is_canonical_checkout(host) {
+        bail!(
+            "update: {} is the canonical harness source checkout; install into a host, never into the harness itself",
+            host.display()
+        );
+    }
+    Ok(())
+}
+
 /// True when `host/.devboard` is the canonical harness source checkout. Such a
 /// checkout is never an install target: installing over it would rewrite the
 /// source tree itself.
