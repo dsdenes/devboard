@@ -6,9 +6,11 @@
 //! project answers the same JSON, and the skill prints it with
 //! `devboard preflight ui-ux [project-root]`.
 //!
-//! The glob walk prunes [`IGNORED_DIRS`] and every directory the scanned root's
-//! own `.gitignore` excludes, read from that root alone so an enclosing
-//! repository's rules never change the answer.
+//! The glob walk prunes [`IGNORED_DIRS`] and every directory and file a
+//! `.gitignore` inside the scanned root excludes. Each visited directory's own
+//! `.gitignore` is read, so a package's local rule governs its own tree, and no
+//! `.gitignore` outside the scanned root is read, so an enclosing repository's
+//! rules never change the answer.
 //!
 //! The `design-md` lint runs through [`preflight_with`], so tests never spawn
 //! the package. [`preflight`] runs the local bin directly; a project without an
@@ -22,7 +24,7 @@ use regex::Regex;
 use serde_json::{json, Map, Number, Value};
 
 /// Directories the glob walk never enters, mirroring the script's ignore set.
-/// The scanned root's own `.gitignore` adds prune rules on top of these names.
+/// A `.gitignore` inside the scanned root adds rules on top of these names.
 const IGNORED_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -932,47 +934,64 @@ fn rel(root: &Path, path: &Path) -> String {
     }
 }
 
-/// Directory prune rules resolved from the scanned root's own `.gitignore`.
+/// The prune rules one `.gitignore` contributes, scoped to its own directory.
 ///
-/// Only `<root>/.gitignore` is read: rules of an enclosing repository never
-/// prune this project's tree. Rules apply to a directory's root-relative path
-/// in file order and the last match decides, so a later `!` rule re-includes
-/// what an earlier one excluded.
-struct IgnoreRules {
+/// Only `.gitignore` files inside the scanned root are read: rules of an
+/// enclosing repository never prune this project's tree. A rule matches a
+/// directory's or file's path relative to the directory holding the file, and
+/// applies in file order, so a later `!` rule re-includes what an earlier one
+/// excluded. A deeper `.gitignore` overrides an ancestor's rule for the same
+/// path because the walk reads the scopes in that order and the last match wins.
+struct IgnoreScope {
+    /// The directory holding the `.gitignore`, as root-relative components.
+    prefix: Vec<String>,
     rules: Vec<IgnoreRule>,
 }
 
 struct IgnoreRule {
     /// The pattern's path components, leading and trailing `/` removed.
     parts: Vec<String>,
-    /// A pattern with an internal or leading `/` matches the whole root-relative
-    /// path; one without matches a directory name at any depth.
+    /// A pattern with an internal or leading `/` matches the whole
+    /// scope-relative path; one without matches a name at any depth.
     anchored: bool,
+    /// A trailing `/` narrows the rule to directories.
+    dir_only: bool,
     negated: bool,
 }
 
-impl IgnoreRules {
-    fn read(root: &Path) -> Self {
-        let text = std::fs::read_to_string(root.join(".gitignore")).unwrap_or_default();
-        Self {
-            rules: text.lines().filter_map(ignore_rule).collect(),
-        }
-    }
-
-    /// Whether the directory at the root-relative `parts` path is ignored.
-    fn ignores(&self, parts: &[String]) -> bool {
-        let mut ignored = false;
-        for rule in &self.rules {
-            if rule.matches(parts) {
-                ignored = !rule.negated;
-            }
-        }
-        ignored
+impl IgnoreScope {
+    /// The scope one directory's own `.gitignore` supplies, when it holds a rule.
+    fn read(directory: &Path, prefix: &[String]) -> Option<Self> {
+        let text = std::fs::read_to_string(directory.join(".gitignore")).ok()?;
+        let rules = text.lines().filter_map(ignore_rule).collect::<Vec<_>>();
+        (!rules.is_empty()).then(|| Self {
+            prefix: prefix.to_vec(),
+            rules,
+        })
     }
 }
 
+/// Whether the root-relative `parts` path is ignored by the scopes the walk holds.
+fn ignored(scopes: &[IgnoreScope], parts: &[String], is_dir: bool) -> bool {
+    let mut ignored = false;
+    for scope in scopes {
+        let Some(relative) = parts.strip_prefix(scope.prefix.as_slice()) else {
+            continue;
+        };
+        for rule in &scope.rules {
+            if rule.matches(relative, is_dir) {
+                ignored = !rule.negated;
+            }
+        }
+    }
+    ignored
+}
+
 impl IgnoreRule {
-    fn matches(&self, parts: &[String]) -> bool {
+    fn matches(&self, parts: &[String], is_dir: bool) -> bool {
+        if self.dir_only && !is_dir {
+            return false;
+        }
         if !self.anchored {
             return parts
                 .last()
@@ -983,8 +1002,8 @@ impl IgnoreRule {
     }
 }
 
-/// One `.gitignore` line as a directory rule: blank lines and comments drop, a
-/// `!` prefix negates, and a trailing `/` narrows the rule to a directory.
+/// One `.gitignore` line as a rule: blank lines and comments drop, a `!` prefix
+/// negates, and a trailing `/` narrows the rule to a directory.
 fn ignore_rule(line: &str) -> Option<IgnoreRule> {
     let line = line.trim_end();
     if line.is_empty() || line.starts_with('#') {
@@ -994,6 +1013,7 @@ fn ignore_rule(line: &str) -> Option<IgnoreRule> {
         Some(rest) => (true, rest),
         None => (false, line),
     };
+    let dir_only = pattern.ends_with('/');
     let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
     // Git anchors a pattern that holds a `/` anywhere but the removed trailing
     // one; the leading `/` is then redundant.
@@ -1010,6 +1030,7 @@ fn ignore_rule(line: &str) -> Option<IgnoreRule> {
     Some(IgnoreRule {
         parts,
         anchored,
+        dir_only,
         negated,
     })
 }
@@ -1021,9 +1042,9 @@ struct Tree {
 
 impl Tree {
     fn scan(root: &Path) -> Self {
-        let ignore = IgnoreRules::read(root);
         let mut files = Vec::new();
-        walk(root, &mut Vec::new(), &mut files, &ignore);
+        let mut scopes = Vec::new();
+        walk(root, &mut Vec::new(), &mut files, &mut scopes);
         Self { files }
     }
 
@@ -1044,13 +1065,18 @@ fn walk(
     directory: &Path,
     prefix: &mut Vec<String>,
     files: &mut Vec<Vec<String>>,
-    ignore: &IgnoreRules,
+    scopes: &mut Vec<IgnoreScope>,
 ) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
     let mut entries = entries.flatten().collect::<Vec<_>>();
     entries.sort_by_key(|entry| entry.file_name());
+    let scope = IgnoreScope::read(directory, prefix);
+    let pushed = scope.is_some();
+    if let Some(scope) = scope {
+        scopes.push(scope);
+    }
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
@@ -1060,15 +1086,21 @@ fn walk(
                 continue;
             }
             prefix.push(name);
-            if !ignore.ignores(prefix) {
-                walk(&path, prefix, files, ignore);
+            if !ignored(scopes, prefix, true) {
+                walk(&path, prefix, files, scopes);
             }
             prefix.pop();
         } else if path.is_file() {
             let mut file = prefix.clone();
             file.push(name);
+            if ignored(scopes, &file, false) {
+                continue;
+            }
             files.push(file);
         }
+    }
+    if pushed {
+        scopes.pop();
     }
 }
 

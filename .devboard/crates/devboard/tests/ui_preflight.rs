@@ -869,6 +869,58 @@ fn a_negated_gitignore_rule_keeps_its_directory() {
 }
 
 #[test]
+fn a_gitignored_file_supplies_no_tokens_or_stories() {
+    let fixture = Fixture::new("gitignored-files");
+    fixture.write(".gitignore", "generated/*\n");
+    fixture.write(
+        "generated/theme.tokens.json",
+        r#"{"space":{"sm":{"$value":"4px"}}}"#,
+    );
+    fixture.write(".storybook/main.ts", "export default {};\n");
+    fixture.write("generated/Kit.stories.ts", "export default {};\n");
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["dtcg"], json!({"status": "missing"}));
+    assert_eq!(
+        result["checks"]["storybook"],
+        json!({
+            "status": "missing",
+            "config": ".storybook/main.ts",
+            "storyCount": 0,
+        })
+    );
+}
+
+#[test]
+fn a_gitignored_token_glob_supplies_no_token_file() {
+    let fixture = Fixture::new("gitignored-token-glob");
+    fixture.write(".gitignore", "*.tokens.json\n");
+    fixture.write("theme.tokens.json", r#"{"space":{"sm":{"$value":"4px"}}}"#);
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["dtcg"], json!({"status": "missing"}));
+}
+
+#[test]
+fn a_package_gitignore_prunes_its_own_generated_output() {
+    let fixture = Fixture::new("package-gitignored");
+    fixture.write("packages/ui/.gitignore", "generated/\n");
+    fixture.write(
+        "packages/ui/generated/theme.tokens.json",
+        r#"{"space":{"sm":{"$value":"4px"}}}"#,
+    );
+    fixture.write(".storybook/main.ts", "export default {};\n");
+    let result = fixture.preflight();
+    assert_eq!(result["checks"]["dtcg"], json!({"status": "missing"}));
+    assert_eq!(
+        result["checks"]["storybook"],
+        json!({
+            "status": "missing",
+            "config": ".storybook/main.ts",
+            "storyCount": 0,
+        })
+    );
+}
+
+#[test]
 fn token_files_are_found_by_glob_and_by_the_token_directory() {
     let fixture = Fixture::new("tokens-glob");
     fixture.write(
