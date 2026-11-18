@@ -1510,6 +1510,122 @@ async fn startup_repairs_every_credential_file_direction() {
     assert!(damaged, "the unusable primary was preserved aside");
 }
 
+/// Removes one required field from one primary entry, leaving the file
+/// parseable but that entry unreadable to `stored_subscription`.
+fn damage_primary_entry(state: &Path, index: usize, field: &str) {
+    let path = credentials_path(state);
+    let source = std::fs::read_to_string(&path).expect("the primary credentials");
+    let mut envelope: Value = serde_json::from_str(&source).expect("the primary parses");
+    envelope["subscriptions"]
+        .as_array_mut()
+        .expect("the primary entries")
+        .get_mut(index)
+        .expect("the primary entry")
+        .as_object_mut()
+        .expect("an entry object")
+        .remove(field);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&envelope).expect("the damaged primary JSON"),
+    )
+    .expect("write the damaged primary");
+}
+
+fn subscriptions_in(path: &Path) -> Vec<String> {
+    let source = std::fs::read_to_string(path).expect("a credentials file");
+    let envelope: Value = serde_json::from_str(&source).expect("a credentials envelope");
+    envelope["subscriptions"]
+        .as_array()
+        .expect("the entries")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("an entry id").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_primary_that_lost_one_entry_never_rewrites_the_intact_backup() {
+    let root = fixture_root("partial-rejection");
+    let state = root.join("state");
+    let stored = [
+        subscription("go", ProviderId::OpenCodeGo, "go-partial-0001"),
+        subscription("or", ProviderId::OpenRouter, "or-partial-0002"),
+    ];
+    save_subscriptions(&state, &stored).expect("credentials");
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let backup_before = std::fs::read(&backup_path).expect("the backup");
+    damage_primary_entry(&state, 0, "label");
+
+    let service = service_at(&state, &root.join("repo"), Arc::new(Mutex::new(Vec::new())));
+    let listed: Vec<String> = service.list().into_iter().map(|entry| entry.id).collect();
+    assert_eq!(listed, vec!["go".to_string(), "or".to_string()]);
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the backup"),
+        backup_before,
+        "the intact backup keeps its bytes"
+    );
+    assert_eq!(
+        std::fs::read(&primary_path).expect("the repaired primary"),
+        backup_before,
+        "the damaged primary is repaired from the backup"
+    );
+    assert_eq!(
+        subscriptions_in(&backup_path),
+        vec!["go".to_string(), "or".to_string()],
+        "the backup still parses to both subscriptions"
+    );
+    assert!(!credentials_lost(&state));
+    assert!(service.view().refusal.is_none());
+}
+
+#[tokio::test]
+async fn an_all_rejected_primary_is_repaired_from_the_intact_backup() {
+    let root = fixture_root("all-rejected-primary");
+    let state = root.join("state");
+    let stored = [
+        subscription("go", ProviderId::OpenCodeGo, "go-rejected-0001"),
+        subscription("or", ProviderId::OpenRouter, "or-rejected-0002"),
+    ];
+    save_subscriptions(&state, &stored).expect("credentials");
+    let primary_path = credentials_path(&state);
+    let backup_path = credentials_backup_path(&state);
+    let backup_before = std::fs::read(&backup_path).expect("the backup");
+    damage_primary_entry(&state, 0, "key");
+    damage_primary_entry(&state, 1, "key");
+
+    let loaded = load_subscriptions(&state);
+    assert_eq!(loaded.source, CredentialSource::Primary);
+    assert_eq!(loaded.subscriptions, stored);
+    assert_eq!(
+        std::fs::read(&backup_path).expect("the backup"),
+        backup_before,
+        "the loader never rewrites the intact backup"
+    );
+    assert!(loaded
+        .preserved
+        .expect("the damaged primary is preserved")
+        .exists());
+
+    let (audit, audits) = collecting_audit();
+    let service = service_with_audit(
+        &state,
+        &root.join("repo"),
+        Arc::new(Mutex::new(Vec::new())),
+        audit,
+    );
+    assert_eq!(service.list(), stored);
+    assert_eq!(
+        std::fs::read(&primary_path).expect("the repaired primary"),
+        backup_before
+    );
+    assert_eq!(loss_count(&audits), 0);
+    assert!(!credentials_lost(&state));
+    assert!(
+        service.view().refusal.is_none(),
+        "the store is neither fresh nor lost"
+    );
+}
+
 #[tokio::test]
 async fn a_running_refresh_restores_deleted_files_before_publishing() {
     let root = fixture_root("running-repair");

@@ -508,13 +508,46 @@ fn read_credentials_file(path: &Path) -> CredentialFile {
     }
 }
 
+/// The list an intact copy holds: it parsed completely, preserved every
+/// entry, and names at least one subscription. Only such a copy outranks a
+/// primary that lost entries to validation.
+fn intact_subscriptions(file: &CredentialFile) -> Option<&[StoredSubscription]> {
+    match file {
+        CredentialFile::Valid {
+            subscriptions,
+            rejected: false,
+            ..
+        } if !subscriptions.is_empty() => Some(subscriptions),
+        _ => None,
+    }
+}
+
 /// Reads the subscription list, preferring the primary and falling back to
 /// the same-directory backup. A missing file is an empty list; unusable bytes
-/// are preserved aside.
+/// are preserved aside. A primary that lost entries to validation is damaged,
+/// so an intact backup is the copy to trust and repairs it.
 pub fn load_subscriptions(state_dir: &Path) -> LoadedCredentials {
     let primary_path = credentials_path(state_dir);
     let backup_path = credentials_backup_path(state_dir);
-    match read_credentials_file(&primary_path) {
+    let primary = read_credentials_file(&primary_path);
+    let backup = read_credentials_file(&backup_path);
+    if let CredentialFile::Valid {
+        rejected: true,
+        preserved,
+        ..
+    } = &primary
+    {
+        if let Some(restored) = intact_subscriptions(&backup) {
+            let subscriptions = restored.to_vec();
+            let _ = write_credentials_file(state_dir, &primary_path, &subscriptions);
+            return LoadedCredentials {
+                subscriptions,
+                preserved: preserved.clone(),
+                source: CredentialSource::Primary,
+            };
+        }
+    }
+    match primary {
         CredentialFile::Valid {
             subscriptions,
             rejected,
@@ -534,7 +567,7 @@ pub fn load_subscriptions(state_dir: &Path) -> LoadedCredentials {
                 CredentialFile::Unusable { preserved } => preserved,
                 _ => None,
             };
-            match read_credentials_file(&backup_path) {
+            match backup {
                 CredentialFile::Valid {
                     subscriptions,
                     rejected,
@@ -1829,6 +1862,26 @@ impl CredentialStore {
             ..
         } = &primary
         {
+            let rescuing = if *rejected {
+                intact_subscriptions(&backup)
+            } else {
+                None
+            };
+            if let Some(restored) = rescuing {
+                let list = restored.to_vec();
+                match write_credentials_file(&self.state_dir, &primary_path, &list) {
+                    Ok(()) => self.audit_activity(format!(
+                        "providers: rewrote the damaged primary from the backup at {}",
+                        primary_path.display()
+                    )),
+                    Err(error) => (self.log)(&format!(
+                        "providers: the repaired credentials could not be written: {error}"
+                    )),
+                }
+                *lock(&self.subscriptions) = list;
+                self.clear_loss();
+                return;
+            }
             let list = subscriptions.clone();
             if *rejected {
                 if let Err(error) = write_credentials_file(&self.state_dir, &primary_path, &list) {
