@@ -60,6 +60,10 @@ const KILLS_FILE: &str = "kills.jsonl";
 /// One MiB in bytes; every setting is expressed in whole MiB.
 pub const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
+/// The smallest hard maximum a budget may carry.
+const MIN_MEMORY_MAX_MB: u64 = 128;
+/// The smallest soft high mark and reserve a budget may carry.
+const MIN_MEMORY_FLOOR_MB: u64 = 64;
 /// How long the same deferral is kept out of the log.
 const DEFERRAL_DEDUPE_MS: u64 = 30_000;
 /// How often a deferred peer retries its admission in-process.
@@ -82,13 +86,29 @@ impl Settings {
     /// The documented defaults: a quarter of RAM (at least 1 GiB) as the
     /// reserve, everything above it as the hard maximum, 80% of that as the
     /// soft high mark, and one peer per four CPUs clamped to 1..=64.
+    ///
+    /// The reserve is also held inside the bounds [`Self::validate`] states:
+    /// the hard maximum keeps its own floor and the reserve stays strictly
+    /// below it, so a host of 2 GiB or less derives a budget its own validator
+    /// accepts instead of one it refuses. Only a host smaller than both floors
+    /// together has no valid budget at all; it gets the floors, and only
+    /// [`Self::validate_for`] then refuses the host size.
     pub fn derive(total_mb: u64, cpus: u32) -> Self {
         let total_mb = total_mb.max(1);
-        let memory_reserve_mb = (total_mb / 4)
-            .max(GIB / MIB)
-            .min(total_mb.saturating_sub(64).max(64));
-        let memory_max_mb = total_mb.saturating_sub(memory_reserve_mb).max(64);
-        let memory_high_mb = (memory_max_mb.saturating_mul(4) / 5).max(64);
+        // What the documented formula asks for: a quarter of RAM, at least
+        // 1 GiB.
+        let wanted_reserve_mb = (total_mb / 4).max(GIB / MIB);
+        // The most the reserve may take while the hard maximum keeps its floor
+        // and stays strictly above the reserve.
+        let reserve_ceiling_mb = total_mb
+            .saturating_sub(MIN_MEMORY_MAX_MB)
+            .min(total_mb.saturating_sub(1) / 2)
+            .max(MIN_MEMORY_FLOOR_MB);
+        let memory_reserve_mb = wanted_reserve_mb.min(reserve_ceiling_mb);
+        let memory_max_mb = total_mb
+            .saturating_sub(memory_reserve_mb)
+            .max(MIN_MEMORY_MAX_MB);
+        let memory_high_mb = (memory_max_mb.saturating_mul(4) / 5).max(MIN_MEMORY_FLOOR_MB);
         let max_agent_peers = (cpus / 4).clamp(1, 64);
         Self {
             max_agent_peers,
@@ -132,12 +152,18 @@ impl Settings {
         self.normalize();
     }
 
-    /// Keeps the soft mark at or below the hard maximum.
+    /// Keeps a budget inside the bounds [`Self::validate`] states, so a value
+    /// read from a saved file, an environment override, or a decoded frame
+    /// never leaves an effective budget its own validator refuses.
     fn normalize(&mut self) {
         self.max_agent_peers = self.max_agent_peers.clamp(1, 64);
-        self.memory_max_mb = self.memory_max_mb.max(64);
-        self.memory_high_mb = self.memory_high_mb.clamp(64, self.memory_max_mb);
-        self.memory_reserve_mb = self.memory_reserve_mb.max(64);
+        self.memory_max_mb = self.memory_max_mb.max(MIN_MEMORY_MAX_MB);
+        self.memory_high_mb = self
+            .memory_high_mb
+            .clamp(MIN_MEMORY_FLOOR_MB, self.memory_max_mb);
+        self.memory_reserve_mb = self
+            .memory_reserve_mb
+            .clamp(MIN_MEMORY_FLOOR_MB, self.memory_max_mb.saturating_sub(1));
     }
 
     pub fn to_json(&self) -> Value {
@@ -167,14 +193,22 @@ impl Settings {
         if self.max_agent_peers == 0 || self.max_agent_peers > 64 {
             return Err("Max concurrent agents must be between 1 and 64.".to_string());
         }
-        if self.memory_max_mb < 128 {
-            return Err("Memory max must be at least 128 MB.".to_string());
+        if self.memory_max_mb < MIN_MEMORY_MAX_MB {
+            return Err(format!(
+                "Memory max must be at least {MIN_MEMORY_MAX_MB} MB."
+            ));
         }
-        if self.memory_high_mb < 64 || self.memory_high_mb > self.memory_max_mb {
-            return Err("Memory high must be at least 64 MB and at most memory max.".to_string());
+        if self.memory_high_mb < MIN_MEMORY_FLOOR_MB || self.memory_high_mb > self.memory_max_mb {
+            return Err(format!(
+                "Memory high must be at least {MIN_MEMORY_FLOOR_MB} MB and at most memory max."
+            ));
         }
-        if self.memory_reserve_mb < 64 || self.memory_reserve_mb >= self.memory_max_mb {
-            return Err("Reserve must be at least 64 MB and below memory max.".to_string());
+        if self.memory_reserve_mb < MIN_MEMORY_FLOOR_MB
+            || self.memory_reserve_mb >= self.memory_max_mb
+        {
+            return Err(format!(
+                "Reserve must be at least {MIN_MEMORY_FLOOR_MB} MB and below memory max."
+            ));
         }
         Ok(())
     }
@@ -2076,6 +2110,25 @@ mod tests {
         assert_eq!(small.memory_max_mb, 3_072);
         assert_eq!(small.memory_high_mb, 2_457);
         assert_eq!(small.max_agent_peers, 1);
+    }
+
+    #[test]
+    fn a_loaded_budget_is_normalized_into_the_validator_bounds() {
+        // A frame or a saved file that carries values under the floors loads
+        // inside them, so the effective budget is never one `validate` refuses.
+        let mut settings = Settings {
+            max_agent_peers: 8,
+            memory_high_mb: 64,
+            memory_max_mb: 64,
+            memory_reserve_mb: 512,
+        };
+        settings.normalize();
+        assert_eq!(settings.memory_max_mb, MIN_MEMORY_MAX_MB);
+        assert_eq!(settings.memory_reserve_mb, MIN_MEMORY_MAX_MB - 1);
+        assert_eq!(settings.memory_high_mb, MIN_MEMORY_FLOOR_MB);
+        assert_eq!(settings.validate(), Ok(()));
+        let decoded = Settings::from_value(&settings.to_json()).expect("the frame decodes");
+        assert_eq!(decoded, settings);
     }
 
     #[test]

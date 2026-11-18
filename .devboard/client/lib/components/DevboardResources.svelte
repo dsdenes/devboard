@@ -89,27 +89,16 @@
     );
   });
 
-  /** The bounds the server enforces; an invalid draft never leaves the page. */
+  /**
+   * Sends the draft. The bounds have one owner, the server: a value it refuses
+   * comes back as its refusal, so the page never refuses a budget the server
+   * would accept. Only a draft that is not four whole numbers stays here,
+   * because it is not a budget at all.
+   */
   function save(): void {
     const values = draft();
     if (values === null) {
       error = "Every setting must be a whole number.";
-      return;
-    }
-    if (values.maxAgentPeers < 1 || values.maxAgentPeers > 64) {
-      error = "Max concurrent agents must be between 1 and 64.";
-      return;
-    }
-    if (values.memoryMaxMb < 128) {
-      error = "Memory max must be at least 128 MB.";
-      return;
-    }
-    if (values.memoryHighMb < 64 || values.memoryHighMb > values.memoryMaxMb) {
-      error = "Memory high must be at least 64 MB and at most memory max.";
-      return;
-    }
-    if (values.memoryReserveMb < 64 || values.memoryReserveMb >= values.memoryMaxMb) {
-      error = "Reserve must be at least 64 MB and below memory max.";
       return;
     }
     error = null;

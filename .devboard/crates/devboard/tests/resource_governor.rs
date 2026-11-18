@@ -853,6 +853,60 @@ fn settings_persist_across_restart() {
 /* The transient slice                                                       */
 /* ------------------------------------------------------------------------ */
 
+#[test]
+fn a_derived_budget_is_one_its_own_validator_accepts() {
+    // Every host from the smallest budget that can carry both floors (192 MB:
+    // a 128 MB maximum and the 64 MB reserve) through 4 GiB derives a budget
+    // that passes the same check a save applies. The 2048 MB row is the host
+    // that used to derive reserve 1024 and max 1024 and refuse its own frame.
+    for total_mb in 192..=4_096 {
+        for cpus in [2, 8] {
+            let derived = Settings::derive(total_mb, cpus);
+            assert_eq!(
+                derived.validate_for(total_mb),
+                Ok(()),
+                "{total_mb} MB on {cpus} CPUs derived {derived:?}"
+            );
+            assert!(
+                derived.memory_max_mb >= 128,
+                "{total_mb} MB derived a maximum under the floor: {derived:?}"
+            );
+            assert!(
+                derived.memory_reserve_mb < derived.memory_max_mb,
+                "{total_mb} MB derived a reserve that is not below the maximum: {derived:?}"
+            );
+        }
+    }
+    let two_gib = Settings::derive(2_048, 8);
+    assert!(
+        two_gib.memory_max_mb >= 128 && two_gib.memory_reserve_mb < two_gib.memory_max_mb,
+        "a 2 GiB host derives a usable budget: {two_gib:?}"
+    );
+}
+
+#[test]
+fn a_two_gib_host_accepts_the_budget_it_preseeded() {
+    let directory = scratch("preseeded");
+    let governor = in_memory_governor(&directory, FakeMemory::new(2_048, 1_500, 8), &[]);
+    let preseeded = governor.settings();
+    assert_eq!(preseeded, governor.defaults());
+    // The Resources page seeds its inputs from `effective` and sends them back
+    // unchanged; the same values must pass the save path.
+    let saved = governor
+        .apply_update(None, None, None, None)
+        .expect("the preseeded budget is one the server accepts");
+    assert_eq!(saved, preseeded);
+    assert_eq!(governor.settings(), preseeded);
+    assert!(
+        std::fs::read_to_string(directory.join("resources").join("settings.json")).is_ok(),
+        "the accepted save reached the settings file"
+    );
+}
+
+/* ------------------------------------------------------------------------ */
+/* The transient slice                                                       */
+/* ------------------------------------------------------------------------ */
+
 fn slice_budget() -> Settings {
     Settings {
         max_agent_peers: 2,
