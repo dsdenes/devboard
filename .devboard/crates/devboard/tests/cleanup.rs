@@ -715,6 +715,7 @@ fn the_host_guard_its_owner_record_and_the_launcher_control_files_survive_every_
             pid: std::process::id(),
             port: 8080,
             repo_dir: host.to_string_lossy().into_owned(),
+            harness: host.join(".devboard").to_string_lossy().into_owned(),
             state_dir: state.to_string_lossy().into_owned(),
             started_at: own_started_at(),
         },
