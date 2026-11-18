@@ -81,6 +81,30 @@ test("a stopped worker names the dashboard's own tracker sync failure", () => {
   );
 });
 
+test("a paused worker's frozen poll error yields to the dashboard's own sync", () => {
+  // Pause stops the worker's tracker read, so its last poll error is history:
+  // the Overview's error line must come from the read the dashboard makes.
+  issues.handleEvent(
+    snapshot({
+      lifecycle: "paused",
+      enabled: true,
+      attached: true,
+      paused: true,
+      sync: {
+        intervalMs: 30000,
+        lastSyncAt: "2026-11-05T08:57:10.477Z",
+        error: "Gitea open-issue read for acme/app failed: connection refused",
+      },
+    }),
+  );
+
+  const view = render(IssuesWorkspace, { props: { tab: OVERVIEW } });
+
+  expect(view.getByTestId("issues-poll-error").textContent?.trim()).toBe(
+    "Gitea open-issue read for acme/app failed: connection refused",
+  );
+});
+
 test("a live worker still shows its poll error", () => {
   issues.handleEvent(
     snapshot({

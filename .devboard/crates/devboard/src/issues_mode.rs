@@ -3652,7 +3652,7 @@ impl IssuesBridge {
     ///
     /// A live worker reads the tracker on its own interval and publishes the
     /// result in its state. The bridge reads the tracker only when no such
-    /// worker exists, so one interval costs one forge read, not two.
+    /// worker exists, or when that worker is paused and reads nothing.
     fn attached_worker_state(&self) -> Option<IssuesState> {
         let owners: Vec<LockOwner> = self
             .owners()
@@ -4100,8 +4100,15 @@ impl IssuesBridge {
                 .unwrap_or(Value::Null),
         );
         // A live worker's published queue is the interval's single read: the
-        // bridge shows it instead of reading the same issues again.
-        let queue = self.served_queue(attached.then(|| newest.first()).flatten(), &live_states);
+        // bridge shows it instead of reading the same issues again. A paused
+        // worker publishes no read, so its queue is history and the rows are
+        // the dashboard's own.
+        let published = if attached {
+            newest.iter().find(|state| !state.paused)
+        } else {
+            None
+        };
+        let queue = self.served_queue(published, &live_states);
         map.insert(
             "queue".into(),
             Value::Array(
@@ -4165,7 +4172,9 @@ impl IssuesBridge {
             updated_at.map(Value::String).unwrap_or(Value::Null),
         );
         map.insert("workers".into(), Value::Array(workers));
-        let sync = match attached.then(|| newest.first()).flatten() {
+        // The same read answers for the sync line: a live worker's poll, or the
+        // dashboard's own tracker view while no unpaused worker publishes one.
+        let sync = match published {
             Some(state) => SyncView {
                 interval_ms: state.poll.interval_ms,
                 last_sync_at: state.poll.last_poll_at.clone(),
@@ -5269,11 +5278,14 @@ impl IssuesBridge {
         // once per interval and publishes the result, and the bridge projects
         // that result. Reading the same issues here made every interval cost
         // two forge requests, each one a token use on the forge's busiest
-        // table.
+        // table. A paused worker makes no read of its own, so the bridge reads
+        // and publishes the queue for as long as the pause holds.
         if let Some(state) = self.attached_worker_state() {
-            self.publish_worker_read(&state);
-            self.refresh();
-            return;
+            if !state.paused {
+                self.publish_worker_read(&state);
+                self.refresh();
+                return;
+            }
         }
         // A page polls its resource once a second; the tracker is read once
         // per interval no matter how often a read arrives.
@@ -6461,6 +6473,13 @@ impl IssuesWorker {
         }
         if self.draining && self.active.is_empty() && !self.polling {
             self.stop().await;
+            return;
+        }
+        // Pause has one meaning: a paused worker makes no tracker read. The
+        // dashboard's own sync serves the queue while it holds, so the panel's
+        // `Polling paused` names the loop that stopped, its poll fields are
+        // history, and no forge request keeps spending a rate-limited token.
+        if self.state.paused {
             return;
         }
         if std::time::Instant::now() < self.next_poll_due {
@@ -10269,6 +10288,53 @@ mod tests {
             worker.apply(command).await;
         }
         assert!(!worker.state.paused, "the later Resume holds");
+    }
+
+    /// A tracker read stub that counts every read it answered.
+    fn counting_read(reads: Arc<AtomicU64>, answer: PollResult) -> TrackerRead {
+        Arc::new(move |_request: TrackerReadRequest| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            let answer = answer.clone();
+            Box::pin(async move { answer }) as TrackerReadFuture
+        })
+    }
+
+    /// Pause is the operator's stop of forge traffic, not only of new starts:
+    /// one paused worker kept one authenticated read per interval, so the panel
+    /// said `Polling paused` while the same loop kept spending the rate limit.
+    #[tokio::test]
+    async fn a_paused_worker_makes_no_tracker_read_until_resume() {
+        let (repo, state) = unit_root("pause-read");
+        let mut worker = worker(&repo, &state);
+        let reads = Arc::new(AtomicU64::new(0));
+        worker.list_issues =
+            counting_read(Arc::clone(&reads), PollResult::NotModified { etag: None });
+
+        worker.apply(IssuesCommand::Pause).await;
+        worker.next_poll_due = std::time::Instant::now();
+        worker.tick().await;
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "a paused worker read the tracker"
+        );
+        assert_eq!(worker.state.poll.last_poll_at, None, "the poll is frozen");
+
+        worker.apply(IssuesCommand::Check).await;
+        assert_eq!(
+            worker.state.notice.as_deref(),
+            Some("Check now is unavailable while paused."),
+            "Check now still answers its paused refusal"
+        );
+
+        worker.apply(IssuesCommand::Resume).await;
+        worker.tick().await;
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "Resume restores the interval read on the next tick"
+        );
+        assert!(worker.state.poll.last_poll_at.is_some());
     }
 }
 

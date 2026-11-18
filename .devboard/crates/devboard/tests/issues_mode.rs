@@ -2377,6 +2377,83 @@ async fn one_tracker_read_per_interval_serves_the_worker_and_the_bridge() {
     assert!(snapshot["sync"]["lastSyncAt"].is_string());
 }
 
+/// Pause stops the worker's tracker read, so the dashboard takes it over.
+///
+/// A paused worker makes no read, and the bridge deferred to the attached
+/// worker whenever one was live: the open queue froze at the pause and the
+/// worker's last poll error kept looking current while the panel said
+/// `Polling paused`. The bridge now reads for itself while that worker is
+/// paused, and that read is what the Overview's sync reports.
+#[tokio::test]
+async fn a_paused_worker_leaves_the_tracker_read_to_the_dashboard() {
+    let (repo, state) = scratch("paused-read");
+    let owner = spawn_owner(&repo, &state);
+    let mut document = state_document(&repo, "paused", json!([]));
+    document["paused"] = json!(true);
+    document["pauseSource"] = json!("operator");
+    document["worker"] = attached_worker(&owner.pid, &state);
+    document["poll"]["lastPollAt"] = json!("2026-01-01T00:00:05.000Z");
+    document["poll"]["error"] = json!("the frozen poll error");
+    write_state(&repo, &state, &document);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let mut settings = options(
+        &repo,
+        &state,
+        hooks(
+            Arc::new(|| PreflightResult::Ok {
+                repository: "acme/app".into(),
+            }),
+            Arc::new(|_argv, _env| Some(42)),
+            Arc::new(|_request| Ok(())),
+        ),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    settings.hooks.tracker_read = Arc::new(move |_request: TrackerReadRequest| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            PollResult::Issues {
+                issues: vec![Issue {
+                    number: 12,
+                    title: "Twelve".into(),
+                    url: "https://example.test/12".into(),
+                    created_at: "2026-01-02T00:00:00.000Z".into(),
+                    labels: Vec::new(),
+                    body: None,
+                }],
+                etag: Some("etag-paused".into()),
+            }
+        })
+    });
+    let bridge = IssuesBridge::new(settings);
+
+    bridge.sync_now().await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the dashboard read for the paused worker"
+    );
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot["lifecycle"], "paused");
+    assert_eq!(
+        snapshot["queue"][0]["number"],
+        json!(12),
+        "the queue refreshed during the pause"
+    );
+    assert_eq!(snapshot["sync"]["error"], Value::Null);
+    assert!(
+        snapshot["sync"]["lastSyncAt"].is_string(),
+        "the Overview reports the dashboard's own read"
+    );
+    assert_eq!(
+        snapshot["poll"]["error"],
+        json!("the frozen poll error"),
+        "the worker's poll stays history"
+    );
+}
+
 /* ------------------------------------------------------------------------ */
 /* Start answers                                                             */
 /* ------------------------------------------------------------------------ */

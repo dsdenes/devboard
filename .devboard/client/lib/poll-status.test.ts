@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { IssuesSnapshot } from "./types";
 import { issuesIndicatorTitle, issuesLabel, versionLabel } from "./issues-label";
-import { pollAge, pollInterval, pollStatus } from "./poll-status";
+import { pollAge, pollInterval, pollingPaused, pollStatus } from "./poll-status";
 
 const AT = Date.parse("2026-10-27T14:03:24.000Z");
 
@@ -36,6 +36,19 @@ function snapshot(overrides: Partial<IssuesSnapshot> = {}): IssuesSnapshot {
     ...overrides,
   };
 }
+
+describe("paused family", () => {
+  test("names the pause from the flag or either lifecycle half", () => {
+    // The worker's tick gates on `paused`, and the panel's line and its poll
+    // fields both read this one predicate: they cannot disagree about whether
+    // a tracker read is still happening.
+    expect(pollingPaused(snapshot({ paused: true }))).toBe(true);
+    expect(pollingPaused(snapshot({ lifecycle: "paused", paused: false }))).toBe(true);
+    expect(pollingPaused(snapshot({ lifecycle: "pausing", paused: false }))).toBe(true);
+    expect(pollingPaused(snapshot())).toBe(false);
+    expect(pollingPaused(null)).toBe(false);
+  });
+});
 
 describe("poll interval", () => {
   test("keeps sub-second cadences in milliseconds and whole seconds unrounded", () => {

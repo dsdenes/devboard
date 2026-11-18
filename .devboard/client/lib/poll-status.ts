@@ -65,6 +65,19 @@ function syncStatus(sync: IssuesSyncState | undefined, now: number): PollStatus 
 }
 
 /**
+ * Whether the family is paused. A paused worker makes no tracker read of its
+ * own, so its poll fields are history until Resume: the dashboard's own tracker
+ * sync is what reports while the pause holds.
+ */
+export function pollingPaused(snapshot: IssuesSnapshot | null): boolean {
+  return (
+    (snapshot?.paused ?? false) ||
+    snapshot?.lifecycle === "paused" ||
+    snapshot?.lifecycle === "pausing"
+  );
+}
+
+/**
  * The Automation panel subtitle. It states whether the worker is polling, how
  * often, and when it last checked; the exact timestamps stay in the tooltip so
  * a precise time is one hover away without cluttering the header.
@@ -86,7 +99,7 @@ export function pollStatus(snapshot: IssuesSnapshot | null, now: number): PollSt
     return { tone: "idle", text: "Not polling", title: "The issues worker is stopped." };
   }
 
-  if (snapshot.paused || snapshot.lifecycle === "paused" || snapshot.lifecycle === "pausing") {
+  if (pollingPaused(snapshot)) {
     return { tone: "idle", text: "Polling paused", title };
   }
 

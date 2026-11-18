@@ -11,7 +11,7 @@
   import IssuesAgentLog from "./IssuesAgentLog.svelte";
   import IssuesQuestion from "./IssuesQuestion.svelte";
   import PageHeader from "./ui/page-header.svelte";
-  import { pollStatus } from "../poll-status";
+  import { pollStatus, pollingPaused } from "../poll-status";
 
   interface Props {
     tab: WorkspaceTab | null;
@@ -54,9 +54,13 @@
   const poll = $derived(pollStatus(issues.snapshot, now));
   // Poll fields belong to a live worker. A stopped family leaves the newest
   // state on disk for history, and its last poll error is not a current
-  // failure; the dashboard's own tracker sync reports while stopped.
+  // failure; the dashboard's own tracker sync reports while stopped. A paused
+  // worker makes no tracker read either, so its frozen poll is history too and
+  // the same sync reports while the pause holds.
   const workerLive = $derived(
-    (issues.snapshot?.enabled ?? false) && (issues.snapshot?.lifecycle ?? "stopped") !== "stopped",
+    (issues.snapshot?.enabled ?? false) &&
+      (issues.snapshot?.lifecycle ?? "stopped") !== "stopped" &&
+      !pollingPaused(issues.snapshot),
   );
   // The Overview shows one tracker error, whichever half of the product read
   // the origin: a live worker's poll, or the dashboard's own sync while the
