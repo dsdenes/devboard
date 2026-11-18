@@ -165,6 +165,7 @@ impl GoalDraftQuestion {
             .map(|option| {
                 let mut record = Map::new();
                 record.insert("label".into(), Value::String(option.label.clone()));
+                record.insert("value".into(), Value::String(option.value.clone()));
                 if let Some(description) = &option.description {
                     record.insert("description".into(), Value::String(description.clone()));
                 }
@@ -437,6 +438,11 @@ fn parse_question(value: Option<&Value>) -> Option<Option<GoalDraftQuestion>> {
     for option in options {
         let option = option.as_object()?;
         let label = option.get("label")?.as_str()?.to_string();
+        let value = option
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| label.clone());
         let description = option
             .get("description")
             .and_then(Value::as_str)
@@ -447,6 +453,7 @@ fn parse_question(value: Option<&Value>) -> Option<Option<GoalDraftQuestion>> {
             .unwrap_or(false);
         parsed.push(crate::acp::AcpQuestionOption {
             label,
+            value,
             description,
             recommended,
         });
@@ -2084,6 +2091,7 @@ mod tests {
                 message: "Choose".to_string(),
                 options: vec![crate::acp::AcpQuestionOption {
                     label: "Alpha".to_string(),
+                    value: "Alpha".to_string(),
                     description: Some("The first outcome.".to_string()),
                     recommended: true,
                 }],

@@ -32,7 +32,14 @@ const CLIENT_VERSION: &str = "0.1.0";
 /// One selectable answer a question offers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpQuestionOption {
+    /// The display text the developer selects.
     pub label: String,
+    /// The machine value the peer's schema declares for this option: the
+    /// `const`/`value` member when the entry has one, else the label. An
+    /// answer sends this instead of the label, because a schema can name an
+    /// option `{"const": "a", "title": "Alpha"}`.
+    #[serde(default)]
+    pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// True for the option the peer's schema default names, or the first one
@@ -1041,27 +1048,27 @@ fn answer_content(question: &AcpQuestion, value: &str) -> Map<String, Value> {
     let keys: Vec<String> = question.properties.keys().cloned().collect();
     let choice_keys: Vec<String> = keys
         .iter()
-        .filter(|key| !property_labels(&question.properties[key.as_str()]).is_empty())
+        .filter(|key| !property_options(&question.properties[key.as_str()]).is_empty())
         .cloned()
         .collect();
 
-    let matching_key = choice_keys
-        .iter()
-        .find(|key| {
-            property_labels(&question.properties[key.as_str()])
-                .iter()
-                .any(|label| label == value)
-        })
-        .cloned();
-    if let Some(key) = matching_key {
+    // The developer submits the option's display label; the peer receives the
+    // schema's own value, which need not equal it.
+    let matching = choice_keys.iter().find_map(|key| {
+        property_options(&question.properties[key.as_str()])
+            .into_iter()
+            .find(|option| option.label == value)
+            .map(|option| (key.clone(), option.value))
+    });
+    if let Some((key, chosen)) = matching {
         let is_array = as_record(&question.properties[&key])
             .and_then(|record| record.get("type"))
             .and_then(Value::as_str)
             == Some("array");
         let entry = if is_array {
-            Value::Array(vec![Value::String(value.to_string())])
+            Value::Array(vec![Value::String(chosen)])
         } else {
-            Value::String(value.to_string())
+            Value::String(chosen)
         };
         let mut content = Map::new();
         content.insert(key, entry);
@@ -1115,8 +1122,9 @@ fn question_options(properties: &Map<String, Value>) -> Vec<AcpQuestionOption> {
                 continue;
             }
             options.push(AcpQuestionOption {
-                recommended: recommended == Some(option.label.as_str()),
+                recommended: recommended == Some(option.value.as_str()),
                 label: option.label,
+                value: option.value,
                 description: option.description,
             });
         }
@@ -1134,6 +1142,7 @@ fn question_options(properties: &Map<String, Value>) -> Vec<AcpQuestionOption> {
 
 struct ParsedOption {
     label: String,
+    value: String,
     description: Option<String>,
 }
 
@@ -1141,6 +1150,7 @@ fn parsed_option(entry: &Value) -> Option<ParsedOption> {
     if let Value::String(label) = entry {
         return Some(ParsedOption {
             label: label.clone(),
+            value: label.clone(),
             description: None,
         });
     }
@@ -1149,12 +1159,23 @@ fn parsed_option(entry: &Value) -> Option<ParsedOption> {
         .iter()
         .find_map(|key| record.get(*key).and_then(Value::as_str))?
         .to_string();
+    // The schema's machine value is the `const` (or `value`) member; an entry
+    // that names only a display title answers with that title.
+    let value = ["const", "value"]
+        .iter()
+        .find_map(|key| record.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(|| label.clone());
     let description = record
         .get("description")
         .and_then(Value::as_str)
         .filter(|description| !description.trim().is_empty())
         .map(str::to_string);
-    Some(ParsedOption { label, description })
+    Some(ParsedOption {
+        label,
+        value,
+        description,
+    })
 }
 
 fn property_options(property: &Value) -> Vec<ParsedOption> {
@@ -1195,13 +1216,6 @@ fn property_options(property: &Value) -> Vec<ParsedOption> {
         }
     }
     options
-}
-
-fn property_labels(property: &Value) -> Vec<String> {
-    property_options(property)
-        .into_iter()
-        .map(|option| option.label)
-        .collect()
 }
 
 fn as_record(value: &Value) -> Option<&Map<String, Value>> {
@@ -1289,4 +1303,107 @@ fn signal_kill() -> i32 {
 #[cfg(not(unix))]
 fn signal_kill() -> i32 {
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn question(properties: Value) -> AcpQuestion {
+        let properties = as_record(&properties).expect("an object").clone();
+        AcpQuestion {
+            id: AcpId::Number(1),
+            message: "Choose an answer".to_string(),
+            options: question_options(&properties),
+            properties,
+            required: Some(vec!["value".to_string()]),
+        }
+    }
+
+    #[test]
+    fn an_option_whose_title_differs_from_its_const_answers_with_the_const() {
+        let question = question(json!({
+            "value": {
+                "type": "string",
+                "default": "a",
+                "oneOf": [
+                    { "const": "a", "title": "Alpha" },
+                    { "const": "b", "title": "Beta" },
+                ],
+            },
+        }));
+        assert_eq!(question.options[0].label, "Alpha");
+        assert_eq!(question.options[0].value, "a");
+        assert!(question.options[0].recommended);
+        assert_eq!(question.options[1].value, "b");
+        assert!(!question.options[1].recommended);
+        let content = answer_content(&question, "Alpha");
+        assert_eq!(Value::Object(content), json!({ "value": "a" }));
+    }
+
+    #[test]
+    fn an_option_whose_title_equals_its_const_answers_unchanged() {
+        let question = question(json!({
+            "value": {
+                "type": "string",
+                "default": "Beta",
+                "oneOf": [
+                    { "const": "Alpha", "title": "Alpha" },
+                    { "const": "Beta", "title": "Beta" },
+                ],
+            },
+        }));
+        assert!(question.options[1].recommended);
+        let content = answer_content(&question, "Beta");
+        assert_eq!(Value::Object(content), json!({ "value": "Beta" }));
+    }
+
+    #[test]
+    fn a_plain_enum_string_is_both_label_and_value() {
+        let question = question(json!({
+            "value": { "type": "string", "enum": ["main", "other"] },
+        }));
+        assert_eq!(question.options[0].label, "main");
+        assert_eq!(question.options[0].value, "main");
+        let content = answer_content(&question, "other");
+        assert_eq!(Value::Object(content), json!({ "value": "other" }));
+    }
+
+    #[test]
+    fn a_free_text_answer_still_goes_to_the_other_key_verbatim() {
+        let question = question(json!({
+            "value": {
+                "type": "string",
+                "oneOf": [
+                    { "const": "a", "title": "Alpha" },
+                    { "const": "b", "title": "Beta" },
+                ],
+            },
+            "value__other": { "type": "string" },
+        }));
+        let content = answer_content(&question, "Something else");
+        assert_eq!(
+            Value::Object(content),
+            json!({ "value__other": "Something else" })
+        );
+    }
+
+    #[test]
+    fn an_array_choice_answers_with_the_options_value() {
+        let question = question(json!({
+            "value": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "oneOf": [
+                        { "const": "a", "title": "Alpha" },
+                        { "const": "b", "title": "Beta" },
+                    ],
+                },
+            },
+        }));
+        assert_eq!(question.options[1].value, "b");
+        let content = answer_content(&question, "Beta");
+        assert_eq!(Value::Object(content), json!({ "value": ["b"] }));
+    }
 }
