@@ -206,7 +206,19 @@ where
         );
         return;
     }
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            let reason = format!("DESIGN.md could not be read: {error}");
+            let mut check = Map::new();
+            check.insert("status".into(), json!("unverified"));
+            check.insert("path".into(), json!("DESIGN.md"));
+            check.insert("reason".into(), Value::String(reason.clone()));
+            report.set_check("designMd", check);
+            report.add_unverified("designMd", "readable DESIGN.md", &reason, "");
+            return;
+        }
+    };
     let layout = check_layout(&text);
     let lint = lint_report(root, lint);
     let mut details = Vec::new();
@@ -800,10 +812,16 @@ fn a2ui_check(report: &mut Report, root: &Path) {
             }
         }
     } else if version_path.is_file() {
-        raw = std::fs::read_to_string(&version_path)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        match std::fs::read_to_string(&version_path) {
+            Ok(text) => raw = text.trim().to_string(),
+            Err(error) => {
+                a2ui_unverified(
+                    report,
+                    format!(".design/a2ui/version could not be read: {error}"),
+                );
+                return;
+            }
+        }
     }
     let version = match raw.strip_prefix('v').or_else(|| raw.strip_prefix('V')) {
         Some(stripped) => stripped,
@@ -821,6 +839,14 @@ fn a2ui_check(report: &mut Report, root: &Path) {
         json!("Step 3 writes A2UI JSONL plus a standalone wireframe."),
     );
     report.set_check("a2ui", check);
+}
+
+fn a2ui_unverified(report: &mut Report, reason: String) {
+    let mut check = Map::new();
+    check.insert("status".into(), json!("unverified"));
+    check.insert("reason".into(), Value::String(reason.clone()));
+    report.set_check("a2ui", check);
+    report.add_unverified("a2ui", "readable A2UI version pin", &reason, "");
 }
 
 fn a2ui_invalid(report: &mut Report, reason: String) {

@@ -32,6 +32,14 @@ impl Fixture {
         std::fs::write(path, contents).expect("the fixture file");
     }
 
+    fn write_bytes(&self, relative: &str, contents: &[u8]) {
+        let path = self.root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("the fixture parent");
+        }
+        std::fs::write(path, contents).expect("the fixture file");
+    }
+
     fn preflight(&self) -> Value {
         preflight(&self.root)
     }
@@ -360,6 +368,46 @@ fn a_lint_that_cannot_produce_json_is_unverified() {
 }
 
 #[test]
+fn an_unreadable_design_md_reports_the_read_error() {
+    let fixture = Fixture::new("design-md-unreadable");
+    fixture.write_bytes(
+        "DESIGN.md",
+        b"# Product design\n\n## Layout\n\nBase unit 4px; padding 16px, gaps 8px.\n\xff\n",
+    );
+    let result = fixture.preflight();
+    let design = &result["checks"]["designMd"];
+    assert_eq!(design["status"], json!("unverified"));
+    assert_eq!(design["path"], json!("DESIGN.md"));
+    let reason = design["reason"].as_str().expect("a read error");
+    assert!(
+        reason.starts_with("DESIGN.md could not be read: "),
+        "reason: {reason}"
+    );
+    assert!(reason.contains("valid UTF-8"), "reason: {reason}");
+    assert!(
+        !reason.contains("missing a ## Layout or ## Layout & Spacing section"),
+        "reason: {reason}"
+    );
+    assert!(
+        result["missing"]
+            .as_array()
+            .expect("missing entries")
+            .iter()
+            .all(|entry| entry["id"] != json!("designMd")),
+        "missing: {}",
+        result["missing"]
+    );
+    let unverified = result["unverified"]
+        .as_array()
+        .expect("unverified entries")
+        .iter()
+        .find(|entry| entry["id"] == json!("designMd"))
+        .expect("the designMd unverified entry");
+    assert_eq!(unverified["requirement"], json!("readable DESIGN.md"));
+    assert_eq!(unverified["detail"], json!(reason));
+}
+
+#[test]
 fn a_json_number_a2ui_version_is_rejected_without_coercion() {
     let fixture = Fixture::new("a2ui-numeric-version");
     fixture.write(".design/a2ui/config.json", r#"{"version": 1.0}"#);
@@ -454,6 +502,45 @@ fn an_a2ui_version_file_is_trimmed_and_unprefixed() {
             "note": "Step 3 writes A2UI JSONL plus a standalone wireframe.",
         })
     );
+}
+
+#[test]
+fn an_unreadable_a2ui_version_file_reports_the_read_error() {
+    let fixture = Fixture::new("a2ui-version-unreadable");
+    fixture.write_bytes(".design/a2ui/version", b"v0.9.1\xff\n");
+    let result = fixture.preflight();
+    let a2ui = &result["checks"]["a2ui"];
+    assert_eq!(a2ui["status"], json!("unverified"));
+    let reason = a2ui["reason"].as_str().expect("a read error");
+    assert!(
+        reason.starts_with(".design/a2ui/version could not be read: "),
+        "reason: {reason}"
+    );
+    assert!(reason.contains("valid UTF-8"), "reason: {reason}");
+    assert!(
+        !reason.contains("unsupported A2UI version"),
+        "reason: {reason}"
+    );
+    assert!(
+        result["missing"]
+            .as_array()
+            .expect("missing entries")
+            .iter()
+            .all(|entry| entry["id"] != json!("a2ui")),
+        "missing: {}",
+        result["missing"]
+    );
+    let unverified = result["unverified"]
+        .as_array()
+        .expect("unverified entries")
+        .iter()
+        .find(|entry| entry["id"] == json!("a2ui"))
+        .expect("the a2ui unverified entry");
+    assert_eq!(
+        unverified["requirement"],
+        json!("readable A2UI version pin")
+    );
+    assert_eq!(unverified["detail"], json!(reason));
 }
 
 #[test]
