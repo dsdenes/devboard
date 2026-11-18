@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { connection } from "../connection.svelte";
   import { issues, isGoalIssue } from "../issues.svelte";
   import { askingLabel, versionLabel } from "../issues-label";
   import { isProcessing, queueCounts, queueRowState, queueSummary } from "../issues-queue";
@@ -182,6 +183,7 @@
               variant="outline"
               label="Pause"
               evidence={() => issues.lifecycle}
+              refusal={() => connection.refusalRevision("pauseIssues")}
               command={() => issues.pause()}
               data-testid="issues-pause"
               data-command="issues.pause"
@@ -193,6 +195,7 @@
               variant="outline"
               label="Resume"
               evidence={() => issues.lifecycle}
+              refusal={() => connection.refusalRevision("resumeIssues")}
               command={() => issues.resume()}
               data-testid="issues-resume"
               data-command="issues.resume"
@@ -204,6 +207,7 @@
               variant="destructive"
               label="Stop"
               evidence={() => issues.lifecycle}
+              refusal={() => connection.refusalRevision("stopIssues")}
               command={() => issues.stop()}
               data-testid="issues-stop"
               data-command="issues.stop"
@@ -215,6 +219,7 @@
               variant="outline"
               label="Check now"
               evidence={() => issues.snapshot}
+              refusal={() => connection.refusalRevision("checkIssues")}
               command={() => issues.check()}
               data-testid="issues-check-now"
               data-command="issues.check"
