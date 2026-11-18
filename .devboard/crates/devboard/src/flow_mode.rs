@@ -3358,7 +3358,9 @@ impl FlowMode {
         match outcome {
             Ok(DetachedRunOutcome::Completed) => self.finish_goal_creation(true),
             Ok(DetachedRunOutcome::Preserved) => {}
-            Ok(DetachedRunOutcome::Attached) | Ok(DetachedRunOutcome::Stopped) => {
+            Ok(DetachedRunOutcome::Attached)
+            | Ok(DetachedRunOutcome::Stopped)
+            | Ok(DetachedRunOutcome::Cancelled) => {
                 self.finish_goal_creation(false);
             }
             Err(error) => {
@@ -3734,7 +3736,9 @@ impl FlowMode {
                 self.finish_implementation();
             }
             Ok(DetachedRunOutcome::Preserved) => {}
-            Ok(DetachedRunOutcome::Attached) | Ok(DetachedRunOutcome::Stopped) => {
+            Ok(DetachedRunOutcome::Attached)
+            | Ok(DetachedRunOutcome::Stopped)
+            | Ok(DetachedRunOutcome::Cancelled) => {
                 self.finish_implementation();
             }
             Err(error) => {

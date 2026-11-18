@@ -9154,7 +9154,9 @@ async fn run_agent(
     }
     match outcome {
         Ok(DetachedRunOutcome::Completed) | Ok(DetachedRunOutcome::Attached) => {}
-        Ok(DetachedRunOutcome::Stopped) | Ok(DetachedRunOutcome::Preserved) => return false,
+        Ok(DetachedRunOutcome::Stopped)
+        | Ok(DetachedRunOutcome::Preserved)
+        | Ok(DetachedRunOutcome::Cancelled) => return false,
         Err(message) => {
             let run = lock(&mode.state).run.clone();
             if let Some(run) = run.filter(|run| still_current(mode, &run.run_id, request)) {

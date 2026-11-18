@@ -1292,6 +1292,173 @@ async fn ask_refuses_before_a_process_without_a_provider() {
     );
 }
 
+/// The durable path `AskMode` uses for one conversation id.
+fn conversation_file(scratch: &Scratch, id: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let repo = std::path::absolute(scratch.repo()).expect("an absolute repository");
+    let key = hex::encode(Sha256::digest(id.as_bytes()));
+    scratch
+        .state()
+        .join("ask")
+        .join(devboard::journal::repo_key(&repo))
+        .join(format!("{}.json", &key[..32]))
+}
+
+/// A close that lands before the first ask for its id admitted is
+/// authoritative: the ask that follows creates no conversation, starts no
+/// agent, and answers the refusal instead.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn ask_after_a_close_admits_nothing() {
+    let _env = env_guard();
+    let scratch = Scratch::new("close-before-ask");
+    let log = scratch.path.join("agent.log");
+    let app = app_for(&scratch, stub_command(&log));
+    let (conn, mut inbox) = connection();
+    let id = "conversation-closed";
+
+    // The panel closes while the ask's provider selection is still running:
+    // after this close the id exists only as the close itself.
+    app.command(
+        &conn,
+        Command::CloseAsk {
+            conversation_id: Some(json!(id)),
+        },
+    )
+    .await;
+    assert!(drain(&mut inbox).is_empty(), "a close answers no frame");
+
+    app.command(
+        &conn,
+        Command::Ask {
+            conversation_id: Some(json!(id)),
+            question: Some(json!("What does the issues indicator show?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    assert_eq!(
+        drain(&mut inbox),
+        vec![json!({
+            "type": "askError",
+            "conversationId": id,
+            "message": "This conversation is closed.",
+        })],
+        "the closed id is refused, not admitted"
+    );
+    assert!(!log.exists(), "no agent process started for a closed id");
+    assert!(
+        ask_directory_empty(&scratch),
+        "the refused ask creates no conversation file and no run directory"
+    );
+}
+
+/// A close after the conversation was restored but before its peer started is
+/// authoritative too: the next ask for that id creates no new conversation and
+/// starts no owner.
+// The environment guard serializes process-wide env across concurrently
+// running tests, so it is deliberately held for the whole test.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn a_restored_conversation_closed_before_its_peer_starts_admits_nothing() {
+    let _env = env_guard();
+    let scratch = Scratch::new("close-restored");
+    let log = scratch.path.join("agent.log");
+    let id = "conversation-restored";
+    let path = conversation_file(&scratch, id);
+    std::fs::create_dir_all(path.parent().expect("the ask directory"))
+        .expect("the ask directory exists");
+    let stored = json!({
+        "id": id,
+        "transcript": [{"role": "developer", "text": "An earlier question?"}],
+        "turn": 1,
+        "busy": false,
+        "lastPrompt": null,
+        "textStart": 0,
+        "error": null,
+    });
+    std::fs::write(&path, format!("{stored}\n")).expect("the conversation is persisted");
+
+    // The replacement dashboard restores the conversation without its peer.
+    let app = app_for(&scratch, stub_command(&log));
+    let (conn, mut inbox) = connection();
+    app.command(
+        &conn,
+        Command::CloseAsk {
+            conversation_id: Some(json!(id)),
+        },
+    )
+    .await;
+    assert!(
+        !path.exists(),
+        "the close removes the restored conversation's file"
+    );
+
+    app.command(
+        &conn,
+        Command::Ask {
+            conversation_id: Some(json!(id)),
+            question: Some(json!("Which component renders it?")),
+            context: Some(context()),
+        },
+    )
+    .await;
+    assert_eq!(
+        drain(&mut inbox),
+        vec![json!({
+            "type": "askError",
+            "conversationId": id,
+            "message": "This conversation is closed.",
+        })],
+        "the closed id is never admitted again"
+    );
+    assert!(!log.exists(), "no agent process started for a closed id");
+    assert!(
+        ask_directory_empty(&scratch),
+        "neither the conversation file nor a run directory comes back"
+    );
+}
+
+/// A peer handle closed before its owner started starts nothing at all.
+#[tokio::test]
+async fn a_closed_peer_starts_no_owner() {
+    let scratch = Scratch::new("closed-peer");
+    let log = scratch.path.join("agent.log");
+    let options = devboard::detached_run::DetachedPeerOptions::new(
+        scratch.repo(),
+        scratch.state(),
+        "ask",
+        "closed-peer",
+        "test",
+        stub_command(&log),
+        scratch.repo().to_string_lossy().into_owned(),
+    );
+    let peer = devboard::detached_run::DetachedPeer::new(options);
+    let directory = peer.directory().to_path_buf();
+    peer.close();
+
+    let outcome = peer
+        .run("never sent")
+        .await
+        .expect("a cancelled run is not an error");
+    assert_eq!(
+        outcome,
+        devboard::detached_run::DetachedRunOutcome::Cancelled,
+        "a closed handle reports a cancelled run"
+    );
+    assert!(
+        peer.state().is_none(),
+        "a closed peer publishes no run state"
+    );
+    assert!(
+        !directory.join("prompt.txt").exists(),
+        "a closed peer never records the prompt it would have sent"
+    );
+    assert!(!log.exists(), "a closed peer spawns no agent");
+}
+
 /// Waits until the peer process is gone, so a close is proven by the process
 /// table rather than by a runtime-specific exit log line. The wait yields so
 /// the runtime can reap the child it spawned.

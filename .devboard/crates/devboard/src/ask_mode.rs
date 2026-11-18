@@ -15,7 +15,7 @@
 //! peer and its text journal; this module validates requests and answers the
 //! polled conversation from the journal.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -27,7 +27,9 @@ use sha2::{Digest, Sha256};
 use crate::acp::{AcpActivity, PermissionPolicy};
 use crate::app::{App, Conn};
 use crate::command::Command;
-use crate::detached_run::{ActivityCallback, DetachedPeer, DetachedPeerOptions, TextCallback};
+use crate::detached_run::{
+    ActivityCallback, DetachedPeer, DetachedPeerOptions, DetachedRunOutcome, TextCallback,
+};
 
 /// The longest conversation id a client may name.
 const MAX_CONVERSATION_ID: usize = 200;
@@ -37,6 +39,12 @@ const MAX_QUESTION: usize = 4000;
 pub const ASK_TURN_SILENCE_MS: u64 = 120_000;
 /// The outer bound on one turn, even while it keeps reporting progress.
 pub const ASK_TURN_MAX_MS: u64 = 15 * 60_000;
+/// How many closed ids one dashboard remembers. A close outlives the
+/// conversation it closed, so the record is bounded and drops its oldest
+/// entry first.
+const CLOSED_ID_LIMIT: usize = 256;
+/// The refusal a question for a closed conversation answers with.
+const CLOSED_MESSAGE: &str = "This conversation is closed.";
 /// Bounds shared with the client's capture, in their wire order; a larger
 /// value is refused.
 const ASK_CONTEXT_LIMITS: [(&str, usize); 7] = [
@@ -348,8 +356,38 @@ impl Conversation {
     }
 }
 
+/// The ids whose conversation was closed, in close order.
+///
+/// A close is authoritative before the conversation exists: the first ask
+/// chooses its provider before it admits, and a close that lands during that
+/// await must not be overwritten by the admission that follows.
+#[derive(Default)]
+struct ClosedIds {
+    ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl ClosedIds {
+    fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    fn record(&mut self, id: &str) {
+        if !self.ids.insert(id.to_string()) {
+            return;
+        }
+        self.order.push_back(id.to_string());
+        while self.order.len() > CLOSED_ID_LIMIT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.ids.remove(&oldest);
+            }
+        }
+    }
+}
+
 struct Inner {
     conversations: HashMap<String, Conversation>,
+    closed: ClosedIds,
 }
 
 /// Every conversation this dashboard serves.
@@ -454,7 +492,10 @@ impl AskMode {
             harness_version: app.running_version.clone(),
             turn_silence: Duration::from_millis(ASK_TURN_SILENCE_MS.max(1)),
             turn_max: Duration::from_millis(ASK_TURN_MAX_MS.max(ASK_TURN_SILENCE_MS)),
-            inner: Mutex::new(Inner { conversations }),
+            inner: Mutex::new(Inner {
+                conversations,
+                closed: ClosedIds::default(),
+            }),
         });
         // A replacement inherits the owners that were answering when the
         // previous dashboard went away, so their turns still settle. A
@@ -495,6 +536,48 @@ impl AskMode {
             .conversations
             .get(id)
             .is_some_and(|conversation| conversation.live(turn))
+    }
+
+    /// The one admission decision for a turn, taken under the lock that owns
+    /// the conversations. Provider selection awaited before it, so a close that
+    /// landed during that await is decided here instead of being overwritten by
+    /// a fresh conversation.
+    fn admit(&self, id: &str, first_turn: bool, adopted: bool, request: &AskRequest) -> Admission {
+        let mut state = lock(&self.inner);
+        if state.closed.contains(id) {
+            return Admission::Closed;
+        }
+        let conversation = state
+            .conversations
+            .entry(id.to_string())
+            .or_insert_with(|| Conversation::new(id.to_string()));
+        if conversation.busy {
+            return Admission::Busy;
+        }
+        conversation.turn += 1;
+        let turn = conversation.turn;
+        conversation.busy = true;
+        conversation.error = None;
+        conversation.last_progress = Instant::now();
+        // A fresh owner resets its run journal; a reused one keeps the earlier
+        // turns' text, so only this turn's entries count.
+        conversation.text_start = if first_turn && !adopted {
+            0
+        } else {
+            turn_text_count(&self.state_dir, &self.repo_dir, id)
+        };
+        conversation.transcript.push(TranscriptEntry {
+            role: Role::Developer,
+            text: request.question.clone(),
+        });
+        let earlier = &conversation.transcript[..conversation.transcript.len() - 1];
+        let prompt = if first_turn {
+            ask_prompt(request, earlier)
+        } else {
+            follow_up_prompt(&request.question)
+        };
+        conversation.last_prompt = Some(prompt.clone());
+        Admission::Turn { turn, prompt }
     }
 
     /// Records one assistant chunk as turn progress. The answer itself is read
@@ -647,6 +730,13 @@ impl AskMode {
             );
             return;
         }
+        // A closed conversation is never admitted again. The check repeats
+        // after the provider selection below, which is where a close can land
+        // before anything exists to close.
+        if lock(&self.inner).closed.contains(&id) {
+            send_error(socket, &id, CLOSED_MESSAGE);
+            return;
+        }
 
         let first_turn = {
             let state = lock(&self.inner);
@@ -685,54 +775,25 @@ impl AskMode {
             None
         };
 
-        // Provider selection awaited above, so the refusal is decided again
+        // Provider selection awaited above, so every refusal is decided again
         // under the same lock that admits the turn: two requests never start
-        // one conversation's second turn.
-        let admitted = {
-            let mut state = lock(&self.inner);
-            let conversation = state
-                .conversations
-                .entry(id.clone())
-                .or_insert_with(|| Conversation::new(id.clone()));
-            if conversation.closed {
-                *conversation = Conversation::new(id.clone());
+        // one conversation's second turn, and a close that landed during the
+        // await is not overwritten by the admission that follows.
+        let admitted = self.admit(&id, first_turn, adopted, &request);
+        let (turn, prompt) = match admitted {
+            Admission::Turn { turn, prompt } => (turn, prompt),
+            Admission::Closed => {
+                send_error(socket, &id, CLOSED_MESSAGE);
+                return;
             }
-            if conversation.busy {
-                None
-            } else {
-                conversation.turn += 1;
-                let turn = conversation.turn;
-                conversation.busy = true;
-                conversation.error = None;
-                conversation.last_progress = Instant::now();
-                // A fresh owner resets its run journal; a reused one keeps the
-                // earlier turns' text, so only this turn's entries count.
-                conversation.text_start = if first_turn && !adopted {
-                    0
-                } else {
-                    turn_text_count(&self.state_dir, &self.repo_dir, &id)
-                };
-                conversation.transcript.push(TranscriptEntry {
-                    role: Role::Developer,
-                    text: request.question.clone(),
-                });
-                let earlier = &conversation.transcript[..conversation.transcript.len() - 1];
-                let prompt = if first_turn {
-                    ask_prompt(&request, earlier)
-                } else {
-                    follow_up_prompt(&request.question)
-                };
-                conversation.last_prompt = Some(prompt.clone());
-                Some((turn, prompt))
+            Admission::Busy => {
+                send_error(
+                    socket,
+                    &id,
+                    "The agent is still answering the previous question.",
+                );
+                return;
             }
-        };
-        let Some((turn, prompt)) = admitted else {
-            send_error(
-                socket,
-                &id,
-                "The agent is still answering the previous question.",
-            );
-            return;
         };
         self.persist(&id);
         socket.send(self.inquiry_frame(&id));
@@ -878,7 +939,15 @@ impl AskMode {
                 }
             }
         }
+        // The generation is read again immediately before the owner starts: a
+        // close that landed after the attachment above already closed
+        // `created`, and its start is refused for it.
+        if !self.live(id, turn) {
+            created.close();
+            return TurnOutcome::Dropped;
+        }
         match created.run(prompt).await {
+            Ok(DetachedRunOutcome::Cancelled) => TurnOutcome::Dropped,
             Ok(_) => TurnOutcome::Done,
             Err(message) => TurnOutcome::Failed(message),
         }
@@ -970,6 +1039,10 @@ impl AskMode {
     fn discard(&self, id: &str) {
         let peer = {
             let mut state = lock(&self.inner);
+            // The close is authoritative even before the first ask admitted:
+            // an admission that awaited provider selection reads this record
+            // and starts nothing for the id.
+            state.closed.record(id);
             let Some(mut conversation) = state.conversations.remove(id) else {
                 return;
             };
@@ -998,6 +1071,16 @@ impl AskMode {
         }
         let _ = std::fs::remove_file(self.conversation_path(id));
     }
+}
+
+/// How one admission decision settled.
+enum Admission {
+    /// The turn was admitted; its prompt and number are ready to run.
+    Turn { turn: u64, prompt: String },
+    /// The previous turn is still answering.
+    Busy,
+    /// The conversation's id was closed, so it is never admitted again.
+    Closed,
 }
 
 enum TurnOutcome {
@@ -1142,7 +1225,10 @@ mod tests {
             harness_version: None,
             turn_silence: silence,
             turn_max: max,
-            inner: Mutex::new(Inner { conversations }),
+            inner: Mutex::new(Inner {
+                conversations,
+                closed: ClosedIds::default(),
+            }),
         })
     }
 
@@ -1152,6 +1238,22 @@ mod tests {
             .get("conversation")
             .expect("the fixture conversation")
             .last_progress
+    }
+
+    /// A close that lands while the first ask chose its provider is not
+    /// overwritten by the admission that follows: the id stays closed and no
+    /// conversation is created for it.
+    #[test]
+    fn a_close_before_the_admission_refuses_the_turn() {
+        let mode = mode_with_timeouts(Duration::from_secs(5), Duration::from_secs(5));
+        let late = "closed-while-selecting";
+        mode.discard(late);
+        let admission = mode.admit(late, true, false, &request(late, "Who renders it?"));
+        assert!(matches!(admission, Admission::Closed));
+        assert!(
+            !lock(&mode.inner).conversations.contains_key(late),
+            "a closed id admits nothing"
+        );
     }
 
     #[test]

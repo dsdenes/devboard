@@ -1303,6 +1303,8 @@ pub enum DetachedRunOutcome {
     Stopped,
     Attached,
     Preserved,
+    /// The handle was closed before its owner started, so nothing ran.
+    Cancelled,
 }
 
 struct PeerInner {
@@ -1319,6 +1321,10 @@ struct PeerInner {
     first_resolved: AtomicBool,
     paused: AtomicBool,
     closed: AtomicBool,
+    /// Serializes a close against the start it would otherwise race: an owner
+    /// never starts once its handle is closed, and a close that wins the race
+    /// stops the owner the start just spawned.
+    lifecycle: Mutex<()>,
     preserved: AtomicBool,
     close_reason: Mutex<Option<CloseReason>>,
     failure: Mutex<Option<String>>,
@@ -1380,6 +1386,7 @@ impl DetachedPeer {
             first_resolved: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            lifecycle: Mutex::new(()),
             preserved: AtomicBool::new(false),
             close_reason: Mutex::new(None),
             failure: Mutex::new(None),
@@ -1464,6 +1471,11 @@ impl DetachedPeer {
     /// started. The returned future settles with the run's own outcome, or
     /// with the first turn's outcome for a conversation.
     pub async fn run(&self, prompt: &str) -> Result<DetachedRunOutcome, String> {
+        // A closed handle starts no owner, even when the close landed before
+        // anything existed to close.
+        if self.closed() {
+            return Ok(DetachedRunOutcome::Cancelled);
+        }
         let existing = read_detached_run_state(&self.inner.directory);
         if self.inner.options.attach_only {
             let Some(existing) = existing else {
@@ -1508,7 +1520,9 @@ impl DetachedPeer {
                 }
             }
         }
-        self.start(prompt)?;
+        if !self.start(prompt)? {
+            return Ok(DetachedRunOutcome::Cancelled);
+        }
         self.wait_outcome().await
     }
 
@@ -1635,6 +1649,11 @@ impl DetachedPeer {
     }
 
     pub fn close(&self) {
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self.inner.closed.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -1694,7 +1713,17 @@ impl DetachedPeer {
         )
     }
 
-    fn start(&self, prompt: &str) -> Result<(), String> {
+    /// Starts the owner, or reports `false` when the handle was closed before
+    /// the owner could start.
+    fn start(&self, prompt: &str) -> Result<bool, String> {
+        let _lifecycle = self
+            .inner
+            .lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.closed() {
+            return Ok(false);
+        }
         reset_detached_run(&self.inner.directory);
         let now = crate::journal::now_iso8601();
         let generation = uuid::Uuid::new_v4().to_string();
@@ -1734,7 +1763,7 @@ impl DetachedPeer {
         if let Ok(mut owner) = self.inner.owner_pid.lock() {
             *owner = Some(pid);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn owner_argv(&self, generation: &str) -> Result<Vec<String>, String> {
