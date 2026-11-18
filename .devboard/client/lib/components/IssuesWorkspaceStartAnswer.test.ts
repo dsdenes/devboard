@@ -158,6 +158,36 @@ test("a refused Start stays on the card and never raises the ceiling notice", as
   }
 });
 
+test("a second Start answered by the same refusal text releases its control", async () => {
+  jest.useFakeTimers();
+  try {
+    const { view, socket } = await pressStart();
+
+    // The server answered the first Start with the refusal.
+    socket.deliver(state({ startError: REFUSAL }));
+    await view.findByTestId("issues-start-error");
+    expect(view.getByTestId("issues-start").hasAttribute("aria-busy")).toBe(false);
+    const answered = issues.startAnswerRevision;
+
+    // The same refusal answers the second Start: neither `starting` nor
+    // `startError` changes, so the answer's revision is the only evidence the
+    // server replied at all.
+    await fireEvent.click(view.getByTestId("issues-start"));
+    expect(view.getByTestId("issues-start").hasAttribute("aria-busy")).toBe(true);
+    socket.deliver(state({ startError: REFUSAL }));
+    await view.findByTestId("issues-start-error");
+
+    expect(issues.startAnswerRevision).toBe(answered + 1);
+    expect(view.getByTestId("issues-start").textContent?.trim()).toBe("Start");
+    expect(view.getByTestId("issues-start").hasAttribute("aria-busy")).toBe(false);
+    expect(view.queryByTestId("command-notice")).toBeNull();
+    jest.advanceTimersByTime(10_000);
+    expect(view.queryByTestId("command-notice")).toBeNull();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("a started worker is shown by its pid and Start rests disabled", async () => {
   const { view, socket } = await pressStart();
 

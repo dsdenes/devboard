@@ -170,6 +170,7 @@
               variant="default"
               label="Start"
               evidence={() => issues.startEvidence}
+              refusal={() => issues.startAnswerRevision}
               command={() => issues.start()}
               data-testid="issues-start"
               data-command="issues.start"

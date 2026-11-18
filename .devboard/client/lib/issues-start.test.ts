@@ -48,6 +48,17 @@ test("a Start answer names the start in flight and releases its control", () => 
   expect(store.startEvidence).not.toBe(inFlight);
 });
 
+test("a snapshot no Start asked for is not a Start answer", () => {
+  const store = new IssuesStore();
+  const refusal = "missing prerequisite: omp is not on PATH";
+  store.handleEvent(snapshot({ startError: refusal }));
+  // A read is not an answer to a Start this page dispatched: it bumps no
+  // revision, so it can never settle a Start control's latch by arriving.
+  expect(store.startAnswerRevision).toBe(0);
+  store.handleEvent(snapshot({ startError: refusal }));
+  expect(store.startAnswerRevision).toBe(0);
+});
+
 test("a snapshot from an older server names no start in flight", () => {
   const store = new IssuesStore();
   const legacy = snapshot();

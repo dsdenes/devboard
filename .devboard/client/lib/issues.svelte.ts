@@ -105,6 +105,16 @@ export class IssuesStore {
   private answerRevisions = $state<Record<string, number>>({});
   /** Runs whose answer frame was dispatched and still awaits its reply. */
   private readonly unanswered = new Set<string>();
+  /**
+   * Bumped by every `issuesState` frame that answers a Start this page
+   * dispatched: the accepted start's state, or the state a refused start
+   * names. A second refusal carries the same `startError` text as the first,
+   * so `startEvidence` stays byte-identical; only this revision distinguishes
+   * the answer it sent from a start nothing ever answered.
+   */
+  startAnswerRevision = $state(0);
+  /** True from a dispatched Start until the frame that answers it. */
+  private startAwaitingAnswer = false;
 
   /**
    * The number of answering frames for a run's dispatched answer. It never
@@ -242,6 +252,8 @@ export class IssuesStore {
    * The Start control's confirming evidence: a start in flight, or the
    * refusal that answered one. Both change on the frame the action changed,
    * so the control leaves its busy word instead of waiting for the ceiling.
+   * A refusal that repeats the previous one changes neither, so the control
+   * latches `startAnswerRevision` as well and settles on that answer.
    */
   get startEvidence(): string {
     return `${this.starting ? "starting" : "idle"}|${this.startError ?? ""}`;
@@ -291,10 +303,13 @@ export class IssuesStore {
   /**
    * Starts the worker. Returns false when the command never reached the
    * server, so the control releases its label instead of waiting out the
-   * ceiling for an answer nothing asked for.
+   * ceiling for an answer nothing asked for. A dispatched Start marks the next
+   * `issuesState` frame as its answer, which is what bumps the revision.
    */
   start(): boolean {
-    return connection.send({ type: "startIssues" });
+    if (!connection.send({ type: "startIssues" })) return false;
+    this.startAwaitingAnswer = true;
+    return true;
   }
 
   pause(): boolean {
@@ -468,6 +483,13 @@ export class IssuesStore {
       const next = message as unknown as IssuesSnapshot;
       this.snapshot = next;
       this.settleAnswers();
+      // One dispatched Start, one answer: the server sends exactly one state
+      // frame for it, and a repeated refusal is that same frame again. No
+      // Start awaiting an answer means this read answers nothing.
+      if (this.startAwaitingAnswer) {
+        this.startAwaitingAnswer = false;
+        this.startAnswerRevision += 1;
+      }
       const live = new Set((next.agents ?? []).map((agent) => agent.runId));
       const kept: Record<string, string[]> = {};
       for (const [runId, lines] of Object.entries(this.agentActivity)) {
