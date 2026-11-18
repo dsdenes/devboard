@@ -347,6 +347,21 @@ test("a deploy run-status notice stays out of the page while a foreign notice re
   );
 });
 
+// The history omits a skipped run, so the worker's own notice is the only place
+// the page can say main did not deploy and why.
+test("a skipped deploy states the worker's reason while the history keeps no row", () => {
+  const view = presentAgent(
+    "deploy-on-main",
+    deploySnapshot({ notice: "deploy skipped: no deploy instructions", deploys: [] }),
+    "open",
+  );
+  const page = within(view.container);
+  const notice = page.getByTestId("agent-notice");
+  expect(notice.getAttribute("role")).toBe("status");
+  expect(notice.textContent).toContain("deploy skipped: no deploy instructions");
+  expect(page.queryAllByTestId("agent-deploy")).toHaveLength(0);
+});
+
 test("a frame without workers renders the page with no live worker row", () => {
   const withoutWorkers = releaseSnapshot({});
   delete withoutWorkers.workers;

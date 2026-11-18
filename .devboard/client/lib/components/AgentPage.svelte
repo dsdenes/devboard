@@ -38,12 +38,13 @@
   const lifecycle = $derived(snapshot?.lifecycle ?? "stopped");
   const sync = $derived<AgentSync>(snapshot?.sync ?? { state: "stale", at: null, error: null });
   // Deploy on main lists its runs in one history panel; the run-status line
-  // that used to sit under the prompt repeats what a row already states.
+  // that used to sit under the prompt repeats what a row already states. A
+  // skipped run has no row, so its notice is the page's only statement of the
+  // worker's reason and is never suppressed.
   const RUN_STATUS_NOTICE_PREFIXES = [
     "deploying ",
     "deployed ",
     "deploy failed:",
-    "deploy skipped:",
     "deploy stopped:",
   ];
   const notice = $derived(snapshot?.notice ?? null);
