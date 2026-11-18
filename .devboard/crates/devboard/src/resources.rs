@@ -2445,14 +2445,14 @@ mod tests {
         // inside them, so the effective budget is never one `validate` refuses.
         let mut settings = Settings {
             max_agent_peers: 8,
-            memory_high_mb: 64,
-            memory_max_mb: 64,
-            memory_reserve_mb: 512,
+            memory_high_mb: Some(64),
+            memory_max_mb: Some(64),
+            memory_reserve_mb: Some(512),
         };
         settings.normalize();
-        assert_eq!(settings.memory_max_mb, MIN_MEMORY_MAX_MB);
-        assert_eq!(settings.memory_reserve_mb, MIN_MEMORY_MAX_MB - 1);
-        assert_eq!(settings.memory_high_mb, MIN_MEMORY_FLOOR_MB);
+        assert_eq!(settings.memory_max_mb, Some(MIN_MEMORY_MAX_MB));
+        assert_eq!(settings.memory_reserve_mb, Some(MIN_MEMORY_MAX_MB - 1));
+        assert_eq!(settings.memory_high_mb, Some(MIN_MEMORY_FLOOR_MB));
         assert_eq!(settings.validate(), Ok(()));
         let decoded = Settings::from_value(&settings.to_json()).expect("the frame decodes");
         assert_eq!(decoded, settings);

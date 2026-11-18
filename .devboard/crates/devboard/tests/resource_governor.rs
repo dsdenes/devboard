@@ -1082,23 +1082,30 @@ fn a_derived_budget_is_one_its_own_validator_accepts() {
         for cpus in [2, 8] {
             let derived = Settings::derive(total_mb, cpus);
             assert_eq!(
-                derived.validate_for(total_mb),
+                derived.validate_for(Some(total_mb)),
                 Ok(()),
                 "{total_mb} MB on {cpus} CPUs derived {derived:?}"
             );
+            let (Some(max), Some(reserve)) = (derived.memory_max_mb, derived.memory_reserve_mb)
+            else {
+                panic!("{total_mb} MB on {cpus} CPUs derived no memory budget: {derived:?}");
+            };
             assert!(
-                derived.memory_max_mb >= 128,
+                max >= 128,
                 "{total_mb} MB derived a maximum under the floor: {derived:?}"
             );
             assert!(
-                derived.memory_reserve_mb < derived.memory_max_mb,
+                reserve < max,
                 "{total_mb} MB derived a reserve that is not below the maximum: {derived:?}"
             );
         }
     }
     let two_gib = Settings::derive(2_048, 8);
     assert!(
-        two_gib.memory_max_mb >= 128 && two_gib.memory_reserve_mb < two_gib.memory_max_mb,
+        matches!(
+            (two_gib.memory_max_mb, two_gib.memory_reserve_mb),
+            (Some(max), Some(reserve)) if max >= 128 && reserve < max
+        ),
         "a 2 GiB host derives a usable budget: {two_gib:?}"
     );
 }
