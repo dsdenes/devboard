@@ -95,6 +95,12 @@ export class FlowStore {
    *  to be appended a second time. */
   pendingConclusion: { text: string; board: string } | null = null;
 
+  /** The conversation message this dashboard sent and the server has not
+   *  confirmed yet. The draft survives until the conversation ends with that
+   *  developer message, so a refused send never discards the operator's words
+   *  and a confirmation never clears words typed since the dispatch. */
+  pendingConversation: { text: string } | null = null;
+
   /** A stored session this dashboard is still restoring: its state is not
    *  settled yet, so no control that edits it is offered. */
   get restoring(): boolean {
@@ -191,6 +197,7 @@ export class FlowStore {
     this.question = message.question;
     this.goalCreation = message.goalCreation;
     this.conversation = message.conversation;
+    this.#settleConversation(message.conversation?.messages ?? []);
     this.activity = message.activity;
     this.notice = message.notice;
     this.history = message.history;
@@ -311,11 +318,30 @@ export class FlowStore {
     this.steeringDraft = "";
   }
 
-  sendConversation(): void {
+  /** Settles a dispatched conversation message once the conversation ends with
+   *  that developer message: the server appends only what it accepted, so the
+   *  draft was delivered. An agent reply or another text never confirms it. */
+  #settleConversation(messages: FlowConversation["messages"]): void {
+    const sent = this.pendingConversation;
+    if (sent === null) return;
+    const last = messages[messages.length - 1];
+    if (last === undefined || last.role !== "developer" || last.text !== sent.text) return;
+    this.pendingConversation = null;
+    if (this.conversationDraft === sent.text) this.conversationDraft = "";
+  }
+
+  /** Dispatches the conversation message; false when nothing left the page.
+   *  The draft stays until a frame shows the server took it, exactly as
+   *  `sendSteering` keeps its note until the confirming steering frame. */
+  sendConversation(): boolean {
     const text = this.conversationDraft;
-    if (text.trim().length === 0) return;
-    connection.send({ type: "sendFlowConversation", text });
-    this.conversationDraft = "";
+    if (text.trim().length === 0) return false;
+    this.pendingConversation = { text };
+    if (!connection.send({ type: "sendFlowConversation", text })) {
+      this.pendingConversation = null;
+      return false;
+    }
+    return true;
   }
 
   /** Dispatches the conclusion; false when nothing left the page. The draft and
@@ -488,6 +514,7 @@ export class FlowStore {
       this.conversationDraft = "";
       this.conclusionDraft = "";
       this.pendingConclusion = null;
+      this.pendingConversation = null;
       this.#settleAnswer();
       return;
     }
@@ -511,6 +538,7 @@ export class FlowStore {
         ...this.conversation,
         messages: [...this.conversation.messages, { role: message.role, text: message.text }],
       };
+      this.#settleConversation(this.conversation.messages);
       return;
     }
     if (

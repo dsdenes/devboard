@@ -97,6 +97,7 @@
   const conversationSendPending = createCommandBusy({
     label: "Send",
     evidence: () => flow.conversation?.messages.length,
+    refusal: () => connection.refusalRevision("sendFlowConversation"),
   });
 
   // The render only reads the latches; the answering frame settles them here.
@@ -1019,7 +1020,7 @@
                 onsubmit={(event) => {
                   event.preventDefault();
                   conversationSendPending.start();
-                  flow.sendConversation();
+                  if (!flow.sendConversation()) conversationSendPending.refuse();
                 }}
               >
                 <input
