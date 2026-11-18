@@ -44,9 +44,10 @@
     (`scrollWidth === clientWidth === 1024`) and the title is the only track that
     yields.
   - The empty state is a plain 39px line inside the panel with no row chrome.
-  - Light-theme row hover resolves to `row-hover` (`#f6f8fa`), the same value as the
-    light `surface`; the hover is therefore not visible in light mode. This is the
-    existing token pair from `DESIGN.md` and is not changed by this run.
+  - Light-theme row hover resolved to `row-hover` (`#f6f8fa`), the same value as the
+    light `surface`, so the hover was invisible in light mode. Issue #2149 fixed that
+    collision: light `row-hover` is now `#eaeef2`, and the `DESIGN.md` token row names
+    the same value.
 - Not run / blocked:
   - designmd MCP research was not run: no token, OpenUI, or Storybook artifact was
     mutated, so the skill's mutation gate does not apply. No research receipt is

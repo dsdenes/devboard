@@ -322,7 +322,7 @@ with the dark set.
 | `warning-surface` | `#2b2411` | `#fff8e5` | Warning tint |
 | `error` | `#ff7b72` | `#cf222e` | Failure text |
 | `error-surface` | `#2b1513` | `#fdf2f1` | Failure tint |
-| `row-hover` | `#1b2129` | `#f6f8fa` | Table row hover |
+| `row-hover` | `#1b2129` | `#eaeef2` | Table row hover |
 | `activity-bar` | `#0a0d12` | `#f6f8fa` | Mode rail background |
 | `selection-background` | `#264f78` | `#b6d7ff` | Text selection |
 
