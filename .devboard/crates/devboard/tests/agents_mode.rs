@@ -2867,6 +2867,93 @@ async fn a_start_that_spawns_nothing_still_answers() {
 }
 
 #[tokio::test]
+async fn a_start_refused_at_the_program_resolution_settles_on_the_refusal() {
+    let root = scratch("start-program-refusal");
+    let app = app_at(&root);
+    let missing = root.join("missing/devboard");
+    devboard::agents_mode::set_program_link(&app, "scout", Some(missing.clone()));
+    let (conn, mut inbox) = connection_for(&app).await;
+    // The poll owns the projection a Start's answer restates.
+    devboard::agents_mode::poll_once(&app);
+    let _ = frames(&mut inbox);
+
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("scout")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let answered = agent(&all, "scout")
+        .expect("the answering snapshot")
+        .clone();
+    assert_ne!(answered["lifecycle"], json!("starting"), "{all:?}");
+    let refusal = answered["error"]
+        .as_str()
+        .expect("the refusal on the card")
+        .to_string();
+    assert!(refusal.contains("missing prerequisite"), "{refusal}");
+    assert!(
+        refusal.contains(&missing.to_string_lossy().into_owned()),
+        "{refusal}"
+    );
+
+    // `/agents` answers from the cache the command wrote, and must not keep
+    // the preview's `starting` the refusal never reached.
+    devboard::agents_mode::handle(&app, &conn, &Command::GetAgents).await;
+    let all = frames(&mut inbox);
+    let listed = all
+        .iter()
+        .filter(|frame| frame.get("type").and_then(Value::as_str) == Some("agentsState"))
+        .filter_map(|frame| frame.get("agents").and_then(Value::as_array))
+        .flatten()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some("scout"))
+        .expect("the cached scout projection")
+        .clone();
+    assert_eq!(
+        listed["lifecycle"], answered["lifecycle"],
+        "the cached read and the Start's answer disagree: {listed:?}"
+    );
+    assert_eq!(listed["error"], answered["error"], "{listed:?}");
+
+    // `/agents/{id}` reads the family fresh, and it must agree.
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("scout")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let fresh = agent(&all, "scout").expect("the fresh scout projection");
+    assert_eq!(fresh["lifecycle"], listed["lifecycle"], "{all:?}");
+    assert_eq!(fresh["error"], listed["error"], "{all:?}");
+
+    // Pressing Start again settles on the new attempt's own state instead of
+    // replaying the previous preview.
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("scout")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let again = agent(&all, "scout").expect("the second answer");
+    assert_ne!(again["lifecycle"], json!("starting"), "{all:?}");
+    assert!(
+        again["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("missing prerequisite")),
+        "{all:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_unchanged_snapshot_is_not_rebroadcast() {
     let root = scratch("quiet-poll");
     let app = app_at(&root);

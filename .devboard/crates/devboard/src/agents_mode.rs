@@ -1016,16 +1016,21 @@ struct StartFacts {
 /// pushed `startAgent` past the client's 1000 ms budget on a populated
 /// checkout. The poll owns that read; a command answer restates what the poll
 /// keeps current and replaces only the fields the command changed.
-fn start_answer(answer: &mut Value, facts: StartFacts) {
-    let Some(object) = answer.as_object_mut() else {
-        return;
+///
+/// Returns the lifecycle this command's own state commands, or `None` when the
+/// command settled with nothing in flight. A settled answer then restates the
+/// lifecycle the poll published: the preview's `starting` belongs to the
+/// command that ran, not to the projection a refusal leaves behind.
+fn start_answer(answer: &mut Value, facts: StartFacts) -> Option<&'static str> {
+    let object = answer.as_object_mut()?;
+    let lifecycle = if facts.starting {
+        Some("starting")
+    } else if facts.stopping {
+        Some("stopping")
+    } else {
+        None
     };
-    if facts.starting || facts.stopping {
-        let lifecycle = if facts.starting {
-            "starting"
-        } else {
-            "stopping"
-        };
+    if let Some(lifecycle) = lifecycle {
         object.insert(
             "lifecycle".to_string(),
             Value::String(lifecycle.to_string()),
@@ -1040,6 +1045,7 @@ fn start_answer(answer: &mut Value, facts: StartFacts) {
     if facts.starting || facts.error.is_some() {
         object.insert("error".to_string(), nullable_text(facts.error));
     }
+    lifecycle
 }
 
 /// Overlays the facts one accepted Stop changed onto the projection the poll
@@ -2737,14 +2743,27 @@ impl Adapter {
     }
 
     /// The answer a Start command publishes: the polled projection with the
-    /// facts that command changed, overlaid in place.
-    fn apply_start(&self, answer: &mut Value) {
+    /// facts that command changed, overlaid in place. Returns the lifecycle the
+    /// command's own state commands, or `None` when it settled with nothing in
+    /// flight.
+    fn apply_start(&self, answer: &mut Value) -> Option<&'static str> {
         match self {
             Adapter::Repo(family) => family.start_projection(answer),
             Adapter::Watchdog(family) => family.start_projection(answer),
             Adapter::Mcp(family) => family.start_projection(answer),
             Adapter::Release(family) => family.start_projection(answer),
             Adapter::Deploy(family) => family.start_projection(answer),
+        }
+    }
+
+    /// Whether a start this family owns is still in flight.
+    fn start_in_flight(&self) -> bool {
+        match self {
+            Adapter::Repo(family) => family.start_in_flight(),
+            Adapter::Watchdog(family) => family.start_in_flight(),
+            Adapter::Mcp(family) => family.start_in_flight(),
+            Adapter::Release(family) => family.start_in_flight(),
+            Adapter::Deploy(family) => family.start_in_flight(),
         }
     }
 
@@ -3361,15 +3380,31 @@ impl AgentsMode {
         // A projection that still reads `stopping` after the family has no
         // pending stop is stale: rebuild it once, even when the disk
         // fingerprint did not move.
-        let stale_stop = self
+        let cached_lifecycle = self
             .cached
             .lock()
             .ok()
             .and_then(|cached| cached.get(adapter.id()).cloned())
-            .map(|snapshot| snapshot.get("lifecycle").and_then(Value::as_str) == Some("stopping"))
-            .unwrap_or(false)
-            && !adapter.has_live_workers();
-        changed || peers_changed || stale_stop || gate_changed || adapter.rebuild_always()
+            .and_then(|snapshot| {
+                snapshot
+                    .get("lifecycle")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        let stale_stop =
+            cached_lifecycle.as_deref() == Some("stopping") && !adapter.has_live_workers();
+        // A projection that still reads `starting` after the family cleared
+        // every start flag is a command's preview that outlived the command:
+        // the answer that settles it states the poll's lifecycle, and this
+        // rebuild heals a cache another path left behind.
+        let stale_start =
+            cached_lifecycle.as_deref() == Some("starting") && !adapter.start_in_flight();
+        changed
+            || peers_changed
+            || stale_stop
+            || stale_start
+            || gate_changed
+            || adapter.rebuild_always()
     }
 
     fn publish_if_changed(&self, adapter: &Adapter) {
@@ -3451,6 +3486,11 @@ impl AgentsMode {
     fn publish_command_answer(&self, adapter: &Adapter, overlay: fn(&Adapter, &mut Value)) {
         let mut agent = self.project(adapter);
         overlay(adapter, &mut agent);
+        self.publish_projection(adapter, agent);
+    }
+
+    /// Stores and broadcasts one projection a command built.
+    fn publish_projection(&self, adapter: &Adapter, agent: Value) {
         self.store_projection(adapter, &agent);
         let text = crate::jsjson::stringify(&agent);
         if let Ok(mut signatures) = self.signatures.lock() {
@@ -3466,7 +3506,28 @@ impl AgentsMode {
     }
 
     fn publish_start(&self, adapter: &Adapter) {
-        self.publish_command_answer(adapter, Adapter::apply_start);
+        self.publish_command_answer(adapter, |adapter, answer| {
+            adapter.apply_start(answer);
+        });
+    }
+
+    /// Publishes a Start's answer once its command settled.
+    ///
+    /// A refusal at the program resolution writes no worker and no file, so the
+    /// `starting` the preview cached is the command's own optimism and nothing
+    /// else. The settled answer restates the lifecycle the poll published
+    /// before that preview, which is what `/agents/{id}` reads: the card
+    /// settles on the refusal, and the two reads of one family agree.
+    fn publish_settled_start(&self, adapter: &Adapter, polled: &Value) {
+        let mut agent = self.project(adapter);
+        if adapter.apply_start(&mut agent).is_none() {
+            if let Some(lifecycle) = polled.get("lifecycle") {
+                if let Some(object) = agent.as_object_mut() {
+                    object.insert("lifecycle".to_string(), lifecycle.clone());
+                }
+            }
+        }
+        self.publish_projection(adapter, agent);
     }
 
     /// Publishes a Stop's answer the same way. The stop proof publishes the
@@ -3606,13 +3667,17 @@ impl AgentsMode {
                     conn.send(json!({"type": "error", "message": format!("Unknown background agent: {id}.")}));
                     return true;
                 };
+                // The projection the poll published before this command is the
+                // lifecycle a settled answer restates. `project` is already the
+                // first publish's base, so this adds no read.
+                let polled = self.project(adapter);
                 adapter.preview_start();
                 let preview = PreviewWindow(adapter);
                 let pending = adapter.start();
                 self.publish_start(adapter);
                 let result = pending.await;
                 drop(preview);
-                self.publish_start(adapter);
+                self.publish_settled_start(adapter, &polled);
                 self.answer_fault(conn, result);
                 true
             }
@@ -5235,7 +5300,7 @@ impl RepoFamily {
 
     /// Overlays a Start's own facts onto the published projection, so the
     /// answer walks no state tree.
-    fn start_projection(&self, answer: &mut Value) {
+    fn start_projection(&self, answer: &mut Value) -> Option<&'static str> {
         let mutable = self.mutable.lock().expect("family state");
         start_answer(
             answer,
@@ -5251,6 +5316,17 @@ impl RepoFamily {
                 error: mutable.start_error.clone(),
             },
         )
+    }
+
+    /// Whether a start this family owns is still in flight: armed by a command
+    /// whose spawn has not answered, or previewed by one that has not landed.
+    /// A cached projection that reads `starting` while this is false is a
+    /// command's preview the poll rebuilds away.
+    fn start_in_flight(&self) -> bool {
+        self.mutable
+            .lock()
+            .map(|mutable| mutable.starting || mutable.preview_starting)
+            .unwrap_or(true)
     }
 
     /// Overlays this Stop's one changed fact: a family the operator asked to
@@ -7803,7 +7879,7 @@ impl WatchdogFamily {
 
     /// Overlays a Start's own facts onto the published projection, so the
     /// answer walks no state tree.
-    fn start_projection(&self, answer: &mut Value) {
+    fn start_projection(&self, answer: &mut Value) -> Option<&'static str> {
         let mutable = self.mutable.lock().expect("watchdog state");
         start_answer(
             answer,
@@ -7819,6 +7895,17 @@ impl WatchdogFamily {
                 error: mutable.start_error.clone(),
             },
         )
+    }
+
+    /// Whether a start this family owns is still in flight: armed by a command
+    /// whose spawn has not answered, or previewed by one that has not landed.
+    /// A cached projection that reads `starting` while this is false is a
+    /// command's preview the poll rebuilds away.
+    fn start_in_flight(&self) -> bool {
+        self.mutable
+            .lock()
+            .map(|mutable| mutable.starting || mutable.preview_starting)
+            .unwrap_or(true)
     }
 
     /// Overlays this Stop's one changed fact: a family the operator asked to
@@ -9127,7 +9214,7 @@ impl McpFamily {
 
     /// Overlays a Start's own facts onto the published projection, so the
     /// answer walks no state tree.
-    fn start_projection(&self, answer: &mut Value) {
+    fn start_projection(&self, answer: &mut Value) -> Option<&'static str> {
         let mutable = self.mutable.lock().expect("mcp state");
         start_answer(
             answer,
@@ -9143,6 +9230,17 @@ impl McpFamily {
                 error: mutable.start_error.clone(),
             },
         )
+    }
+
+    /// Whether a start this family owns is still in flight: armed by a command
+    /// whose spawn has not answered, or previewed by one that has not landed.
+    /// A cached projection that reads `starting` while this is false is a
+    /// command's preview the poll rebuilds away.
+    fn start_in_flight(&self) -> bool {
+        self.mutable
+            .lock()
+            .map(|mutable| mutable.starting || mutable.preview_starting)
+            .unwrap_or(true)
     }
 
     /// Overlays this Stop's one changed fact: a family the operator asked to
@@ -10233,7 +10331,7 @@ impl ReleaseFamily {
 
     /// Overlays a Start's own facts onto the published projection, so the
     /// answer walks no state tree.
-    fn start_projection(&self, answer: &mut Value) {
+    fn start_projection(&self, answer: &mut Value) -> Option<&'static str> {
         let mutable = self.mutable.lock().expect("release-train state");
         start_answer(
             answer,
@@ -10249,6 +10347,17 @@ impl ReleaseFamily {
                 error: mutable.start_error.clone(),
             },
         )
+    }
+
+    /// Whether a start this family owns is still in flight: armed by a command
+    /// whose spawn has not answered, or previewed by one that has not landed.
+    /// A cached projection that reads `starting` while this is false is a
+    /// command's preview the poll rebuilds away.
+    fn start_in_flight(&self) -> bool {
+        self.mutable
+            .lock()
+            .map(|mutable| mutable.starting || mutable.preview_starting)
+            .unwrap_or(true)
     }
 
     /// Overlays this Stop's one changed fact: a family the operator asked to
@@ -11060,7 +11169,7 @@ impl DeployFamily {
         mutable.starting || mutable.preview_starting || mutable.stop_requested
     }
 
-    fn start_projection(&self, answer: &mut Value) {
+    fn start_projection(&self, answer: &mut Value) -> Option<&'static str> {
         let mutable = self.mutable.lock().expect("deploy-on-main state");
         start_answer(
             answer,
@@ -11075,7 +11184,18 @@ impl DeployFamily {
                 notice: mutable.notice.clone(),
                 error: mutable.start_error.clone(),
             },
-        );
+        )
+    }
+
+    /// Whether a start this family owns is still in flight: armed by a command
+    /// whose spawn has not answered, or previewed by one that has not landed.
+    /// A cached projection that reads `starting` while this is false is a
+    /// command's preview the poll rebuilds away.
+    fn start_in_flight(&self) -> bool {
+        self.mutable
+            .lock()
+            .map(|mutable| mutable.starting || mutable.preview_starting)
+            .unwrap_or(true)
     }
 
     /// Overlays this Stop's one changed fact: a family the operator asked to
@@ -12464,5 +12584,73 @@ mod refresh_coalescing {
         unsafe {
             libc::kill(pid as i32, libc::SIGKILL);
         }
+    }
+}
+
+#[cfg(test)]
+mod stale_start_projection {
+    //! A cached `starting` whose family has no start in flight is a preview
+    //! that outlived the command that wrote it. The poll must rebuild it on the
+    //! next tick even though the family's state tree never moved.
+
+    use super::*;
+
+    fn fixture_root(label: &str) -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(".test-tmp")
+            .join(format!("stale-start-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("repo/.devboard/prompts")).expect("a prompt root");
+        std::fs::create_dir_all(root.join("repo/adrs")).expect("an adr root");
+        std::fs::create_dir_all(root.join("state")).expect("a state root");
+        root
+    }
+
+    fn mode_at(root: &Path) -> Arc<AgentsMode> {
+        let config = crate::config::Config {
+            hostname: "127.0.0.1".to_string(),
+            port: 0,
+            adrs_dir: root.join("repo/adrs"),
+            repo_dir: root.join("repo"),
+            goal_file: root.join("repo/GOAL.md"),
+            static_dir: None,
+            agent_command: "omp acp".to_string(),
+            state_dir: root.join("state"),
+            allowed_hosts: Vec::new(),
+            feedback: None,
+        };
+        let journal = crate::journal::Journal::open(&config.state_dir, &config.repo_dir, 0);
+        let app = crate::app::App::new(config, journal);
+        mode_for(&app).expect("the registered agents mode")
+    }
+
+    #[tokio::test]
+    async fn a_cached_starting_projection_rebuilds_without_a_workspace_change() {
+        let root = fixture_root("poll");
+        let mode = mode_at(&root);
+        let scout = mode
+            .adapters
+            .iter()
+            .find(|adapter| adapter.id() == "scout")
+            .expect("the scout adapter");
+        // The first tick records the fingerprints the next tick compares with.
+        mode.poll(&Arc::downgrade(&mode));
+        assert!(!scout.start_in_flight(), "a fresh family starts nothing");
+
+        let mut seeded = mode.project(scout);
+        seeded["lifecycle"] = json!("starting");
+        mode.store_projection(scout, &seeded);
+        // No file was written and no worker attached: the cached `starting` is
+        // the only thing that changed.
+        assert!(
+            mode.poll_should_rebuild(scout, 0, false),
+            "the poll must rebuild a cached `starting` whose start flags are clear"
+        );
+
+        mode.poll(&Arc::downgrade(&mode));
+        let healed = mode.project(scout);
+        assert_ne!(healed["lifecycle"], json!("starting"), "{healed:?}");
+        assert_eq!(healed["lifecycle"], json!("stopped"), "{healed:?}");
     }
 }
