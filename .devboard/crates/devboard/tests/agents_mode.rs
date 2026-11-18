@@ -703,6 +703,110 @@ async fn start_spawns_the_rust_worker_argv_and_stop_writes_control() {
 }
 
 #[tokio::test]
+async fn a_stop_is_durable_and_a_live_worker_is_never_reported_stopped() {
+    let root = scratch("durable-stop");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    std::fs::create_dir_all(repo.join(".devboard")).expect("a harness directory");
+    let intent = state
+        .join("families")
+        .join(repo_key(&repo))
+        .join("dead-code.json");
+
+    // A Stop on a family that is already stopped records the command and
+    // answers ok: the operator asked for the state it is already in.
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StopAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    assert!(find(&all, "error").is_empty(), "stop refused: {all:?}");
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&intent).expect("the intent"))
+            .expect("JSON intent");
+    assert_eq!(written["enabled"], false, "{written:?}");
+
+    // A live worker beside a state that says stopped reads stopping: the card
+    // never claims a family is stopped while its process still lives.
+    let pid = stand_in_worker();
+    write_lock(&repo, &state, pid);
+    let path = state
+        .join("dead-code")
+        .join(repo_key(&repo))
+        .join("state.json");
+    let mut document = dead_code_state(&root, &repo, &state, pid);
+    document["lifecycle"] = json!("stopped");
+    write_json(&path, document);
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::GetAgent {
+            id: Some(json!("dead-code")),
+        },
+    )
+    .await;
+    let all = frames(&mut inbox);
+    let snapshot = agent(&all, "dead-code").expect("a dead-code snapshot");
+    assert_eq!(snapshot["lifecycle"], "stopping", "{all:?}");
+    assert_eq!(snapshot["enabled"], false, "{all:?}");
+    assert_eq!(snapshot["attached"], true, "{all:?}");
+    assert_eq!(snapshot["workers"][0]["pid"], pid, "{all:?}");
+
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[tokio::test]
+async fn a_gated_start_records_no_intent() {
+    let root = scratch("gated-start");
+    let app = app_at(&root);
+    let repo = root.join("repo");
+    let state = root.join("state");
+    // The fixture served repository is the harness source checkout, where
+    // Deploy on main carries its own refusal and has no Start to record.
+    let spawns: RecordedSpawns = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&spawns);
+    devboard::agents_mode::set_spawn(&app, move |argv, environment| {
+        recorded
+            .lock()
+            .expect("recorded spawns")
+            .push((argv.to_vec(), environment.clone()));
+        None
+    });
+    let intent = state
+        .join("families")
+        .join(repo_key(&repo))
+        .join("deploy-on-main.json");
+
+    let (conn, mut inbox) = connection_for(&app).await;
+    devboard::agents_mode::handle(
+        &app,
+        &conn,
+        &Command::StartAgent {
+            id: Some(json!("deploy-on-main")),
+        },
+    )
+    .await;
+    let _ = frames(&mut inbox);
+    assert!(
+        !intent.exists(),
+        "a gated Start recorded a durable command it can never honour"
+    );
+    assert!(
+        spawns.lock().expect("recorded spawns").is_empty(),
+        "a gated Start spawned a worker"
+    );
+}
+
+#[tokio::test]
 async fn a_stop_answer_reads_each_cycle_summary_once() {
     let root = scratch("stop-cycle-reads");
     let app = app_at(&root);

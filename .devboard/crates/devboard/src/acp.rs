@@ -521,6 +521,19 @@ impl AcpConnection {
             // One process group per peer, so a signal reaches its tools too.
             command.process_group(0);
         }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            // The peer belongs to the process that started it: a SIGKILLed
+            // worker must not leave an agent with working tools behind. The
+            // kernel's parent-death signal is the immediate guarantee; the
+            // supervision record below is the backstop a wrapper survives.
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
 
         let mut child = command
             .spawn()
@@ -532,6 +545,11 @@ impl AcpConnection {
             return Err(AcpError::new("Agent stdio was not piped."));
         };
         let pid = child.id().unwrap_or(0);
+        let supervision_record = crate::supervision::record_supervised_child(
+            pid,
+            std::path::Path::new(&options.cwd),
+            spawn_argv.clone(),
+        );
 
         let (events, receiver) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
@@ -564,6 +582,9 @@ impl AcpConnection {
             async move {
                 let _ = child.wait().await;
                 inner.exited.store(true, Ordering::SeqCst);
+                if let Some(path) = supervision_record {
+                    crate::supervision::remove_supervision_record(&path);
+                }
             }
         });
 

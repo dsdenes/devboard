@@ -22,6 +22,7 @@ use time::OffsetDateTime;
 
 use crate::app::{App, Conn, Shared};
 use crate::command::Command;
+use crate::family_intent::{self, FamilyIntent, LiveWorker, Reconcile};
 use crate::workers::release_train::AgentLifecycle;
 
 /* ------------------------------------------------------------------------ */
@@ -43,6 +44,18 @@ const RELEASE_AUTO_START_POLL_MS: u64 = 1_000;
 /// The shortest and longest wait between failed automatic starts.
 const RELEASE_AUTO_START_BACKOFF_MIN_MS: i64 = 5_000;
 const RELEASE_AUTO_START_BACKOFF_MAX_MS: i64 = 60_000;
+/// How often the shared control plane reconciles every family against the
+/// operator's durable intent.
+const FAMILY_RECONCILE_POLL_MS: u64 = 5_000;
+/// How long a successful automatic start is given to attach its worker before
+/// the next pass may start another.
+const FAMILY_AUTO_START_SETTLE_MS: i64 = 60_000;
+/// The shortest and longest wait between failed automatic starts of any family.
+const FAMILY_AUTO_START_BACKOFF_MIN_MS: i64 = 5_000;
+const FAMILY_AUTO_START_BACKOFF_MAX_MS: i64 = 60_000;
+/// How long a stop the operator asked for is given to settle before the
+/// control plane asks again while its worker is still alive.
+const FAMILY_STOP_RETRY_MS: i64 = 5_000;
 /// Wall-clock bound for a family's Start preflight. A preflight that never
 /// settles must answer with a refusal instead of leaving the family starting.
 const AGENT_PREFLIGHT_TIMEOUT_MS: u64 = 20_000;
@@ -2691,9 +2704,19 @@ struct AgentsMode {
     /// changes a gated family's projection while its own state stands still,
     /// so the poll owes every family a rebuild on this fact alone.
     project_kind: Mutex<crate::project_kind::ProjectKind>,
+    /// The next time each family's durable intent may be acted on, and the
+    /// backoff a failed automatic start is on.
+    reconcile: Mutex<HashMap<&'static str, ReconcileState>>,
     /// The served checkout the project kind is read from.
     repo_dir: PathBuf,
     has_clients: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+/// One family's control-plane backoff.
+#[derive(Clone, Copy, Debug)]
+struct ReconcileState {
+    next_at: i64,
+    backoff_ms: i64,
 }
 
 enum Adapter {
@@ -2854,10 +2877,42 @@ impl Adapter {
         match self {
             Adapter::Repo(family) => !family.all_owners().is_empty(),
             Adapter::Watchdog(family) => !family.owners().is_empty(),
-            Adapter::Mcp(family) => !family.owners().is_empty(),
-            Adapter::Release(family) => !family.owners().is_empty(),
-            Adapter::Deploy(family) => !family.owners().is_empty(),
+            Adapter::Mcp(family) => !family.all_owners().is_empty(),
+            Adapter::Release(family) => !family.all_owners().is_empty(),
+            Adapter::Deploy(family) => !family.all_owners().is_empty(),
         }
+    }
+
+    /// Every live worker this family reads, so the projection can name one the
+    /// family's own state file does not carry (an older version's worker, or a
+    /// worker that published `stopped` and has not exited yet).
+    fn live_workers(&self) -> Vec<LiveWorker> {
+        let owners = match self {
+            Adapter::Repo(family) => family.all_owners(),
+            Adapter::Watchdog(family) => family.owners(),
+            Adapter::Mcp(family) => family.all_owners(),
+            Adapter::Release(family) => family.all_owners(),
+            Adapter::Deploy(family) => family.all_owners(),
+        };
+        owners
+            .into_iter()
+            .map(|owner| LiveWorker {
+                pid: owner.pid,
+                version: owner.harness_version,
+                state_dir: owner.state_dir,
+                started_at: owner.started_at,
+            })
+            .collect()
+    }
+
+    /// Whether the shared control plane starts this family. The Release Train
+    /// owns its own durable enabled record and auto-start; Deploy is
+    /// push-triggered and has no Start an operator can leave enabled.
+    fn auto_starts(&self) -> bool {
+        matches!(
+            self,
+            Adapter::Repo(_) | Adapter::Watchdog(_) | Adapter::Mcp(_)
+        )
     }
 
     /// Publishes this family's current projection after a background Start
@@ -3209,6 +3264,7 @@ impl AgentsMode {
             publish_lock: Mutex::new(()),
             settle_until: Mutex::new(0),
             project_kind: Mutex::new(crate::project_kind::of(&repo_dir)),
+            reconcile: Mutex::new(HashMap::new()),
             repo_dir: repo_dir.clone(),
             has_clients: Arc::new(move || shared_for_clients.has_clients()),
         })
@@ -3266,13 +3322,27 @@ impl AgentsMode {
                 });
             }
         }
-        let weak_takeover = weak.clone();
+        // The shared control plane reconciles every family against the
+        // operator's durable intent. The first pass is the boot pass: a live
+        // worker of an older version is taken over, a family the operator
+        // stopped is never started, and a confirmed enabled family whose
+        // worker is gone is started again. Later passes only act on a change.
+        let weak_control = weak.clone();
         tokio::spawn(async move {
-            let Some(mode) = weak_takeover.upgrade() else {
+            let Some(mode) = weak_control.upgrade() else {
                 return;
             };
-            for adapter in &mode.adapters {
-                adapter.takeover().await;
+            mode.reconcile(true).await;
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(FAMILY_RECONCILE_POLL_MS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let Some(mode) = weak_control.upgrade() else {
+                    break;
+                };
+                mode.reconcile(false).await;
             }
         });
         // An enabled Release Train survives a dead or drained worker: the
@@ -3417,7 +3487,7 @@ impl AgentsMode {
             .publish_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = adapter.snapshot(peers);
+        let snapshot = self.normalized_snapshot(adapter, peers);
         self.store_projection(adapter, &snapshot);
         let text = crate::jsjson::stringify(&snapshot);
         let changed = {
@@ -3457,13 +3527,13 @@ impl AgentsMode {
                 return value.clone();
             }
         }
-        let snapshot = adapter.snapshot(self.peers_for(adapter));
+        let snapshot = self.normalized_snapshot(adapter, self.peers_for(adapter));
         self.store_projection(adapter, &snapshot);
         snapshot
     }
 
     fn publish_agent(&self, adapter: &Adapter) {
-        let agent = adapter.snapshot(self.peers_for(adapter));
+        let agent = self.normalized_snapshot(adapter, self.peers_for(adapter));
         self.store_projection(adapter, &agent);
         let text = crate::jsjson::stringify(&agent);
         if let Ok(mut signatures) = self.signatures.lock() {
@@ -3476,6 +3546,187 @@ impl AgentsMode {
             }),
             None,
         );
+    }
+
+    /// The family's durable operator command, if one was recorded.
+    fn intent(&self, adapter: &Adapter) -> Option<FamilyIntent> {
+        family_intent::read(&self.prompts.state_dir, &self.repo_dir, adapter.id())
+    }
+
+    /// Records one family's durable operator command.
+    fn record_intent(&self, adapter: &Adapter, intent: FamilyIntent) -> Result<(), String> {
+        family_intent::write(
+            &self.prompts.state_dir,
+            &self.repo_dir,
+            adapter.id(),
+            intent,
+        )
+        .map_err(|error| {
+            format!(
+                "Could not record the {} intent, so it was not changed: {error}",
+                adapter.descriptor().label
+            )
+        })
+    }
+
+    /// Builds one projection and normalizes it against the operator's intent
+    /// and the processes that are actually alive. Every surface that answers a
+    /// family goes through here, so no adapter can report `stopped` beside a
+    /// running worker or a live peer.
+    fn normalized_snapshot(&self, adapter: &Adapter, peers: u32) -> Value {
+        let mut snapshot = adapter.snapshot(peers);
+        let live = adapter.live_workers();
+        let peer_pids = self.governor.active_pids_for(adapter.descriptor().label);
+        family_intent::apply_presence(&mut snapshot, self.intent(adapter), &live, &peer_pids);
+        snapshot
+    }
+
+    /// Whether this family's control-plane action is due.
+    fn reconcile_due(&self, adapter: &Adapter, now: i64) -> bool {
+        self.reconcile
+            .lock()
+            .map(|states| {
+                states
+                    .get(adapter.id())
+                    .map(|state| now >= state.next_at)
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true)
+    }
+
+    /// Records one automatic action's outcome and its next due time.
+    fn finish_reconcile(&self, adapter: &Adapter, start: bool, result: &AgentResult, now: i64) {
+        let delay = {
+            let Ok(mut states) = self.reconcile.lock() else {
+                return;
+            };
+            let state = states.entry(adapter.id()).or_insert(ReconcileState {
+                next_at: 0,
+                backoff_ms: FAMILY_AUTO_START_BACKOFF_MIN_MS,
+            });
+            if result.ok {
+                state.backoff_ms = FAMILY_AUTO_START_BACKOFF_MIN_MS;
+                state.next_at = now
+                    + if start {
+                        FAMILY_AUTO_START_SETTLE_MS
+                    } else {
+                        FAMILY_STOP_RETRY_MS
+                    };
+                0
+            } else {
+                let delay = state.backoff_ms.clamp(
+                    FAMILY_AUTO_START_BACKOFF_MIN_MS,
+                    FAMILY_AUTO_START_BACKOFF_MAX_MS,
+                );
+                state.next_at = now + delay;
+                state.backoff_ms = (state.backoff_ms * 2).min(FAMILY_AUTO_START_BACKOFF_MAX_MS);
+                delay
+            }
+        };
+        if result.ok {
+            return;
+        }
+        let detail = result
+            .message
+            .clone()
+            .unwrap_or_else(|| "the worker could not be started".to_string());
+        let action = if start { "start" } else { "stop" };
+        self.shared.journal.write(
+            "server-error",
+            &format!(
+                "{}: automatic {action} failed; retrying in {delay} ms: {detail}",
+                adapter.descriptor().label
+            ),
+            Some("agents"),
+        );
+    }
+
+    /// Reconciles every family with the operator's durable intent.
+    ///
+    /// The pass is the only place that starts or stops a family on its own:
+    /// a disabled family is stopped and never started, a confirmed enabled
+    /// family whose worker is gone is started again, and a live worker of an
+    /// older version is taken over once at boot.
+    async fn reconcile(&self, boot: bool) {
+        let now = (now_millis)();
+        for adapter in &self.adapters {
+            if crate::project_kind::reason(adapter.descriptor().gate, &self.repo_dir).is_some() {
+                continue;
+            }
+            let mut intent = self.intent(adapter);
+            if intent.is_none() {
+                intent = self.seed_intent(adapter);
+            }
+            let live = adapter.has_live_workers();
+            if live && intent.is_some_and(|intent| intent.enabled && !intent.confirmed) {
+                // A worker of this intent generation attached: the family may
+                // be restarted after this worker exits, but never before.
+                let confirmed = FamilyIntent {
+                    enabled: true,
+                    confirmed: true,
+                };
+                if self.record_intent(adapter, confirmed).is_ok() {
+                    intent = Some(confirmed);
+                }
+            }
+            let starting = adapter.start_in_flight();
+            match family_intent::reconcile(intent, live, starting, adapter.auto_starts(), boot) {
+                Reconcile::None => {}
+                Reconcile::Takeover => adapter.takeover().await,
+                Reconcile::Stop => {
+                    if self.reconcile_due(adapter, now) {
+                        let result = adapter.stop();
+                        self.finish_reconcile(adapter, false, &result, now);
+                        self.publish_agent(adapter);
+                    }
+                }
+                Reconcile::Start => {
+                    if self.reconcile_due(adapter, now) {
+                        let result = adapter.start().await;
+                        self.finish_reconcile(adapter, true, &result, now);
+                        self.publish_agent(adapter);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Seeds a durable intent from the family's pre-control-plane state the
+    /// first time a dashboard with this code sees it.
+    ///
+    /// A family that reads enabled (or has a live worker) was on before the
+    /// record existed; keeping that intent makes it survive a later worker
+    /// exit. A family that reads stopped gets no record and stays exactly as
+    /// off as it was.
+    fn seed_intent(&self, adapter: &Adapter) -> Option<FamilyIntent> {
+        if !adapter.auto_starts() {
+            return None;
+        }
+        let snapshot = adapter.snapshot(0);
+        let enabled = snapshot
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || snapshot
+                .get("attached")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        if !enabled {
+            return None;
+        }
+        let intent = FamilyIntent {
+            enabled: true,
+            confirmed: true,
+        };
+        match self.record_intent(adapter, intent) {
+            Ok(()) => Some(intent),
+            Err(error) => {
+                self.shared
+                    .journal
+                    .write("server-error", &error, Some("agents"));
+                None
+            }
+        }
     }
 
     /// Publishes a command's answer: the projection the poll maintains, with
@@ -3508,6 +3759,9 @@ impl AgentsMode {
     fn publish_start(&self, adapter: &Adapter) {
         self.publish_command_answer(adapter, |adapter, answer| {
             adapter.apply_start(answer);
+            if let Some(object) = answer.as_object_mut() {
+                object.insert("enabled".to_string(), json!(true));
+            }
         });
     }
 
@@ -3527,6 +3781,16 @@ impl AgentsMode {
                 }
             }
         }
+        // The preview claimed enabled; a gated or refused Start never recorded
+        // that command, so the settled answer restates the durable intent.
+        let enabled = self
+            .intent(adapter)
+            .map(|intent| intent.enabled)
+            .or_else(|| polled.get("enabled").and_then(Value::as_bool))
+            .unwrap_or(false);
+        if let Some(object) = agent.as_object_mut() {
+            object.insert("enabled".to_string(), json!(enabled));
+        }
         self.publish_projection(adapter, agent);
     }
 
@@ -3534,7 +3798,12 @@ impl AgentsMode {
     /// worker's own draining state on the next tick, and the answer states the
     /// one fact this command changed now.
     fn publish_stop(&self, adapter: &Adapter) {
-        self.publish_command_answer(adapter, Adapter::apply_stop);
+        self.publish_command_answer(adapter, |adapter, answer| {
+            adapter.apply_stop(answer);
+            if let Some(object) = answer.as_object_mut() {
+                object.insert("enabled".to_string(), json!(false));
+            }
+        });
     }
 
     fn send_agent(&self, conn: &Conn, adapter: &Adapter) {
@@ -3542,7 +3811,7 @@ impl AgentsMode {
         // Start's worker proves itself by publishing its lock, and the answer
         // must show it. The page-open read is `answer_refresh`, which never
         // walks the state tree.
-        let agent = adapter.snapshot(self.peers_for(adapter));
+        let agent = self.normalized_snapshot(adapter, self.peers_for(adapter));
         self.store_projection(adapter, &agent);
         conn.send(json!({
             "type": "agentState",
@@ -3671,12 +3940,32 @@ impl AgentsMode {
                 // lifecycle a settled answer restates. `project` is already the
                 // first publish's base, so this adds no read.
                 let polled = self.project(adapter);
+                // A gated family has no Start to record: its own refusal is
+                // the whole answer.
+                let gated = crate::project_kind::reason(adapter.descriptor().gate, &self.repo_dir)
+                    .is_some();
                 adapter.preview_start();
                 let preview = PreviewWindow(adapter);
                 let pending = adapter.start();
                 self.publish_start(adapter);
                 let result = pending.await;
                 drop(preview);
+                if !gated {
+                    let live = adapter.has_live_workers();
+                    let intent = FamilyIntent {
+                        enabled: true,
+                        confirmed: live,
+                    };
+                    if let Err(error) = self.record_intent(adapter, intent) {
+                        // A worker that runs without the command that owns it is
+                        // exactly the invisible background work the operator
+                        // refused: stop it and answer the write failure.
+                        let _ = adapter.stop();
+                        self.publish_stop(adapter);
+                        conn.send(json!({"type": "error", "message": error}));
+                        return true;
+                    }
+                }
                 self.publish_settled_start(adapter, &polled);
                 self.answer_fault(conn, result);
                 true
@@ -3692,7 +3981,19 @@ impl AgentsMode {
                     conn.send(json!({"type": "error", "message": format!("Unknown background agent: {id}.")}));
                     return true;
                 };
+                // The durable command is written before the worker is asked:
+                // if the write fails, a stopped worker could come back after a
+                // restart, so the Stop is refused instead of half-applied.
+                if let Err(error) = self.record_intent(adapter, FamilyIntent::disabled()) {
+                    conn.send(json!({"type": "error", "message": error}));
+                    return true;
+                }
                 let result = adapter.stop();
+                let remaining = adapter.has_live_workers() || adapter.start_in_flight();
+                // A Stop on an already stopped family is the durable command
+                // itself, not a fault: the operator asked for a state it is
+                // already in.
+                let result = if remaining { result } else { AgentResult::ok() };
                 self.publish_stop(adapter);
                 self.answer_fault(conn, result);
                 true
@@ -9165,6 +9466,12 @@ impl McpFamily {
             .collect()
     }
 
+    /// Every live worker of this family, including one another dashboard's
+    /// state directory owns: the projection names it instead of hiding it.
+    fn all_owners(&self) -> Vec<LockOwner> {
+        live_lock_owners(&self.lock_path())
+    }
+
     fn control_for(&self, owner: &LockOwner) -> PathBuf {
         let legacy = read_lock(&self.lock_path())
             .map(|value| value.pid == owner.pid)
@@ -10241,7 +10548,9 @@ impl ReleaseFamily {
     /// The newest worker record that still carries the operator's enabled
     /// intent while its process is gone. A dead pid and a reused pid whose
     /// kernel start tick differs both count as gone.
-    fn auto_start_record(&self) -> Option<crate::workers::release_train::ReleaseTrainWorkerRecord> {
+    fn newest_worker_record(
+        &self,
+    ) -> Option<crate::workers::release_train::ReleaseTrainWorkerRecord> {
         let mut newest: Option<crate::workers::release_train::ReleaseTrainWorkerRecord> = None;
         for directory in crate::workers::release_train::worker_state_directories(&self.directory) {
             let Some(record) =
@@ -10257,7 +10566,22 @@ impl ReleaseFamily {
                 newest = Some(record);
             }
         }
-        let record = newest?;
+        newest
+    }
+
+    /// The operator's last Release Train intent, independent of whether a
+    /// worker is live. A record the operator stopped is never replaced by a
+    /// version takeover.
+    fn record_enabled(&self) -> bool {
+        self.newest_worker_record()
+            .map(|record| {
+                record.enabled && resolved(Path::new(&record.root)) == resolved(&self.repo_dir)
+            })
+            .unwrap_or(true)
+    }
+
+    fn auto_start_record(&self) -> Option<crate::workers::release_train::ReleaseTrainWorkerRecord> {
+        let record = self.newest_worker_record()?;
         if !record.enabled {
             return None;
         }
@@ -10768,6 +11092,15 @@ impl ReleaseFamily {
             .iter()
             .any(|owner| owner.harness_version == self.running_version)
         {
+            return AgentResult::ok();
+        }
+        // The operator's Stop is durable: a stopped Release Train is never
+        // replaced on a version change. The older worker is drained and the
+        // family stays off until an explicit Start.
+        if !self.record_enabled() {
+            for owner in owners {
+                let _ = write_command(&self.control_for(&owner), &json!({"type": "drain"}));
+            }
             return AgentResult::ok();
         }
         let newest = self.running_version.as_ref().and_then(|_| {

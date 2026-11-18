@@ -136,17 +136,35 @@ pub fn apply_presence(
     let mut next = lifecycle.clone();
     if live {
         object.insert("attached".to_string(), json!(true));
-        if lifecycle == "stopped" || (!enabled && lifecycle == "running") {
+        if lifecycle == "stopped" {
+            // A worker the family's own state does not map is new: it is
+            // running, not exiting. One whose record says stopped is ending.
+            let any_running = object
+                .get("workers")
+                .and_then(Value::as_array)
+                .map(|workers| {
+                    workers.is_empty()
+                        || workers.iter().any(|worker| {
+                            matches!(
+                                worker.get("lifecycle").and_then(Value::as_str),
+                                Some("running") | Some("starting")
+                            )
+                        })
+                })
+                .unwrap_or(true);
+            next = if any_running {
+                "running".to_string()
+            } else {
+                "stopping".to_string()
+            };
+        } else if !enabled && lifecycle == "running" {
             next = "stopping".to_string();
         }
     } else if !peer_pids.is_empty() {
         if lifecycle == "stopped" {
             next = "stopping".to_string();
         }
-        let notice_is_empty = object
-            .get("notice")
-            .map(Value::is_null)
-            .unwrap_or(true);
+        let notice_is_empty = object.get("notice").map(Value::is_null).unwrap_or(true);
         if notice_is_empty {
             let pids = peer_pids
                 .iter()
@@ -349,6 +367,7 @@ mod tests {
     #[test]
     fn a_live_worker_never_reads_stopped() {
         let mut value = snapshot("stopped", true);
+        value["workers"] = json!([{"pid": 7, "lifecycle": "stopped"}]);
         apply_presence(&mut value, None, &[worker(7)], &[]);
         assert_eq!(value["lifecycle"], "stopping");
         assert_eq!(value["attached"], true);
@@ -356,9 +375,23 @@ mod tests {
     }
 
     #[test]
+    fn a_new_live_worker_with_no_state_reads_running() {
+        let mut value = snapshot("stopped", true);
+        apply_presence(&mut value, None, &[worker(7)], &[]);
+        assert_eq!(value["lifecycle"], "running");
+        assert_eq!(value["attached"], true);
+        assert_eq!(value["workers"][0]["pid"], 7);
+    }
+
+    #[test]
     fn a_disabled_family_that_still_runs_reads_stopping() {
         let mut value = snapshot("running", true);
-        apply_presence(&mut value, Some(FamilyIntent::disabled()), &[worker(7)], &[]);
+        apply_presence(
+            &mut value,
+            Some(FamilyIntent::disabled()),
+            &[worker(7)],
+            &[],
+        );
         assert_eq!(value["enabled"], false);
         assert_eq!(value["lifecycle"], "stopping");
     }
@@ -384,13 +417,7 @@ mod tests {
     #[test]
     fn an_abandoned_start_is_not_restarted() {
         assert_eq!(
-            reconcile(
-                Some(FamilyIntent::enabled()),
-                false,
-                false,
-                true,
-                false
-            ),
+            reconcile(Some(FamilyIntent::enabled()), false, false, true, false),
             Reconcile::None
         );
         assert_eq!(
@@ -411,13 +438,7 @@ mod tests {
     #[test]
     fn a_stopped_family_is_never_started_by_reconcile() {
         assert_eq!(
-            reconcile(
-                Some(FamilyIntent::disabled()),
-                true,
-                false,
-                true,
-                true
-            ),
+            reconcile(Some(FamilyIntent::disabled()), true, false, true, true),
             Reconcile::Stop
         );
         assert_eq!(

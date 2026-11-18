@@ -439,6 +439,20 @@ fn record_child(state_dir: &Path, pid: u32, cwd: &Path, argv: Vec<String>) -> Op
     Some(path)
 }
 
+/// Records one child this process spawned, so the reaper ends it if this
+/// process dies before closing it. Returns the record path to remove once the
+/// child is reaped.
+///
+/// The ACP peer is the harness's one long-lived child that is not a worker and
+/// not a detached run owner: a SIGKILLed worker leaves it with working tools
+/// and no dashboard. Recording it gives the same proof every other child has.
+pub fn record_supervised_child(pid: u32, cwd: &Path, argv: Vec<String>) -> Option<PathBuf> {
+    if pid == 0 {
+        return None;
+    }
+    record_child(&default_supervision_state_directory(), pid, cwd, argv)
+}
+
 /// The current instant as an ISO 8601 UTC timestamp with exactly three
 /// fractional digits, the form `Date.prototype.toISOString` writes.
 fn now_iso8601_millis() -> String {

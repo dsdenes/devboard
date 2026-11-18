@@ -1482,6 +1482,21 @@ impl Governor {
             .unwrap_or(0)
     }
 
+    /// The pids of one starter's live peers, so a family's projection can name
+    /// the process that is still working after its worker is gone.
+    pub fn active_pids_for(&self, starter: &str) -> Vec<u32> {
+        self.split_live_slots()
+            .0
+            .iter()
+            .filter(|slot| slot.get("starter").and_then(Value::as_str) == Some(starter))
+            .filter_map(|slot| {
+                slot.get("pid")
+                    .and_then(Value::as_u64)
+                    .map(|pid| pid as u32)
+            })
+            .collect()
+    }
+
     /// Records one deferral in `deferrals.jsonl` and the dashboard journal.
     /// The same label is recorded at most once per [`DEFERRAL_DEDUPE_MS`].
     pub fn record_deferral(&self, kind: &str, label: &str, reason: &DeferReason) {

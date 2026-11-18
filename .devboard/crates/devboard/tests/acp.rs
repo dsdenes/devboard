@@ -585,3 +585,92 @@ async fn close_ends_a_peer_whose_stdout_already_closed() {
         "a close after stdout EOF left the peer running"
     );
 }
+
+/// A peer must never outlive the process that started it. The stub exits on
+/// stdin EOF, which would pass even without a guarantee, so this peer ignores
+/// signals and never reads its stdin: only the kernel's parent-death signal can
+/// end it when its owner is SIGKILLed.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_peer_dies_with_its_owner_process() {
+    if let Ok(ready) = std::env::var("DEVBOARD_ACP_OWNER_READY") {
+        owner_with_its_peer(&ready);
+        return;
+    }
+    let scratch = Scratch::new("owner-death");
+    let script = scratch.path().join("stubborn.sh");
+    std::fs::write(
+        &script,
+        "trap '' TERM\necho ready > ready.txt\nwhile :; do sleep 1; done\n",
+    )
+    .expect("the peer script is written");
+    let ready = scratch.path().join("owner.txt");
+    let mut owner = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args([
+            "--exact",
+            "a_peer_dies_with_its_owner_process",
+            "--nocapture",
+        ])
+        .env("DEVBOARD_ACP_OWNER_READY", &ready)
+        .env(
+            "DEVBOARD_ACP_OWNER_COMMAND",
+            format!("/bin/sh {}", script.display()),
+        )
+        .env("STATE_DIR", scratch.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the owner starts");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the owner never reported its peer"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let peer: u32 = std::fs::read_to_string(&ready)
+        .expect("the ready file")
+        .trim()
+        .parse()
+        .expect("the peer pid");
+    unsafe {
+        libc::kill(owner.id() as i32, libc::SIGKILL);
+    }
+    let _ = owner.wait();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while peer_alive(peer) {
+        if Instant::now() >= deadline {
+            unsafe {
+                libc::kill(peer as i32, libc::SIGKILL);
+            }
+            panic!("the peer outlived the owner that started it");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The owner process of [`a_peer_dies_with_its_owner_process`]: it opens one
+/// connection, publishes the peer pid, and parks until the parent kills it.
+#[cfg(target_os = "linux")]
+fn owner_with_its_peer(ready: &str) {
+    let command = std::env::var("DEVBOARD_ACP_OWNER_COMMAND").expect("the peer command");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("the owner runtime");
+    runtime.block_on(async move {
+        let cwd = std::env::var("STATE_DIR")
+            .unwrap_or_else(|_| devboard_root().to_string_lossy().into_owned());
+        let options = AcpConnectionOptions::new(command, cwd);
+        let (connection, _events) = AcpConnection::connect(options)
+            .await
+            .expect("the peer starts");
+        let pid = connection.pid().expect("the peer has a pid");
+        std::fs::write(ready, format!("{pid}\n")).expect("the ready file");
+        loop {
+            tokio::time::sleep(Duration::from_secs(3_600)).await;
+        }
+    });
+}
