@@ -445,6 +445,40 @@ test("a sheet that records no command reads zero of every slot", () => {
   expect(coverageText(view.container)).toBe("0 of 8 found");
 });
 
+function testingLevels(value: unknown, confidence: string): void {
+  const testing = (discover.state!.sheet as Record<string, unknown>).testing as Record<
+    string,
+    unknown
+  >;
+  testing.levels = {
+    value,
+    evidence: [],
+    confidence,
+    reason: "No test files were found in the crawled files.",
+  };
+}
+
+test("an unknown levels leaf renders its reason with no zero count", () => {
+  discover.state = state({});
+  testingLevels(null, "unknown");
+  const view = render(DiscoverOverview);
+  const testing = card(view.container, "testing");
+  const text = testing?.textContent?.replace(/\s+/g, " ") ?? "";
+
+  expect(testing?.querySelector(".panel__subtitle")).toBeNull();
+  expect(text).not.toContain("0 levels");
+  expect(text).not.toContain("0 tests");
+  expect(text).toContain("No test files were found in the crawled files.");
+});
+
+test("an observed levels leaf counts its level and its test in the subtitle", () => {
+  discover.state = state({});
+  const view = render(DiscoverOverview);
+  const subtitle = card(view.container, "testing")?.querySelector(".panel__subtitle");
+
+  expect(subtitle?.textContent?.trim().replace(/\s+/g, " ")).toBe("1 level · 1 test");
+});
+
 function remoteState(): DiscoverStatePayload {
   const payload = state({});
   payload.remoteAvailable = true;

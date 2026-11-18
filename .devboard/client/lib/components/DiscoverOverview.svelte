@@ -752,10 +752,12 @@
           <section class="panel discover-card" data-testid="discover-card" data-field="testing">
             <div class="panel__header">
               <h2 class="panel__title">Testing</h2>
-              <span class="panel__subtitle">
-                {tiers.length} {tiers.length === 1 ? "level" : "levels"} · {testTotal ?? 0}
-                {(testTotal ?? 0) === 1 ? "test" : "tests"}
-              </span>
+              {#if !isLeaf(testingSection) && levels !== undefined && levels.confidence !== "unknown"}
+                <span class="panel__subtitle">
+                  {tiers.length} {tiers.length === 1 ? "level" : "levels"} · {testTotal ?? 0}
+                  {(testTotal ?? 0) === 1 ? "test" : "tests"}
+                </span>
+              {/if}
             </div>
             <div class="panel__body">
               {#if isLeaf(testingSection)}
