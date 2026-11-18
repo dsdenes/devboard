@@ -189,13 +189,12 @@ const LANE = {
   question: QUESTION,
 };
 
+function lanesState(lanes: unknown[]): Record<string, unknown> {
+  return { type: "laneState", lanes, openEpics: 0, runningLanes: lanes.length };
+}
+
 function laneState(question: unknown): Record<string, unknown> {
-  return {
-    type: "laneState",
-    lanes: [{ ...LANE, question }],
-    openEpics: 0,
-    runningLanes: 1,
-  };
+  return lanesState([{ ...LANE, question }]);
 }
 
 test("a lane answer keeps its prompt and draft until the frame that names it", () => {
@@ -203,28 +202,28 @@ test("a lane answer keeps its prompt and draft until the frame that names it", (
   const store = new GoalStore();
   const socket = openSocket();
   store.handleEvent(laneState(QUESTION));
-  store.laneDraft = "Alpha";
+  store.setLaneDraft("lane-1", "Alpha");
 
-  expect(store.submitLaneAnswer("lane-1", store.laneDraft)).toBe(true);
+  expect(store.submitLaneAnswer("lane-1", store.laneDraftFor("lane-1"))).toBe(true);
   expect(socket.sent).toContain(
     JSON.stringify({ type: "answer", lane: "lane-1", id: 7, value: "Alpha" }),
   );
   expect(store.lane("lane-1")?.question?.id).toBe(7);
-  expect(store.laneDraft).toBe("Alpha");
+  expect(store.laneDraftFor("lane-1")).toBe("Alpha");
 
   store.handleEvent({ type: "questionCleared", lane: "lane-1", id: 7 });
   expect(store.lane("lane-1")?.question).toBeNull();
-  expect(store.laneDraft).toBe("");
+  expect(store.laneDraftFor("lane-1")).toBe("");
 });
 
 test("a lane snapshot without the question clears the draft that answered it", () => {
   const store = new GoalStore();
   store.handleEvent(laneState(QUESTION));
-  store.laneDraft = "Alpha";
+  store.setLaneDraft("lane-1", "Alpha");
 
   store.handleEvent(laneState(null));
   expect(store.lane("lane-1")?.question).toBeNull();
-  expect(store.laneDraft).toBe("");
+  expect(store.laneDraftFor("lane-1")).toBe("");
 });
 
 test("a refused lane answer keeps the prompt and releases the control", () => {
@@ -232,15 +231,70 @@ test("a refused lane answer keeps the prompt and releases the control", () => {
   const store = new GoalStore();
   openSocket();
   store.handleEvent(laneState(QUESTION));
-  store.laneDraft = "Alpha";
+  store.setLaneDraft("lane-1", "Alpha");
 
   const control = createCommandBusy({ label: "Submit answer", evidence: () => store.answerRevision });
   control.start();
-  expect(store.submitLaneAnswer("lane-1", store.laneDraft)).toBe(true);
+  expect(store.submitLaneAnswer("lane-1", store.laneDraftFor("lane-1"))).toBe(true);
   store.handleEvent({ type: "error", message: "No pending question with that id." });
 
   control.settle();
   expect(control.busy).toBe(false);
   expect(store.lane("lane-1")?.question?.id).toBe(7);
-  expect(store.laneDraft).toBe("Alpha");
+  expect(store.laneDraftFor("lane-1")).toBe("Alpha");
+});
+
+const LANE_B = {
+  ...LANE,
+  id: "lane-2",
+  attempt: 2,
+  question: { ...QUESTION, id: 8 },
+};
+
+test("a second lane's question leaves the text typed for the first", () => {
+  installGlobals();
+  const store = new GoalStore();
+  const socket = openSocket();
+  store.handleEvent(lanesState([LANE, { ...LANE_B, question: null }]));
+  store.setLaneDraft("lane-1", "Alpha");
+
+  // Lane B asks while lane A's answer is half-typed: only B's field is empty.
+  store.handleEvent({
+    type: "question",
+    lane: "lane-2",
+    id: 8,
+    message: "Choose for the second lane",
+    options: [],
+  });
+  expect(store.laneDraftFor("lane-1")).toBe("Alpha");
+  expect(store.laneDraftFor("lane-2")).toBe("");
+
+  store.setLaneDraft("lane-2", "Beta");
+  expect(store.laneDraftFor("lane-1")).toBe("Alpha");
+
+  // Lane B dispatches its own text, never the text typed for lane A.
+  expect(store.submitLaneAnswer("lane-2", store.laneDraftFor("lane-2"))).toBe(true);
+  expect(socket.sent).toContain(
+    JSON.stringify({ type: "answer", lane: "lane-2", id: 8, value: "Beta" }),
+  );
+  expect(socket.sent).not.toContain(
+    JSON.stringify({ type: "answer", lane: "lane-2", id: 8, value: "Alpha" }),
+  );
+  expect(store.laneDraftFor("lane-1")).toBe("Alpha");
+});
+
+test("a snapshot ends one lane's question and keeps the other lane's draft", () => {
+  const store = new GoalStore();
+  store.handleEvent(lanesState([LANE, LANE_B]));
+  store.setLaneDraft("lane-1", "Alpha");
+  store.setLaneDraft("lane-2", "Beta");
+
+  store.handleEvent(lanesState([{ ...LANE, question: null }, LANE_B]));
+  expect(store.lane("lane-1")?.question).toBeNull();
+  expect(store.laneDraftFor("lane-1")).toBe("");
+  expect(store.laneDraftFor("lane-2")).toBe("Beta");
+
+  // A lane that left the snapshot takes its own draft with it.
+  store.handleEvent(lanesState([{ ...LANE, question: null }]));
+  expect(store.laneDraftFor("lane-2")).toBe("");
 });

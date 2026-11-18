@@ -547,7 +547,7 @@ export function buildCommands(ctx: CommandContext): CommandDef[] {
           ctx.focusLater("goal", `#lane-answer-${lane.id}`);
           return;
         }
-        goal.submitLaneAnswer(lane.id, goal.laneDraft);
+        goal.submitLaneAnswer(lane.id, goal.laneDraftFor(lane.id));
       },
     });
   }

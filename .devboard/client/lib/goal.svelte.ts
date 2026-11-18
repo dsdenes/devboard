@@ -157,7 +157,8 @@ export class GoalStore {
   activity = $state<string[]>([]);
   question = $state<RunQuestion | null>(null);
   draft = $state("");
-  laneDraft = $state("");
+  /** One answer draft per lane, keyed by lane id; a lane without one reads empty. */
+  laneDrafts = $state<Record<string, string>>({});
   /**
    * Bumped by the frame that answers a dispatched answer: the
    * `questionCleared` broadcast of an accepted one, or the `error` frame of a
@@ -488,7 +489,7 @@ export class GoalStore {
     const lane = this.lane(laneId);
     if (lane === null) return;
     if (lane.question === null || String(lane.question.id) !== String(pending.id)) {
-      this.laneDraft = "";
+      this.clearLaneDraft(laneId);
       this.settleAnswer();
     }
     this.lanes = this.lanes.map((entry) =>
@@ -504,7 +505,7 @@ export class GoalStore {
     this.lanes = this.lanes.map((entry) =>
       entry.id === laneId ? { ...entry, question: null } : entry,
     );
-    this.laneDraft = "";
+    this.clearLaneDraft(laneId);
     this.settleAnswer();
     return true;
   }
@@ -537,6 +538,36 @@ export class GoalStore {
     if (!connection.send({ type: "answer", id, value: trimmed })) return false;
     this.answering += 1;
     return true;
+  }
+
+  /** The text typed for one lane's answer; a lane without a draft reads empty. */
+  laneDraftFor(laneId: string): string {
+    return this.laneDrafts[laneId] ?? "";
+  }
+
+  /** Records the text typed into one lane's answer field, and only that lane's. */
+  setLaneDraft(laneId: string, value: string): void {
+    if (value.length === 0) {
+      this.clearLaneDraft(laneId);
+      return;
+    }
+    this.laneDrafts = { ...this.laneDrafts, [laneId]: value };
+  }
+
+  /** Drops one lane's draft, leaving every other lane's where it was. */
+  clearLaneDraft(laneId: string): void {
+    if (this.laneDrafts[laneId] === undefined) return;
+    const drafts = { ...this.laneDrafts };
+    delete drafts[laneId];
+    this.laneDrafts = drafts;
+  }
+
+  /** Reports whether a lane snapshot moved or ended the question `before` held. */
+  private laneQuestionEnded(before: Lane | undefined, after: Lane): boolean {
+    return (
+      before?.question != null &&
+      (after.question === null || String(after.question.id) !== String(before.question.id))
+    );
   }
 
   /** The lane counterpart of `submitAnswer`. */
@@ -674,18 +705,24 @@ export class GoalStore {
         // A lane snapshot is authoritative for the question each lane holds:
         // an answer accepted elsewhere, or before a reload, arrives only as a
         // lane without its question, so the draft that answered it goes too.
-        const dropped = message.lanes.some((lane) => {
-          const before = this.lanes.find((entry) => entry.id === lane.id);
-          return (
-            before?.question != null &&
-            (lane.question === null ||
-              String(lane.question.id) !== String(before.question.id))
-          );
-        });
-        if (dropped) {
-          this.laneDraft = "";
-          this.settleAnswer();
+        // Every other lane keeps the text typed for it, keyed by lane id, and
+        // a lane that left the snapshot takes its draft with it.
+        const before = new Map(this.lanes.map((lane) => [lane.id, lane]));
+        const after = new Map(message.lanes.map((lane) => [lane.id, lane]));
+        const dropped = message.lanes.some((lane) =>
+          this.laneQuestionEnded(before.get(lane.id), lane),
+        );
+        const drafts: Record<string, string> = {};
+        for (const [laneId, text] of Object.entries(this.laneDrafts)) {
+          const current = after.get(laneId);
+          if (current === undefined) continue;
+          if (this.laneQuestionEnded(before.get(laneId), current)) continue;
+          drafts[laneId] = text;
         }
+        if (Object.keys(drafts).length !== Object.keys(this.laneDrafts).length) {
+          this.laneDrafts = drafts;
+        }
+        if (dropped) this.settleAnswer();
         this.lanes = message.lanes;
         this.openEpics = message.openEpics;
         this.runningLanes = message.runningLanes;

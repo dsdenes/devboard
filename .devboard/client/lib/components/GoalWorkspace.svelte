@@ -1052,9 +1052,9 @@
                 class="answer-form"
                 onsubmit={(event) => {
                   event.preventDefault();
-                  if (goal.laneDraft.trim().length === 0) return;
+                  if (goal.laneDraftFor(lane.id).trim().length === 0) return;
                   laneAnswerPending.start();
-                  if (!goal.submitLaneAnswer(lane.id, goal.laneDraft)) {
+                  if (!goal.submitLaneAnswer(lane.id, goal.laneDraftFor(lane.id))) {
                     laneAnswerPending.refuse();
                   }
                 }}
@@ -1064,7 +1064,8 @@
                   class="goal-answer-input"
                   style="min-height: 28px; padding: 4px 8px;"
                   type="text"
-                  bind:value={goal.laneDraft}
+                  value={goal.laneDraftFor(lane.id)}
+                  oninput={(event) => goal.setLaneDraft(lane.id, event.currentTarget.value)}
                   placeholder="Your answer"
                   aria-label="Your answer"
                   data-testid="lane-answer-input"
@@ -1076,7 +1077,7 @@
                   busy={laneAnswerPending.busy}
                   data-command={`goal.lane.answer.submit.${lane.id}`}
                   data-testid="lane-submit-answer"
-                  disabled={goal.laneDraft.trim().length === 0}
+                  disabled={goal.laneDraftFor(lane.id).trim().length === 0}
                 >
                   Submit answer
                 </Button>
